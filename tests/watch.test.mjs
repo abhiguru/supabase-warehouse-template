@@ -1168,7 +1168,7 @@ test('mute never covers backup_missing, backup_failed or daily_timer_legacy: the
   try {
     const out = [];
     assert.equal(await W.main(['mute', '600'], h.deps, t => out.push(t)), 0);
-    assert.match(out[0], /^Muted all alerts until \S+\. backup_missing, backup_failed and daily_timer_legacy are not muted\.$/);
+    assert.match(out[0], /^Muted all alerts until \S+\. backup_missing, backup_failed, daily_timer_legacy and upgrade_interrupted are not muted\.$/);
     assert.equal(await W.main(['mute', '600', 'backup_missing'], h.deps, t => out.push(t)), 1);
     assert.match(out[1], /^backup_missing cannot be muted: it says no backup exists\.$/);
     assert.equal(await W.main(['mute', '600', 'backup_failed'], h.deps, t => out.push(t)), 1);
@@ -1188,7 +1188,7 @@ test('mute never covers backup_missing, backup_failed or daily_timer_legacy: the
     writeFileSync(join(h.state, 'config/watch-mutes.json'), JSON.stringify({ all: h.clock.t + HOUR, ids: { other_bad: h.clock.t + HOUR } }));
     await W.runOnce(h.deps, { checks, heal: null });
     const alive = h.posts.filter(p => /^Monitoring is alive/.test(p.text)).pop();
-    assert.match(alive.text, /Alerts are muted until \S+\. Muted: other_bad\. backup_missing, backup_failed and daily_timer_legacy are never muted: they are posted anyway\./);
+    assert.match(alive.text, /Alerts are muted until \S+\. Muted: other_bad\. backup_missing, backup_failed, daily_timer_legacy and upgrade_interrupted are never muted: they are posted anyway\./);
     h.clock.t = new Date(2026, 9, 21, 9, 5).getTime();
     writeFileSync(join(h.state, 'config/watch-mutes.json'), JSON.stringify({ all: null, ids: {} }));
     await W.runOnce(h.deps, { checks, heal: null });
@@ -3528,5 +3528,214 @@ test('record-verified puts a backup on config/backups-verified.list with the tim
     const kept = W.pruneBackups(h.state, { now: at(21, 7, 0) });
     assert.equal(kept.verifiedKept, nm(10));
     assert.deepEqual(readdirSync(join(h.state, 'backups')).sort(), [nm(10), ...[14, 15, 16, 17, 18, 19, 20].map(nm)]);
+  } finally { clean(h); }
+});
+
+// ---------------------------------------------------------------- upgrades: the stuck limit, the alert, self-healing and maintenance mode
+// A backup directory that says how long it took (duration_seconds= in metadata.txt, written by scripts/backup.sh).
+function timedBackup(h, name, seconds) {
+  const dir = addBackup(h, name);
+  writeFileSync(join(dir, 'metadata.txt'), `format=warehouse-backup-v6\n${seconds === null ? '' : `duration_seconds=${seconds}\n`}`);
+  return dir;
+}
+const verifiedLine = (name, seconds) => `${name} ${Math.floor(T0 / 1000)}${seconds === undefined ? '' : ` ${seconds}`}\n`;
+
+test('upgrade: the lock of a recorded upgrade is called stuck after max(2 h, twice the last backup plus the last verify), never over a day; any other command keeps 2 hours', async () => {
+  const h = harness();
+  try {
+    const A = 'warehouse-20261018T020000Z'; const B = 'warehouse-20261019T020000Z';
+    // Nothing known: the 2 hours of every other command.
+    assert.equal(W.upgradeStuckMs(h.state), 2 * HOUR);
+    timedBackup(h, A, 3000); timedBackup(h, B, 3000);   // 50 minutes each
+    // The verify time on the list (upgrade.sh records it) wins over the backup's own; the newest line that has one.
+    writeFileSync(join(h.state, 'config/backups-verified.list'), verifiedLine(A, 1000) + verifiedLine(B, 2400));
+    assert.equal(W.upgradeStuckMs(h.state), 2 * (3000 + 2400) * 1000, 'twice (50 min + 40 min) = 3 hours');
+    // A line with no time (a nightly verify) after one that has it: the newest line that HAS one is used.
+    writeFileSync(join(h.state, 'config/backups-verified.list'), verifiedLine(A, 1000) + verifiedLine(B));
+    assert.equal(W.upgradeStuckMs(h.state), 2 * (3000 + 1000) * 1000);
+    // No verify time anywhere: the backup's own time stands in for it.
+    writeFileSync(join(h.state, 'config/backups-verified.list'), verifiedLine(B));
+    assert.equal(W.upgradeStuckMs(h.state), 2 * (3000 + 3000) * 1000, 'twice (50 + 50 min) = 3 h 20 min');
+    // The newest backup that records its time is used (an older format, or an unreadable line, does not hide the one before it).
+    timedBackup(h, 'warehouse-20261020T020000Z', null);
+    assert.equal(W.upgradeStuckMs(h.state), 2 * (3000 + 3000) * 1000);
+    // Never under 2 hours: short backups, and no more than a day: nonsense figures.
+    for (const name of [A, B, 'warehouse-20261020T020000Z']) rmSync(join(h.state, 'backups', name), { recursive: true });
+    timedBackup(h, A, 60); writeFileSync(join(h.state, 'config/backups-verified.list'), verifiedLine(A, 60));
+    assert.equal(W.upgradeStuckMs(h.state), 2 * HOUR, 'a small facility keeps the 2 hours');
+    timedBackup(h, B, 9999999); writeFileSync(join(h.state, 'config/backups-verified.list'), verifiedLine(B, 9999999));
+    assert.equal(W.upgradeStuckMs(h.state), 24 * HOUR, 'a figure that large is not believed');
+    writeFileSync(join(h.state, 'backups', B, 'metadata.txt'), 'duration_seconds=abc\nduration_seconds=-5\n');
+    writeFileSync(join(h.state, 'config/backups-verified.list'), '');
+    assert.equal(W.upgradeStuckMs(h.state), 2 * HOUR, 'junk is ignored: the figures are not numbers, and the floor decides');
+
+    // Through the checker: a 50 + 40 minute upgrade is not stuck at 2 h 30 min, and is at 3 h; a lock with no record is stuck at 2 h as before.
+    rmSync(join(h.state, 'backups'), { recursive: true }); mkdirSync(join(h.state, 'backups'));
+    timedBackup(h, B, 3000); writeFileSync(join(h.state, 'config/backups-verified.list'), verifiedLine(B, 2400));
+    h.holdLock();
+    const checks = [['stub', () => [{ check: 'stub', ...failing() }]]];
+    upgradeRecord(h, join(h.state, 'backups', B), { maintenance: 'on' });
+    let r = await W.runOnce(h.deps, { checks, ...NO_JOBS });
+    assert.equal(r.skipped, 'operator lock is held');
+    h.advance(2 * HOUR + 30 * 60000); r = await W.runOnce(h.deps, { checks, ...NO_JOBS });
+    assert.equal(r.skipped, 'operator lock is held', 'a healthy upgrade is not stuck after 2 hours 30 minutes');
+    h.advance(29 * 60000 + 59000); r = await W.runOnce(h.deps, { checks, ...NO_JOBS });
+    assert.equal(r.skipped, 'operator lock is held', 'just under 3 hours');
+    h.advance(1000); r = await W.runOnce(h.deps, { checks, ...NO_JOBS });
+    assert.equal(find(r.results, 'operator_lock_stuck').ok, false, 'at 3 hours it is');
+    assert.equal(find(r.results, 'upgrade_interrupted'), undefined, 'the lock is held: the upgrade is running, not interrupted');
+    const g = harness();
+    try {
+      timedBackup(g, B, 3000); writeFileSync(join(g.state, 'config/backups-verified.list'), verifiedLine(B, 2400));
+      g.holdLock();
+      await W.runOnce(g.deps, { checks, ...NO_JOBS });
+      g.advance(2 * HOUR); r = await W.runOnce(g.deps, { checks, ...NO_JOBS });
+      assert.equal(find(r.results, 'operator_lock_stuck').ok, false, 'without a record the limit is 2 hours, whatever the backups took');
+    } finally { clean(g); }
+  } finally { clean(h); }
+});
+
+test('upgrade_interrupted: raised at once when the record exists and the lock is free, with what to do; silent while the lock is held; clears with the record; cannot be muted', async () => {
+  const h = harness();
+  try {
+    const checks = [['upgrade', W.checkUpgrade]];
+    h.seed();
+    // No record: fine.
+    let r = await W.runOnce(h.deps, { checks, heal: null, ...NO_JOBS });
+    assert.equal(find(r.results, 'upgrade_interrupted').ok, true);
+    assert.deepEqual(h.posts.filter(p => /^\[FIRING\]/.test(p.text)), []);
+    // A verified upgrade that stopped: one run is enough (not the two of other alerts), and the post says what to do.
+    upgradeRecord(h, '/state/backups/warehouse-20261019T020000Z', { from_label: 'v0.6.0', to_label: 'v0.7.0', command: 'v0.7.0', maintenance: 'on', step: 'Setup (the same inputs as the installation)' });
+    h.advance(5 * 60000); r = await W.runOnce(h.deps, { checks, heal: null, ...NO_JOBS });
+    const alert = find(r.results, 'upgrade_interrupted');
+    assert.equal(alert.ok, false);
+    assert.equal(alert.immediate, true);
+    assert.equal(alert.summary, 'An upgrade from v0.6.0 to v0.7.0 did not finish');
+    const fired = h.posts.filter(p => /^\[FIRING\]/.test(p.text));
+    assert.equal(fired.length, 1, 'posted on the first run that sees it');
+    assert.match(fired[0].text, /An upgrade from v0\.6\.0 to v0\.7\.0 did not finish/);
+    // Slack clips the detail to a few hundred characters: all of this is inside what it posts.
+    assert.match(fired[0].text, /Stopped at step "Setup \(the same inputs as the installation\)": the facility may be half upgraded\./);
+    assert.match(fired[0].text, /The API is closed to phones \(maintenance mode\) until then: bash scripts\/maintenance\.sh off opens it\./);
+    assert.match(fired[0].text, /node scripts\/upgrade-record\.mjs report \(the way forward and the way back\)/);
+    assert.doesNotMatch(fired[0].text, /wait for it/, 'the lock is free: upgrade.sh is not running');
+    // Muting does not silence it, as for the backup alerts: a global mute and a mute of its own id.
+    const out = [];
+    assert.equal(await W.main(['mute', '600'], h.deps, t => out.push(t)), 0);
+    assert.match(out[0], /upgrade_interrupted are not muted\.$/);
+    assert.equal(await W.main(['mute', '600', 'upgrade_interrupted'], h.deps, t => out.push(t)), 1);
+    assert.equal(out[1], 'upgrade_interrupted cannot be muted: it says an upgrade stopped half way, with the facility closed to phones.');
+    h.advance(4 * HOUR + 60000); await W.runOnce(h.deps, { checks, heal: null, ...NO_JOBS });
+    assert.equal(h.posts.filter(p => /^\[FIRING\]|^\[REPEAT\]|STILL/i.test(p.text) && /did not finish/.test(p.text)).length, 2, 'repeated after 4 hours although everything is muted');
+    // While the lock is held the check says nothing (the alert is left as it is): an upgrade that is running is not an interrupted one.
+    h.holdLock();
+    assert.equal(W.checkUpgrade(h.ctx()), null);
+    h.releaseLock();
+    // The record goes (the upgrade finished, or the way back ended with `rm`): the alert clears.
+    rmSync(join(h.state, 'config/upgrade-in-progress'));
+    h.advance(5 * 60000); await W.runOnce(h.deps, { checks, heal: null, ...NO_JOBS });
+    assert.ok(h.posts.some(p => /^\[CLEARED\]/.test(p.text) && /did not finish/.test(p.text)));
+    // A record written before the backup was proved: the facility was not changed, and it says to run the command again.
+    upgradeRecord(h, '', { verified: 'no', from_label: 'v0.6.0', to_label: 'v0.7.0', command: 'v0.7.0', maintenance: 'on', step: 'Backup' });
+    const early = W.checkUpgrade(h.ctx())[0];
+    assert.equal(early.ok, false); assert.equal(early.immediate, true);
+    assert.match(early.detail, /stopped before the first backup was proved to restore, so the facility was not changed\./);
+    assert.match(early.detail, /The API is closed to phones \(maintenance mode\) until then: bash scripts\/maintenance\.sh off opens it\./);
+    assert.match(early.detail, /Run the same command again: bash upgrade\.sh v0\.7\.0$/);
+    // Without the line that says the API was closed (an upgrade.sh from before maintenance mode) there is nothing about it.
+    upgradeRecord(h, '', { verified: 'no', from_label: 'v0.6.0', to_label: 'v0.7.0', command: 'v0.7.0', step: 'Backup' });
+    assert.doesNotMatch(W.checkUpgrade(h.ctx())[0].detail, /maintenance/);
+    // The API was opened and only the health check after that failed: the alert says it is OPEN, never that it is closed.
+    upgradeRecord(h, '/state/backups/warehouse-20261019T020000Z', { from_label: 'v0.6.0', to_label: 'v0.7.0', command: 'v0.7.0', maintenance: 'opened', step: 'Open the API to phones again' });
+    const opened = W.checkUpgrade(h.ctx())[0];
+    assert.equal(opened.ok, false); assert.equal(opened.immediate, true);
+    assert.match(opened.detail, /The API is open to phones \(maintenance mode is off\), but the health check after opening it failed: node scripts\/watch\.mjs health\./);
+    assert.doesNotMatch(opened.detail, /closed to phones/);
+    // A record that cannot be read is an alert too, not silence.
+    writeFileSync(join(h.state, 'config/upgrade-in-progress'), 'garbage\n');
+    const unreadable = W.checkUpgrade(h.ctx())[0];
+    assert.equal(unreadable.ok, false); assert.equal(unreadable.summary, 'The record of an upgrade cannot be read');
+    assert.match(unreadable.detail, /bash scripts\/maintenance\.sh off/);
+  } finally { clean(h); }
+});
+
+test('self-heal: nothing is started or restarted while config/upgrade-in-progress exists (the functions container would load the new code on a half-migrated schema); without it the same run heals', async () => {
+  const h = harness();
+  try {
+    h.seed(); h.stateOf = { functions: 'running|unhealthy', rest: 'exited|' };
+    h.runs['compose.sh restart functions'] = ok();
+    h.runs['compose.sh up -d --no-build --no-recreate --no-deps --pull never rest'] = ok();
+    upgradeRecord(h, '/state/backups/warehouse-20261019T020000Z');
+    for (let i = 0; i < 5; i++) { await healRun(h); h.advance(5 * 60000); }
+    assert.deepEqual(healCalls(h), [], 'five runs: not one start, restart or recreate');
+    assert.deepEqual(h.posts.filter(p => /service_healed|started it again|restarted it/.test(p.text)), []);
+    assert.deepEqual(W.selfHeal(h.ctx()), [], 'and the function reports nothing');
+    rmSync(join(h.state, 'config/upgrade-in-progress'));
+    for (let i = 0; i < 3; i++) { await healRun(h); h.advance(5 * 60000); }
+    assert.ok(healCalls(h).includes('compose.sh restart functions'), 'the record gone: functions is restarted as before');
+    assert.ok(healCalls(h).includes('compose.sh up -d --no-build --no-recreate --no-deps --pull never rest'));
+  } finally { clean(h); }
+});
+
+test('status: says "Maintenance mode: upgrading" when a gateway runs with it, and when only the marker is there', async () => {
+  const h = harness();
+  try {
+    const status = async () => { const out = []; await W.main(['status'], h.deps, t => out.push(t)); return out.join('\n'); };
+    const env = word => { h.runs['{{range .Config.Env}}'] = ok(`PATH=/usr/bin\n${word === undefined ? '' : `WAREHOUSE_MAINTENANCE=${word}\n`}`); };
+    env('off');
+    assert.doesNotMatch(await status(), /Maintenance mode/, 'nothing to say when it is off');
+    env('upgrading');
+    let text = await status();
+    assert.match(text, /^Maintenance mode: upgrading \(the gateway answers 503 "upgrading" to every API request; phones are told the server is being updated\)\. Open it with: bash scripts\/maintenance\.sh off$/m);
+    // The LAN gateway counts too.
+    h.services = [...SERVICES, 'gateway-lan'];
+    h.runs['{{range .Config.Env}}'] = line => ok(line.endsWith(idOf('gateway-lan')) ? 'WAREHOUSE_MAINTENANCE=upgrading\n' : 'WAREHOUSE_MAINTENANCE=off\n');
+    assert.match(await status(), /^Maintenance mode: upgrading /m);
+    h.services = [...SERVICES];
+    // Only the marker: the gateway still runs without it, or is not running.
+    writeFileSync(join(h.state, 'config/maintenance'), 'upgrading\n');
+    env('off');
+    assert.match(await status(), /^Maintenance mode: marked \(.*\/config\/maintenance exists\) but the gateway runs without it; the next recreate closes it\. Open it with: bash scripts\/maintenance\.sh off$/m);
+    h.services = SERVICES.filter(s => s !== 'gateway');
+    assert.match(await status(), /but the gateway is not running; it starts closed\./);
+    // A docker that cannot be asked is not an error of status.
+    h.services = [...SERVICES];
+    h.runs['{{range .Config.Env}}'] = bad('docker said no');
+    assert.match(await status(), /Maintenance mode: marked .* but the gateway is not running; it starts closed\./);
+  } finally { clean(h); }
+});
+
+test('the health check does not probe the API through a gateway that is closed on purpose: it says so as a warning that passes, and probes again once the marker is gone', async () => {
+  const h = harness();
+  try {
+    writeFileSync(join(h.state, 'config/maintenance'), 'upgrading\n');
+    const closed = W.gatewayProbe(h.ctx(), 0);
+    assert.equal(closed.length, 1);
+    assert.deepEqual([closed[0].ok, closed[0].warn], [true, true]);
+    assert.match(closed[0].text, /maintenance mode is on \(config\/maintenance\), so the API answers 503 "upgrading" on purpose and REST and the public configuration were not probed through it\. bash scripts\/maintenance\.sh off opens it and runs this check/);
+    assert.equal(h.calls.some(c => /exec -T storage/.test(c)), false, 'no probe was run in the storage container');
+    // With the marker gone the probe runs as before (here the fake docker has no answer for it: the failure shows it ran).
+    rmSync(join(h.state, 'config/maintenance'));
+    const open = W.gatewayProbe(h.ctx(), 0);
+    assert.equal(h.calls.some(c => /exec -T storage/.test(c)), true);
+    assert.equal(open.every(line => line.warn !== true), true);
+  } finally { clean(h); }
+});
+
+test('runHealth with maintenance mode on: the gateway is not probed, the line is a warning that passes, and the other checks still count', async () => {
+  const h = harness();
+  try {
+    writeFileSync(join(h.state, 'config/maintenance'), 'upgrading\n');
+    h.runs['pg_isready'] = ok('accepting connections');
+    const report = await W.runHealth(h.deps, { waitMs: 0 });
+    assert.equal(h.calls.some(c => /exec -T storage/.test(c)), false, 'nothing was probed through the gateway');
+    const line = report.lines.find(l => /maintenance mode is on/.test(l.text));
+    assert.deepEqual([line.ok, line.warn], [true, true]);
+    assert.equal(report.lines.some(l => /answers through the gateway/.test(l.text)), false, 'no claim that the API answers');
+    // A fault elsewhere still fails the check: the warning hides nothing else.
+    h.stateOf = { rest: 'exited|' };
+    const sick = await W.runHealth(h.deps, { waitMs: 0 });
+    assert.equal(sick.ok, false);
+    assert.equal(sick.lines.some(l => /maintenance mode is on/.test(l.text) && l.warn), true);
   } finally { clean(h); }
 });

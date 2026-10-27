@@ -26,6 +26,17 @@
 # the copy from the drive without unpacking the photos, and then keeps the newest N valid archives of this installation
 # (setup --keep N, default 3), deleting older ones, and, once an encrypted archive is written and verified, the readable
 # archives an earlier release left. Archives that are damaged, unsigned or signed with another key are reported and never deleted.
+# The saved images (<state>/images, written and signed by scripts/build-images.sh) are copied too, as a folder beside the archives,
+# warehouse-backups/<state name>/images: once, and again only when the folder's signed list (SHA256SUMS) is no longer the one on the
+# drive. db:restore-host looks for an `images` folder next to the archive it is given, so a lost-host restore from the drive finds them.
+# They are not inside the archives (every archive would carry the same few GiB) and are not encrypted: they are built from this
+# repository's recipes and hold nothing of the installation; their signature, made with the backup key, is what db:restore-host checks
+# before it loads one. The copy goes into a partial folder, is read back from the drive, and replaces the old folder only then (an
+# interruption between the two renames leaves the old folder under another name, which the next run puts back first). It is the last
+# step of a run, after the archive is copied and verified and the drive is pruned, and it deletes nothing: an image problem (too little
+# room, a folder that does not authenticate, an unreadable drive) does not make the archive copy a failure and does not hold back the
+# pruning or the removal of readable archives. The run is recorded as ok with "saved images NOT copied: <why>", warns on stderr, and
+# `npm run doctor` shows it.
 set -euo pipefail
 umask 077
 ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
@@ -131,6 +142,21 @@ conf_encrypts() {
 # The text the enrolment marker signs: this drive, this partition, this instance.
 enrolment_hmac() { printf '%s\n%s\n%s\n' "$D_UUID" "$D_PARTUUID" "$2" | backup_hmac "$1" warehouse-usb-enrolment-v1; }
 instance_id_of() { sed -n 's/.*"instanceId"[^"]*"\([^"]*\)".*/\1/p' "$1/public/instance.json" 2>/dev/null | head -n1 || true; }
+# What the saved images add to a drive, from the tarballs in the state's images folder (one copy, not one per archive).
+images_space_note() {
+  local dir="$1/images" bytes=0 size file
+  if [[ -d "$dir" && ! -L "$dir" ]]; then
+    for file in "$dir"/*.tar; do
+      [[ -f "$file" && ! -L "$file" ]] || continue
+      size="$(stat -c %s -- "$file" 2>/dev/null || echo 0)"; bytes=$((bytes + size))
+    done
+  fi
+  if ((bytes > 0)); then
+    echo "The saved images ($dir, $(numfmt --to=iec-i --suffix=B "$bytes" 2>/dev/null || echo "$bytes bytes") now) are copied to the drive as well, once and again after a change, beside the archives: the drive needs that much room more than the archives (about 2.5 GiB at the first install) and as much again free while a changed set is written beside the old one. A lost-host restore from the drive then needs no Debian, npm or Chrome for Testing to answer; Docker Hub is still needed for the postgres and PostgREST images."
+  else
+    echo "There are no saved images in $dir yet. Once bash scripts/build-images.sh --save has written them (about 2.5 GiB), the drive receives them too, beside the archives, and the drive needs that much more room (as much again free while a changed set is written beside the old one)."
+  fi
+}
 
 # ---------------------------------------------------------------- root: installation
 write_rule() {
@@ -193,6 +219,7 @@ do_enroll() {
   { grep -v -E -- "^$D_UUID( |\$)" "$DRIVES" 2>/dev/null || true; printf '%s %s\n' "$D_UUID" "$D_PARTUUID"; } > "$tmp"
   chmod 0600 "$tmp"; chown root:root "$tmp"; mv -f -- "$tmp" "$DRIVES"
   echo "Enrolled drive $D_UUID (/dev/$name, partition $D_PARTUUID) and wrote its signed enrolment marker."
+  images_space_note "$state"
   write_rule
 }
 
@@ -337,6 +364,7 @@ EOF
     echo 'Archives are NOT encrypted (you typed --no-encrypt). They contain every credential of the instance. Run setup again with --encrypt to encrypt them with the backup key (confirm a copy of the key off this machine first: bash scripts/backup-key-escrow.sh show).'
   fi
   echo "Each drive keeps the newest $keep valid archives of this installation; older ones are deleted after a run that finishes without a failure (change it with --keep N)."
+  [[ -n "$enroll" ]] || images_space_note "$state"
   # Lines of one column were written by a release that enrolled a drive by its volume serial alone.
   legacy="$(grep -E '^[A-Za-z0-9-]+$' "$DRIVES" || true)"
   while IFS= read -r D_UUID; do
@@ -597,13 +625,81 @@ prune_drive() {
   fi
 }
 
+# The saved images on the drive (see the head of this file). SHA256SUMS lists every file of the folder except itself and its signature.
+IMAGES_NOTE='none yet'; IMAGES_PROBLEM=''
+# What went wrong with the images, said once, on stderr, and recorded; the archive copy stands (see the head of this file).
+images_problem() {
+  IMAGES_PROBLEM="$1"; IMAGES_NOTE="NOT copied: $1"
+  echo "WARNING: saved images NOT copied: $1" >&2
+}
+# 0 when DIR has a signature and every file its SHA256SUMS names has the recorded hash as the drive returns it (media_hash).
+images_verify() {
+  local dir="$1" hash name
+  [[ -f "$dir/SHA256SUMS" && ! -L "$dir/SHA256SUMS" && -f "$dir/SHA256SUMS.hmac" && ! -L "$dir/SHA256SUMS.hmac" ]] || return 1
+  while read -r hash name; do
+    [[ "$name" =~ ^[A-Za-z0-9][A-Za-z0-9._-]*$ && -f "$dir/$name" && ! -L "$dir/$name" ]] || return 1
+    [[ "$(media_hash "$dir/$name")" == "$hash" ]] || return 1
+  done < <(sed -n 's/^\([0-9a-f]\{64\}\)  \(.*\)$/\1 \2/p' "$dir/SHA256SUMS")
+}
+copy_images() {
+  local src="$STATE/images" dst="$DEST/images" partial="$DEST/.images.partial" old="$DEST/.images.old" name size need=0 avail problem
+  local -a names=()
+  if [[ ! -d "$src" || -L "$src" ]]; then
+    echo "No saved images in $src yet, so none were copied. bash scripts/build-images.sh --save writes them; the next copy to the drive takes them."
+    return 0
+  fi
+  # The folder on the drive is current when it has the same signed list and signature, and every file is as the list says.
+  if [[ -f "$src/SHA256SUMS" && -f "$src/SHA256SUMS.hmac" ]] && cmp -s -- "$src/SHA256SUMS" "$dst/SHA256SUMS" 2>/dev/null && cmp -s -- "$src/SHA256SUMS.hmac" "$dst/SHA256SUMS.hmac" 2>/dev/null; then
+    if images_verify "$dst"; then IMAGES_NOTE='already present'; echo 'The saved images are already on the drive and verified.'; return 0; fi
+    echo 'The saved images on the drive do not match their list; copying them again.'
+  fi
+  # Only a folder that proves itself genuine is copied, as db:restore-host will only load one that does.
+  if ! problem="$(WAREHOUSE_BACKUP_KEY_FILE="$STATE/config/backup.key" backup_authenticate "$src" false 2>&1)"; then
+    problem="${problem%%$'\n'*}"
+    images_problem "$src does not authenticate with the backup key (${problem#Refusing: }). Run bash scripts/build-images.sh --save, which signs the images with the key in use, then attach the drive again"
+    return 0
+  fi
+  mapfile -t names < <(sed -n 's/^[0-9a-f]\{64\}  //p' "$src/SHA256SUMS")
+  for name in "${names[@]}"; do
+    if [[ ! "$name" =~ ^[A-Za-z0-9][A-Za-z0-9._-]*$ ]]; then images_problem "the signed list in $src names a file that cannot be copied safely: $name"; return 0; fi
+    size="$(stat -c %s -- "$src/$name" 2>/dev/null || echo 0)"; need=$((need + size))
+  done
+  need=$((need + 67108864))
+  if ! avail="$(free_bytes "$DEST")"; then
+    images_problem "could not read the free space of the drive ($DEST), so it cannot be checked that they fit. Check the drive (dmesg, another USB port), then attach it again"
+    return 0
+  fi
+  if ((avail <= need)); then
+    images_problem "drive too small: they need $(human "$need") next to what is on the drive after this run's pruning, and it has $(human "$avail") free (a changed set is written beside the old one, so a drive needs room for both while it is replaced). The archives are not touched by this. Use a larger drive"
+    return 0
+  fi
+  rm -rf -- "$partial" "$old"
+  mkdir -- "$partial" || { images_problem 'writing them to the drive failed'; return 0; }
+  for name in "${names[@]}" SHA256SUMS SHA256SUMS.hmac; do
+    cp -- "$src/$name" "$partial/$name" || { rm -rf -- "$partial"; images_problem "writing them to the drive failed (copying $name)"; return 0; }
+  done
+  sync -f "$partial" 2>/dev/null || sync
+  if ! cmp -s -- "$src/SHA256SUMS" "$partial/SHA256SUMS" || ! cmp -s -- "$src/SHA256SUMS.hmac" "$partial/SHA256SUMS.hmac" || ! images_verify "$partial"; then
+    rm -rf -- "$partial"; images_problem 'what was read back from the drive does not match what was written'; return 0
+  fi
+  if [[ -e "$dst" ]] && ! mv -- "$dst" "$old"; then rm -rf -- "$partial"; images_problem 'replacing the earlier copy on the drive failed; it is untouched'; return 0; fi
+  if ! mv -- "$partial" "$dst"; then
+    [[ ! -e "$old" ]] || mv -- "$old" "$dst" || true
+    rm -rf -- "$partial"; images_problem 'moving them into place on the drive failed'; return 0
+  fi
+  rm -rf -- "$old"
+  sync
+  IMAGES_NOTE='copied'
+  echo "Copied the saved images to the drive and verified them: $((${#names[@]})) file(s), $(human "$((need - 67108864))"), in ${dst#"$DEST"/}/ beside the archives."
+}
+
 record() {
   local result="$1" message="$2" now last_ok tmp report
   now="$(date +%s)"
   last_ok="$(sed -n 's/^last_success_epoch=//p' "$RESULT_FILE" 2>/dev/null | head -n1 || true)"
   [[ "$result" != ok ]] || last_ok="$now"
-  report="$(printf 'result=%s\nfinished_utc=%s\nfinished_epoch=%s\nlast_success_epoch=%s\ndrive_uuid=%s\ndevice=%s\ncopied=%s\nalready_present=%s\nfailed=%s\nmessage=%s\n' \
-    "$result" "$(date -u -d "@$now" +%Y-%m-%dT%H:%M:%SZ)" "$now" "$last_ok" "$D_UUID" "$DEVICE" "$COPIED" "$PRESENT" "$FAILED" "${message//$'\n'/ }")"
+  report="$(printf 'result=%s\nfinished_utc=%s\nfinished_epoch=%s\nlast_success_epoch=%s\ndrive_uuid=%s\ndevice=%s\ncopied=%s\nalready_present=%s\nfailed=%s\nimages_problem=%s\nmessage=%s\n' \
+    "$result" "$(date -u -d "@$now" +%Y-%m-%dT%H:%M:%SZ)" "$now" "$last_ok" "$D_UUID" "$DEVICE" "$COPIED" "$PRESENT" "$FAILED" "${IMAGES_PROBLEM//$'\n'/ }" "${message//$'\n'/ }")"
   tmp="$(mktemp "$STATE/config/.usb-backup.last.XXXXXX")"
   printf '%s\n' "$report" > "$tmp"; mv -f -- "$tmp" "$RESULT_FILE"
   if [[ -n "$DEST" && -d "$DEST" && -w "$DEST" ]]; then
@@ -703,6 +799,14 @@ cmd_run() {
   [[ -z "$instance_id" ]] || printf '%s\n' "$instance_id" > "$id_file"
   # The lock is held, so partial files are leftovers of an interrupted run.
   find "$DEST" -maxdepth 1 -name '.*.partial' -type f -delete
+  # A copy of the saved images that was interrupted between its two renames (copy_images) leaves the only good copy as .images.old and
+  # no `images` folder: it is put back first, before the leftovers are cleared. The copy below checks it and writes a new one if needed.
+  if [[ ! -e "$DEST/images" && ! -L "$DEST/images" && -d "$DEST/.images.old" && ! -L "$DEST/.images.old" ]]; then
+    if mv -- "$DEST/.images.old" "$DEST/images"; then echo 'The earlier saved images were put back (images/): the last copy to the drive was interrupted while it replaced them.'
+    else echo 'Warning: could not put the earlier saved images (.images.old) back; they are left where they are.' >&2; fi
+  fi
+  rm -rf -- "$DEST/.images.partial"
+  if [[ -e "$DEST/images" || -L "$DEST/images" ]]; then rm -rf -- "$DEST/.images.old"; fi
   # A checksum or signature file whose archive is not there is what an interrupted copy leaves (the sidecars are written before
   # the archive is moved into place); nothing else would ever remove it.
   while IFS= read -r f; do
@@ -795,6 +899,10 @@ cmd_run() {
     if ((ENCRYPT && ENC_VERIFIED)); then remove_plaintext; fi
     prune_drive
   fi
+
+  # The saved images come last: the room they need is measured on the drive as it is after the pruning, and a problem with them is
+  # recorded apart from the archive copy (images_problem) and never holds the deletions above back.
+  copy_images
   [[ -z "$(find "$DEST" -maxdepth 1 -type f -name 'warehouse-*.tar' -print -quit)" ]] || plain=1
 
   echo "Summary: copied=$COPIED already-present=$PRESENT failed=$FAILED pruned=$PRUNED unencrypted-removed=$PLAIN_REMOVED. The drive keeps the newest $KEEP valid archives of this installation; damaged, unsigned and foreign archives are reported and never deleted."
@@ -806,7 +914,7 @@ cmd_run() {
     echo "The archives are encrypted with the backup key $STATE/config/backup.key. Keep a copy of that key away from this machine and from the drive: without it they cannot be restored."
   fi
   if ((FAILED)); then record failed "$FAILURES"; exit 1; fi
-  record ok "copied $COPIED, already present $PRESENT, pruned $PRUNED, unencrypted removed $PLAIN_REMOVED, restore verified $n"
+  record ok "copied $COPIED, already present $PRESENT, pruned $PRUNED, unencrypted removed $PLAIN_REMOVED, restore verified $n, saved images $IMAGES_NOTE"
 }
 
 # Internal: called by the root helper through setpriv, as the installation user.

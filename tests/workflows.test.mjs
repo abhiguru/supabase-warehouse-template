@@ -171,7 +171,10 @@ test('keep-alive: a monthly timestamp commit on its own branch and a call that e
   for (const file of readdirSync(directory)) {
     if (file === 'keep-alive.yml') continue;
     const text = readFileSync(new URL(file, directory), 'utf8');
-    assert.doesNotMatch(text, /contents:\s*write/, `${file} does not need write access`);
+    // The one exception: the release workflow's publish-images job attaches release-images.json to the GitHub Release, so that job (and
+    // only it, tested below) may write contents. Everything else of every workflow, that job's text included for the other two rules, is held to the rules.
+    const rest = file === 'release.yml' ? text.replace(/\n  publish-images:\n[^]*?(?=\n  [a-z-]+:\n|$)/, '\n') : text;
+    assert.doesNotMatch(rest, /contents:\s*write/, `${file} does not need write access`);
     assert.doesNotMatch(text, /actions:\s*write/, `${file} may not enable or disable workflows`);
     assert.doesNotMatch(text, /write-all/, `${file} may not ask for every permission`);
   }
@@ -386,4 +389,91 @@ test('migration-order checks the base with the ordering script in its own job, a
   assert.match(seeded, /00000000000117_customer_name_rule\.sql/, 'the clash variant proves the refusal names migration 117');
   assert.match(seeded, /grep -q 'customers_name_norm_key' "\$RUNNER_TEMP\/\$out\.out"/, 'and that the refusal came from the unique index over the clashing names');
   assert.match(seeded, /fingerprint-before/, 'and that the database is untouched');
+});
+
+test('release.yml publishes the release images in a job of their own: build, scan, then login, push and attach, with write permissions in that job only', () => {
+  const release = readFileSync(new URL('../.github/workflows/release.yml', import.meta.url), 'utf8');
+  // The workflow stays read-only; the checks job inherits that and asks for nothing.
+  assert.match(release, /\npermissions:\n  contents: read\n\njobs:\n/);
+  const [checks, publish] = release.split(/\n  publish-images:\n/);
+  assert.ok(publish, 'a publish-images job exists');
+  assert.doesNotMatch(checks, /\n    permissions:|packages:\s*write|contents:\s*write/, 'the checks job writes nothing');
+  assert.match(publish, /^    needs: release\n/, 'it runs only after the validation, tests and audit of the release job pass');
+  assert.match(publish, /\n    if: github\.repository == 'abhiguru\/supabase-warehouse-template'\n/, 'a fork has no right to the registry namespace');
+  assert.match(publish, /\n    permissions:\n      contents: write\n      packages: write\n    steps:\n/, 'exactly the two write permissions, on this job');
+  assert.doesNotMatch(publish, /write-all|id-token|actions:\s*write|pull-requests:\s*write/);
+  assert.doesNotMatch(release, /continue-on-error|\|\| true/, 'no step may be softened');
+  assert.doesNotMatch(release, /secrets\./, 'the job needs no secret beyond the run\'s own token');
+
+  // The steps, in order: state for the scan, the look for a pre-release of this commit, Trivy, scan (build + scan), login, push (or, for a
+  // final tag on the commit of its pre-release, the re-tag), anonymous check, attach.
+  const names = [...publish.matchAll(/\n      - (?:name: ([^\n]+)|uses: ([^\n@ ]+))/g)].map(match => match[1] ?? match[2]);
+  assert.deepEqual(names, ['actions/checkout', 'actions/setup-node', 'Throwaway operator state for the build and the scan',
+    'Reuse the images of the pre-release at this commit, if there is one', 'Install Trivy 0.76.0',
+    'Build every image without the cache and scan it', 'Log in to ghcr.io', 'Push the images that were scanned and write release-images.json',
+    'Re-tag the images of the pre-release and write release-images.json',
+    'Check that the images pull without credentials', 'Attach release-images.json to the GitHub Release']);
+  const step = name => `\n${publish.split(`\n      - name: ${name}\n`)[1].split(/\n      - /)[0]}`;
+  // The scan is the repository's gate (npm run scan:images = scripts/scan-images.sh: a row no valid exception covers, an expired exception
+  // or a failed scan exits 1, tests/image-scan.test.mjs), run as a plain step: its failure stops the job before any login or push.
+  assert.match(step('Build every image without the cache and scan it'), /\n        run: npm run scan:images$/);
+  assert.equal(JSON.parse(readFileSync(new URL('../package.json', import.meta.url), 'utf8')).scripts['scan:images'], 'bash scripts/scan-images.sh');
+  assert.ok(publish.indexOf('npm run scan:images') < publish.indexOf('docker login'), 'no build or scan step runs with a registry login');
+  // The push call, not the earlier look for a pre-release (`--rehearsed`, which only reads), is what needs the login before it.
+  assert.ok(publish.indexOf('docker login') < publish.indexOf('run: bash scripts/publish-images.sh "$GITHUB_REF_NAME"'));
+  assert.ok(publish.indexOf('scripts/publish-images.sh') < publish.indexOf('docker manifest inspect'));
+  assert.ok(publish.indexOf('docker manifest inspect') < publish.indexOf('gh release upload'));
+  // The token reaches the login by environment and a pipe, never written into a command line.
+  assert.match(step('Log in to ghcr.io'), /\n        env:\n          REGISTRY_TOKEN: \$\{\{ github\.token \}\}\n        run: printf '%s' "\$REGISTRY_TOKEN" \| docker login ghcr\.io -u "\$GITHUB_ACTOR" --password-stdin$/);
+  for (const line of release.split('\n').filter(line => /\$\{\{ github\.token \}\}/.test(line))) assert.match(line, /^ {10}(REGISTRY_TOKEN|GH_TOKEN): /, `the token is only ever an environment value: ${line.trim()}`);
+  assert.match(step('Push the images that were scanned and write release-images.json'), /\n        run: bash scripts\/publish-images\.sh "\$GITHUB_REF_NAME" "\$RUNNER_TEMP\/release-images\.json"$/);
+  // A final tag on the commit of its newest pre-release builds and scans nothing and re-tags that pre-release's images; any other tag builds.
+  // The build, the scan, Trivy and the push run only when no pre-release's images are reused; the re-tag only when they are.
+  const reuse = step('Reuse the images of the pre-release at this commit, if there is one');
+  assert.match(reuse, /\n        id: rehearsed\n/);
+  assert.match(reuse, /git fetch --force --no-tags origin 'refs\/tags\/v\*:refs\/tags\/v\*'\n/, 'the tags of the pre-releases are fetched: a tag checkout has only its own');
+  assert.match(reuse, /rc="\$\(bash scripts\/publish-images\.sh --rehearsed "\$GITHUB_REF_NAME" "\$RUNNER_TEMP\/rehearsed-images\.json"\)"\n\s+echo "rc=\$rc" >> "\$GITHUB_OUTPUT"/);
+  for (const name of ['Install Trivy 0.76.0', 'Build every image without the cache and scan it', 'Push the images that were scanned and write release-images.json']) {
+    assert.match(step(name), /\n        if: steps\.rehearsed\.outputs\.rc == ''\n/, `${name} runs only when no pre-release's images are reused`);
+  }
+  const retag = step('Re-tag the images of the pre-release and write release-images.json');
+  assert.match(retag, /\n        if: steps\.rehearsed\.outputs\.rc != ''\n/);
+  assert.match(retag, /\n        env:\n          REHEARSED: \$\{\{ steps\.rehearsed\.outputs\.rc \}\}\n/, 'the pre-release name reaches the script by environment, not written into the command');
+  assert.match(retag, /\n        run: bash scripts\/publish-images\.sh --retag "\$GITHUB_REF_NAME" "\$REHEARSED" "\$RUNNER_TEMP\/rehearsed-images\.json" "\$RUNNER_TEMP\/release-images\.json"$/);
+  assert.ok(publish.indexOf('docker login') < publish.indexOf('--retag'), 'the re-tag writes to the registry, so it logs in first');
+  assert.doesNotMatch(reuse, /docker login|packages/, 'finding the pre-release needs no registry write');
+  // The exposure of the job token is said where the job is defined: one job builds, scans and publishes.
+  assert.match(release, /the job's token \(write access to the\n  # repository's contents and packages\) is held by the runner from the first step to the last, so the build, the scan, the Trivy\n  # binary and the repository's scripts all run in a job that holds it\. That is accepted:/);
+  // The images must be readable without credentials, or no facility could pull them.
+  const anonymous = step('Check that the images pull without credentials');
+  assert.ok(anonymous.indexOf('docker logout ghcr.io') < anonymous.indexOf('docker manifest inspect "$ref"'));
+  assert.match(anonymous, /jq -r '\.images\[\]\.ref' "\$RUNNER_TEMP\/release-images\.json"/);
+  assert.match(anonymous, /exit 1; \}/, 'an unreadable image fails the run');
+  // The list is attached to the release, replacing an earlier one of a rerun; a release that does not exist yet is made as a draft.
+  const attach = step('Attach release-images.json to the GitHub Release');
+  assert.match(attach, /gh release upload "\$GITHUB_REF_NAME" "\$RUNNER_TEMP\/release-images\.json" --repo "\$GITHUB_REPOSITORY" --clobber/);
+  assert.match(attach, /gh release create "\$GITHUB_REF_NAME" [^\n]*--verify-tag --draft /);
+  assert.match(attach, /GH_TOKEN: \$\{\{ github\.token \}\}/);
+  // Trivy: the release archive of a pinned version (0.74.0 or later, as the checklist says), checked against a SHA-256 before it is unpacked.
+  const trivy = step('Install Trivy 0.76.0');
+  const version = /releases\/download\/v(\d+)\.(\d+)\.(\d+)\/trivy_\1\.\2\.\3_Linux-64bit\.tar\.gz/.exec(trivy);
+  assert.ok(version && (Number(version[1]) > 0 || Number(version[2]) >= 74), 'a pinned Trivy of 0.74.0 or later');
+  assert.match(trivy, /echo "[0-9a-f]{64}  \$RUNNER_TEMP\/trivy\.tar\.gz" \| sha256sum -c -\n[^]*tar -xzf/, 'the checksum is verified before the archive is unpacked');
+  assert.match(readFileSync(new URL('../docs/RELEASE_CHECKLIST.md', import.meta.url), 'utf8'), /Trivy 0\.74\.0 or later/);
+  // The state is the scan's: a throwaway one made by configure.mjs, exported for every later step.
+  assert.match(step('Throwaway operator state for the build and the scan'), /node scripts\/configure\.mjs --state-dir "\$RUNNER_TEMP\/publish-images-state"[^]*echo "WAREHOUSE_STATE_DIR=\$RUNNER_TEMP\/publish-images-state" >> "\$GITHUB_ENV"/);
+});
+
+test('release.yml makes the draft of a pre-release a pre-release by the version alone: build metadata with a hyphen in it does not', () => {
+  const release = readFileSync(new URL('../.github/workflows/release.yml', import.meta.url), 'utf8');
+  const attach = release.split('\n      - name: Attach release-images.json to the GitHub Release\n')[1];
+  assert.ok(attach, 'the attach step exists');
+  // The two lines of the step that decide it, run as they are.
+  const lines = attach.split('\n').map(line => line.trim()).filter(line => line === 'prerelease=()' || line.startsWith('[[ ') && line.endsWith('|| prerelease=(--prerelease)'));
+  assert.equal(lines.length, 2, 'the step declares prerelease and sets it in one test');
+  for (const [ref, expected] of [['v1.2.3', ''], ['v1.2.3-rc.1', '--prerelease'], ['v1.2.3+build-5', ''], ['v1.2.3-rc.1+build-5', '--prerelease'], ['v1.2.3+build.5', ''], ['v1.2.3-beta', '--prerelease']]) {
+    const run = spawnSync('bash', ['-c', `set -e\n${lines.join('\n')}\nprintf '%s' "\${prerelease[*]}"`], { encoding: 'utf8', env: { ...process.env, GITHUB_REF_NAME: ref } });
+    assert.equal(run.status, 0, `${ref}: ${run.stderr}`);
+    assert.equal(run.stdout, expected, `${ref} is ${expected ? 'a pre-release' : 'final'}`);
+  }
 });

@@ -27,6 +27,8 @@ const GATEWAY_MEMORY = `wg-test-${id}-memory`;
 const GATEWAY_LAN = `wg-test-${id}-lan`;
 const GATEWAY_LAN_OUT = `wg-test-${id}-lan-out`;
 const GATEWAY_LAN_OLD = `wg-test-${id}-lan-old`;
+const GATEWAY_MAINT = `wg-test-${id}-maint`;
+const GATEWAY_LAN_MAINT = `wg-test-${id}-lan-maint`;
 const ORIGIN = 'https://app.example.test';
 // Fictional API keys, minted here from a throwaway secret so no token-shaped literal sits in the source
 // (the secret scan treats any JWT literal as a leak, and the gateway only compares the strings).
@@ -61,7 +63,7 @@ before(() => {
 
 after(() => {
   if (skip) return;
-  for (const name of [GATEWAY, GATEWAY_MEMORY, GATEWAY_LAN, GATEWAY_LAN_OUT, GATEWAY_LAN_OLD, STUB]) docker(['rm', '-f', name]);
+  for (const name of [GATEWAY, GATEWAY_MEMORY, GATEWAY_LAN, GATEWAY_LAN_OUT, GATEWAY_LAN_OLD, GATEWAY_MAINT, GATEWAY_LAN_MAINT, STUB]) docker(['rm', '-f', name]);
   docker(['network', 'rm', NETWORK]);
   docker(['rmi', '-f', IMAGE]);
   if (scratch) rmSync(scratch, { recursive: true, force: true });
@@ -92,7 +94,7 @@ test('nginx -t passes on the rendered configuration, in the image, with the flag
   // The user and the filter of the image.
   const inspected = JSON.parse(docker(['image', 'inspect', IMAGE]).stdout)[0].Config;
   assert.equal(inspected.User, '101:101');
-  assert.ok(inspected.Env.includes('NGINX_ENVSUBST_FILTER=^(CORS_ALLOWED_ORIGIN|ANON_KEY|SERVICE_ROLE_KEY|LAN_CIDR|LAN_BIND_IP|LAN_HTTP_PORT)$'));
+  assert.ok(inspected.Env.includes('NGINX_ENVSUBST_FILTER=^(CORS_ALLOWED_ORIGIN|ANON_KEY|SERVICE_ROLE_KEY|WAREHOUSE_MAINTENANCE|LAN_CIDR|LAN_BIND_IP|LAN_HTTP_PORT)$'));
 });
 
 test('the container refuses to start on a missing value or one that could change the configuration', { skip }, t => {
@@ -164,13 +166,13 @@ const BIG_BYTES = 10 * 1024 * 1024 - 1024;
 
 // Starts a gateway container on the lab network, limited like the Compose service. `swap` false lets the kernel kill it at 128 MB
 // instead of swapping, which is what a host without swap does, so an overrun shows as OOMKilled here too.
-async function startGateway(name, { memory = false } = {}) {
-  const run = docker(['run', '-d', '--name', name, '--network', NETWORK, '-p', '127.0.0.1::8000', '--memory', '128m', ...(memory ? ['--memory-swap', '128m'] : []), '--cpus', '0.5', ...HARDENING, ...environment(), IMAGE]);
+async function startGateway(name, { memory = false, env = {}, ready = 200 } = {}) {
+  const run = docker(['run', '-d', '--name', name, '--network', NETWORK, '-p', '127.0.0.1::8000', '--memory', '128m', ...(memory ? ['--memory-swap', '128m'] : []), '--cpus', '0.5', ...HARDENING, ...environment(env), IMAGE]);
   assert.equal(run.status, 0, run.stderr);
   const bound = Number(/:(\d+)\s*$/m.exec(docker(['port', name, '8000/tcp']).stdout)[1]);
   for (let attempt = 0; attempt < 50; attempt += 1) {
-    // Storage has no key check and no rate limit; the stand-in answers 200. (/health answers the container's own check only.)
-    try { if ((await request('/storage/v1/ready', { port: bound })).status === 200) return bound; } catch { /* not listening yet */ }
+    // Storage has no key check and no rate limit; the stand-in answers 200 (503 from a container in maintenance mode). (/health answers the container's own check only.)
+    try { if ((await request('/storage/v1/ready', { port: bound })).status === ready) return bound; } catch { /* not listening yet */ }
     await new Promise(done => setTimeout(done, 200));
   }
   return assert.fail(`the gateway did not answer: ${docker(['logs', name]).stderr}`);
@@ -754,4 +756,134 @@ test('LAN: the probe of the key check passes with the keys the container was sta
   // The REST route answers the anon key of the lab's own container with the stand-in's 200; the same request without the key is the gateway's 401.
   assert.equal((await lanGet('/rest/v1/', { headers: { apikey: ANON } }, lanOldPort)).status, 401);
   assert.equal((await lanGet('/rest/v1/', { headers: { apikey: ANON } }, lanPort)).status, 200);
+});
+
+// ---- maintenance mode (WAREHOUSE_MAINTENANCE): the gateway answers "upgrading" while upgrade.sh or scripts/maintenance.sh has the facility closed ---------------
+const UPGRADING_BODY = '{"code":"upgrading","message":"The facility\'s server is being updated. Try again in a few minutes."}';
+let maintPort;
+let lanMaintPort;
+const maintenanceFlags = word => ['-e', `WAREHOUSE_MAINTENANCE=${word}`];
+
+test('maintenance mode: the word is off when nothing is set, and only off and upgrading start the container', { skip }, t => {
+  if (unbuilt) return t.skip(unbuilt);
+  const run = (flags, ...command) => docker(['run', '--rm', '-e', 'NGINX_ENTRYPOINT_QUIET_LOGS=1', ...HARDENING, ...environment(), ...flags, IMAGE, ...command]);
+  // Nothing set, empty and `off` render the same map (the compose file passes off when the marker is absent); `upgrading` renders its own.
+  for (const flags of [[], maintenanceFlags(''), maintenanceFlags('off')]) {
+    const dump = run(flags, 'nginx', '-T');
+    assert.equal(dump.status, 0, dump.stderr);
+    assert.match(dump.stdout, /map \$server_name \$maintenance_mode \{\s+default "off";\s+\}/, JSON.stringify(flags));
+    assert.doesNotMatch(dump.stdout, /\$\{/);
+  }
+  const closed = run(maintenanceFlags('upgrading'), 'nginx', '-T');
+  assert.equal(closed.status, 0, closed.stderr);
+  assert.match(closed.stdout, /map \$server_name \$maintenance_mode \{\s+default "upgrading";\s+\}/);
+  // The LAN container reads the same template: the word is in its configuration too.
+  const lan = run(lanFlags('192.168.1.0/24', { WAREHOUSE_MAINTENANCE: 'upgrading' }), 'nginx', '-T');
+  assert.equal(lan.status, 0, lan.stderr);
+  assert.match(lan.stdout, /map \$server_name \$maintenance_mode \{\s+default "upgrading";\s+\}/);
+  // Any other word is refused, with a message, rather than read as off (a mistyped word must not leave the API open when the operator meant it closed).
+  for (const word of ['on', 'Upgrading', 'UPGRADING', 'upgrade', 'true', '1', 'maintenance', 'off ', ' upgrading', 'off;', 'upgrading; return 200', '$remote_addr', 'off\nupgrading']) {
+    const result = run(maintenanceFlags(word), 'nginx', '-t');
+    assert.notEqual(result.status, 0, `started with ${JSON.stringify(word)}`);
+    assert.match(result.stderr, /WAREHOUSE_MAINTENANCE must be off or upgrading/, JSON.stringify(word));
+    assert.doesNotMatch(result.stderr, /test is successful/);
+  }
+});
+
+test('maintenance mode: every API route answers 503 with the body that says upgrading and Retry-After 120, the preflight and /health still answer, and nothing reaches an upstream', { skip }, async t => {
+  if (unbuilt) return t.skip(unbuilt);
+  await startLab();
+  maintPort ??= await startGateway(GATEWAY_MAINT, { env: { WAREHOUSE_MAINTENANCE: 'upgrading' }, ready: 503 });
+  const marker = randomBytes(6).toString('hex');
+  const closed = (path, options = {}) => request(path, { port: maintPort, ...options, headers: { 'CF-Connecting-IP': address(), Origin: ORIGIN, ...options.headers } });
+  // Every route, with a good key, a wrong key, none, and a path that the open gateway refuses with a 404: all are the same 503 (the refusal comes before the
+  // key check and the path check, so a phone with a stale key is not logged out by an upgrade, and the app has one answer to read).
+  const requests = [
+    [`/rest/v1/rpc/maintenance-${marker}`, { headers: { apikey: ANON } }],
+    [`/rest/v1/rpc/maintenance-${marker}`, { headers: { apikey: SERVICE } }],
+    [`/rest/v1/rpc/maintenance-${marker}`, { headers: { apikey: `${ANON}x` } }],
+    [`/rest/v1/rpc/maintenance-${marker}`, {}],
+    [`/rest/v1/rpc/maintenance-${marker}`, { method: 'POST', headers: { apikey: ANON, 'Content-Type': 'application/json' }, body: '{"p_x":1}' }],
+    ['/rest/v1/', { headers: { apikey: ANON } }],
+    ['/rest/v1/x/../y', { headers: { apikey: ANON } }],
+    [`/storage/v1/object/maintenance-${marker}`, {}],
+    [`/storage/v1/object/maintenance-${marker}`, { method: 'POST', body: 'x'.repeat(100) }],
+    [`/storage/v1/object/sign/documents/maintenance-${marker}.pdf?token=abc`, {}],
+    [`/functions/v1/maintenance-${marker}`, {}],
+    [`/functions/v1/operator-otp/request`, { method: 'POST', body: '{}' }],
+    ['/functions/v1/get-public-config', {}],
+  ];
+  for (const [path, options] of requests) {
+    const answer = await closed(path, options);
+    const what = `${options.method ?? 'GET'} ${path}`;
+    assert.equal(answer.status, 503, what);
+    assert.equal(answer.text, UPGRADING_BODY, what);
+    assert.deepEqual(JSON.parse(answer.text), { code: 'upgrading', message: "The facility's server is being updated. Try again in a few minutes." });
+    assert.deepEqual(answer.all('retry-after'), ['120'], what);
+    assert.match(answer.headers['content-type'], /^application\/json/, what);
+    assert.deepEqual(answer.all('x-warehouse-path'), ['public'], `${what}: the app tells the answer came from the server`);
+    assert.deepEqual(answer.all('access-control-allow-origin'), [ORIGIN], `${what}: a browser can read it`);
+    assert.deepEqual(answer.all('access-control-allow-credentials'), ['true']);
+  }
+  // The preflight is answered as always, so that the app can send the request whose answer it reads.
+  for (const [path, methods] of [['/rest/v1/rpc/x', 'GET,POST,PUT,PATCH,DELETE,OPTIONS'], ['/storage/v1/object/x', 'GET,POST,PUT,DELETE,OPTIONS'], ['/functions/v1/get-public-config', 'GET,POST,PUT,DELETE,OPTIONS']]) {
+    const preflight = await closed(path, { method: 'OPTIONS', headers: { 'Access-Control-Request-Method': 'POST' } });
+    assert.equal(preflight.status, 204, path);
+    assert.deepEqual(preflight.all('access-control-allow-methods'), [methods], path);
+    assert.deepEqual(preflight.all('x-warehouse-path'), ['public']);
+    assert.deepEqual(preflight.all('retry-after'), [], 'a preflight is not told to wait');
+  }
+  // Paths that are no route of the API are what they were, and /health answers the container's own check (the Compose health check of the
+  // maintenance container must pass, or Compose would call the gateway unhealthy for the length of the upgrade).
+  const nothing = await closed('/nothing');
+  assert.equal(nothing.status, 404);
+  assert.equal(nothing.text, '{"message":"no Route matched with those values"}');
+  assert.deepEqual(nothing.all('retry-after'), []);
+  assert.equal((await closed('/rest/v1')).status, 404);
+  const inside = docker(['exec', GATEWAY_MAINT, 'wget', '-q', '-T', '5', '-O', '-', 'http://127.0.0.1:8000/health']);
+  assert.equal(inside.status, 0, inside.stderr);
+  assert.equal(inside.stdout, 'ok\n');
+  assert.equal(docker(['inspect', '--format', '{{.State.Running}}', GATEWAY_MAINT]).stdout.trim(), 'true');
+  // None of it reached an upstream, and none of it used a rate-limit bucket: 150 requests from one address are 150 refusals, no 429.
+  const ip = address();
+  const burst = await Promise.all(Array.from({ length: 150 }, () => closed('/functions/v1/get-public-config', { headers: { 'CF-Connecting-IP': ip } })));
+  assert.deepEqual([...new Set(burst.map(item => item.status))], [503]);
+  const upstream = docker(['logs', STUB]);
+  assert.doesNotMatch(`${upstream.stdout}\n${upstream.stderr}`, new RegExp(`maintenance-${marker}`), 'the stand-in never saw a request of the closed gateway');
+  assert.doesNotMatch(`${upstream.stdout}\n${upstream.stderr}`, /operator-otp|abc/);
+  // The open gateway of the same lab, on the same image, is as it was: the same request is answered by the upstream, and a 503 is not what it says.
+  const open = await request(`/rest/v1/rpc/maintenance-${marker}`, { headers: { apikey: ANON } });
+  assert.equal(open.status, 200);
+  assert.deepEqual(open.all('retry-after'), []);
+  assert.doesNotMatch(open.text, /upgrading/);
+  // The access log keeps the refusals as 503 in the line the checker reads, without a query string.
+  const log = docker(['logs', GATEWAY_MAINT]);
+  assert.match(`${log.stdout}\n${log.stderr}`, /"GET \/storage\/v1\/object\/sign\/documents\/maintenance-[0-9a-f]+\.pdf HTTP\/1\.1" 503 \d+ [0-9.]+$/m);
+  assert.doesNotMatch(`${log.stdout}\n${log.stderr}`, /token=abc/);
+});
+
+test('maintenance mode: the LAN server answers the same 503 with its own path header, after the Host pin, and its /health still answers', { skip }, async t => {
+  if (unbuilt) return t.skip(unbuilt);
+  await startLanLab();
+  lanMaintPort ??= await startLan(GATEWAY_LAN_MAINT, labSubnet, { WAREHOUSE_MAINTENANCE: 'upgrading' });
+  for (const [path, options] of [['/rest/v1/rpc/x', { headers: { apikey: ANON } }], ['/rest/v1/rpc/x', {}], ['/storage/v1/object/x', {}], ['/functions/v1/get-public-config', {}], ['/functions/v1/operator-otp/request', { method: 'POST', body: '{}' }]]) {
+    const answer = await lanGet(path, options, lanMaintPort);
+    assert.equal(answer.status, 503, path);
+    assert.equal(answer.text, UPGRADING_BODY, path);
+    assert.deepEqual(answer.all('retry-after'), ['120'], path);
+    assert.deepEqual(answer.all('x-warehouse-path'), ['lan'], path);
+  }
+  const preflight = await lanGet('/rest/v1/rpc/x', { method: 'OPTIONS', headers: { Origin: ORIGIN, 'Access-Control-Request-Method': 'POST' } }, lanMaintPort);
+  assert.equal(preflight.status, 204);
+  assert.deepEqual(preflight.all('x-warehouse-path'), ['lan']);
+  // The Host pin is still in front: a page moved onto this address by DNS rebinding gets the 404 of any unknown path, not the maintenance answer.
+  const rebound = await lanGet('/rest/v1/rpc/x', { headers: { host: 'rebind.attacker.example', apikey: ANON } }, lanMaintPort);
+  assert.equal(rebound.status, 404);
+  assert.equal(rebound.text, '{"message":"no Route matched with those values"}');
+  assert.equal(docker(['exec', GATEWAY_LAN_MAINT, 'wget', '-q', '-T', '5', '-O', '-', 'http://127.0.0.1:8080/health']).stdout, 'ok\n');
+  // From a second client of the LAN (the stand-in) it is the same.
+  const fromOther = fromStub('/rest/v1/rpc/x', { apikey: ANON }, GATEWAY_LAN_MAINT);
+  assert.equal(fromOther.status, 503);
+  // The LAN container that is not in maintenance mode, on the same lab, is open.
+  assert.equal((await lanGet('/storage/v1/object/x')).status, 200);
 });

@@ -419,6 +419,17 @@ test('doctor warning covers not set up, never copied, failed and stale USB backu
     assert.match(usbBackupWarning(state, { etc, now, maxAgeDays: 7 }), /9 days old/);
     last('failed', 0);
     assert.match(usbBackupWarning(state, { etc, now }), /failed at x: disk full/);
+    // An archive that was copied but whose saved images were not: its own warning, only while the copy is recent and not failed.
+    const withImages = (result, days, problem) => writeFileSync(join(state, 'config/usb-backup.last'),
+      `result=${result}\nfinished_utc=x\nlast_success_epoch=${Math.floor(now / 1000) - days * 86400}\nimages_problem=${problem}\nmessage=m\n`);
+    withImages('ok', 1, '');
+    assert.equal(usbBackupWarning(state, { etc, now }), null, 'no image problem: no warning');
+    withImages('ok', 1, 'drive too small: they need 70MiB');
+    assert.match(usbBackupWarning(state, { etc, now }), /copied the archive but not the saved images: drive too small: they need 70MiB\./);
+    withImages('ok', 9, 'drive too small: they need 70MiB');
+    assert.match(usbBackupWarning(state, { etc, now }), /9 days old/, 'a stale copy is reported as stale first');
+    withImages('failed', 0, 'drive too small: they need 70MiB');
+    assert.match(usbBackupWarning(state, { etc, now }), /failed at x/, 'a failed run is reported as failed');
   } finally { rmSync(scratch, { recursive: true, force: true }); }
 });
 

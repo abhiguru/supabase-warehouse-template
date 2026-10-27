@@ -95,14 +95,19 @@ An alert fires after two failing runs in a row (10 minutes), except the event al
 | `usb_backup` | The USB backup is set up and stale or failed; or it still writes readable archives although nobody typed `--no-encrypt` (the installation never reran `sudo bash scripts/backup-usb.sh setup --state <state>` after encryption became the default); or its archives are encrypted and the key copy is not confirmed (no `config/backup-key.escrow`, or one for another key: `bash scripts/backup-key-escrow.sh show`); the same rule as `npm run doctor` |
 | `retention_failed` | The last retention clean-up failed |
 | `daily_timer_legacy` | The checker unit is from before the daily timer: the backup still runs inside it (at once; never muted; see "Install the timer") |
-| `operator_lock_stuck` | A setup or restore (or any command but the daily pass) has held the operator lock for 2 hours or more; the daily pass, 4 hours or more |
+| `upgrade_interrupted` | An upgrade did not finish: `config/upgrade-in-progress` exists and no command holds the operator lock, so `upgrade.sh` is not running (at once; **never muted**). The facility may be half upgraded and the API is closed to phones (maintenance mode) until a person finishes the upgrade (the same command again) or goes back; `node scripts/upgrade-record.mjs report` prints both, `bash scripts/maintenance.sh off` opens the API. Services are not restarted by the checker meanwhile (see "Self-healing"). An upgrade that stopped before its backup was proved changed nothing: the record says so. If the alert says the API is open, the upgrade had finished and opened it, and the health check after that failed: run `node scripts/watch.mjs health` |
+| `operator_lock_stuck` | A setup or restore (or any command but the daily pass) has held the operator lock for 2 hours or more; the daily pass, 4 hours or more; an `upgrade.sh` (while `config/upgrade-in-progress` exists), twice the time of the last backup plus the last verify, but not under 2 hours and not over a day |
 
 While an operator command (setup, backup, restore, stop) holds the lock, the checker judges nothing: those commands stop
 services on purpose. The daily pass is the exception, because it takes hours by design: while it holds the lock the checker keeps
 running the checks that need none of the services the backup stops (`cpu`, `memory`, `disk`, the database, the backup files and
 the break-glass check) and posts their alerts, and leaves the service, gateway and PDF checks and self-healing alone until the
 pass is over. The lock counts as stuck after 2 hours, or after 4 hours when the state says the daily pass is the one running
-(the daily unit's own time limit; a pass the state still calls running after 4 hours is taken as cut short). A stuck lock turns
+(the daily unit's own time limit; a pass the state still calls running after 4 hours is taken as cut short), or, while
+`config/upgrade-in-progress` exists (`upgrade.sh` does a backup, the proof that it restores and the migrations under one lock), after twice
+the time of the last backup plus the last verify, when that is more than 2 hours (never more than a day). The backup's time is
+`duration_seconds=` in the newest backup's `metadata.txt`; the verify's is the third field of the newest line of `config/backups-verified.list`
+that has one (`upgrade.sh` records it; the nightly pass does not, and then the backup's own time stands in). A stuck lock turns
 every check, but not self-healing, back on.
 
 The gateway rates (`api_error_rate_high`, `api_latency_p95_high`, `api_429_rate_high`) are read from the last 5000 lines of the gateway
@@ -175,7 +180,9 @@ says "it needs a person" until the service is back (a service that never recover
 reported as the alert `service_healed:<name>`. Nothing is done to a
 service whose `service_down:<name>` alert is muted: **mute before a planned stop of one service**, as before a `stop.sh`
 (`stop.sh` removes the containers, which the checker never recreates). Nothing is done while `config/stopped-by-operator` exists
-(see "Install the timer"). The checker never recreates a container, so a
+(see "Install the timer"). **Nothing at all is done while `config/upgrade-in-progress` exists** (`upgrade_interrupted`): a service started
+or restarted then could be the new release's code on a schema that is only part migrated (the `functions` container reads its code when it
+starts), and a person decides what the facility runs. The checker never recreates a container, so a
 changed compose file or image is applied only by `setup.sh`. The optional `supavisor`, `cups` and `sensor-bridge` are left
 alone.
 
@@ -253,16 +260,16 @@ node scripts/watch.mjs unmute "service_down:rest"
 **Mute before a planned `stop.sh`**: the checker keeps running while the services are stopped and reports each stopped
 service as an alert. `stop.sh` says so when it finishes. The commands need `WAREHOUSE_STATE_DIR`.
 
-**`backup_missing`, `backup_failed` and `daily_timer_legacy` are never muted.** A mute, whole or of one alert, covers every other alert; these
+**`backup_missing`, `backup_failed`, `daily_timer_legacy` and `upgrade_interrupted` are never muted.** A mute, whole or of one alert, covers every other alert; these
 are posted anyway, and `mute 60 backup_missing` is refused. They are the only warning that the data is not being saved (or that
-the backup hangs on an out-of-date unit), and a
+the backup hangs on an out-of-date unit, or that an upgrade stopped half way with the API closed to phones), and a
 week-long mute while a service was being repaired must not hide it. The daily "Monitoring is alive" message says so whenever
 a mute is active.
 
 ## Status and testing
 
 ```bash
-node scripts/watch.mjs status          # what is firing, muted, the daily jobs and whether a pass is running, the time zone, the last Slack failure
+node scripts/watch.mjs status          # what is firing, muted, the daily jobs and whether a pass is running, whether the API is closed (maintenance mode), the time zone, the last Slack failure
 node scripts/watch.mjs run             # one pass of the checks now (what the 5-minute timer does)
 node scripts/watch.mjs daily           # the daily pass, if the window is open and today's is not done (what the daily timer does)
 node scripts/watch.mjs test-message    # post a test message to the stored webhook

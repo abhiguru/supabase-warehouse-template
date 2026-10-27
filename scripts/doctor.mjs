@@ -12,7 +12,7 @@ import { isMain } from './is-main.mjs';
 import { usbBackupWarning } from './usb-backup-status.mjs';
 import { interruptedUpgradeWarning } from './upgrade-record.mjs';
 import { storedWebhook } from './alert-webhook.mjs';
-import { defaultDeps, legacyDailyAdvice, runHealth, statePath, stoppedByOperator } from './watch.mjs';
+import { defaultDeps, legacyDailyAdvice, maintenanceMarked, runHealth, statePath, stoppedByOperator } from './watch.mjs';
 import { lanChecks } from './lan.mjs';
 import { lanAddressLine, lanSettings } from './lan-common.mjs';
 
@@ -242,7 +242,10 @@ export async function doctor({ hostPreflight = false, preflight = false, local =
   // The LAN fallback, when it is on. Its address is printed here (`--local` is what start.sh and setup.sh show last). A fault of
   // it never stops a start, an upgrade or a setup: with `--local` it is a warning, because the public path is the facility's;
   // `node scripts/doctor.mjs` (the full check) and `--lan` fail on it.
-  const lan = await lanReport(env, manifest.instanceId);
+  // Maintenance mode (scripts/maintenance.sh; an upgrade is under way or stopped half way): the LAN listener answers 503 "upgrading" like the public
+  // gateway, on purpose, so it is not probed; the health check above said so as a warning.
+  const maintenance = maintenanceMarked(state);
+  const lan = maintenance ? { failures: [], warnings: [], address: '' } : await lanReport(env, manifest.instanceId);
   const lanNote = (lan.address ? `\n${lan.address}` : '') + [...lan.warnings, ...(local ? lan.failures : [])].map(text => `\nWarning: LAN fallback: ${text}`).join('');
   const usb = usbBackupWarning(state);
   // The monitoring checker (scripts/watch.mjs) is run by a systemd timer that an operator installs with sudo
@@ -250,6 +253,7 @@ export async function doctor({ hostPreflight = false, preflight = false, local =
   const checker = checkerWarnings(state);
   const note = [upgradeWarning, usb, ...checker].filter(Boolean).map(text => `\nWarning: ${text}`).join('') + lanNote;
   if (local) return `Local operator services and gateway are healthy.${note}`;
+  if (maintenance) throw new Error('Maintenance mode is on (config/maintenance): the API answers 503 "upgrading" to phones on purpose, so the external check cannot pass. Open it with: bash scripts/maintenance.sh off');
   const response = await fetch(`${origin}/functions/v1/get-public-config`, { signal: AbortSignal.timeout(15000), redirect: 'error' });
   if (!response.ok) throw new Error(`External public configuration returned HTTP ${response.status}.`);
   const json = await response.json();

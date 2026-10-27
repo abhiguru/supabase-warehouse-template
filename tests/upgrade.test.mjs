@@ -58,6 +58,14 @@ case "$*" in
     [[ "\${FAKE_FAIL:-}" != db ]] || { echo 'could not connect (fake)' >&2; exit 2; }
     [[ -z "\${FAKE_NOISE:-}" ]] || echo 'WARN[0000] a compose warning (fake)' >&2
     printf '%s' "$FAKE_LEDGER" ;;
+  *pg_stat_activity*)
+    # The check for sessions of psql from outside the stack: the query goes to the maintenance log (the test reads what it asks), the answer is
+    # FAKE_SESSIONS (every time), or only the first time with FAKE_SESSIONS_ONCE=yes (a probe that was just finishing).
+    echo "sessions-query $*" >> "$FAKE_LOG.maint"
+    [[ "\${FAKE_FAIL:-}" != sessions ]] || { echo 'could not ask (fake)' >&2; exit 2; }
+    if [[ "\${FAKE_SESSIONS_ONCE:-}" == yes && -e "$FAKE_LOG.sessions-asked" ]]; then exit 0; fi
+    : > "$FAKE_LOG.sessions-asked"
+    printf '%s' "\${FAKE_SESSIONS:-}" ;;
   *server_version_num*) printf '%s\\n' "\${FAKE_SERVER_NUM:-180006}" ;;
   *installer_admin_state*) printf '%s\\n' "\${FAKE_ADMIN_STATE:-match}" ;;
   *user_profiles*) printf '%s\\n' "$FAKE_ADMIN" ;;
@@ -68,8 +76,27 @@ esac
 set -euo pipefail
 ${REC_FN}
 echo "setup $* | lock=${LOG_LOCK} version=$(cat "$(dirname "$0")/VERSION") running=\${WAREHOUSE_UPGRADE_RUNNING:-} ${REC}" >> "$FAKE_LOG"
+echo "setup sees marker=$([[ -e "$WAREHOUSE_STATE_DIR/config/maintenance" ]] && echo yes || echo no)" >> "$FAKE_LOG.maint"
 [[ "\${FAKE_HANG:-}" != setup ]] || sleep 30
 [[ "\${FAKE_FAIL:-}" != setup ]] || { echo 'setup failed (fake)' >&2; exit 3; }
+`,
+  // Maintenance mode (scripts/maintenance.sh has its own test, tests/maintenance.test.mjs, with a fake docker): here a stand-in that keeps the marker the way
+  // the real one does, and logs to a file of its own (FAKE_LOG.maint) how far the main log had got, who held the lock, whose copy it was and what
+  // the record said, so that the order against the backup and the setup can be read without changing the main log. FAKE_MAINT=on|off makes that
+  // command fail.
+  'scripts/maintenance.sh': `#!/usr/bin/env bash
+set -euo pipefail
+${REC_FN}
+marker="$WAREHOUSE_STATE_DIR/config/maintenance"
+had=$([[ -e "$marker" ]] && echo yes || echo no)
+echo "maintenance $1 mainlog=$(wc -l < "$FAKE_LOG" | tr -d ' ') marker-before=$had lock=${LOG_LOCK} version=$(cat "$(dirname "$0")/../VERSION") maintenance-in-record=$(rec maintenance) ${REC}" >> "$FAKE_LOG.maint"
+[[ "\${FAKE_MAINT:-}" != "$1" ]] || { echo "maintenance $1 failed (fake)" >&2; exit 1; }
+# FAKE_MAINT=off-open: the real script's exit status 2 for "the API is open, the health check failed" (it removes the marker first).
+[[ "\${FAKE_MAINT:-}" != "$1-open" ]] || { rm -f "$marker"; echo "maintenance $1: health check failed (fake)" >&2; exit 2; }
+case "$1" in
+  on) echo upgrading > "$marker" ;;
+  off) rm -f "$marker" ;;
+esac
 `,
   'scripts/checkout-permissions.sh': `#!/usr/bin/env bash
 [[ "\${FAKE_FAIL:-}" != perms ]] || { echo 'checkout-permissions failed (fake)' >&2; exit 1; }
@@ -1117,4 +1144,220 @@ test('the verified backup is put on the list of verified backups after its proof
       assert.deepEqual(preLog(bad), [], 'the checker was not asked: the backup did not prove itself');
     } finally { bad.cleanup(); }
   } finally { w.cleanup(); }
+});
+
+// --- the write freeze: maintenance mode around the backup, and fas-sync -----------------------------------------------------------------
+// The stand-in scripts/maintenance.sh and the session query log to FAKE_LOG.maint (see the stubs above); the real script is tested in tests/maintenance.test.mjs.
+const maintLog = w => (existsSync(`${w.log}.maint`) ? readFileSync(`${w.log}.maint`, 'utf8').split('\n').filter(Boolean) : []);
+const forgetMaint = w => { rmSync(`${w.log}.maint`, { force: true }); rmSync(`${w.log}.sessions-asked`, { force: true }); };
+const marker = w => join(w.state, 'config/maintenance');
+
+test('the API is closed before the backup, stays closed through the checkout and the setup of the new release, and is opened after it; the record says so', () => {
+  const w = world();
+  try {
+    const r = w.run(['v0.2.0']);
+    assert.equal(r.status, 0, r.stdout + r.stderr);
+    const [session, on, sees, off] = maintLog(w);
+    assert.match(session, /^sessions-query /, 'the first thing asked is who else is on the database');
+    // Before the backup: the main log (backup, verify, setup) had no line yet; the old release's script, under the lock, with the record already
+    // saying that the API is (about to be) closed.
+    assert.equal(on, 'maintenance on mainlog=0 marker-before=no lock=held version=v0.1.0 maintenance-in-record=on record=[no|Close the API to phones (maintenance mode)]');
+    // The setup of the NEW release ran with the marker there: its compose calls close the gateways it recreates.
+    assert.equal(sees, 'setup sees marker=yes');
+    // After the setup (three lines in the main log), by the new release's script, under the lock, with the marker still there.
+    assert.match(off, /^maintenance off mainlog=3 marker-before=yes lock=held version=v0\.2\.0 maintenance-in-record=on record=\[yes\|Open the API to phones again/);
+    assert.equal(maintLog(w).length, 4);
+    assert.equal(existsSync(marker(w)), false, 'success leaves the API open');
+    assert.equal(existsSync(w.recordPath), false);
+    assert.match(r.stdout, /==> Close the API to phones \(maintenance mode\)[^]*==> Backup[^]*==> Verify the backup restores[^]*==> Checkout: v0\.2\.0[^]*==> Setup[^]*==> Open the API to phones again[^]*==> What v0\.2\.0 asks of the operator/);
+    assert.match(r.stdout, /The facility is closed to phones from the backup to the end of setup \(maintenance mode: they are told the server is being updated\)/);
+  } finally { w.cleanup(); }
+});
+
+test('a step that fails after the backup was proved leaves the API closed, and the way forward and the way back say how to open it', () => {
+  const w = world();
+  try {
+    const r = w.run(['v0.2.0'], { FAKE_FAIL: 'setup' });
+    assert.notEqual(r.status, 0);
+    assert.deepEqual(maintLog(w).filter(line => /^maintenance/.test(line)).map(line => line.split(' ').slice(0, 2).join(' ')), ['maintenance on'], 'never opened');
+    assert.equal(existsSync(marker(w)), true, 'the marker is still there: every Compose command of every script keeps the gateways closed');
+    assert.match(recordText(w), /^maintenance=on$/m);
+    assert.equal(w.record().maintenance, true);
+    // The way forward, and the way back with the line that opens it between the old release's setup and its check.
+    assert.match(r.stderr, /The API stays closed to phones \(maintenance mode: they are told the server is being updated\) until the upgrade has finished or you run: bash scripts\/maintenance\.sh off\./);
+    assert.match(r.stderr, /The API has been closed to phones since before the backup, so phones recorded nothing after it; what reached the database another way \(fas-sync, if it was not paused, or a psql session\) is lost:/);
+    assert.doesNotMatch(r.stderr, /Everything the facility recorded after the backup was taken is lost/);
+    const order = ['bash scripts/compose.sh up -d --force-recreate --no-deps --wait --wait-timeout 180 functions', 'bash scripts/maintenance.sh off', 'node scripts/doctor.mjs --local', `rm -f '${w.state}/config/upgrade-in-progress'`];
+    let at = -1;
+    for (const line of order) {
+      const found = r.stderr.indexOf(line, at + 1);
+      assert.ok(found > at, `the way back names, in order: ${line}\n${r.stderr}`);
+      at = found;
+    }
+    // The rerun closes it again (whatever happened in between), goes on without a new backup, and the rerun that succeeds opens it once.
+    forgetMaint(w);
+    const second = w.run(['v0.2.0'], { FAKE_FAIL: 'setup' });
+    assert.notEqual(second.status, 0);
+    assert.deepEqual(maintLog(w).filter(line => /^maintenance/.test(line)).map(line => line.split(' ').slice(0, 2).join(' ')), ['maintenance on']);
+    assert.match(maintLog(w).find(line => line.startsWith('maintenance on')), /marker-before=yes/, 'it was closed already; closing again is safe');
+    forgetMaint(w);
+    const third = w.run(['v0.2.0']);
+    assert.equal(third.status, 0, third.stdout + third.stderr);
+    assert.deepEqual(maintLog(w).filter(line => /^maintenance/.test(line)).map(line => line.split(' ').slice(0, 2).join(' ')), ['maintenance on', 'maintenance off']);
+    assert.equal(existsSync(marker(w)), false);
+  } finally { w.cleanup(); }
+});
+
+test('when nothing was changed yet (a failed backup or proof) the API this run closed is opened again; a failure to open it is said, with the command', () => {
+  for (const fail of ['backup', 'verify']) {
+    const w = world();
+    try {
+      const r = w.run(['v0.2.0'], { FAKE_FAIL: fail });
+      assert.notEqual(r.status, 0, fail);
+      assert.deepEqual(maintLog(w).filter(line => /^maintenance/.test(line)).map(line => line.split(' ').slice(0, 2).join(' ')), ['maintenance on', 'maintenance off'], fail);
+      assert.equal(existsSync(marker(w)), false, `${fail}: the facility is as it was, so it is open`);
+      assert.match(r.stderr, /The API was opened again \(maintenance mode off\): nothing of the facility was changed\./, fail);
+      assert.equal(existsSync(w.recordPath), false);
+    } finally { w.cleanup(); }
+  }
+  // It cannot be opened: the operator is told, and the marker stays.
+  const w = world();
+  try {
+    const r = w.run(['v0.2.0'], { FAKE_FAIL: 'backup', FAKE_MAINT: 'off' });
+    assert.notEqual(r.status, 0);
+    assert.equal(existsSync(marker(w)), true);
+    assert.match(r.stderr, /Could not open the API again \(message above\)\. It is closed to phones until you run: bash scripts\/maintenance\.sh off/);
+    // The record stays while the API does: it is what makes the checker say so (upgrade_interrupted), and the rerun starts afresh from it.
+    assert.equal(existsSync(w.recordPath), true);
+    assert.equal(w.record().maintenance, true);
+    assert.equal(w.record().verified, false);
+    assert.doesNotMatch(r.stderr, /The API was opened again/);
+    assert.match(r.stderr, /The API is still closed to phones \(maintenance mode\): the same command goes on with it closed, and this opens it: bash scripts\/maintenance\.sh off/);
+  } finally { w.cleanup(); }
+  // Closing it fails: nothing else is done (no backup), and the run is a failure at that step.
+  const v = world();
+  try {
+    const r = v.run(['v0.2.0'], { FAKE_MAINT: 'on' });
+    assert.notEqual(r.status, 0);
+    assert.deepEqual(r.log, [], 'no backup, no verify, no setup');
+    assert.match(r.stderr, /maintenance on failed \(fake\)/);
+    assert.match(r.stderr, /The upgrade stopped at: Close the API to phones \(maintenance mode\)/);
+    assert.equal(r.head, v.tag('v0.1.0'), 'the checkout did not move');
+  } finally { v.cleanup(); }
+});
+
+test('a resumed upgrade that is stopped before the checkout does not open the API: the database may be half upgraded already', () => {
+  const w = world();
+  try {
+    const first = w.run(['v0.2.0'], { FAKE_FAIL: 'setup' });
+    assert.notEqual(first.status, 0);
+    // The operator puts the checkout back on the old commit by hand (the first line of the way back) and runs the command again.
+    git(w.install, 'checkout', '-q', '--detach', w.tag('v0.1.0'));
+    forgetMaint(w);
+    const r = w.run(['v0.2.0'], { FAKE_MAINT: 'on' });
+    assert.notEqual(r.status, 0);
+    assert.match(r.stdout, /Resuming: /);
+    assert.deepEqual(maintLog(w).filter(line => /^maintenance/.test(line)).map(line => line.split(' ').slice(0, 2).join(' ')), ['maintenance on'], 'it tried to close it, and did not open it');
+    assert.equal(existsSync(marker(w)), true, 'still closed');
+    assert.doesNotMatch(r.stderr, /The API was opened again/);
+    assert.equal(existsSync(w.recordPath), true, 'the record stays: the API is closed by an upgrade nobody has finished');
+  } finally { w.cleanup(); }
+});
+
+test('a failed OPENING after setup keeps the record: the upgrade is done but not finished, and the rerun finishes it', () => {
+  const w = world();
+  try {
+    const r = w.run(['v0.2.0'], { FAKE_MAINT: 'off' });
+    assert.notEqual(r.status, 0);
+    assert.match(r.stderr, /The upgrade stopped at: Open the API to phones again/);
+    assert.equal(existsSync(w.recordPath), true);
+    assert.equal(existsSync(marker(w)), true, 'still closed');
+    assert.match(r.stderr, /Continue: bash upgrade\.sh v0\.2\.0/);
+    forgetMaint(w);
+    const again = w.run(['v0.2.0']);
+    assert.equal(again.status, 0, again.stdout + again.stderr);
+    assert.equal(existsSync(marker(w)), false);
+    assert.equal(existsSync(w.recordPath), false);
+  } finally { w.cleanup(); }
+});
+
+test('an opening that ends with a failed health check (status 2) is recorded as OPEN: the record, the report and the failure text must not say the API is closed', () => {
+  const w = world();
+  try {
+    const r = w.run(['v0.2.0'], { FAKE_MAINT: 'off-open' });
+    assert.notEqual(r.status, 0);
+    assert.match(r.stderr, /The upgrade stopped at: Open the API to phones again/);
+    assert.equal(existsSync(marker(w)), false, 'the API is open');
+    assert.match(recordText(w), /^maintenance=opened$/m);
+    assert.equal(w.record().maintenance, false);
+    assert.equal(w.record().apiOpen, true);
+    assert.match(r.stderr, /The API is open to phones again \(maintenance mode is off\); the health check that follows failed, so look at it: node scripts\/watch\.mjs health\./);
+    assert.doesNotMatch(r.stderr, /stays closed|is closed to phones|has been closed to phones/);
+    // Any other failure of the opening (status 1) leaves it closed, as the record says.
+    const w2 = world();
+    try {
+      const r2 = w2.run(['v0.2.0'], { FAKE_MAINT: 'off' });
+      assert.notEqual(r2.status, 0);
+      assert.match(recordText(w2), /^maintenance=on$/m);
+      assert.equal(existsSync(marker(w2)), true);
+    } finally { w2.cleanup(); }
+  } finally { w.cleanup(); }
+});
+
+test('a run stopped before anything was changed whose reopening ends with a failed health check (status 2): the API is open, the record goes, and it says so', () => {
+  const w = world();
+  try {
+    const r = w.run(['v0.2.0'], { FAKE_FAIL: 'backup', FAKE_MAINT: 'off-open' });
+    assert.notEqual(r.status, 0);
+    assert.equal(existsSync(marker(w)), false);
+    assert.equal(existsSync(w.recordPath), false, 'the facility is as it was and the API is open: nothing to report');
+    assert.match(r.stderr, /The API was opened again \(maintenance mode off\) and nothing of the facility was changed, but the health check failed \(message above\)/);
+    assert.doesNotMatch(r.stderr, /still closed|Could not open the API again/);
+  } finally { w.cleanup(); }
+});
+
+test('fas-sync: the plan says to pause it, and a psql session from outside the stack on the database refuses the run before anything is changed; a dry run only warns', () => {
+  const w = world();
+  try {
+    const dry = w.run(['--dry-run', 'v0.2.0']);
+    assert.equal(dry.status, 0, dry.stderr);
+    assert.match(dry.stdout, /The facility is closed for the backup, its verification and the migrations: before step 1 both gateways are put in maintenance mode/);
+    assert.match(dry.stdout, /Pause fas-sync now \(it writes straight to the database\): nothing may write meanwhile, or the way back would lose it\./);
+    assert.doesNotMatch(dry.stderr, /psql session/, 'none is open');
+    // What is asked: sessions of psql (the way fas-sync reaches the database) other than the one asking, among client backends.
+    const query = maintLog(w).find(line => line.startsWith('sessions-query'));
+    assert.match(query, /FROM pg_stat_activity WHERE backend_type = 'client backend' AND application_name = 'psql' AND pid <> pg_backend_pid\(\)/);
+    // A dry run with one open: a warning that names it, exit 0.
+    const warned = w.run(['--dry-run', 'v0.2.0'], { FAKE_SESSIONS: 'supabase_admin active 12s' });
+    assert.equal(warned.status, 0, warned.stderr);
+    assert.match(warned.stderr, /Warning: a psql session is open on the database, and the real run refuses to start while it is:\n {2}supabase_admin active 12s\nThat is a psql session on the database from outside the stack\. fas-sync writes to the database that way/);
+    // The real run refuses, before the backup, the record, the maintenance mode and the log.
+    forgetMaint(w);
+    const before = w.run(['--dry-run', 'v0.2.0']).head;
+    forgetMaint(w);
+    const refused = w.run(['v0.2.0'], { FAKE_SESSIONS: 'supabase_admin active 12s\nsupabase_admin idle in transaction 300s' });
+    assert.notEqual(refused.status, 0);
+    assert.match(refused.stderr, /supabase_admin active 12s\n {2}supabase_admin idle in transaction 300s\nThat is a psql session on the database from outside the stack\. fas-sync writes to the database that way \(pause it: let its run finish and do not start another\)/);
+    assert.match(refused.stderr, /Refusing: pause fas-sync \(or close the session\) and run this command again\. Nothing was changed\./);
+    assert.deepEqual(refused.log, [], 'no backup');
+    assert.equal(refused.head, before);
+    assert.equal(maintLog(w).some(line => /^maintenance/.test(line)), false, 'the API was not closed');
+    assert.equal(existsSync(marker(w)), false);
+    assert.equal(existsSync(w.recordPath), false);
+    assert.equal(w.upgradesLog(), '');
+    // A session that was just finishing (gone at the second look, three seconds later) is not fas-sync: the run goes on.
+    forgetMaint(w);
+    const passing = w.run(['v0.2.0'], { FAKE_SESSIONS: 'supabase_admin active 1s', FAKE_SESSIONS_ONCE: 'yes' });
+    assert.equal(passing.status, 0, passing.stdout + passing.stderr);
+    assert.equal(maintLog(w).filter(line => line.startsWith('sessions-query')).length, 2, 'asked twice');
+  } finally { w.cleanup(); }
+  // The database cannot be asked: refused, the real run needs the answer.
+  const v = world();
+  try {
+    const r = v.run(['v0.2.0'], { FAKE_FAIL: 'sessions' });
+    assert.notEqual(r.status, 0);
+    assert.match(r.stderr, /Refusing: could not ask the database which sessions are open \(.*could not ask \(fake\).*\)\. Nothing was changed\./);
+    assert.deepEqual(r.log, []);
+    assert.equal(existsSync(v.recordPath), false);
+  } finally { v.cleanup(); }
 });

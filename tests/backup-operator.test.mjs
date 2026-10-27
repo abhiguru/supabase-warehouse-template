@@ -856,3 +856,101 @@ test('restore verifier refuses a dump made by a server older than PostgreSQL 17 
     assert.doesNotMatch(newer.calls, /--section=pre-data/, 'nothing was restored');
   } finally { rmSync(scratch, { recursive: true, force: true }); }
 });
+
+// The LAN fallback (gateway-lan) is the other way in to the API: the backup stops it with the gateway and starts it again apart (scripts/lan.sh start,
+// where a fault of the fallback is a warning), and a gateway that is in maintenance mode (config/maintenance, scripts/maintenance.sh) is never recreated.
+function lanBackupWorld() {
+  const scratch = mkdtempSync(join(tmpdir(), 'warehouse-backup-lan-'));
+  const state = join(scratch, 'state');
+  const bin = join(scratch, 'bin');
+  const wrapper = join(scratch, 'wrapper');
+  const log = join(scratch, 'docker.log');
+  const envLog = join(scratch, 'env.log');
+  for (const path of [state, join(state, 'config'), join(state, 'public'), join(state, 'data'), join(state, 'data/db'), join(state, 'data/storage'), bin, wrapper]) mkdirSync(path, { recursive: true, mode: 0o700 });
+  writeFileSync(join(state, 'config/compose.env'), [`WAREHOUSE_PROJECT_NAME=warehouse-backup-test`, `WAREHOUSE_DB_PATH=${state}/data/db`, `WAREHOUSE_STORAGE_PATH=${state}/data/storage`,
+    'LAN_ENABLED=true', 'LAN_BIND_IP=192.168.77.5', 'LAN_HTTP_PORT=8080', 'LAN_CIDR=192.168.77.0/24', 'COMPOSE_PROFILES=lan', ''].join('\n'), { mode: 0o600 });
+  writeFileSync(join(state, 'public/instance.json'), '{"schemaVersion":1}\n');
+  writeFileSync(join(state, 'data/storage/object'), 'object data');
+  fakeBackupDocker(bin);
+  // In front of the shared fake docker: gateway-lan is a running container of this project, and every call is logged with the WAREHOUSE_MAINTENANCE it saw.
+  writeFileSync(join(wrapper, 'docker'), `#!/bin/sh
+printf '%s|%s\\n' "\${WAREHOUSE_MAINTENANCE-unset}" "$*" >> "${envLog}"
+case "$*" in
+  *' ps -q gateway-lan') printf '%s\\n' "$*" >> "$FAKE_DOCKER_LOG"; echo dddddddddddd; exit 0 ;;
+  # Where the backup had got when the LAN fallback was started again: the manifest of the stored files is made after the services are back, and
+  # the finished backup is moved into place last.
+  *' up -d --no-deps --wait --wait-timeout 60 gateway-lan') m=before-manifest; ls "$FAKE_STAGE_PARENT"/.warehouse-backup-staging.*/storage.manifest >/dev/null 2>&1 && m=after-manifest; [ -e "$FAKE_DEST/metadata.txt" ] && m=backup-finished; printf 'LAN-UP %s\\n' "$m" >> "$FAKE_DOCKER_LOG" ;;
+esac
+exec "${join(bin, 'docker')}" "$@"
+`, { mode: 0o700 });
+  const env = { ...process.env, PATH: `${wrapper}:${bin}:${process.env.PATH}`, WAREHOUSE_STATE_DIR: state, FAKE_DOCKER_LOG: log, FAKE_STAGE_PARENT: scratch,
+    WAREHOUSE_LAN_INTERFACES: JSON.stringify([{ name: 'ens33', address: '192.168.77.5', prefix: 24, defaultRoute: true }]) };
+  delete env.COMPOSE_PROFILES; delete env.WAREHOUSE_MAINTENANCE;
+  const run = (extra = {}, destination = join(scratch, 'backup')) => {
+    writeFileSync(log, ''); writeFileSync(envLog, '');
+    return spawnSync('bash', [new URL('../scripts/backup.sh', import.meta.url).pathname, destination], { encoding: 'utf8', env: { ...env, FAKE_DEST: destination, ...extra } });
+  };
+  const lines = () => readFileSync(log, 'utf8').split('\n').filter(Boolean);
+  const at = pattern => lines().findIndex(line => pattern.test(line));
+  return { scratch, state, run, lines, at, envCalls: () => readFileSync(envLog, 'utf8').split('\n').filter(Boolean), done: () => rmSync(scratch, { recursive: true, force: true }) };
+}
+
+test('backup stops gateway-lan before the other services and starts it again apart, after they are back; a failed backup starts it again too', () => {
+  const w = lanBackupWorld();
+  try {
+    const result = w.run();
+    assert.equal(result.status, 0, result.stderr);
+    const lanStop = w.at(/--profile lan stop gateway-lan$/);
+    const gatewayStop = w.at(/ stop gateway$/);
+    const dump = w.at(/pg_dump/);
+    const back = w.at(/up -d --no-recreate --no-deps --wait --wait-timeout 180 gateway/);
+    const lanStart = w.at(/--profile lan up -d --no-deps --wait --wait-timeout 60 gateway-lan$/);
+    assert.ok(lanStop >= 0 && gatewayStop >= 0 && dump >= 0 && back >= 0 && lanStart >= 0, w.lines().join('\n'));
+    assert.ok(lanStop < gatewayStop, 'the LAN ingress is stopped first, with the gateway');
+    assert.ok(gatewayStop < dump, 'both are stopped before the dump');
+    assert.ok(dump < back && back < lanStart, 'the services come back, then the LAN fallback apart');
+    assert.equal(w.lines().filter(line => /--profile lan stop gateway-lan$/.test(line)).length, 1);
+    assert.equal(w.lines().filter(line => /--profile lan up -d .* gateway-lan$/.test(line)).length, 1, 'started once');
+    assert.deepEqual(w.lines().filter(line => line.startsWith('LAN-UP')), ['LAN-UP before-manifest'], 'started as soon as the other services are back, not when the backup is finished');
+    // The dump fails: the cleanup brings everything back, the LAN fallback too.
+    const failed = w.run({ FAKE_DOCKER_FAIL: 'yes' }, join(w.scratch, 'failed-backup'));
+    assert.notEqual(failed.status, 0);
+    assert.ok(w.at(/--profile lan stop gateway-lan$/) < w.at(/pg_dump/));
+    assert.ok(w.at(/up -d --no-recreate --no-deps --wait --wait-timeout 180 gateway/) < w.at(/--profile lan up -d --no-deps --wait --wait-timeout 60 gateway-lan$/), 'started again after a failure');
+    assert.deepEqual(w.lines().filter(line => line.startsWith('LAN-UP')), ['LAN-UP before-manifest']);
+  } finally { w.done(); }
+});
+
+test('backup with the LAN fallback off or its container not running does not touch gateway-lan, and a LAN fallback that will not start is a warning, not a failed backup', () => {
+  const w = lanBackupWorld();
+  try {
+    // Off: nothing runs, so nothing is stopped or started (the same fake, without the container).
+    writeFileSync(join(w.scratch, 'wrapper/docker'), `#!/bin/sh\nexec "${join(w.scratch, 'bin/docker')}" "$@"\n`, { mode: 0o700 });
+    const off = w.run();
+    assert.equal(off.status, 0, off.stderr);
+    assert.equal(w.lines().some(line => /gateway-lan$/.test(line) && /\b(stop|up)\b/.test(line)), false, w.lines().join('\n'));
+    // Running, and the host has lost the address (the router gave it another): lan.sh start says why and the backup is fine.
+    writeFileSync(join(w.scratch, 'wrapper/docker'), `#!/bin/sh\ncase "$*" in *' ps -q gateway-lan') echo dddddddddddd; exit 0 ;; esac\nexec "${join(w.scratch, 'bin/docker')}" "$@"\n`, { mode: 0o700 });
+    const moved = w.run({ WAREHOUSE_LAN_INTERFACES: JSON.stringify([{ name: 'ens33', address: '192.168.77.9', prefix: 24, defaultRoute: true }]) }, join(w.scratch, 'moved'));
+    assert.equal(moved.status, 0, moved.stderr);
+    assert.match(moved.stderr, /LAN fallback: this host no longer has 192\.168\.77\.5/);
+    assert.equal(readFileSync(join(w.scratch, 'moved/database.dump'), 'utf8'), 'fake database dump\n');
+  } finally { w.done(); }
+});
+
+test('backup never lifts maintenance mode: with the marker every Compose command it runs carries the word and none recreates a container; without it none does', () => {
+  const w = lanBackupWorld();
+  try {
+    writeFileSync(join(w.state, 'config/maintenance'), 'upgrading\n', { mode: 0o600 });
+    const closed = w.run();
+    assert.equal(closed.status, 0, closed.stderr);
+    const compose = w.envCalls().filter(line => /\|compose /.test(line) && / (up|stop) /.test(line));
+    assert.ok(compose.length >= 4, `${compose.length} start/stop commands`);
+    assert.deepEqual([...new Set(compose.map(line => line.split('|')[0]))], ['upgrading'], 'every one of them hands Compose the word');
+    assert.equal(w.envCalls().some(line => /--force-recreate/.test(line)), false, 'nothing is recreated');
+    rmSync(join(w.state, 'config/maintenance'));
+    const open = w.run({}, join(w.scratch, 'open'));
+    assert.equal(open.status, 0, open.stderr);
+    assert.deepEqual([...new Set(w.envCalls().filter(line => /\|compose /.test(line)).map(line => line.split('|')[0]))], ['unset']);
+  } finally { w.done(); }
+});

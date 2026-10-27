@@ -1,12 +1,12 @@
-# The parts of the http configuration that hold the three environment variables the gateway is started with. The image's
-# entrypoint (envsubst, filtered by NGINX_ENVSUBST_FILTER in docker/nginx/Dockerfile) puts the three values in wherever a
-# dollar sign stands in front of one of the three names, with or without braces around it, and replaces nothing else in
+# The parts of the http configuration that hold the four environment variables the gateway is started with. The image's
+# entrypoint (envsubst, filtered by NGINX_ENVSUBST_FILTER in docker/nginx/Dockerfile) puts the four values in wherever a
+# dollar sign stands in front of one of the four names, with or without braces around it, and replaces nothing else in
 # this file or in any other; docker-entrypoint.d/18-require-env.sh has already refused a missing value or one with a
 # character that could change this configuration. No comment in a template may write a dollar sign in front of one of
 # those names: the value would be put into the comment too, a key included (tests/gateway-config.test.mjs checks both
 # forms). Write the name alone, as here.
-# Every server that serves the API (api-locations.conf) uses the two nginx variables defined here, $cors_allowed_origin and
-# $apikey_error.
+# Every server that serves the API (api-locations.conf) uses the three nginx variables defined here, $cors_allowed_origin,
+# $apikey_error and $maintenance_mode.
 
 # The one browser origin that may call the API (the application URL, SITE_URL), exactly as configured and never a
 # pattern. Kong's cors plugin set it on every answer when only one plain origin was configured, and so does the gateway.
@@ -27,4 +27,12 @@ map $http_apikey $apikey_error {
     ""                      "No API key found in request";
     "${ANON_KEY}"           "";
     "${SERVICE_ROLE_KEY}"   "";
+}
+
+# Maintenance mode: the word `off` or `upgrading`, the value of WAREHOUSE_MAINTENANCE (docker-compose.yml). The container has `off`
+# when nothing is set (docker-entrypoint.d/17-maintenance-default.envsh) and refuses any other word than these two
+# (18-require-env.sh). upgrade.sh and scripts/maintenance.sh turn it on by way of the marker config/maintenance, which
+# scripts/compose.sh reads. api-http.conf turns the word into the answer that every API route gives while it is `upgrading`.
+map $server_name $maintenance_mode {
+    default "${WAREHOUSE_MAINTENANCE}";
 }

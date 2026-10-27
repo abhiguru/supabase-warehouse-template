@@ -1,6 +1,6 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { existsSync, readFileSync } from 'node:fs';
+import { existsSync, readFileSync, statSync } from 'node:fs';
 import { composeAvailable, renderCompose, renderedCompose } from './compose-render.mjs';
 import { parseGatewayLog } from '../scripts/watch.mjs';
 
@@ -42,11 +42,11 @@ function block(text, header) {
 }
 const route = name => block(CODE.locations, `location ${name}`);
 
-// The three variables the image's entrypoint puts into the templates (NGINX_ENVSUBST_FILTER in docker/nginx/Dockerfile) and the
+// The variables the image's entrypoint puts into the templates (NGINX_ENVSUBST_FILTER in docker/nginx/Dockerfile) and the
 // way it does it: GNU envsubst replaces both forms, $NAME and the braced form, for a name the filter matches in full (checked on the
 // real image in tests/gateway-nginx.test.mjs); every other dollar sign is left alone.
 const filter = /^ENV NGINX_ENVSUBST_FILTER="\^\(([A-Z_|]+)\)\$"$/m.exec(dockerfile)?.[1].split('|');
-const VALUES = { CORS_ALLOWED_ORIGIN: 'https://app.example.test', ANON_KEY: 'unit.anon.key', SERVICE_ROLE_KEY: 'unit.service.key', LAN_CIDR: '192.168.7.0/24', LAN_BIND_IP: '192.168.7.20', LAN_HTTP_PORT: '8181' };
+const VALUES = { CORS_ALLOWED_ORIGIN: 'https://app.example.test', ANON_KEY: 'unit.anon.key', SERVICE_ROLE_KEY: 'unit.service.key', WAREHOUSE_MAINTENANCE: 'off', LAN_CIDR: '192.168.7.0/24', LAN_BIND_IP: '192.168.7.20', LAN_HTTP_PORT: '8181' };
 const render = text => text.replace(/\$(?:\{([A-Za-z_][A-Za-z0-9_]*)\}|([A-Za-z_][A-Za-z0-9_]*))/g, (all, braced, bare) => (filter.includes(braced ?? bare) ? VALUES[braced ?? bare] : all));
 const RENDERED = { http: render(FILES.httpTemplate), gateway: render(FILES.gatewayTemplate), lan: render(FILES.lanTemplate) };
 
@@ -67,19 +67,19 @@ test('the gateway is nginx from docker/nginx: no Kong file, entrypoint override 
   assert.doesNotMatch(read('.env.example'), /^KONG_/m);
 });
 
-test('the public templates hold exactly three variables, the LAN server three more, the image puts in only those, and no key or origin can add to the configuration', () => {
-  assert.deepEqual([...filter].sort(), ['ANON_KEY', 'CORS_ALLOWED_ORIGIN', 'LAN_BIND_IP', 'LAN_CIDR', 'LAN_HTTP_PORT', 'SERVICE_ROLE_KEY']);
+test('the public templates hold exactly four variables, the LAN server three more, the image puts in only those, and no key or origin can add to the configuration', () => {
+  assert.deepEqual([...filter].sort(), ['ANON_KEY', 'CORS_ALLOWED_ORIGIN', 'LAN_BIND_IP', 'LAN_CIDR', 'LAN_HTTP_PORT', 'SERVICE_ROLE_KEY', 'WAREHOUSE_MAINTENANCE']);
   const used = new Set();
   for (const [name, text] of Object.entries({ http: FILES.httpTemplate, gateway: FILES.gatewayTemplate })) {
     for (const match of text.matchAll(/\$\{([A-Za-z_][A-Za-z0-9_]*)\}/g)) used.add(match[1]);
     // The entrypoint replaces $NAME as well as the braced form. A comment that wrote either would have the real key put into it,
     // and so would a bare $NAME in the configuration itself (the templates write the braced form only).
     const comments = text.split('\n').filter(line => line.trim().startsWith('#')).join('\n');
-    assert.doesNotMatch(comments, /\$\{?(?:ANON_KEY|SERVICE_ROLE_KEY|CORS_ALLOWED_ORIGIN)\b/, `${name}: a comment writes a variable`);
+    assert.doesNotMatch(comments, /\$\{?(?:ANON_KEY|SERVICE_ROLE_KEY|CORS_ALLOWED_ORIGIN|WAREHOUSE_MAINTENANCE)\b/, `${name}: a comment writes a variable`);
     assert.doesNotMatch(comments, /\$\{/, `${name}: a comment writes a brace after a dollar sign`);
-    assert.doesNotMatch(code(text), /\$(?:ANON_KEY|SERVICE_ROLE_KEY|CORS_ALLOWED_ORIGIN)\b/, `${name}: a variable without braces`);
+    assert.doesNotMatch(code(text), /\$(?:ANON_KEY|SERVICE_ROLE_KEY|CORS_ALLOWED_ORIGIN|WAREHOUSE_MAINTENANCE)\b/, `${name}: a variable without braces`);
   }
-  assert.deepEqual([...used].sort(), ['ANON_KEY', 'CORS_ALLOWED_ORIGIN', 'SERVICE_ROLE_KEY'], 'the public templates have no LAN variable');
+  assert.deepEqual([...used].sort(), ['ANON_KEY', 'CORS_ALLOWED_ORIGIN', 'SERVICE_ROLE_KEY', 'WAREHOUSE_MAINTENANCE'], 'the public templates have no LAN variable');
   // The LAN server holds LAN_CIDR (the allow list) once and LAN_BIND_IP and LAN_HTTP_PORT (the Host pin), and writes none of them in a comment (the
   // entrypoint would put the value into the comment too).
   assert.deepEqual([...FILES.lanTemplate.matchAll(/\$\{([A-Za-z_][A-Za-z0-9_]*)\}/g)].map(match => match[1]), ['LAN_BIND_IP', 'LAN_BIND_IP', 'LAN_HTTP_PORT', 'LAN_CIDR']);
@@ -110,8 +110,9 @@ test('the public templates hold exactly three variables, the LAN server three mo
   // The LAN server and the http-level template are in the image under templates-lan; nothing is mounted from the checkout.
   assert.match(dockerfile, /^COPY lan\/ \/etc\/nginx\/templates-lan\/$/m);
   assert.match(dockerfile, /^COPY templates\/http\.conf\.template \/etc\/nginx\/templates-lan\/http\.conf\.template$/m);
-  // The compose environment names exactly those three and requires each.
-  for (const name of filter.filter(name => !name.startsWith('LAN_'))) assert.match(compose, new RegExp(`\\n      ${name}: \\$\\{${name}:\\?[^}]+\\}\\n`), `${name} is required by Compose`);
+  // The compose environment names exactly those four and requires each of the three that are not a switch; the switch has the default `off` in both gateway services.
+  for (const name of filter.filter(name => !name.startsWith('LAN_') && name !== 'WAREHOUSE_MAINTENANCE')) assert.match(compose, new RegExp(`\\n      ${name}: \\$\\{${name}:\\?[^}]+\\}\\n`), `${name} is required by Compose`);
+  assert.equal((compose.match(/\n      WAREHOUSE_MAINTENANCE: \$\{WAREHOUSE_MAINTENANCE:-off\}\n/g) || []).length, 2, 'both gateway services take the switch, off by default');
   // The LAN names are for gateway-lan only and may be empty in Compose (the entrypoint refuses an empty one); the public gateway is not given them.
   for (const name of ['LAN_CIDR', 'LAN_BIND_IP', 'LAN_HTTP_PORT']) assert.equal((compose.match(new RegExp(`\\n      ${name}: \\$\\{${name}:-\\}\\n`, 'g')) || []).length, name === 'LAN_CIDR' ? 1 : 2, name);
 });
@@ -210,6 +211,44 @@ test('CORS: the one configured origin, with credentials, answered at the gateway
     assert.match(block(CODE.locations, `location @json_${status}`), /include \/etc\/nginx\/cors-headers\.conf;/, `the ${status} answer`);
     assert.match(CODE.locations, new RegExp(`^error_page ${status} @json_${status};$`, 'm'));
   }
+});
+
+// Maintenance mode (WAREHOUSE_MAINTENANCE, docs/OPERATOR_INSTALL.md "While it upgrades"): tests/gateway-nginx.test.mjs runs it for real.
+test('maintenance mode: after the preflight every API route answers the 503 that says upgrading, with Retry-After 120; /health is not touched; only off and upgrading are accepted', () => {
+  // The word reaches the configuration as one map value (the public template, copied into the LAN directory of the image); everything else is derived from it.
+  assert.match(code(FILES.httpTemplate), /map \$server_name \$maintenance_mode \{\n\s+default "\$\{WAREHOUSE_MAINTENANCE\}";\n\}/);
+  assert.match(CODE.http, /map \$maintenance_mode \$maintenance_on \{\n\s+default\s+0;\n\s+upgrading 1;\n\}/);
+  assert.match(CODE.http, /map \$maintenance_mode \$unavailable_retry_after \{\n\s+default\s+"";\n\s+upgrading 120;\n\}/);
+  const bodies = /map \$maintenance_mode \$unavailable_body \{\n\s+default\s+('[^\n]+');\n\s+upgrading\s+('[^\n]+');\n\}/.exec(CODE.http);
+  assert.ok(bodies, 'the bodies of the 503');
+  const body = text => JSON.parse(text.slice(1, -1).replace("\\'", "'"));
+  assert.deepEqual(body(bodies[1]), { message: 'The upstream server is unavailable' }, 'an upstream that does not answer: the body Kong sent');
+  assert.deepEqual(body(bodies[2]), { code: 'upgrading', message: "The facility's server is being updated. Try again in a few minutes." });
+  const answer = block(CODE.locations, 'location @json_503');
+  assert.match(answer, /add_header Retry-After \$unavailable_retry_after always;/);
+  assert.match(answer, /include \/etc\/nginx\/cors-headers\.conf;/, 'the app reads it, and the path header is on it');
+  assert.match(answer, /return 503 \$unavailable_body;/);
+  // On each route: the preflight first (so the app can read the answer), then the refusal, and before everything that could answer something else.
+  for (const name of ['/rest/v1/', '/storage/v1/', '/functions/v1/']) {
+    const text = route(name);
+    const refusal = '    if ($maintenance_on) { return 503; }';
+    assert.equal(text.split(refusal).length - 1, 1, `${name}: one refusal`);
+    const at = needle => text.indexOf(needle);
+    assert.ok(at('if ($cors_preflight)') >= 0 && at('if ($cors_preflight)') < at(refusal), `${name}: the preflight is answered first`);
+    assert.ok(at(refusal) < at('return 404;'), `${name}: before the path check`);
+    for (const later of ['return 401;', 'limit_req ', 'proxy_pass ']) if (at(later) >= 0) assert.ok(at(refusal) < at(later), `${name}: before ${later.trim()}`);
+    // `return` is the only thing done inside an `if` (nginx's rule for a safe `if`), here as in the rest of the file.
+    assert.deepEqual([...text.matchAll(/^\s*if \(\$maintenance_on\) \{ ([^}]*) \}$/gm)].map(match => match[1]), ['return 503;']);
+  }
+  // Not a route of the API: nothing outside the three is touched, and the container's own health check answers as always.
+  assert.doesNotMatch(CODE.gatewayTemplate + CODE.lanTemplate, /maintenance/);
+  assert.doesNotMatch(CODE.locations.replace(/if \(\$maintenance_on\) \{ return 503; \}/g, ''), /maintenance/);
+  // The container: nothing set means off, only the two words start it, and both gateway services pass the same switch (gateway-lan: the other way in).
+  const entry = read('docker/nginx/docker-entrypoint.d/18-require-env.sh');
+  assert.match(entry, /case "\$\{WAREHOUSE_MAINTENANCE:-\}" in\n\s+off\|upgrading\) ;;\n\s+\*\) fail "WAREHOUSE_MAINTENANCE must be off or upgrading" ;;\nesac/);
+  const defaults = new URL('../docker/nginx/docker-entrypoint.d/17-maintenance-default.envsh', import.meta.url);
+  assert.match(readFileSync(defaults, 'utf8').split('\n').filter(line => !line.startsWith('#')).join('\n'), /^: "\$\{WAREHOUSE_MAINTENANCE:=off\}"\nexport WAREHOUSE_MAINTENANCE$/m);
+  assert.ok((statSync(defaults).mode & 0o111) !== 0, 'the image\'s entrypoint sources an executable .envsh only');
 });
 
 // The first line of each path map (docker/nginx/api-http.conf): a dot segment in the raw path, `.` or `..` written plainly or as
@@ -346,7 +385,7 @@ test('the gateway service publishes one loopback port, is read-only with no capa
   assert.match(service, /- \/etc\/nginx\/conf\.d:uid=101,gid=101,mode=0755,size=1m\n/);
 });
 
-test('the rendered Compose gateway has the hardening, the limits, the port and the three variables', { skip: !composeAvailable() && !process.env.CI ? 'docker compose is not installed' : false }, () => {
+test('the rendered Compose gateway has the hardening, the limits, the port and the four variables', { skip: !composeAvailable() && !process.env.CI ? 'docker compose is not installed' : false }, () => {
   const { services } = renderedCompose();
   const gateway = services.gateway;
   assert.equal(services.kong, undefined, 'there is no Kong service');
@@ -362,7 +401,8 @@ test('the rendered Compose gateway has the hardening, the limits, the port and t
   assert.equal(Number(gateway.deploy.resources.limits.cpus), 0.5);
   assert.deepEqual(gateway.ports.map(({ host_ip, target, protocol }) => [host_ip, target, protocol]), [['127.0.0.1', 8000, 'tcp']]);
   assert.match(String(gateway.ports[0].published), /^\d{4,5}$/);
-  assert.deepEqual(Object.keys(gateway.environment).sort(), ['ANON_KEY', 'CORS_ALLOWED_ORIGIN', 'SERVICE_ROLE_KEY']);
+  assert.deepEqual(Object.keys(gateway.environment).sort(), ['ANON_KEY', 'CORS_ALLOWED_ORIGIN', 'SERVICE_ROLE_KEY', 'WAREHOUSE_MAINTENANCE']);
+  assert.equal(gateway.environment.WAREHOUSE_MAINTENANCE, 'off', 'a state without the marker is not in maintenance mode');
   assert.ok(gateway.environment.ANON_KEY.length > 20 && gateway.environment.SERVICE_ROLE_KEY.length > 20);
   for (const key of Object.keys(gateway.environment)) assert.doesNotMatch(gateway.environment[key], /[\s"'$;{}]/, `${key} holds nothing the configuration could not hold`);
   // The LAN service is the only other one that publishes a port (tests below).
