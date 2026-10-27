@@ -80,6 +80,10 @@ second=$(plan_of "$ROOT" | mig_psql 2>&1) || { echo "$second" | tail -20 >&2; ec
 # The ledger holds exactly the files of migrations/ (the baseline today, more once a migration follows it).
 [[ "$(mig_psql -At -c 'SELECT string_agg(name, $$,$$ ORDER BY name) FROM warehouse_migrations.applied')" == "$(cd "$ROOT/migrations" && ls -1 *.sql | LC_ALL=C sort | paste -sd,)" ]] || { echo 'The ledger does not hold exactly the migration files.' >&2; exit 1; }
 migration_count=$(ls -1 "$ROOT"/migrations/*.sql | wc -l)
+# Migration 127 seeds one numbering rule per document type: today's behaviour (GRN letters from A, dispatch I + 4 digits, invoices per year),
+# each with its check on (a new facility holds no numbers that could fail it).
+[[ "$(mig_psql -At -c "SELECT string_agg(concat_ws('|', document_type, scheme, prefix, width, start, fy_reset, first_letter, per_letter, \"check\"), ',' ORDER BY document_type) FROM warehouse_security.document_numbering")" \
+  == 'dispatch|sequence|I|4|1|f|t,grn|letters||4|1|f|A|1000|t,invoice|year||1|1|t|t' ]] || { echo 'The numbering rules a new facility starts with are not the defaults.' >&2; exit 1; }
 
 # Definition files (migrations/definitions/, scripts/migration-plan.mjs): applied after the numbered files, each once per checksum.
 definition_count=$(ls -1 "$ROOT"/migrations/definitions/*.sql | wc -l)
@@ -152,9 +156,10 @@ sed -i 's/^\( *\)\$function\$;$/\1-- definition fix\n\1$function$;/' "$fixroot/m
 printf 'GRANT EXECUTE ON FUNCTION public.get_invoice_detail(uuid) TO anon;\n' >> "$fixroot/migrations/definitions/get_invoice_detail.sql"
 [[ "$(grep -c 'definition fix' "$fixroot/migrations/definitions/save_grn.sql")" == 1 ]] || { echo 'The test could not change save_grn.sql.' >&2; exit 1; }
 plan_of "$fixroot" | chain_psql >/dev/null 2>&1 || { echo 'The fixed definitions did not apply.' >&2; exit 1; }
-# Both databases here have the definitions table, so the entry for it is left out of the lists (an entry that matches nothing fails the run).
+# Both databases here have the definitions applied (the table and the shipped files), so the entry for the table and the lines of the shipped
+# fixes (functions and grants) are left out of the lists: an entry that matches nothing fails the run.
 allow_real="$fixroot/allow-none.txt"
-grep -v 'warehouse_migrations' "$ROOT/tests/definitions-allowed-differences.txt" > "$allow_real"
+grep -v -e 'warehouse_migrations' -e '^[AB] \^function' -e '^[AB] \^acl' "$ROOT/tests/definitions-allowed-differences.txt" > "$allow_real"
 { cat "$allow_real"; printf '%s\n' 'A ^function\|public\.save_grn\(' 'B ^function\|public\.save_grn\('; } > "$fixroot/allow-body.txt"
 { cat "$allow_real"; printf '%s\n' 'B ^acl\|function\|public\.get_invoice_detail\('; } > "$fixroot/allow-grant.txt"
 { cat "$allow_real"; printf '%s\n' 'A ^function\|public\.save_grn\(' 'B ^function\|public\.save_grn\(' 'B ^acl\|function\|public\.get_invoice_detail\('; } > "$fixroot/allow-both.txt"
@@ -392,6 +397,74 @@ fi
 mig_psql -c 'DROP DATABASE policy_probe WITH (FORCE)' >/dev/null
 echo "The newest migration ($newest) applies on top of the storage policies, and a dropped policy column is named by tests/storage_policy_deps.sql."
 
+# Migration 127 starts the GRN letters at W on a facility that holds both W and X numbers (FAS's order is W, X, Y, Z, A, B ...), at X on one
+# that holds numbers of the X, Y, Z series only, at A on one that does not, and leaves the numbers it finds as they are. The migrations up to
+# 126, the numbers, then the rest. It starts the check of a document type ON when every number it holds follows the rule it starts with, and
+# OFF (with a notice that counts the numbers) when one does not: here DG1, which is not a letter and digits.
+before127=$(cd "$ROOT/migrations" && ls -1 *.sql | LC_ALL=C sort | awk '/^00000000000127_/ { exit } { last = $0 } END { print last }')
+[[ -n "$before127" ]] || { echo 'Migration 127 was not found.' >&2; exit 1; }
+for first_letter in W X A; do
+  numbering_db="numbering_${first_letter,,}"
+  make_probe "$numbering_db" "$before127"
+  case "$first_letter" in
+    W) numbers="('W0818'), ('X0001'), ('A0257')"; check_on=true ;;
+    X) numbers="('Z0007'), ('A0001'), ('B2021')"; check_on=true ;;
+    *) numbers="('A0007'), ('C0001'), ('DG1')"; check_on=false ;;
+  esac
+  mig_psql -d "$numbering_db" -c "WITH c AS (INSERT INTO public.customers(name, mobile) VALUES ('Numbering Probe', '9888888802') RETURNING id) INSERT INTO public.goodsreceived(gr_no, customer_id) SELECT n, c.id FROM c, (VALUES $numbers) AS v(n)" >/dev/null
+  applied_127=$(plan_of "$ROOT" | mig_psql -d "$numbering_db" 2>&1) || { echo "$applied_127" | tail -n 20 >&2; echo 'Migration 127 does not apply to a facility that holds GRNs.' >&2; exit 1; }
+  [[ "$(mig_psql -d "$numbering_db" -At -c "SELECT first_letter FROM warehouse_security.document_numbering WHERE document_type = 'grn'")" == "$first_letter" \
+    && "$(mig_psql -d "$numbering_db" -At -c 'SELECT count(*) FROM public.goodsreceived')" == 3 ]] || { echo "Migration 127 did not start the GRN letters at $first_letter." >&2; exit 1; }
+  [[ "$(mig_psql -d "$numbering_db" -At -c "SELECT string_agg(document_type || '=' || \"check\", ',' ORDER BY document_type) FROM warehouse_security.document_numbering")" == "dispatch=true,grn=$([[ $check_on == true ]] && echo true || echo false),invoice=true" ]] \
+    || { echo "Migration 127 did not start the GRN check as $check_on at $first_letter." >&2; exit 1; }
+  if [[ "$check_on" == true ]]; then
+    [[ "$applied_127" != *'do not follow'* ]] || { echo "Migration 127 reported numbers that do not follow the rule at $first_letter: $applied_127" >&2; exit 1; }
+  else
+    [[ "$applied_127" == *'1 grn number(s) do not follow A####'*'for example DG1)'* ]] || { echo "Migration 127 did not say that DG1 does not follow A####: $applied_127" >&2; exit 1; }
+  fi
+  mig_psql -c "DROP DATABASE $numbering_db WITH (FORCE)" >/dev/null
+done
+echo 'Migration 127 starts the GRN letters at W where W and X are in use, at X where the X, Y, Z series is, at A elsewhere, keeps every number, and starts a check on only where the numbers follow the rule.'
+
+# A facility like the one FAS's books come from: dispatch numbers G####, H####, G1234A, CLR####, I####A beside I####. Migration 127 starts the
+# dispatch check OFF and says how many numbers do not follow I#### (the GRN check, whose numbers follow, ON); the saves of those shapes then
+# go through while a taken number is refused; the rule still suggests I####; doctor's query reads the state and its warning says how to switch
+# the check on; switching it on counts what is kept and refuses the next such number; and switching it off again is recorded.
+numbering_db=numbering_off
+make_probe "$numbering_db" "$before127"
+mig_psql -d "$numbering_db" -c "WITH c AS (INSERT INTO public.customers(name, mobile) VALUES ('Numbering Probe', '9888888803') RETURNING id)
+  INSERT INTO public.dispatch(disp_no, customer_id) SELECT n, c.id FROM c, (VALUES ('G0001'), ('G1234'), ('G1234A'), ('H0012'), ('H0012B'), ('CLR0007'), ('I0007'), ('I0008A')) AS v(n)" >/dev/null
+mig_psql -d "$numbering_db" -c "WITH c AS (SELECT id FROM public.customers WHERE mobile = '9888888803') INSERT INTO public.goodsreceived(gr_no, customer_id) SELECT n, c.id FROM c, (VALUES ('A0001'), ('A0002')) AS v(n)" >/dev/null
+applied_off=$(plan_of "$ROOT" | mig_psql -d "$numbering_db" 2>&1) || { echo "$applied_off" | tail -n 20 >&2; echo 'Migration 127 does not apply to a facility with FAS-style dispatch numbers.' >&2; exit 1; }
+[[ "$applied_off" == *'7 dispatch number(s) do not follow I####'* && "$applied_off" == *'for example CLR0007, G0001, G1234, G1234A, H0012)'* ]] \
+  || { echo "Migration 127 did not count the seven dispatch numbers that do not follow I####: $applied_off" >&2; exit 1; }
+off_psql() { mig_psql -d "$numbering_db" -At "$@"; }
+[[ "$(off_psql -c "SELECT string_agg(document_type || '=' || \"check\", ',' ORDER BY document_type) FROM warehouse_security.document_numbering")" == 'dispatch=false,grn=true,invoice=true' ]] \
+  || { echo 'Migration 127 did not start the dispatch check off and the GRN check on.' >&2; exit 1; }
+[[ "$(off_psql -c "SELECT count(*) FROM warehouse_security.document_numbering_history")" == 0 ]] || { echo 'The seed wrote history rows.' >&2; exit 1; }
+# Saves of every shape go through the check (no refusal), a taken number is not a format failure, a stray GRN still is one; the suggestion stays I####.
+[[ "$(off_psql -c "SELECT string_agg(coalesce(warehouse_security.document_number_failure('dispatch', n, NULL)::text, 'ok'), ',' ORDER BY n) FROM unnest(ARRAY['G0002', 'H0013A', 'G1235A', 'CLR0008', 'I0009A', 'I0007']) n")" == 'ok,ok,ok,ok,ok,ok' ]] \
+  || { echo 'With the dispatch check off a number of FAS shape was refused.' >&2; exit 1; }
+[[ "$(off_psql -c "SELECT warehouse_security.document_number_failure('grn', 'GRN1', NULL)->>'reason'")" == NUMBER_FORMAT ]] || { echo 'The GRN check, which started on, did not refuse GRN1.' >&2; exit 1; }
+[[ "$(off_psql -c "SELECT warehouse_security.document_number_suggestion('dispatch', NULL)->>'number'")" == I0008 ]] || { echo 'The dispatch suggestion is not I0008 (I0007 is the highest I number; I0008A is not one).' >&2; exit 1; }
+# Doctor: the query it sends answers with the rule and the count; its words name the option that switches the check on.
+doctor_answer=$(off_psql -c "$(node --input-type=module -e "import { NUMBERING_PROBLEMS_SQL } from '$ROOT/scripts/numbering.mjs'; process.stdout.write(NUMBERING_PROBLEMS_SQL)")") \
+  || { echo 'The query of doctor numbering warnings failed.' >&2; exit 1; }
+doctor_text=$(DOCTOR_ANSWER="$doctor_answer" node --input-type=module -e "import { numberingProblems } from '$ROOT/scripts/numbering.mjs'; console.log(numberingProblems(() => ({ ok: true, output: process.env.DOCTOR_ANSWER })).join('\n'))")
+[[ "$doctor_text" == 'Dispatch numbers are not checked: 7 existing numbers do not follow I#### (for example CLR0007, G0001, G1234, G1234A, H0012)'*'--dispatch-numbering sequence,prefix=I,digits=4,start=1,check=on'* && "$doctor_text" != *GRN* ]] \
+  || { echo "Doctor's warning for the dispatch check is not as expected: $doctor_text" >&2; exit 1; }
+# The operator's way to switch it on, as setup.sh's configure-operator.sql runs it: counts, keeps, refuses; and off again.
+switched=$(mig_psql -d "$numbering_db" -v company=Probe -v dispatch_numbering="$(node "$ROOT/scripts/numbering.mjs" rule dispatch 'sequence,prefix=I,digits=4,start=1,check=on')" < "$ROOT/scripts/configure-operator.sql" 2>&1 | tail -n 1)
+[[ "$switched" == 'Next dispatch: I0008; 8 dispatches keep their numbers. 7 existing numbers do not follow the rule and keep their numbers.' ]] || { echo "Switching the dispatch check on printed: $switched" >&2; exit 1; }
+[[ "$(off_psql -c "SELECT warehouse_security.document_number_failure('dispatch', 'G0002', NULL)->>'pattern'")" == 'I####' && "$(off_psql -c "SELECT count(*) FROM public.dispatch")" == 8 ]] \
+  || { echo 'With the dispatch check on again G0002 was not refused, or a dispatch was lost.' >&2; exit 1; }
+switched=$(mig_psql -d "$numbering_db" -v company=Probe -v dispatch_numbering="$(node "$ROOT/scripts/numbering.mjs" rule dispatch 'sequence,prefix=I,digits=4,start=1,check=off')" < "$ROOT/scripts/configure-operator.sql" 2>&1 | tail -n 1)
+[[ "$switched" == 'Next dispatch: I0008; 8 dispatches keep their numbers. Numbers are not checked against the rule.' ]] || { echo "Switching the dispatch check off printed: $switched" >&2; exit 1; }
+[[ "$(off_psql -c "SELECT string_agg((old_rule->>'check') || '>' || (new_rule->>'check'), ',' ORDER BY id) FROM warehouse_security.document_numbering_history WHERE document_type = 'dispatch'")" == 'false>true,true>false' ]] \
+  || { echo 'The history does not hold both switches of the dispatch check.' >&2; exit 1; }
+mig_psql -c "DROP DATABASE $numbering_db WITH (FORCE)" >/dev/null
+echo 'Migration 127 starts the dispatch check off where FAS-style numbers exist (seven counted), saves them, suggests I####, doctor says how to switch it on, and the switch counts and keeps the numbers.'
+
 # The seeded drill's data (tests/seed/make-seed.mjs). It loads into a migrated database with the counts it promises. With the clashing
 # customer names ("Seed Harbour Traders" and " seed  HARBOUR traders ") it loads only into a database before migration 117 (the unique
 # customers_name_norm_key), the state of a facility on an earlier release; the plan of this release then refuses at 117 itself, names
@@ -422,6 +495,10 @@ echo 'The seed loads with its counts; with clashing names the plan refuses at mi
 # as staff to prove that the policies hide the rows, so the setting is on for them (database level of this disposable database
 # only); it is reset before the customer-images block, which must see the guard as it is.
 mig_psql -c "ALTER DATABASE postgres SET storage.allow_delete_query = 'true'"
+# Migration 127: the suites below predate the numbering rules and save fixtures with numbers such as DG1 and IR-A. For them the GRN and
+# dispatch rules are free text; a suite that reads a suggestion puts a rule back inside its own transaction, and
+# tests/document_numbering.sql proves the rules themselves.
+mig_psql -c "SELECT warehouse_security.apply_document_numbering('grn', '{\"scheme\":\"free\"}', NULL), warehouse_security.apply_document_numbering('dispatch', '{\"scheme\":\"free\"}', NULL)" >/dev/null
 test_files=(
   "$ROOT/tests/baseline_roles.sql" "$ROOT/tests/baseline_owners.sql" "$ROOT/tests/security_baseline.sql" "$ROOT/tests/operator_auth.sql"
   "$ROOT/tests/invoice_duration.sql" "$ROOT/tests/core_pilot.sql"
@@ -467,6 +544,7 @@ test_files=(
   "$ROOT/tests/report_stock_ist_day.sql" "$ROOT/tests/report_dispatch_weight.sql" "$ROOT/tests/report_grn_weight.sql"
   "$ROOT/tests/report_grn_invoices.sql"
   "$ROOT/tests/sessions_sliding.sql" "$ROOT/tests/break_glass.sql" "$ROOT/tests/otp_source_limits.sql"
+  "$ROOT/tests/document_numbering.sql"
 )
 for test_sql in "${test_files[@]}"; do
   docker exec -i -e PGPASSWORD=disposable-test-database-only "$container" psql -X -q -U supabase_admin -d postgres -v ON_ERROR_STOP=1 < "$test_sql"
@@ -824,6 +902,9 @@ bash "$ROOT/tests/grn_edit_lock_order.sh" "$container"
 # receipt rule under two users acting at the same moment.
 bash "$ROOT/tests/concurrent_rules.sh" "$container"
 
+# Migration 127: a change of a numbering rule and a document save share the document lock; neither sees half of the other.
+bash "$ROOT/tests/numbering_lock.sh" "$container"
+
 # scripts/retention.sh: every statement it sends is one this database accepts.
 bash "$ROOT/tests/retention_queries.sh" "$container"
 
@@ -836,6 +917,9 @@ bash "$ROOT/tests/retention_queries.sh" "$container"
 # backup and replayed by scripts/verify-restore.sh, once with a session attached to
 # template1 and once with the disk-backed data directory.
 bash "$ROOT/tests/verify-restore-drill.sh" "$container"
+# Migration 127: the facility's GRN rule is the default one again, as on a new installation: the REST test below asks a staff session for the
+# next GRN number, and a free-text rule has none to give.
+mig_psql -c "SELECT warehouse_security.apply_document_numbering('grn', '{\"scheme\":\"letters\"}', NULL)" >/dev/null
 # The REST service (PostgREST, the image docker/docker-compose.yml pins) against this migrated database, with the settings the compose
 # file gives it: tests/postgrest-contract.test.mjs asserts the status, code and message of every refusal the app keys on
 # (docs/API_CONTRACT.md, "What the app may match: codes, not texts"). It runs on the test network, which has no route out; the

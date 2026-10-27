@@ -316,6 +316,54 @@ bash setup.sh --operator --state-dir "$WAREHOUSE_STATE_DIR" --admin-phone 91XXXX
 - **Backups.** A backup carries the image (`letterhead.jpg` or `letterhead.png`, signed with the rest), `db:verify-restore` checks it,
   and `db:restore-host` puts it back. A backup made before this option has none and restores to plain PDFs.
 
+### Document numbers
+
+GRN, dispatch and invoice numbers follow a rule of the facility, and **with the rule's check on, a typed number that does not follow the rule is refused when the document is
+saved** ("This number does not follow this facility's numbering (A####)"). Choose the rules at install, or later; an administrator can also change
+them in the app (Document numbers, under Warehouse tools, from the app build that has the screen). Each rerun without the options keeps what is stored.
+
+| Option | A rule is written as | Example numbers |
+|---|---|---|
+| `--grn-numbering`, `--dispatch-numbering` | `letters[,first=A][,digits=4][,per-letter=1000][,check=on\|off]` | A0001 ... A1000, B0001 ... With `first=W` or `first=X`: W, X, Y, Z, A, B ... (FAS's order) |
+| | `year[,prefix=GRN/][,digits=4][,start=1][,check=on\|off]` | GRN/26-27/0001, starting again on every 1 April |
+| | `sequence[,prefix=I][,digits=4][,start=1][,check=on\|off]` | I0001, I0002 ...; with `sequence,start=1001` no prefix: 1001, 1002 (a paper book kept going) |
+| | `free` | any text of up to 20 characters, typed by hand (14/B/2027); nothing is suggested |
+| `--invoice-numbering` | `year` or `sequence[,start=N]` | whole numbers: `year` starts again at 1 every 1 April (today), `sequence` keeps counting across years |
+
+```bash
+bash setup.sh --operator <your usual options> --grn-numbering 'year,prefix=GRN/' --dispatch-numbering 'sequence,prefix=I' --invoice-numbering year
+```
+
+- **The defaults are what the facility did before:** GRN `letters` (first letter `W` when the facility holds both W and X numbers, `X` when it holds X, Y or Z numbers: FAS's order is W, X, Y, Z, A, B),
+  dispatch `sequence,prefix=I`, invoice `year`. `node scripts/doctor.mjs` prints the rules in force ("Document numbers: GRN A#### (letters), ...").
+- **The check.** Each GRN and dispatch rule has a check: on, a number outside the rule is refused; off, it is saved (a number that is taken is still refused, as is one over 20 characters)
+  and the rule still suggests the next number. The update starts a document type with the check **off** when one of the numbers it holds does not follow the rule it starts with (dispatch
+  numbers such as G1234A or CLR0007 beside I0001, a GRN such as DG1) and prints how many, with up to five examples; every other type starts with it on. `doctor` warns "Dispatch numbers are not checked:
+  N existing numbers do not follow I####" until you switch it on. Switch it on by giving the rule you want with `check=on`, for example
+  `--dispatch-numbering sequence,prefix=I,digits=4,start=1,check=on` (the warning prints the exact option for the stored rule); numbers that do not follow it keep their numbers, and setup says
+  how many they are. `check=off` switches it off. Giving a rule without `check` leaves the check as it is stored; `free` rules and invoices have no check to switch (an invoice number is always a whole number).
+- **Limits.** A number has at most 20 characters and at most 7 digits after its prefix; the prefix is up to 10 capital letters, digits, `/` and `-`. Setup refuses an unknown scheme,
+  other prefix characters, a number of digits outside 1 to 7, a number that cannot fit the 20 characters, and `letters` or `free` for invoices, before it changes anything.
+- **A rule where documents exist.** Allowed. Existing numbers never change; setup prints "Next GRN: GRN/26-27/0001; 950 GRNs keep their numbers.". The lists sort the numbers of the earlier form first, then by
+  the text before the trailing digits, then the digits as a number. Every change is kept, with who made it and the count, in `warehouse_security.document_numbering_history`.
+- **What a rule accepts.** `letters`: any capital letter and at least `digits` digits (so FAS's X0001 ... Z1001 fit whatever the first letter; it decides only what is suggested. The suggestion follows the letters in use: the order of the letters always starts after the longest run of unused letters
+  (of two runs of the same length, the one nearer the rule's first letter), so a facility whose books run W, X, Y, Z, A is offered A0258 after A0257 whatever its first letter. Only when all 26 letters are used is the series
+  full: "All GRN numbers A0001-Z1000 are used", and the person types a number or an administrator changes the rule). `year`: the prefix, two consecutive years and the digits. `sequence`: the prefix and at least `digits` digits.
+- **If the numbers you type do not fit.** Keep the check off, or choose a rule they fit. `free` accepts anything of up to 20 characters but suggests nothing. With the check on, a number outside the rule is not saved, whoever sends it.
+- **A stray letter.** The GRN suggestion follows the letters in use; a mistyped GRN number such as Q0001 for A0001 can leave a letter beside the series that takes the suggestion over when it is between B and K (in a series that runs W to A; a stray at L does it only when
+  the rule's first letter is W, because two runs of unused letters are then equally long). `doctor` lists "GRN letters in use outside the main series W–A: ..." (the main series is the run that holds the most numbers) so that the number
+  can be corrected, and warns when the highest letter follows a letter in use that is not full (B0001 beside A0500), which is the one stray that steers the suggestion without standing apart.
+- **fas-sync and other import tools.** The update starts the check only from the numbers already in the database. A number the tool will still push after the update counts too: a GRN such as X1234A (a letter, digits and a letter after them)
+  does not follow the letter rule and the push is refused while the GRN check is on. Push the backlog before the update, or give the update the rule with the check off,
+  `--grn-numbering letters,first=X,check=off` (`first=W` where the facility holds both W and X numbers), and switch the check on later with the same rule and `check=on`.
+  It pushes FAS's GRN numbers (a capital letter and digits) and dispatch numbers as they are. At a facility whose GRN rule is `letters` those of a capital letter and digits are saved whatever the first letter. FAS's dispatch numbers (G1234,
+  H0012A, CLR0007) do not follow `sequence,prefix=I`: while the dispatch check is off (the update starts it off at a facility that holds such numbers) they are saved; with the check on, or with a GRN rule that does not match, the push of that document is
+  refused with the sentence above. Do not use `free` to let them through: a `free` rule suggests no number, and fas-sync reads the suggestion (`get_next_grn_number`, `get_next_dispatch_number`) before and after every push. The suggestion is
+  the rule's whether the check is on or off.
+- **Slips and old app builds.** Numbers of up to 20 characters are possible; the pre-printed GRN and dispatch slips print the number in a field made for 8, so check a long number on paper once before you use one. An app build
+  from before this change fills in its own number where no number is suggested (`free`, a full series) and limits the dispatch number to 8 characters: use a rule that suggests numbers of 8 characters or fewer until every phone
+  has the new build.
+
 ## Several facilities on one host
 
 One installation serves one facility: its own state directory, its own Compose

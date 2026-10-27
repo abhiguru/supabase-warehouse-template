@@ -69,7 +69,15 @@ SELECT pg_temp.grn_assert(warehouse_security.active_role()='staff','actual activ
 SELECT pg_temp.grn_assert((SELECT count(*)=2 FROM public.customers WHERE name LIKE 'GRN Policy %'),'customer lookup across warehouse');
 SELECT pg_temp.grn_assert(public.search_customers('GRN Policy')->>'success'='true','customer RPC lookup');
 SELECT pg_temp.grn_assert(public.get_supervisors()->>'success'='true','supervisor lookup');
+-- Migration 127: a suggestion needs a rule that makes one. tests/migrations.sh runs the older suites with free-text GRN numbers; the default
+-- rule is put back for this check only, inside this transaction.
+RESET ROLE;
+SELECT warehouse_security.apply_document_numbering('grn', '{"scheme":"letters"}', NULL) \gset default_
+SET LOCAL ROLE authenticated;
 SELECT pg_temp.grn_assert(public.get_next_grn_number() IS NOT NULL,'number suggestion');
+RESET ROLE;
+SELECT warehouse_security.apply_document_numbering('grn', '{"scheme":"free"}', NULL) \gset free_
+SET LOCAL ROLE authenticated;
 SELECT public.save_grn(p_gr_no=>'STAFFB',p_date=>now(),p_customer_id=>:'customer_b'::uuid,
  p_customer_name=>'GRN Policy B',p_items=>jsonb_build_array(jsonb_build_object(
  'item_id',:'item_id','item_name','GRN Policy Potatoes','packaging','Bag','qty',10,'weight',5)),

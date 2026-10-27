@@ -46,6 +46,13 @@ FROM unnest(ARRAY[
   'get_public_config','record_sensor_batch']) AS n
 WHERE NOT EXISTS (SELECT 1 FROM pg_proc p WHERE p.pronamespace = 'public'::regnamespace AND p.proname = n
   AND has_function_privilege('service_role', p.oid, 'EXECUTE'));
+-- The numbering RPCs (migration 127): the app calls them from the build that has the Document numbers screen, with these parameter names, and
+-- a signed-in session may run them (the guard decides who). Not in the app list above, which is what the app calls today.
+SELECT pg_temp.rc_assert(count(*) = 0, 'a numbering RPC is gone, has lost a parameter or is not callable by a session: ' || string_agg(f.name, ', ' ORDER BY f.name))
+FROM (VALUES ('suggest_document_number', '{p_document_type,p_date}'), ('get_document_numbering', '{}'), ('set_document_numbering', '{p_document_type,p_rule}')) AS f(name, arguments)
+WHERE NOT EXISTS (SELECT 1 FROM pg_proc p WHERE p.pronamespace = 'public'::regnamespace AND p.proname = f.name
+  AND p.proargnames IS NOT DISTINCT FROM CASE WHEN f.arguments = '{}' THEN NULL ELSE f.arguments::text[] END
+  AND has_function_privilege('authenticated', p.oid, 'EXECUTE'));
 -- fas-sync: a function of that name takes every argument name the sync passes (fassync/push.py), and needs no more than those: a new
 -- parameter without a default would make every call fail with "function does not exist", so the names of the required parameters (the
 -- first pronargs - pronargdefaults) must all be among the names passed (the rule of scripts/check-mobile-contract.mjs).

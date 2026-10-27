@@ -62,7 +62,7 @@ assert.ok(session?.access_token, 'restored customer receives a session');
 const token = session.access_token;
 
 // 2. Business data restored: the receipt saved before the backup renders again.
-const generated = good(await api('/functions/v1/generate-grn-pdf', token, { gr_no: 'BAA01' }), 'generate-grn-pdf after restore');
+const generated = good(await api('/functions/v1/generate-grn-pdf', token, { gr_no: 'A0901' }), 'generate-grn-pdf after restore');
 const signed = new URL(generated.pdf_url);
 assert.equal(signed.origin, env.SUPABASE_PUBLIC_URL, 'document uses configured origin');
 await pdf(base + signed.pathname + signed.search, 'document generated after restore');
@@ -80,4 +80,4 @@ const { signedURL } = await sign.json();
 assert.ok(typeof signedURL === 'string' && signedURL.startsWith('/object/sign/documents/'), 'signed URL shape');
 await pdf(`${base}/storage/v1${signedURL}`, 'pre-backup document after restore');
 for (const reader of [anon, token]) assert.ok(!(await api(`/storage/v1/object/documents/${path}`, reader)).ok, 'private PDF bucket still denies direct reads');
-console.log(`Restored instance passed: pre-backup customer login, document generation for BAA01 and download of ${name}.`);
+console.log(`Restored instance passed: pre-backup customer login, document generation for A0901 and download of ${name}.`);

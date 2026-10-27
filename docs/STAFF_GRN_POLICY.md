@@ -84,6 +84,9 @@ The current role table comes first; the sections after it record how each role's
 | Unlink a profile from its central sign-in (`clear_user_central_identity`, migration 49) | yes | no | no | no |
 | What became of a save whose answer was lost (`get_submission_result`, migration 120): the caller's own saved answers only | yes | yes | yes | no |
 | The GRN edit form's version token and locks (`get_grn_edit_state`, migration 121) | yes | yes | yes | **no** (`Staff access required`) |
+| The next GRN, dispatch or invoice number under the facility's numbering rule (`suggest_document_number`, migration 127) | yes | yes | yes | **no** (`Staff access required`) |
+| Read the numbering rules (`get_document_numbering`, migration 127) | yes | yes | **no** (`Staff access required`) | no |
+| Change a numbering rule (`set_document_numbering`, migration 127) | yes | **no** (`Administrator required`) | no | no |
 | Supervisor's mobile number on a receipt or dispatch | yes | yes | yes | **no** (name only) |
 | `printer_status` (direct read removed in 123: the edge function reads it with the service key) | yes | yes | yes | **no** (and no longer without sign-in) |
 

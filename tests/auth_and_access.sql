@@ -3,6 +3,10 @@
 -- every fixture row rolls back.
 \set ON_ERROR_STOP on
 BEGIN;
+-- Migration 127: the numbering suggestions below are the default rules'. tests/migrations.sh runs the older suites with free-text GRN and
+-- dispatch numbers; this one puts the defaults back inside its own transaction (rolled back with it).
+SELECT warehouse_security.apply_document_numbering('grn', '{"scheme":"letters"}', NULL),
+       warehouse_security.apply_document_numbering('dispatch', '{"scheme":"sequence","prefix":"I"}', NULL) \gset default_
 CREATE FUNCTION pg_temp.assert_true(ok boolean, label text) RETURNS void LANGUAGE plpgsql AS $$
 BEGIN IF ok IS DISTINCT FROM true THEN RAISE EXCEPTION 'FAILED: %',label; END IF; END $$;
 -- Requests a code, marks it delivered and verifies it; test.last_code keeps the code.

@@ -5,12 +5,24 @@
 # The table that records the definitions exists only in B.
 B \|warehouse_migrations\.definitions\|
 #
-# A function whose definition file was changed on purpose after migration 126 (a fix) differs from the one the chain leaves. List its
-# two lines here, with the reason and the date, in the same commit as the change (<schema> is public or warehouse_security). The line
-# also takes the function out of the byte-for-byte function comparison of tests/migrations.sh, every other function stays in it:
+# A function whose definition file was changed on purpose after migration 126 differs from the one the chain leaves: a fix, or a
+# feature that migration 127 (the first one) carries in definition files, not in numbered files. List its two lines here, with the
+# reason and the date, in the same commit as the change (<schema> is public or warehouse_security). The line also takes the
+# function out of the byte-for-byte function comparison of tests/migrations.sh, every other function stays in it:
 #   A ^function\|<schema>\.<name>\(
 #   B ^function\|<schema>\.<name>\(
 # A change of its grants adds a line of the grant list on side B (and A, for a grant that was taken away):
 #   B ^acl\|function\|<schema>\.<name>\(
 # An entry that matches nothing fails the run. A SECURITY DEFINER or INVOKER change is not allowed by an allow-list line: it is an edit of
 # the pinned list in tests/definitions.test.mjs, and ALTER FUNCTION ... SECURITY is refused in a definition file.
+#
+# Migration 127 (document numbering, 2026-10-27): save_grn, create_dispatch_with_stock_check_internal and update_dispatch_smart refuse a
+# number outside the facility's rule, and authorize_rpc knows suggest_document_number (staff) and set_document_numbering (administrators).
+A ^function\|public\.save_grn\(
+B ^function\|public\.save_grn\(
+A ^function\|public\.create_dispatch_with_stock_check_internal\(
+B ^function\|public\.create_dispatch_with_stock_check_internal\(
+A ^function\|warehouse_security\.authorize_rpc\(
+B ^function\|warehouse_security\.authorize_rpc\(
+A ^function\|public\.update_dispatch_smart\(
+B ^function\|public\.update_dispatch_smart\(

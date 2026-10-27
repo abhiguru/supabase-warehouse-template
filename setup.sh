@@ -34,6 +34,15 @@ while (($#)); do
         *) CONFIG_ARGS+=("$1" "$2") ;;
       esac
       shift 2 ;;
+    --grn-numbering|--dispatch-numbering|--invoice-numbering)
+      # The numbering rules live in the database (docs/OPERATOR_INSTALL.md, "Document numbers"): checked below, stored after the migrations.
+      if (($# < 2)); then echo "Missing value for $1" >&2; exit 1; fi
+      case "$1" in
+        --grn-numbering) GRN_NUMBERING="$2" ;;
+        --dispatch-numbering) DISPATCH_NUMBERING="$2" ;;
+        --invoice-numbering) INVOICE_NUMBERING="$2" ;;
+      esac
+      shift 2 ;;
     *) echo "Unknown option: $1" >&2; exit 1 ;;
   esac
 done
@@ -50,6 +59,15 @@ export WAREHOUSE_STATE_DIR="$STATE"
 # shellcheck source=scripts/require-node.sh
 . "$ROOT/scripts/require-node.sh"
 node "$ROOT/scripts/doctor.mjs" --host-preflight
+# The numbering rules given on the command line (scripts/numbering.mjs): a rule that is refused changes nothing. The database checks them again.
+NUMBERING_VARS=()
+for numbering in grn dispatch invoice; do
+  given="${numbering^^}_NUMBERING"
+  if [[ -n "${!given+x}" ]]; then
+    rule="$(node "$ROOT/scripts/numbering.mjs" rule "$numbering" "${!given}")" || exit 1
+    NUMBERING_VARS+=(-v "${numbering}_numbering=$rule")
+  fi
+done
 # A rerun may rewrite compose.env (provider replacement), so hold the operator
 # lock before configure.mjs whenever the state already exists; a first install
 # can only take it once configure.mjs has created the state directory.
@@ -149,7 +167,7 @@ elif [[ "$EXISTING_ADMIN" != match ]]; then
   exit 1
 fi
 COMPANY="$(node -e 'const fs=require("fs"); console.log(JSON.parse(fs.readFileSync(process.argv[1],"utf8")).companyName)' "$STATE/public/instance.json")"
-bash "$ROOT/scripts/compose.sh" exec -T db psql -X -q -U supabase_admin -d postgres -v ON_ERROR_STOP=1 -v company="$COMPANY" < "$ROOT/scripts/configure-operator.sql"
+bash "$ROOT/scripts/compose.sh" exec -T db psql -X -q -U supabase_admin -d postgres -v ON_ERROR_STOP=1 -v company="$COMPANY" ${NUMBERING_VARS[@]+"${NUMBERING_VARS[@]}"} < "$ROOT/scripts/configure-operator.sql"
 # --remove-orphans also removes the containers of services that were removed from the Compose file (see CHANGELOG.md).
 # Services of a profile (printing, sensors, pooler) are disabled services, not
 # orphans, so they are kept.

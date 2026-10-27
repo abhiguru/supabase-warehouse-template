@@ -248,6 +248,11 @@ it uses the financial year of today's date in India (`Asia/Kolkata`), which
 turns at 18:30 UTC on 31 March. The app passes the financial year of the
 invoice date.
 
+**The facility's rule (migration 127).** The invoice number stays a whole number from 1 to 99999999. The facility's rule (`--invoice-numbering`, or an
+administrator in the app) only chooses what is suggested: `year` (the rule above, starting again each April) or `sequence` (the highest number of
+every year plus 1, so the count goes on across years; the number is still unique within its year), each with an optional first number. See
+[API_CONTRACT.md](API_CONTRACT.md), "Document numbering".
+
 **The year must be the invoice date's (migration 120).** `save_invoice` and `update_invoice` refuse
 a year that is not the one of the invoice date with `The invoice date belongs to
 financial year <year>, not <sent>` (SQLSTATE `WH422`). `update_invoice` checks
