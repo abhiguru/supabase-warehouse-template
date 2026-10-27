@@ -72,8 +72,8 @@ The contract (token, endpoint, answers, what is stored) is [docs/CENTRAL_LOGIN.m
   (`setup.sh --operator`, one Cloudflare Tunnel per installation, MSG91 SMS). Operators follow release tags, not `main`:
   `bash upgrade.sh vX.Y.Z` is the upgrade, and a release keeps `upgrade.sh` and the inherited operator lock in `setup.sh`
   ([CONTRIBUTING.md](CONTRIBUTING.md), "Releases").
-- Every business RPC is guarded by `warehouse_security.authorize_rpc` (latest version in
-  the baseline until a migration after it redefines it, then in the newest such migration), and business data is written only through
+- Every business RPC is guarded by `warehouse_security.authorize_rpc` (its current text is
+  `migrations/definitions/00_authorize_rpc.sql`; the baseline and the migrations before 127 hold the history), and business data is written only through
   those RPCs: no app role, administrator included, can insert, update or delete a
   business table directly (migration 42). Direct table reads remain on only 12 tables (`customers`, `dispatch`, `dispatch_images`, `dispatch_trl`, `feature_flags`, `goodsreceived`, `goodsreceived_trl`, `grn_images`, `invoice`, `invoice_trl`, `items`, `user_profiles`; the other 18 were revoked in migration 123, see `tests/role_allowlist.sql` and `tests/table_reads_removed.sql`), limited by the row
   policies; on `invoice` the six internal columns (discount and zero-charge reason,

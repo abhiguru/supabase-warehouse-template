@@ -1,6 +1,6 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
-import { copyFileSync, existsSync, mkdirSync, mkdtempSync, readFileSync, readdirSync, rmSync, writeFileSync } from 'node:fs';
+import { cpSync, existsSync, mkdtempSync, readFileSync, readdirSync, rmSync, writeFileSync } from 'node:fs';
 import { spawnSync } from 'node:child_process';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
@@ -60,12 +60,13 @@ test('the contract scanner reports a function the app calls that a later migrati
   try {
     const scan = (migrations, output) => spawnSync(process.execPath, [join(root, 'scripts/check-mobile-contract.mjs'), process.env.MOBILE_CHECKOUT, '--migrations', migrations, '--output', output], { encoding: 'utf8' });
     const migrations = join(scratch, 'migrations');
-    mkdirSync(migrations);
-    for (const name of readdirSync(join(root, 'migrations'))) copyFileSync(join(root, 'migrations', name), join(migrations, name));
+    cpSync(join(root, 'migrations'), migrations, { recursive: true });
     const before = scan(migrations, join(scratch, 'before.json'));
     const called = JSON.parse(readFileSync(join(scratch, 'before.json'), 'utf8')).rpc.called;
     assert.deepEqual(JSON.parse(readFileSync(join(scratch, 'before.json'), 'utf8')).rpc.missing, [], `the unchanged migrations define every name the app calls: ${before.stderr}`);
     const victim = called.find(name => name === 'get_next_grn_number') ?? called[0];
+    // A DROP removes the function's definition file in the same commit; mirror that so the scanner does not see it defined by the file.
+    rmSync(join(migrations, 'definitions', `${victim}.sql`), { force: true });
     writeFileSync(join(migrations, '99999999999999_drop_probe.sql'), `DROP FUNCTION public.${victim};\n`);
     const after = scan(migrations, join(scratch, 'after.json'));
     assert.equal(after.status, 1, after.stdout);
