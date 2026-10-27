@@ -225,6 +225,7 @@ export async function doctor({ hostPreflight = false, preflight = false, local =
     if (!owned.output.trim() && !projectPublishesPort(env.WAREHOUSE_PROJECT_NAME, port) && await listening(port)) throw new Error(`Loopback gateway port ${port} is already in use.`);
     return 'Operator configuration, private paths and gateway port preflight passed.';
   }
+  checkAppCompatFile(state);
   // Central sign-in from a key file: the file must be there, or every sign-in fails while the app still offers it.
   const keyFileWarning = checkCentralKeyFile(env, state);
   if (keyFileWarning) console.error(`Warning: ${keyFileWarning}`);
@@ -260,6 +261,18 @@ export async function doctor({ hostPreflight = false, preflight = false, local =
   if (json.success !== true || json.data?.anonKey !== env.ANON_KEY || json.data?.instanceId !== manifest.instanceId || json.data?.canonicalOrigin !== origin) throw new Error('External public configuration does not match this instance.');
   if (lan.failures.length) throw new Error(`The public address works, but the LAN fallback does not: ${lan.failures.join('; ')}.`);
   return `Local services and external HTTPS discovery are healthy.${note}`;
+}
+
+// public/app-compat.json (scripts/release-info.sh writes it on every setup and restore) holds the oldest app build this backend answers.
+// get-public-config fails closed without it (HTTP 503), which no phone gets past; say which file and what to do rather than only that the
+// gateway's public configuration failed. Throws when it is missing or invalid.
+export function checkAppCompatFile(stateDir) {
+  const path = resolve(stateDir, 'public/app-compat.json');
+  let version;
+  try { version = JSON.parse(readFileSync(path, 'utf8'))?.minimumClientVersion; } catch { /* reported below */ }
+  if (typeof version !== 'string' || !/^\d+\.\d+\.\d+$/.test(version)) {
+    throw new Error(`${path} is missing or invalid, so the public configuration answers 503 and no phone can sign in. Run setup.sh again (it writes the file).`);
+  }
 }
 
 // Central sign-in with keys from a file (CENTRAL_JWKS_FILE, set by setup.sh --central-jwks-file): the

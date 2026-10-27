@@ -242,6 +242,7 @@ chmod 0600 "$stage/config/compose.env"
 # The rebuilt installation keeps signing with the same backup key.
 if [[ -n "$BACKUP_KEY" ]]; then (umask 077; printf '%s\n' "$BACKUP_KEY" > "$stage/config/backup.key"); chmod 0600 "$stage/config/backup.key"; fi
 install -m 0644 -- "$stage/backups/$name/instance.json" "$stage/public/instance.json"
+# public/release.json and public/app-compat.json are not in a backup: scripts/restore.sh and the setup.sh that follows write them for this checkout.
 # The central sign-in key set (public keys only), when the backup carries one. compose.env names it
 # (CENTRAL_JWKS_FILE), so a restore that left it out would offer central sign-in that cannot work.
 # A backup written before backups carried the file has none: the next steps then say how to put it back.

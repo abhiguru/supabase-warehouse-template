@@ -59,6 +59,7 @@ function fixture(prefix) {
   mkdirSync(bin);
   writeFileSync(providerEnv, 'SMS_PROVIDER=msg91\nMSG91_AUTH_KEY=rotation-test-key\nMSG91_TEMPLATE_ID=000000000000000000000001\nMSG91_PE_ID=1\nMSG91_SENDER_ID=ROTATE\n', { mode: 0o600 });
   configure(root, { stateDir: state, apiUrl: 'https://api.example.com', company: 'Acme', providerEnv });
+  writeFileSync(join(state, 'public/app-compat.json'), readFileSync(join(root, 'app-compat.json'))); // setup.sh writes it; doctor checks it
   writeFileSync(join(bin, 'docker'), fakeDocker, { mode: 0o700 });
   const log = join(scratch, 'docker.log');
   const psqlInput = join(scratch, 'psql-input.sql');

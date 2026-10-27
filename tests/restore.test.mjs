@@ -82,6 +82,39 @@ test('restore refuses a backup of another instance', () => {
   } finally { rmSync(scratch, { recursive: true, force: true }); }
 });
 
+// Identity, not bytes (scripts/instance-identity.mjs): what changed in the manifest since the backup (a capability switched on,
+// the minimum app version that older releases kept there, the display name) does not stop a restore; another facility's does.
+const manifest = (changes = {}) => JSON.stringify({ schemaVersion: 1, instanceId: '0f0f0f0f-0f0f-4f0f-8f0f-0f0f0f0f0f0f', displayName: 'Acme', companyName: 'Acme Cold',
+  canonicalOrigin: 'https://api.example.test', capabilities: { sensors: false, printing: false }, supportedApiVersions: ['1'], minimumClientVersion: '0.1.0', ...changes }, null, 2) + '\n';
+function restoreWithManifests(prefix, backupManifest, stateManifest) {
+  const { scratch, state, backup } = fixture(prefix, { instance: backupManifest });
+  writeFileSync(join(state, 'public/instance.json'), stateManifest);
+  try {
+    const result = restore(scratch, ['--yes', backup]);
+    if (result.status !== 0) untouched(state);
+    return result;
+  } finally { rmSync(scratch, { recursive: true, force: true }); }
+}
+test('restore goes past the instance check when the manifests differ only outside the identity', () => {
+  for (const [what, changes] of [['minimumClientVersion', { minimumClientVersion: '0.4.0' }], ['capabilities', { capabilities: { sensors: true, printing: false } }],
+    ['supportedApiVersions and displayName', { supportedApiVersions: ['1', '2'], displayName: 'Acme Renamed' }]]) {
+    const result = restoreWithManifests('warehouse-restore-identity-ok-', manifest(changes), manifest());
+    assert.doesNotMatch(result.stderr, /instance\.json/, `${what}: not refused for the manifest`);
+  }
+});
+test('restore refuses another instanceId, canonicalOrigin or companyName, naming the field, before moving anything', () => {
+  for (const [field, changes] of [['instanceId', { instanceId: 'aaaaaaaa-0f0f-4f0f-8f0f-0f0f0f0f0f0f' }], ['canonicalOrigin', { canonicalOrigin: 'https://other.example.test' }], ['companyName', { companyName: 'Other Cold' }]]) {
+    const result = restoreWithManifests('warehouse-restore-identity-bad-', manifest(changes), manifest());
+    assert.notEqual(result.status, 0, field);
+    assert.match(result.stderr, new RegExp(`instance\\.json differs from this state in its identity \\(${field}\\)`), field);
+    assert.doesNotMatch(result.calls, /run |up -d| cp /, field);
+  }
+  // A manifest that is not JSON is refused too, not treated as equal.
+  const result = restoreWithManifests('warehouse-restore-identity-junk-', manifest(), 'not json');
+  assert.notEqual(result.status, 0);
+  assert.match(result.stderr, /cannot be read as an instance manifest/);
+});
+
 // The way back from an upgrade is this command after the old release is checked out: a checkout whose migrations are fewer than the
 // backup's, or differ from them, must be refused while nothing has been moved (the database is dropped well before migrate.sh would notice).
 test('restore refuses, before moving anything, a backup that applied a migration this checkout lacks, or one this checkout has with other contents, or one that records no ledger', () => {
@@ -363,6 +396,32 @@ test('restore takes the same v5 backup with --allow-unsigned and a loud warning 
     assert.doesNotMatch(result.stderr, /a v5 or v6 backup must be signed/);
     assert.match(result.calls, /^run -d --pull missing/m, 'the verifier ran');
     assert.match(result.calls, /DROP DATABASE postgres WITH \(FORCE\)/, 'and the replay started');
+  } finally { rmSync(scratch, { recursive: true, force: true }); }
+});
+
+// After a rollback (an older checkout, then restore.sh) public/release.json and public/app-compat.json must describe that checkout, not the
+// release rolled back from: restore.sh writes them again after its migrations and before the services start.
+test('restore writes public/release.json and public/app-compat.json for its checkout after the migrations, before the services start', () => {
+  const scratch = mkdtempSync(join(tmpdir(), 'warehouse-restore-release-'));
+  try {
+    const state = makeState(scratch);
+    const backup = makeBackup(join(scratch, 'backup'), { env: composeEnv(state) });
+    writeFileSync(join(state, 'public/release.json'), JSON.stringify({ backendRelease: 'v9.9.9', backendCommit: 'f'.repeat(40), schemaHead: '9999_newer.sql', writtenAt: '2026-01-01T00:00:00.000Z' }));
+    writeFileSync(join(state, 'public/app-compat.json'), JSON.stringify({ minimumClientVersion: '9.9.9' }));
+    const result = restore(scratch, ['--yes', backup], { FAKE_CATALOG_FILE: join(backup, 'storage_objects.txt') }, root => {
+      standIns(root);
+      writeFileSync(join(root, 'app-compat.json'), JSON.stringify({ minimumClientVersion: '0.0.7', note: 'restored checkout' }));
+    });
+    assert.equal(result.status, 0, result.stderr);
+    const release = JSON.parse(readFileSync(join(state, 'public/release.json'), 'utf8'));
+    assert.equal(release.schemaHead, '0002_second.sql', 'the newest migration of the restored database');
+    assert.notEqual(release.backendRelease, 'v9.9.9');
+    assert.equal(JSON.parse(readFileSync(join(state, 'public/app-compat.json'), 'utf8')).minimumClientVersion, '0.0.7', 'the minimum of the restored checkout');
+    const lines = result.calls.split('\n');
+    const migrated = lines.findIndex(line => line.startsWith('migrate.sh'));
+    const ledger = lines.findIndex(line => line.includes('warehouse_migrations.applied'));
+    const started = lines.findIndex(line => line.endsWith('up -d --wait --wait-timeout 180'));
+    assert.ok(migrated >= 0 && migrated < ledger && ledger < started, `written after the migrations and before the services start (${migrated} ${ledger} ${started})`);
   } finally { rmSync(scratch, { recursive: true, force: true }); }
 });
 

@@ -3,7 +3,7 @@
   "private": true,
   "description": "Builds the library the edge functions load (jose), as a file under functions/vendor.",
   "dependencies": {
-    "jose": "5.10.0"
+    "jose": "6.2.12"
   },
   "devDependencies": {
     "esbuild": "0.25.10"

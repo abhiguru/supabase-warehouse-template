@@ -46,8 +46,10 @@ FROM unnest(ARRAY[
   'get_public_config','record_sensor_batch']) AS n
 WHERE NOT EXISTS (SELECT 1 FROM pg_proc p WHERE p.pronamespace = 'public'::regnamespace AND p.proname = n
   AND has_function_privilege('service_role', p.oid, 'EXECUTE'));
--- fas-sync: a function of that name takes every argument name the sync passes.
-SELECT pg_temp.rc_assert(count(*) = 0, 'fas-sync calls a function that is gone or has lost an argument: ' || string_agg(f.name, ', ' ORDER BY f.name))
+-- fas-sync: a function of that name takes every argument name the sync passes (fassync/push.py), and needs no more than those: a new
+-- parameter without a default would make every call fail with "function does not exist", so the names of the required parameters (the
+-- first pronargs - pronargdefaults) must all be among the names passed (the rule of scripts/check-mobile-contract.mjs).
+SELECT pg_temp.rc_assert(count(*) = 0, 'fas-sync calls a function that is gone, has lost an argument or has gained a required one: ' || string_agg(f.name, ', ' ORDER BY f.name))
 FROM (VALUES
   ('delete_dispatch_with_order_cleanup','{p_dispatch_id,p_user_id}'),
   ('delete_grn_safe','{p_grn_id}'),
@@ -60,7 +62,8 @@ FROM (VALUES
   ('get_next_grn_number','{}'),
   ('get_next_dispatch_number','{}')) AS f(name, arguments)
 WHERE NOT EXISTS (SELECT 1 FROM pg_proc p WHERE p.pronamespace = 'public'::regnamespace AND p.proname = f.name
-  AND COALESCE(p.proargnames, '{}') @> f.arguments::text[]);
+  AND COALESCE(p.proargnames, '{}') @> f.arguments::text[]
+  AND COALESCE(p.proargnames[1:p.pronargs - p.pronargdefaults], '{}') <@ f.arguments::text[]);
 -- create_dispatch_with_stock_check: the four-argument form fas-sync calls (by name, without p_generate_invoice) is there.
 SELECT pg_temp.rc_assert(to_regprocedure('public.create_dispatch_with_stock_check(jsonb,jsonb[],integer,text)') IS NOT NULL,
   'create_dispatch_with_stock_check(jsonb, jsonb[], integer, text) exists');

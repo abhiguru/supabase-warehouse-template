@@ -56,7 +56,7 @@ test('a state that does not exist yet is checked against its parent', () => {
 // when it is missing the router only logs a line, every exchange fails and get-public-config still offers
 // central sign-in. A lost-host restore from a backup without the file left exactly that, with doctor passing.
 import { readFileSync, symlinkSync } from 'node:fs';
-import { checkCentralKeyFile } from '../scripts/doctor.mjs';
+import { checkAppCompatFile, checkCentralKeyFile } from '../scripts/doctor.mjs';
 import { centralKeySet } from './backup-test-helpers.mjs';
 
 function keyState(file) {
@@ -578,4 +578,30 @@ test('doctor: while maintenance mode is on the LAN listener is not probed (it an
   assert.match(source, /const lan = maintenance \? \{ failures: \[\], warnings: \[\], address: '' \} : await lanReport\(env, manifest\.instanceId\);/);
   assert.match(source, /the external check cannot pass\. Open it with: bash scripts\/maintenance\.sh off'\);/);
   assert.match(source, /import \{[^}]*\bmaintenanceMarked\b[^}]*\} from '\.\/watch\.mjs';/);
+});
+
+// get-public-config answers 503 without a valid public/app-compat.json: doctor names the file and the fix.
+test('doctor names public/app-compat.json when it is missing or invalid, and passes with a valid one', () => {
+  for (const [label, file] of [['missing', undefined], ['empty', ''], ['not json', 'nope'], ['no minimum', '{}'], ['bad version', '{"minimumClientVersion":"1.4"}']]) {
+    const state = keyState();
+    try {
+      if (file !== undefined) writeFileSync(join(state, 'public/app-compat.json'), file);
+      assert.throws(() => checkAppCompatFile(state), error => {
+        assert.match(error.message, new RegExp(`${state}/public/app-compat\\.json is missing or invalid`), label);
+        assert.match(error.message, /Run setup\.sh again/, label);
+        return true;
+      }, label);
+    } finally { rmSync(state, { recursive: true, force: true }); }
+  }
+  const state = keyState();
+  try {
+    writeFileSync(join(state, 'public/app-compat.json'), '{"minimumClientVersion":"0.1.0"}');
+    assert.doesNotThrow(() => checkAppCompatFile(state));
+  } finally { rmSync(state, { recursive: true, force: true }); }
+});
+
+test('the full doctor checks app-compat.json before the health check, so its own message is the one an operator reads', () => {
+  const source = readFileSync(new URL('../scripts/doctor.mjs', import.meta.url), 'utf8');
+  const check = source.indexOf('  checkAppCompatFile(state);');
+  assert.ok(check > 0 && check < source.indexOf('await runHealth('), 'checkAppCompatFile(state) runs before runHealth');
 });

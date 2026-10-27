@@ -21,8 +21,7 @@ calls (the name is in a variable: `src/config/supabaseConfig.ts`, `src/utils/ser
 `src/services/stock-service.ts`, `src/services/sensor-service.ts`, and the template `delete_${kind}_image` in
 `src/services/imageDeletion.ts`) are not checked. An older pin than the current one may still call a function that this release drops
 (for example `get_dispatch_list`), so it must not be used.
-`get-config` still publishes `urls.realtime` although the `/realtime/v1` route is gone; the app ignores it, and it can be
-dropped once `minimumClientVersion` is past the builds that read it. The printing functions (`print-grn-preprinted`, `print-dispatch-preprinted`, `print-invoice-preprinted`,
+`get-config` still publishes `urls.realtime` for older app builds that require it; it will be removed only in a release whose app-compat minimum excludes them. The printing functions (`print-grn-preprinted`, `print-dispatch-preprinted`, `print-invoice-preprinted`,
 `print-via-ipp`, `get-printer-status`) exist and answer 503 "Printing is not configured" by design
 (`functions/main/index.ts`); the app names the three preprinted ones through a variable, so they are not in the literal
 count. `manage-print-jobs` is absent; the app does not call it. `get_print_jobs` and `cancel_print_job` (the print "View jobs" sheet) are open to admin, supervisor and staff since migration 123; customers and anon are refused.
@@ -66,6 +65,68 @@ change), `message` can be shown as it is. Do not sign the user out on it (a stal
 than `Retry-After`. Any other 503 from the gateway keeps the body `{"message":"The upstream server is unavailable"}` and has no `Retry-After`.
 It lasts for the backup, its verification and the migrations of one upgrade ([OPERATOR_INSTALL.md](OPERATOR_INSTALL.md#rerun-and-upgrade), "While it
 upgrades"). The edge functions' own 503 bodies (below and in [CENTRAL_LOGIN.md](CENTRAL_LOGIN.md)) are unrelated.
+
+### Which app builds a release supports, and what the backend tells the app
+
+**Policy.** A backend release supports the newest app release. An older build is told to update, not served by a compatibility
+shim: `get-public-config` answers `minimumClientVersion`, and the app refuses to open a facility whose minimum is above its own
+version ("requires app version ..."). Where a section below says an older app keeps working (an optional parameter that defaults as
+before, a check that is skipped when the argument is absent), that describes behaviour kept for other callers such as fas-sync; it is
+not a promise to older builds, and the policy decides.
+
+`get-public-config` (no sign-in) answers, besides the fields of the instance manifest:
+
+| Field | Where it comes from |
+|---|---|
+| `minimumClientVersion` | `app-compat.json` of the running release (`setup.sh` copies it to `<state>/public/app-compat.json`). It is no longer read from `instance.json`, which keeps the field for readers of older releases and is not used. A missing or malformed file makes the function answer 503; `setup.sh` writes it on every run. |
+| `backendRelease` | `public/release.json`: the tag (or `git describe --tags --always`) of the checkout `setup.sh` ran from, `unknown` for a source archive without `.git`. `null` when the file is absent. |
+| `schemaHead` | `public/release.json`: the name of the newest applied migration. `null` when the file is absent. |
+| `version` | `api_configurations.app_version`, seeded `0.2.0` and not updated by releases. Do not use it as the backend's version. |
+
+`get-config` (signed in) reports the same `backendRelease` as `data.environment.backendRelease`. `release.json` holds, besides those two,
+`backendCommit` and `writtenAt`; it is not part of a backup and a restore never brings it back (`setup.sh` and `restore.sh` write it
+again for the checkout they run from, so it is right after a rollback too). `backendRelease` and `schemaHead` are public: `get-public-config` needs no
+sign-in, so anyone who can reach the facility can read which release it runs.
+
+### What the app may match: codes, not texts
+
+Every refusal the app reacts to, as the real REST service (the pinned PostgREST image) answers it. `tests/postgrest-contract.test.mjs`
+runs each row against that service in `npm run test:migrations`; a change that moves a status or a code fails there. **Code** means the
+app may rely on the code (a client should switch on the code and show its own words); **text** means the app still matches the English
+words of the message today. Those words must not change until the app's next release stops matching them, and a new client should not.
+
+| Case | Status | Code | Message | The app matches |
+|---|---|---|---|---|
+| `unknown-function` | 404 | `PGRST202` | Could not find the function public.NAME without parameters in the schema cache | code |
+| `unknown-parameter` | 404 | `PGRST202` | Could not find the function public.NAME(PARAMETER) in the schema cache | code |
+| `unknown-table` | 404 | `PGRST205` | Could not find the table 'public.NAME' in the schema cache | code |
+| `unknown-column` | 400 | `42703` | column TABLE.NAME does not exist | code |
+| `bad-uuid` | 400 | `22P02` | invalid input syntax for type uuid: "VALUE" | code |
+| `jwt-expired` | 401 | `PGRST303` | JWT expired | text |
+| `jwt-wrong-key` | 401 | `PGRST301` | No suitable key or wrong key type | code |
+| `jwt-garbage` | 401 | `PGRST301` | JWT cryptographic operation failed | code |
+| `anon-denied` | 401 | `42501` | permission denied for function NAME | code |
+| `session-revoked` | 403 | `42501` | Session expired or revoked | text |
+| `account-inactive` | 403 | `42501` | Session expired or revoked | text |
+| `staff-required` | 403 | `42501` | Staff access required | text |
+| `administrator-required` | 403 | `42501` | Administrator required | text |
+| `customer-denied` | 403 | `42501` | Customer access denied | text |
+| `read-only-get` | 405 | `25006` | cannot execute INSERT in a read-only transaction | code |
+
+Answers that are an HTTP 200 with an envelope (see [Error shapes](#error-shapes)):
+
+| Case | Envelope | The app matches |
+|---|---|---|
+| `wrapped-refusal` | a guard refusal inside a function that wraps errors, such as `update_user_role`: `{success:false, error_code:'INTERNAL_ERROR', message:'Failed to update user role: Administrator required'}` | text |
+| `report-refusal` | report functions such as `get_customer_grn_activity`: `{success:false, error_code:'42501', error:'Failed to retrieve ...: Customer access denied'}` | code |
+| `duplicate-item-name` | `create_item` and `update_item`: `{success:false, error_code:'DUPLICATE_NAME', error, message}` | code |
+| `duplicate-customer-name` | `create_customer` and `update_customer`: `{success:false, error:{code:'DUPLICATE_NAME', field:'name', details}, message}` | code |
+
+The gateway answers a missing API key `401 {"message":"No API key found in request"}` and a wrong one `401 {"message":"Unauthorized"}` (`docker/nginx/`); after
+`scripts/rotate-keys.sh` an installed app reads "Unauthorized" to end its session and reload the configuration, so these two words are text the app matches.
+"Active account required" is the guard's word for a caller with no active role; over HTTP the session check answers first with `Session expired or revoked`
+(the `account-inactive` row), so the sentence is reached only inside the database. The test checks that `authorize_rpc` still says all four guard texts
+(`Staff access required`, `Administrator required`, `Customer access denied`, `Active account required`).
 
 ### Tested runtime behaviour
 
@@ -152,7 +213,7 @@ No function changes its arguments or the shape of an answer; the app needs no ch
 (`bash scripts/lan.sh on`, [OPERATOR_INSTALL.md](OPERATOR_INSTALL.md#lan-fallback-plain-http-on-the-warehouse-network)):
 
 ```json
-"urls": { "api": "...", "storage": "...", "realtime": "...", "auth": "...", "lan": "http://192.168.1.20:8080" }
+"urls": { "api": "...", "storage": "...", "auth": "...", "lan": "http://192.168.1.20:8080" }
 ```
 
 - **Optional.** `urls.lan` is absent while the fallback is off, and also when the configured address is not a private IPv4 address or

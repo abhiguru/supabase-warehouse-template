@@ -1633,7 +1633,7 @@ The restore refuses, without touching anything, unless all of the following hold
 is empty (run `stop.sh` first); the backup's checksums and its signature under
 this installation's `config/backup.key` are valid; the backup is
 `warehouse-backup-v5` or `-v6` (an older format is refused); the backup's
-`instance.json` equals `public/instance.json`; the backup's `compose.env` equals
+`instance.json` names the same instance as `public/instance.json` (the same `instanceId`, `canonicalOrigin` and `companyName`; the capabilities and the other fields may differ); the backup's `compose.env` equals
 `config/compose.env`, or `--restore-config` is given and the backup names the
 same project and state paths; and `db:verify-restore` passes for the backup; and there is room: the restored files are a second copy next to the kept
 `data/storage.pre-restore-<utc>`, so the free space in `data/` must hold the size of the stored files again

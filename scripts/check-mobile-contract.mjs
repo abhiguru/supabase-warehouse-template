@@ -1,10 +1,11 @@
 #!/usr/bin/env node
 // Static lower-bound inventory: names only; not a substitute for live API/role tests.
 import { readdirSync, readFileSync, writeFileSync } from 'node:fs';
-import { resolve, join, relative } from 'node:path';
+import { basename, resolve, join, relative } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { createRequire } from 'node:module';
 import { spawnSync } from 'node:child_process';
+import { definedNames } from './contract-sql.mjs';
 
 // Typed call inventory: every RPC call of the mobile app with the argument names its type or code gives; with --live the
 // calls are matched against the running database's function signatures, return types and grants.
@@ -80,7 +81,11 @@ if (!mobile) {
   process.exit(2);
 }
 const root = fileURLToPath(new URL('..', import.meta.url));
-const sql = files(join(root, 'migrations'), /\.sql$/).map(path => readFileSync(path, 'utf8')).join('\n');
+// --migrations DIR reads another directory of migrations (tests/rpc-callers.test.mjs adds a migration that drops a function).
+// The files are read in the order they are applied: a DROP removes what an earlier migration defined (scripts/contract-sql.mjs).
+const migrationsOption = process.argv.indexOf('--migrations');
+const migrationsDir = migrationsOption >= 0 ? resolve(process.argv[migrationsOption + 1] ?? '') : join(root, 'migrations');
+const defined = definedNames(files(migrationsDir, /\.sql$/).sort((a, b) => (basename(a) < basename(b) ? -1 : 1)).map(path => readFileSync(path, 'utf8')));
 const ts = createRequire(resolve(mobile, 'package.json'))('typescript');
 const calls = { rpc: new Set(), tables: new Set(), edge: new Set() };
 for (const path of ['src', 'app'].flatMap(dir => files(resolve(mobile, dir), /\.tsx?$/))) {
@@ -107,15 +112,14 @@ for (const path of ['src', 'app'].flatMap(dir => files(resolve(mobile, dir), /\.
   };
   visit(tree);
 }
-const names = (text, pattern) => [...new Set([...text.matchAll(pattern)].map(match => match[1]))].sort();
 const groups = {
   rpc: {
     called: [...calls.rpc].sort(),
-    defined: names(sql, /CREATE\s+(?:OR\s+REPLACE\s+)?FUNCTION\s+(?:public\.)?([a-z][a-z0-9_]*)\s*\(/gi),
+    defined: defined.functions,
   },
   tables: {
     called: [...calls.tables].sort(),
-    defined: names(sql, /CREATE\s+(?:TABLE|VIEW)\s+(?:IF\s+NOT\s+EXISTS\s+)?public\.([a-z][a-z0-9_]*)/gi),
+    defined: defined.relations,
   },
   edge: {
     called: [...calls.edge].sort(),

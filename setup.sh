@@ -115,6 +115,9 @@ rm -f -- "$STATE/config/stopped-by-operator"
 # --remove-orphans stops the old realtime container before the baseline reload's cluster replaces the old one.
 bash "$ROOT/scripts/compose.sh" up -d --remove-orphans --wait --wait-timeout 180 db
 bash "$ROOT/scripts/migrate.sh" --operator
+# What this backend tells the app about itself (get-public-config): the release, the commit, the newest applied migration, and the oldest
+# app build it answers (app-compat.json). Written on every run, after the migrations, so they describe the code that now runs.
+WAREHOUSE_STATE_DIR="$STATE" bash "$ROOT/scripts/release-info.sh"
 # The pooler is off unless it was turned on (bash scripts/pooler.sh on). An installation made before it had a switch is
 # decided once here: a supavisor container means it is in use; otherwise its unused role, schema and empty _supabase
 # database and its secrets are removed. If the pooler was used (the database holds data), the clean-up refuses, changes
