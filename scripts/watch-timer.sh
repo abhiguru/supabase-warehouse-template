@@ -38,6 +38,9 @@
 set -euo pipefail
 umask 077
 ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
+# Written into every unit as "# Recipe: sha256:...": scripts/watch.mjs (root_copy_stale) compares it with this script's hash to tell a unit
+# written by an earlier release from one written by this one.
+RECIPE="$(sha256sum < "${BASH_SOURCE[0]}" | cut -d' ' -f1)"
 # Test override; printed by status whenever it is set.
 UNITS="${WAREHOUSE_WATCH_UNIT_DIR:-/etc/systemd/system}"
 die() { echo "$*" >&2; exit 1; }
@@ -194,6 +197,7 @@ cmd_install() {
   tmp="$(mktemp "$UNITS/.$base.service.XXXXXX")"
   cat > "$tmp" <<UNIT
 # Managed by scripts/watch-timer.sh: one monitoring pass for $state (scripts/watch.mjs run).
+# Recipe: sha256:$RECIPE
 [Unit]
 Description=Warehouse monitoring check for $state
 Wants=network-online.target
@@ -232,6 +236,7 @@ UNIT
   tmp="$(mktemp "$UNITS/.$daily_name.service.XXXXXX")"
   cat > "$tmp" <<UNIT
 # Managed by scripts/watch-timer.sh: the daily backup, verification, pruning and retention for $state (scripts/watch.mjs daily).
+# Recipe: sha256:$RECIPE
 [Unit]
 Description=Warehouse daily backup and retention for $state
 Wants=network-online.target
@@ -271,6 +276,7 @@ UNIT
   tmp="$(mktemp "$UNITS/.$stack.service.XXXXXX")"
   cat > "$tmp" <<UNIT
 # Managed by scripts/watch-timer.sh: starts the services of $state at boot.
+# Recipe: sha256:$RECIPE
 # Docker does not restart a container that was stopped (only one that exited), and the daily backup stops four services
 # for a while: a power cut inside that time leaves them stopped, and nothing else starts them before someone runs start.sh.
 # --no-build --no-recreate: a boot starts stopped containers and creates missing ones, nothing more. It never builds or recreates
@@ -428,6 +434,15 @@ cmd_hint() {
     if ((${#missing[@]})); then
       echo "The monitoring checker timer is installed for $state, but these are missing: $(printf '%s; ' "${missing[@]}" | sed 's/; $//'). Refresh it (needs sudo):"
       echo "  sudo bash $ROOT/scripts/watch-timer.sh install --state $state"
+    else
+      # Units written by another version of this script (or before the recipe line existed): the same comparison as the root_copy_stale
+      # alert of scripts/watch.mjs, so that the command it names is also what setup prints.
+      for unit in "$svc" "$UNITS/$daily.service" "$UNITS/$stack.service"; do
+        grep -qxF -- "# Recipe: sha256:$RECIPE" "$unit" 2>/dev/null && continue
+        echo "The monitoring units for $state were written by an earlier release of watch-timer.sh (the root_copy_stale alert says so weekly). Refresh them (needs sudo):"
+        echo "  sudo bash $ROOT/scripts/watch-timer.sh install --state $state"
+        break
+      done
     fi
     return 0
   fi

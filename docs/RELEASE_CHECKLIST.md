@@ -62,6 +62,9 @@ fresh build and scan before each release instead). Before every release tag:
 - [ ] In `CHANGELOG.md`, rename `## Unreleased` to `## vX.Y.Z (YYYY-MM-DD)` and open a new empty `## Unreleased` above it.
       `upgrade.sh` prints the operator actions by that heading; a release without its section sends the operator to the release note.
 - [ ] Every operator action of the release is in that section's "Operator actions" list, numbered, each with the exact command.
+- [ ] A release that changes `scripts/watch-timer.sh` or `scripts/backup-usb.sh` in a way that changes the units, the udev rule or the
+      installed helper (any edit changes their recipe hash) carries an Operator action: `sudo bash scripts/watch-timer.sh install --state <state>`
+      and/or `sudo bash scripts/backup-usb.sh setup --state <state>`. Until it is done, `root_copy_stale` reminds weekly.
 - [ ] If the release changes the PostgreSQL major, the section says so at the top and links the "Major PostgreSQL upgrade" procedure
       (`upgrade.sh` refuses such a move). If the migrations were squashed, the section lists the migration names the new baseline replaces.
 - [ ] The release contains `upgrade.sh`, `scripts/pg-major.sh` and, in `setup.sh`, `operator_lock_or_inherited` and the recreate of

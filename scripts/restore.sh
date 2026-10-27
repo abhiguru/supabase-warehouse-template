@@ -358,7 +358,11 @@ if [[ "$restore_config" == true ]]; then
   key_name="$(sed -n 's/^CENTRAL_JWKS_FILE=//p' "$state/config/compose.env" | head -n 1)"
   if [[ -n "$key_name" && ! -e "$state/public/$key_name" && ! -L "$state/public/$key_name" ]]; then pending=yes; key_rerun=true; fi
 fi
-WAREHOUSE_CENTRAL_KEY_PENDING="$pending" node "$ROOT/scripts/doctor.mjs" --local
+if ! WAREHOUSE_CENTRAL_KEY_PENDING="$pending" node "$ROOT/scripts/doctor.mjs" --local; then
+  # A collation mismatch cannot be the cause here: the restore recreates postgres from template0 in this image, so it records this
+  # image's current collation version.
+  exit 1
+fi
 phase=done
 cat <<MSG
 In-place restore completed from $backup.
