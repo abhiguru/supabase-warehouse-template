@@ -209,6 +209,17 @@ reload** in `docs/OPERATOR_INSTALL.md`; a new installation needs none of that. A
 
 ### Changed
 
+- **A fix to an RPC body or to `authorize_rpc` no longer needs a migration: those functions are definition files that setup applies again when they change.**
+  `migrations/definitions/` holds the current text of `warehouse_security.authorize_rpc` and of the eleven RPCs that migrations 111 to 126 had patched
+  (`save_grn`, `update_grn`, `delete_grn_safe`, `create_dispatch_with_stock_check_internal`, `get_invoice_data`, `get_invoice_detail`,
+  `get_sensor_polling_data`, `refresh_jwt_token`, `operator_prepare_otp`, `operator_verify_otp`, `apply_grn_rates`), each with its grants. After the numbered migrations,
+  `setup.sh` applies each file whose checksum differs from the row in the new table `warehouse_migrations.definitions` (the first run after this
+  release applies all twelve, which changes no function: the bodies equal what the migrations leave, and `tests/migrations.sh` compares the two
+  catalogs), and tells the API to reload. A file may hold only function statements about its one function; the plan refuses anything else before it touches the database,
+  stops at a file whose function a migration dropped, and applies every file again after a run that applied a numbered migration.
+  So an SQL security fix to one of these functions can now ship as a patch of the current line and as a backport to the previous line
+  (`ci.yml` lets a pull request into `release/*` change an existing definition file, and still refuses a numbered migration). Tables, data and
+  signature changes stay in numbered migrations. No operator action.
 - **Storage's schema version is recorded, frozen on purpose and rehearsed on a populated catalog.** `docker/storage/migrations-head.txt` names the newest
   migration of the Storage image (73, `revoke-grants-to-unused-operations` for v1.80.2); `DB_MIGRATIONS_FREEZE_AT` on the `storage` service holds the
   same name, so an image that moves by accident (a merged Dependabot bump, a rebuilt tag) applies no migration beyond the release's own. Every backup

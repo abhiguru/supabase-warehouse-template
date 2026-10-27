@@ -1,6 +1,6 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { readFileSync, readdirSync, mkdtempSync, mkdirSync, writeFileSync, rmSync } from 'node:fs';
+import { readFileSync, readdirSync, mkdtempSync, mkdirSync, writeFileSync, rmSync, renameSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { spawnSync } from 'node:child_process';
@@ -159,6 +159,51 @@ test('the checks also run for the release branches, and a pull request into one 
   assert.match(validate, /exit 1\n          fi\n      - uses: actions\/setup-node/);
   const contributing = readFileSync(new URL('../CONTRIBUTING.md', import.meta.url), 'utf8');
   assert.match(contributing, /Backports never carry a migration/);
+});
+
+test('the release-branch guard runs: a numbered migration is refused, a changed definition passes, a new or removed definition is refused', () => {
+  const ci = readFileSync(new URL('../.github/workflows/ci.yml', import.meta.url), 'utf8');
+  const step = ci.slice(ci.indexOf('      - name: A change to a release branch carries no migration'));
+  // The step's script, without the fetch (the repository below is complete).
+  const script = step.slice(step.indexOf('        run: |\n') + '        run: |\n'.length, step.indexOf('      - uses: actions/setup-node')).replace(/^ {10}/gm, '').replace(/^git fetch .*\n/m, '');
+  const dir = mkdtempSync(join(tmpdir(), 'warehouse-guard-'));
+  const git = (...args) => { const r = spawnSync('git', ['-c', 'user.name=t', '-c', 'user.email=t@example.invalid', ...args], { cwd: dir, encoding: 'utf8' }); assert.equal(r.status, 0, r.stderr); return r.stdout.trim(); };
+  try {
+    git('init', '-q', '-b', 'release-base');
+    mkdirSync(join(dir, 'migrations', 'definitions'), { recursive: true });
+    writeFileSync(join(dir, 'migrations', '00000000000000_baseline.sql'), 'SELECT 0;\n');
+    writeFileSync(join(dir, 'migrations', 'definitions', '00_authorize_rpc.sql'), 'SELECT 1;\n');
+    writeFileSync(join(dir, 'migrations', 'definitions', 'save_grn.sql'), 'SELECT 2;\n');
+    writeFileSync(join(dir, 'README'), 'x\n');
+    git('add', '.');
+    git('commit', '-q', '-m', 'base');
+    const base = git('rev-parse', 'HEAD');
+    const guard = change => {
+      git('checkout', '-q', '-B', 'change', base);
+      change();
+      git('add', '-A');
+      git('commit', '-q', '--allow-empty', '-m', 'change');
+      return spawnSync('bash', ['-c', script], { cwd: dir, encoding: 'utf8', env: { ...process.env, BASE_SHA: base, BASE_REF: 'release/0.6' } });
+    };
+    const write = (path, text) => writeFileSync(join(dir, path), text);
+    assert.equal(guard(() => write('README', 'y\n')).status, 0, 'a change outside migrations passes');
+    const definition = guard(() => write('migrations/definitions/00_authorize_rpc.sql', 'SELECT 11;\n'));
+    assert.equal(definition.status, 0, definition.stdout + definition.stderr);
+    const migration = guard(() => write('migrations/00000000000127_late.sql', 'SELECT 127;\n'));
+    assert.equal(migration.status, 1);
+    assert.match(migration.stdout, /::error title=Backports never carry a migration::[^\n]*\n.*00000000000127_late\.sql/s);
+    assert.equal(guard(() => write('migrations/00000000000000_baseline.sql', 'SELECT 9;\n')).status, 1, 'an edit of a numbered file is refused');
+    const both = guard(() => { write('migrations/definitions/save_grn.sql', 'SELECT 22;\n'); write('migrations/00000000000127_late.sql', 'SELECT 127;\n'); });
+    assert.equal(both.status, 1, 'a definition next to a migration is still refused');
+    const added = guard(() => write('migrations/definitions/new_function.sql', 'SELECT 3;\n'));
+    assert.equal(added.status, 1);
+    assert.match(added.stdout, /new_function\.sql/);
+    const removed = guard(() => rmSync(join(dir, 'migrations', 'definitions', 'save_grn.sql')));
+    assert.equal(removed.status, 1);
+    assert.match(removed.stdout, /save_grn\.sql/);
+    const renamed = guard(() => renameSync(join(dir, 'migrations', 'definitions', 'save_grn.sql'), join(dir, 'migrations', 'definitions', 'save_grn2.sql')));
+    assert.equal(renamed.status, 1);
+  } finally { rmSync(dir, { recursive: true, force: true }); }
 });
 
 test('keep-alive: a monthly timestamp commit on its own branch and a call that enables the scheduled workflows, with write access in this workflow only', () => {

@@ -98,3 +98,23 @@ test('--root checks another checkout than the script\'s own', () => {
     assert.match(elsewhere.stderr, /00000000000001_early\.sql: sorts before/);
   } finally { r.cleanup(); }
 });
+
+test('the function definitions in migrations/definitions/ are not migrations: editing, adding or removing one passes', () => {
+  const r = repo();
+  try {
+    mkdirSync(join(r.dir, 'migrations', 'definitions'));
+    writeFileSync(r.file('definitions/00_authorize_rpc.sql'), 'SELECT 1;\n');
+    writeFileSync(r.file('definitions/save_grn.sql'), 'SELECT 2;\n');
+    git(r.dir, 'add', 'migrations');
+    git(r.dir, 'commit', '-q', '-m', 'definitions');
+    const same = r.check();
+    assert.equal(same.status, 0, same.stderr);
+    assert.match(same.stdout, /Migration order holds: 3 files of main unchanged, 0 new\./);
+    writeFileSync(r.file('definitions/00_authorize_rpc.sql'), 'SELECT 11;\n');   // edited
+    rmSync(r.file('definitions/save_grn.sql'));                                  // removed
+    writeFileSync(r.file('definitions/update_grn.sql'), 'SELECT 3;\n');          // added
+    const changed = r.check();
+    assert.equal(changed.status, 0, changed.stderr);
+    assert.match(changed.stdout, /3 files of main unchanged, 0 new\./);
+  } finally { r.cleanup(); }
+});

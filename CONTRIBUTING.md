@@ -57,14 +57,35 @@ The fix lands on `main` first, with its test. Then:
 
 - **The current line** (for example 0.7.x). If `main` holds nothing unreleased beyond the fix, tag the next patch from `main` (0.7.2).
   Otherwise, which is the normal state because a release line is many commits long, the fix ships as the **next minor release from
-  `main`** (0.8.0). There is no release branch for the current line: tagging a patch from `main` would carry every unreleased feature,
-  migration and operator action in a "patch".
+  `main`** (0.8.0). Tagging a patch from `main` would carry every unreleased feature, migration and operator action in a
+  "patch". The exception is a fix that is a change to a definition file only (see "A fix to an RPC body" below): it ships as a patch of
+  the current line from a `release/MAJOR.MINOR` branch cut from that line's latest tag when the fix is needed, under the same rules and the
+  same CI guard as the previous line's branch. The first line that can take such a fix is the first minor release that contains
+  `migrations/definitions/`; earlier lines have none.
 - **The previous minor line** (0.6.x, while it is supported). A fix that is **code only** (functions, scripts, images, documents:
-  nothing under `migrations/`) is cherry-picked onto `release/MAJOR.MINOR` of that line (create it from the line's last tag if it does
+  nothing under `migrations/` except existing files of `migrations/definitions/`, see the next item) is cherry-picked onto `release/MAJOR.MINOR` of that line (create it from the line's last tag if it does
   not exist), the `CHANGELOG.md` section of the patch release is written there **and also added to `main`'s `CHANGELOG.md`** (so
   `upgrade.sh` can print it for a facility that moves from the patch to a later minor), and the patch is tagged on that branch. CI runs
-  for `release/**` branches like for `main`, and refuses a pull request into one that changes `migrations/`.
-- **Backports never carry a migration.** A fix that needs SQL (`authorize_rpc`, a policy, an RPC body) ships only as the next minor
+  for `release/**` branches like for `main`, and refuses a pull request into one that changes a numbered file of `migrations/` or adds,
+  removes or renames a file of `migrations/definitions/`.
+- **A fix to an RPC body or to `authorize_rpc` is a change to its definition file, and may be backported, and may ship as a patch of the
+  current line.** The bodies of
+  `warehouse_security.authorize_rpc` and of the RPCs that were patched in migrations 111 to 126 live in `migrations/definitions/*.sql`
+  (one function per file, with its `GRANT`/`REVOKE`). `setup.sh` applies the numbered migrations and then every definition file whose
+  checksum differs from the one recorded in `warehouse_migrations.definitions` (each in its own transaction, then a schema reload), so a
+  changed file reaches a facility with its next setup, and an unchanged one is skipped. A definition file
+  holds only `CREATE OR REPLACE FUNCTION`, `COMMENT ON FUNCTION`, `GRANT`/`REVOKE ... ON FUNCTION` and `ALTER FUNCTION ... SET`/`RESET`,
+  all about the one function of its `REVOKE ALL ON FUNCTION` line (no owner, rename, schema or `SECURITY` change);
+  `scripts/migration-plan.mjs` refuses the whole plan for anything else. A run that applied a numbered migration applies every definition
+  file again, and a file whose function a migration dropped or re-signed stops the plan, naming the file. Change the function in its file (do not write a `DO $patch$`
+  migration for it), land the fix on `main` first with its test, and cherry-pick the same change onto the release branch. If the
+  change is a fix of what the chain left, add the two `^function\|<schema>\.<name>\(` lines for the function to `tests/definitions-allowed-differences.txt` (`<schema>` is `public` or
+  `warehouse_security`; the test that compares the catalog of the numbered files with the catalog after the definitions needs to be told),
+  and a `^acl\|function\|` line for a change of its grants (the file says how). A **signature change, a new
+  RPC (with its grants), tables, columns, policies and data** stay in numbered migrations; a migration that drops or re-signs a function
+  with a definition file changes or removes that file in the same commit (`tests/definitions.test.mjs` refuses a migration that
+  replaces, alters, comments or grants on such a function, or drops the signature its file holds). A re-signing migration may `REVOKE` on the new signature, and its `CREATE FUNCTION` must be followed by `REVOKE ALL ON FUNCTION … FROM PUBLIC, anon, authenticated` in the same migration, because a new function is executable by PUBLIC until then.
+- **Backports never carry a migration.** A fix that needs one of those (a column, a policy, a new or re-signed RPC) ships only as the next minor
   from `main`; the previous line gets no patch, and its release note says "upgrade to the next minor release". The reason is how the
   ledger works: a migration file added on `release/0.6` under another name than on `main` is recorded in the facility's ledger, the next
   minor does not contain that name, and `upgrade.sh` and `scripts/migration-plan.mjs` then refuse to move the facility; under the same

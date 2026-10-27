@@ -40,7 +40,7 @@ Git has it.
 const NAME = 'warehouse-20260101T000000Z';
 
 // `doctor` is the exit status of the stand-in doctor.mjs (it records its arguments and WAREHOUSE_STATE_DIR in doctor.log next to it).
-function world({ floor = 'from_floor=\nstepping_stone=\n', doctor = 0, changelog = CHANGELOG, withFloorFile = true } = {}) {
+function world({ floor = 'from_floor=\nstepping_stone=\n', doctor = 0, changelog = CHANGELOG, withFloorFile = true, definitions = [] } = {}) {
   const scratch = mkdtempSync(join(tmpdir(), 'warehouse-preflight-'));
   const tree = join(scratch, 'tree');
   const state = join(scratch, 'state');
@@ -52,6 +52,12 @@ function world({ floor = 'from_floor=\nstepping_stone=\n', doctor = 0, changelog
   mkdirSync(join(tree, 'migrations'));
   writeFileSync(join(tree, 'migrations/00000000000001_one.sql'), 'SELECT 1;\n');
   writeFileSync(join(tree, 'migrations/00000000000002_two.sql'), 'SELECT 2;\n');
+  // Definition files of the target (migrations/definitions/), when the test asks for some: each holds one function and its REVOKE line.
+  if (definitions.length) mkdirSync(join(tree, 'migrations/definitions'));
+  for (const name of definitions) {
+    const fn = name.replace(/\.sql$/, '').replace(/^[0-9]+_/, '');
+    writeFileSync(join(tree, 'migrations/definitions', name), `CREATE OR REPLACE FUNCTION public.${fn}() RETURNS integer LANGUAGE sql AS $$ SELECT 1 $$;\nREVOKE ALL ON FUNCTION public.${fn}() FROM PUBLIC;\n`);
+  }
   writeFileSync(join(tree, 'scripts/verify-restore.sh'), `#!/bin/bash
 echo "verify-restore $*" >> "$FAKE_LOG"
 if [ "$1" = --rm ]; then exit 0; fi
@@ -64,7 +70,10 @@ echo "Kept disposable database: warehouse-restore-0123456789ab (database warehou
   writeFileSync(join(scratch, 'bin/docker'), `#!/bin/sh
 echo "docker $*" >> "$FAKE_LOG"
 cat > "$FAKE_LOG.plan"
-awk -v fail="$FAKE_FAIL_FILE" '/echo Applying: / { name = $3; print "Applying: " name; if (name == fail) { print "psql:<stdin>:7: ERROR:  fixture failure in " name > "/dev/stderr"; exit 3 } }' "$FAKE_LOG.plan"
+awk -v fail="$FAKE_FAIL_FILE" '/echo Applying: / { name = $3; print "Applying: " name; if (name == fail) { print "psql:<stdin>:7: ERROR:  fixture failure in " name > "/dev/stderr"; exit 3 } }
+/echo Checking definition: / { name = $4; print "Checking definition: " name; if (name == fail) { print "psql:<stdin>:9: ERROR:  fixture failure in " name > "/dev/stderr"; exit 3 } }
+/echo Applying definition: / { print "Applying definition: " $4 }
+/echo Definition unchanged: / { print "Definition unchanged: " $4 }' "$FAKE_LOG.plan"
 `);
   chmodSync(join(scratch, 'bin/docker'), 0o755);
   writeFileSync(join(tree, 'scripts/doctor.mjs'), `import { appendFileSync } from 'node:fs';
@@ -360,6 +369,22 @@ test('a migration that fails on the copy refuses the upgrade before anything cha
     assert.match(r.stderr, /Refusing: v0\.2\.0 cannot be installed on this facility: the migration 00000000000002_two\.sql does not apply to a copy of your data[^]*the facility is unchanged[^]*Nothing was changed\./);
     assert.doesNotMatch(r.stdout, /Rehearsal of the migrations: passed|Preflight of v0\.2\.0 passed/);
     assert.match(r.rehearsalLog, /verify-restore --rm warehouse-restore-0123456789ab\n$/, 'a refusal removes the copy too');
+  } finally { w.cleanup(); }
+});
+
+test('a definition file that fails on the copy is named as the definition, and the pass line counts the definition files', () => {
+  const w = world({ definitions: ['00_first.sql', 'second.sql'] });
+  try {
+    w.backup(NAME, 1024, { dump: 1024 });
+    const bad = w.run({ FAKE_FAIL_FILE: 'second.sql' });
+    assert.equal(bad.status, 1);
+    assert.match(bad.stderr, /ERROR:  fixture failure in second\.sql/);
+    assert.match(bad.stderr, /Refusing: v0\.2\.0 cannot be installed on this facility: the definition second\.sql does not apply to a copy of your data/);
+    assert.doesNotMatch(bad.stderr, /the migration 00000000000002_two\.sql does not apply/, 'not blamed on the last migration, which applied');
+    assert.match(bad.rehearsalLog, /verify-restore --rm warehouse-restore-0123456789ab\n$/);
+    const good = w.run();
+    assert.equal(good.status, 0, good.stdout + good.stderr);
+    assert.match(good.stdout, /Rehearsal of the migrations: passed \(2 to apply, 0 already applied\) on a copy of warehouse-20260101T000000Z; applying them took \d+ s\. Definition files: 2 applied, 2 unchanged\./);
   } finally { w.cleanup(); }
 });
 

@@ -1,0 +1,16 @@
+# Expected differences between a database built from the numbered migrations alone (A) and one built from the migrations plus
+# migrations/definitions/ (B); tests/migrations.sh runs scripts/baseline/catalog-diff.mjs with this file. Format: see catalog-diff.mjs.
+# An entry that matches nothing fails the run, so a stale entry cannot hide a later difference.
+#
+# The table that records the definitions exists only in B.
+B \|warehouse_migrations\.definitions\|
+#
+# A function whose definition file was changed on purpose after migration 126 (a fix) differs from the one the chain leaves. List its
+# two lines here, with the reason and the date, in the same commit as the change (<schema> is public or warehouse_security). The line
+# also takes the function out of the byte-for-byte function comparison of tests/migrations.sh, every other function stays in it:
+#   A ^function\|<schema>\.<name>\(
+#   B ^function\|<schema>\.<name>\(
+# A change of its grants adds a line of the grant list on side B (and A, for a grant that was taken away):
+#   B ^acl\|function\|<schema>\.<name>\(
+# An entry that matches nothing fails the run. A SECURITY DEFINER or INVOKER change is not allowed by an allow-list line: it is an edit of
+# the pinned list in tests/definitions.test.mjs, and ALTER FUNCTION ... SECURITY is refused in a definition file.

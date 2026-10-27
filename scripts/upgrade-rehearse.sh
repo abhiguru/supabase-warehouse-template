@@ -77,12 +77,18 @@ plan="$(cd "$TREE" && node scripts/migration-plan.mjs)" || refuse "the migration
 started=$SECONDS
 if ! printf '%s\n' "$plan" | docker exec -i -e PGPASSWORD=disposable-restore-only "$container" \
     psql -X -q -v ON_ERROR_STOP=1 -U supabase_admin -d warehouse_restore > "$scratch/plan.out" 2> "$scratch/plan.err"; then
-  failing="$(sed -n 's/^Applying: //p' "$scratch/plan.out" | tail -n 1)"
+  # The last file the plan began: a migration ("Applying: "), or a definition file ("Checking definition: ", printed before the check that
+  # its function still exists, then "Applying definition: " for the same file).
+  failing="$(sed -n -e 's/^Applying: /the migration /p' -e 's/^Checking definition: /the definition /p' "$scratch/plan.out" | tail -n 1)"
   errors="$(grep -E '(^|: )(ERROR|FATAL):' "$scratch/plan.err" | head -n 3 || true)"
   [[ -n "$errors" ]] || errors="$(head -n 3 "$scratch/plan.err")"
-  if [[ -n "$failing" ]]; then what="the migration $failing does not apply to a copy of your data"; else what="the migrations do not apply to a copy of your data (the failure came before the first file)"; fi
+  if [[ -n "$failing" ]]; then what="$failing does not apply to a copy of your data"; else what="the migrations do not apply to a copy of your data (the failure came before the first file)"; fi
   printf '%s\n' "$errors" >&2
   refuse "$TO_LABEL cannot be installed on this facility: $what (the database says the above). The restored copy of $(basename "$backup") was used and thrown away; the facility is unchanged. Do not retry the same command: report this message to the maintainers of this software, who can say what to correct in the data or in the release."
 fi
 applied="$(grep -c '^Applying: ' "$scratch/plan.out" || true)"
-say "Rehearsal of the migrations: passed ($applied to apply, $(grep -c '^Already applied: ' "$scratch/plan.out" || true) already applied) on a copy of $(basename "$backup"); applying them took $((SECONDS - started)) s."
+definitions_applied="$(grep -c '^Applying definition: ' "$scratch/plan.out" || true)"
+definitions_unchanged="$(grep -c '^Definition unchanged: ' "$scratch/plan.out" || true)"
+definitions_text=""
+if ((definitions_applied + definitions_unchanged > 0)); then definitions_text=" Definition files: $definitions_applied applied, $definitions_unchanged unchanged."; fi
+say "Rehearsal of the migrations: passed ($applied to apply, $(grep -c '^Already applied: ' "$scratch/plan.out" || true) already applied) on a copy of $(basename "$backup"); applying them took $((SECONDS - started)) s.$definitions_text"

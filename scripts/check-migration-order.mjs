@@ -42,7 +42,9 @@ export function migrationOrderProblems(base, current) {
 function baseFiles(root, ref) {
   const git = args => execFileSync('git', ['-C', root, ...args], { maxBuffer: 256 * 1024 * 1024, stdio: ['ignore', 'pipe', 'pipe'] });
   const listed = git(['ls-tree', '-r', '--name-only', ref, '--', 'migrations/']).toString('utf8').split('\n').filter(Boolean);
-  return new Map(listed.filter(path => path.endsWith('.sql')).map(path => [path.slice('migrations/'.length), git(['show', `${ref}:${path}`])]));
+  // migrations/definitions/ holds the re-applied function definitions (scripts/migration-plan.mjs): they are edited on purpose, so only the
+  // files directly in migrations/ are numbered migrations.
+  return new Map(listed.filter(path => path.endsWith('.sql') && !path.slice('migrations/'.length).includes('/')).map(path => [path.slice('migrations/'.length), git(['show', `${ref}:${path}`])]));
 }
 
 function currentFiles(root) {

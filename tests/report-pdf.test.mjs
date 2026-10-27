@@ -482,7 +482,7 @@ test('the live schema lists exactly the paths generate-report-pdf writes in expi
   // The last migration file that defines the function wins, as it does in the database.
   const directory = new URL('../migrations/', import.meta.url);
   const definition = /CREATE (?:OR REPLACE )?FUNCTION warehouse_maintenance\.expired_generated_documents\(/;
-  const bodies = readdirSync(directory).sort().map(name => readFileSync(new URL(name, directory), 'utf8')).filter(text => definition.test(text));
+  const bodies = readdirSync(directory).filter(name => name.endsWith('.sql')).sort().map(name => readFileSync(new URL(name, directory), 'utf8')).filter(text => definition.test(text));
   assert.ok(bodies.length > 0, 'expired_generated_documents is defined in the migrations');
   const sql = bodies.at(-1);
   const start = sql.search(definition);

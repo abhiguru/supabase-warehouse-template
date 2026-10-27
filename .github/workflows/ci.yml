@@ -1,6 +1,6 @@
 name: CI
 on:
-  # release/** : a backport to the previous minor line (CONTRIBUTING.md, "Releases") is tested like main: the tag's own release.yml runs
+  # release/** : a backport to a previous line, or a patch-only branch of the current line (CONTRIBUTING.md, "Releases") is tested like main: the tag's own release.yml runs
   # neither test:migrations nor the install and upgrade drills. The branches need the same ruleset as main (docs/PRODUCTION_DEPENDENCIES.md).
   push:
     branches: [main, 'release/**']
@@ -30,18 +30,27 @@ jobs:
         with:
           persist-credentials: false
       - name: A change to a release branch carries no migration
-        # Backports never carry a migration (CONTRIBUTING.md, "Releases"): a security fix that needs SQL ships as the next minor from
-        # main. A file name that exists only on the release branch would strand the line, because the next minor does not contain it.
+        # Release branches (a previous line, or a patch-only branch of the current line) never carry a migration (CONTRIBUTING.md, "Releases"): a security fix that needs a table, data or a signature change ships
+        # as the next minor from main. A file name that exists only on the release branch would strand the line, because the next minor does
+        # not contain it. The function definitions in migrations/definitions/ are not migrations: setup applies a file again whenever its
+        # content changed, so a fix to an RPC body or authorize_rpc may be backported by changing an existing definition file. Adding,
+        # removing or renaming one is refused for the same reason as a migration (the next minor would not have it).
         if: github.event_name == 'pull_request' && startsWith(github.base_ref, 'release/')
         env:
           BASE_SHA: ${{ github.event.pull_request.base.sha }}
           BASE_REF: ${{ github.base_ref }}
         run: |
           git fetch --no-tags --depth=1 origin "$BASE_SHA"
-          changed="$(git diff --name-only "$BASE_SHA" HEAD -- migrations/)"
+          changed="$(git diff --name-only "$BASE_SHA" HEAD -- migrations/ ':(exclude)migrations/definitions/')"
           if [ -n "$changed" ]; then
-            echo "::error title=Backports never carry a migration::A pull request into $BASE_REF changes migrations/. A security fix that needs SQL ships as the next minor release from main; the previous line's release note then tells its operators to upgrade."
+            echo "::error title=Backports never carry a migration::A pull request into $BASE_REF changes migrations/. A security fix that needs a table, data or a signature change ships as the next minor release from main; the previous line's release note then tells its operators to upgrade. A fix to a function body changes its file in migrations/definitions/ instead."
             echo "$changed"
+            exit 1
+          fi
+          moved="$(git diff --name-only --diff-filter=ADR --no-renames "$BASE_SHA" HEAD -- migrations/definitions/)"
+          if [ -n "$moved" ]; then
+            echo "::error title=Backports change definitions, not the set of them::A pull request into $BASE_REF adds or removes a file in migrations/definitions/. Change an existing definition file here; a new function or a new file ships as the next minor release from main."
+            echo "$moved"
             exit 1
           fi
       - uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0

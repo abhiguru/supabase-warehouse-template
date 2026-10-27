@@ -15,8 +15,13 @@ container="warehouse-migrations-$suffix"
 net=''
 rest_container=''
 created=false
+chain_container="warehouse-migrations-chain-$suffix"
+# Temporary directories of the test (make_temp_dir): removed here, so a failed run leaves none behind.
+temp_dirs=()
+make_temp_dir() { REPLY=$(mktemp -d "${TMPDIR:-/tmp}/warehouse-$1.XXXXXX"); temp_dirs+=("$REPLY"); }
 cleanup() {
-  if [[ "$created" == true ]]; then docker rm -fv "$container" >/dev/null 2>&1 || true; fi
+  if ((${#temp_dirs[@]})); then rm -rf "${temp_dirs[@]}"; fi
+  if [[ "$created" == true ]]; then docker rm -fv "$container" "$chain_container" >/dev/null 2>&1 || true; fi
   remove_storage_containers
   if [[ -n "$rest_container" ]]; then docker rm -fv "$rest_container" >/dev/null 2>&1 || true; fi
   if [[ -n "$net" ]]; then docker network rm "$net" >/dev/null 2>&1 || true; fi
@@ -34,28 +39,35 @@ done < <(
 db_image="$(bash "$ROOT/scripts/db-image.sh")"
 # Random service passwords for the init script roles.sql (it needs 32 to 128 distinct characters of [A-Za-z0-9_-]).
 net=$(create_net)
-docker run -d --name "$container" --label purpose=warehouse-migration-test \
-  --network "$net" --memory 1g --cpus 1 \
-  --tmpfs /var/lib/postgresql/data:rw,size=768m -e PGDATA=/var/lib/postgresql/data \
-  -e JWT_SECRET=isolated-test-secret-not-for-any-deployment-12345 -e JWT_EXP=3600 \
-  -e AUTH_MODE=operator -e APP_ENV=production \
-  -e POSTGRES_USER=supabase_admin -e POSTGRES_DB=postgres -e POSTGRES_PASSWORD="$(openssl rand -hex 32)" \
-  -e DB_PASSWORD_AUTHENTICATOR="$(openssl rand -hex 32)" -e DB_PASSWORD_STORAGE="$(openssl rand -hex 32)" \
-  -e POSTGRES_INITDB_ARGS=--locale=en_US.UTF-8 \
-  -v "$ROOT/docker/volumes/db/00-bootstrap.sql:/docker-entrypoint-initdb.d/00-bootstrap.sql:ro" \
-  -v "$ROOT/docker/volumes/db/roles.sql:/docker-entrypoint-initdb.d/10-roles.sql:ro" \
-  "$db_image" \
-  postgres "${shipped_flags[@]}" >/dev/null
+# start_db_container <name> [--network <net>]: a disposable database as production starts it; returns when it accepts connections.
+start_db_container() {
+  local name="$1" network=()
+  shift
+  [[ $# -eq 0 ]] || network=("$@")
+  docker run -d --name "$name" --label purpose=warehouse-migration-test \
+    ${network[@]+"${network[@]}"} --memory 1g --cpus 1 \
+    --tmpfs /var/lib/postgresql/data:rw,size=768m -e PGDATA=/var/lib/postgresql/data \
+    -e JWT_SECRET=isolated-test-secret-not-for-any-deployment-12345 -e JWT_EXP=3600 \
+    -e AUTH_MODE=operator -e APP_ENV=production \
+    -e POSTGRES_USER=supabase_admin -e POSTGRES_DB=postgres -e POSTGRES_PASSWORD="$(openssl rand -hex 32)" \
+    -e DB_PASSWORD_AUTHENTICATOR="$(openssl rand -hex 32)" -e DB_PASSWORD_STORAGE="$(openssl rand -hex 32)" \
+    -e POSTGRES_INITDB_ARGS=--locale=en_US.UTF-8 \
+    -v "$ROOT/docker/volumes/db/00-bootstrap.sql:/docker-entrypoint-initdb.d/00-bootstrap.sql:ro" \
+    -v "$ROOT/docker/volumes/db/roles.sql:/docker-entrypoint-initdb.d/10-roles.sql:ro" \
+    "$db_image" \
+    postgres "${shipped_flags[@]}" >/dev/null
+  local ready=false init_log i
+  for ((i=0; i<60; i++)); do
+    # The image's temporary server answers while the init scripts still run: wait for the end of init, then for the real server.
+    init_log=$(docker logs "$name" 2>&1 || true)
+    if [[ "$init_log" == *'PostgreSQL init process complete; ready for start up'* ]] \
+      && docker exec "$name" pg_isready -U supabase_admin -d postgres -h 127.0.0.1 >/dev/null 2>&1; then ready=true; break; fi
+    sleep 2
+  done
+  [[ "$ready" == true ]] || { echo 'Test database did not start' >&2; return 1; }
+}
 created=true
-ready=false
-for ((i=0; i<60; i++)); do
-  # The image's temporary server answers while the init scripts still run: wait for the end of init, then for the real server.
-  init_log=$(docker logs "$container" 2>&1 || true)
-  if [[ "$init_log" == *'PostgreSQL init process complete; ready for start up'* ]] \
-    && docker exec "$container" pg_isready -U supabase_admin -d postgres -h 127.0.0.1 >/dev/null 2>&1; then ready=true; break; fi
-  sleep 2
-done
-[[ "$ready" == true ]] || { echo 'Test database did not start' >&2; exit 1; }
+start_db_container "$container" --network "$net"
 mig_psql() { docker exec -i -e PGPASSWORD=disposable-test-database-only "$container" psql -X -q -U supabase_admin -d postgres -v ON_ERROR_STOP=1 "$@"; }
 # The migration plan of a directory that holds a `migrations/` folder.
 plan_of() { PLAN_MODULE="$ROOT/scripts/migration-plan.mjs" PLAN_ROOT="$1" node -e "import(process.env.PLAN_MODULE).then(m => process.stdout.write(m.migrationPlan(process.env.PLAN_ROOT)))"; }
@@ -69,8 +81,179 @@ second=$(plan_of "$ROOT" | mig_psql 2>&1) || { echo "$second" | tail -20 >&2; ec
 [[ "$(mig_psql -At -c 'SELECT string_agg(name, $$,$$ ORDER BY name) FROM warehouse_migrations.applied')" == "$(cd "$ROOT/migrations" && ls -1 *.sql | LC_ALL=C sort | paste -sd,)" ]] || { echo 'The ledger does not hold exactly the migration files.' >&2; exit 1; }
 migration_count=$(ls -1 "$ROOT"/migrations/*.sql | wc -l)
 
+# Definition files (migrations/definitions/, scripts/migration-plan.mjs): applied after the numbered files, each once per checksum.
+definition_count=$(ls -1 "$ROOT"/migrations/definitions/*.sql | wc -l)
+[[ "$(grep -c '^Applying definition: ' <<< "$first")" == "$definition_count" && "$first" == *'Applying definition: 00_authorize_rpc.sql'* ]] || { echo "The first pass did not apply each of the $definition_count definition files: $first" >&2; exit 1; }
+[[ "$second" == *'Definition unchanged: 00_authorize_rpc.sql'* && "$second" != *'Applying definition:'* ]] || { echo "The second pass must skip every definition: $second" >&2; exit 1; }
+definition_rows() { mig_psql -At -c 'SELECT string_agg(name || $$:$$ || checksum, $$,$$ ORDER BY name COLLATE "C") FROM warehouse_migrations.definitions'; }
+definition_sums() { (cd "$1/migrations/definitions" && for f in *.sql; do printf '%s:%s\n' "$f" "$(sha256sum "$f" | cut -d' ' -f1)"; done | LC_ALL=C sort | paste -sd,); }
+[[ "$(definition_rows)" == "$(definition_sums "$ROOT")" ]] || { echo 'The definitions table does not hold exactly the files and their checksums.' >&2; exit 1; }
+# notifications_during <seconds> <command...>: how many "reload schema" notifications a listener session received while the command ran.
+notifications_during() {
+  local seconds="$1" out
+  shift
+  out=$(mktemp "${TMPDIR:-/tmp}/warehouse-listen.XXXXXX")
+  printf 'LISTEN pgrst;\nSELECT pg_sleep(%s);\nSELECT 1;\n' "$seconds" | mig_psql -At > "$out" 2>&1 &
+  local listener=$!
+  for ((i=0; i<50; i++)); do
+    [[ "$(mig_psql -At -c "SELECT count(*) FROM pg_stat_activity WHERE query LIKE 'SELECT pg_sleep($seconds)%' AND pid <> pg_backend_pid()")" == 1 ]] && break
+    sleep 0.2
+  done
+  "$@" >/dev/null
+  wait "$listener"
+  grep -c 'Asynchronous notification "pgrst" with payload "reload schema"' "$out" || true
+  rm -f "$out"
+}
+# Equivalence: the numbered files alone build one database, the numbered files plus the definitions another, and the catalogs (functions,
+# bodies, owners, grants, search paths) are the same, except what tests/definitions-allowed-differences.txt names (the table that
+# records the definitions, and later any definition changed on purpose). Then the facility that already ran the numbered files gets
+# the definitions on its next setup and ends up with the same catalog too.
+make_temp_dir chain; chainroot=$REPLY
+mkdir "$chainroot/migrations"
+cp "$ROOT"/migrations/*.sql "$chainroot/migrations/"
+start_db_container "$chain_container" --network none
+chain_psql() { docker exec -i -e PGPASSWORD=disposable-test-database-only "$chain_container" psql -X -q -U supabase_admin -d postgres -v ON_ERROR_STOP=1 "$@"; }
+chain_first=$(plan_of "$chainroot" | chain_psql 2>&1) || { echo "$chain_first" | tail -20 >&2; echo 'The numbered files alone did not apply.' >&2; exit 1; }
+[[ "$chain_first" != *'definition'* && "$(chain_psql -At -c "SELECT to_regclass('warehouse_migrations.definitions') IS NULL")" == t ]] || { echo 'A directory without definitions built a definitions table.' >&2; exit 1; }
+# The catalog dump compares grants as a set; the order of a function's ACL array is part of what some suites compare (tests/grn_rates.sql), so
+# the identity, ACL text, settings, owner and body of every function are compared as they are stored, too, one line per function.
+function_lines() { "$1" -At -c "SELECT n.nspname || '.' || p.proname || '(' || pg_get_function_identity_arguments(p.oid) || ')|' || md5(coalesce(p.proacl::text, '') || coalesce(p.proconfig::text, '') || p.prosecdef || pg_get_userbyid(p.proowner) || md5(p.prosrc)) FROM pg_proc p JOIN pg_namespace n ON n.oid = p.pronamespace WHERE n.nspname IN ('public', 'warehouse_security') ORDER BY 1"; }
+# schema.name of the functions an allow-list names (its ^function\| and ^acl\|function\| entries; every overload of the name).
+allowed_functions() { sed -n -E 's/^[AB] \^(function|acl\\\|function)\\\|([a-z_0-9]+)\\\.([a-z_0-9]+)\\\(.*/\2.\3/p' "$1" | sort -u; }
+# changed_functions <psql A> <psql B> <allow-list>: the functions whose stored text differs, without those the allow-list names.
+changed_functions() {
+  local skip
+  skip=$(allowed_functions "$3")
+  { diff <(function_lines "$1") <(function_lines "$2") || true; } | sed -n 's/^[<>] //p' \
+    | awk -F'|' -v skip="$skip" 'BEGIN { n = split(skip, a, "\n"); for (i = 1; i <= n; i++) skip_name[a[i]] = 1 } { name = $1; sub(/\(.*/, "", name); if (!(name in skip_name)) print $1 }' | sort -u
+}
+# same_catalogs <container A> <psql A> <container B> <psql B> <allow-list>: 0 when the catalog (scripts/baseline/catalog-diff.mjs) and every function
+# are the same, except what the allow-list names; otherwise the differences go to standard error.
+same_catalogs() {
+  local report changed
+  if ! report=$(node "$ROOT/scripts/baseline/catalog-diff.mjs" "$1" "$3" --image pg17 --allow "$5" 2>&1); then echo "$report" | tail -n 40 >&2; return 1; fi
+  changed=$(changed_functions "$2" "$4" "$5")
+  if [[ -n "$changed" ]]; then printf 'A function differs (ACL order, settings, owner or body):\n%s\n' "$changed" >&2; return 1; fi
+}
+same_catalogs "$chain_container" chain_psql "$container" mig_psql "$ROOT/tests/definitions-allowed-differences.txt" || { echo 'The definitions change the catalog the numbered files build.' >&2; exit 1; }
+upgrade_pass=$(plan_of "$ROOT" | chain_psql 2>&1) || { echo "$upgrade_pass" | tail -20 >&2; echo 'The definitions did not apply to a database that had the numbered files.' >&2; exit 1; }
+[[ "$(grep -c '^Applying definition: ' <<< "$upgrade_pass")" == "$definition_count" && "$upgrade_pass" != *'Applying: '* ]] || { echo "The upgrade pass did not apply exactly the definitions: $upgrade_pass" >&2; exit 1; }
+[[ "$(definition_rows)" == "$(chain_psql -At -c 'SELECT string_agg(name || $$:$$ || checksum, $$,$$ ORDER BY name COLLATE "C") FROM warehouse_migrations.definitions')" ]] || { echo 'The upgraded database recorded other definitions.' >&2; exit 1; }
+printf '# no differences expected\n' > "$chainroot/none.txt"
+same_catalogs "$chain_container" chain_psql "$container" mig_psql "$chainroot/none.txt" || { echo 'A facility that ran the numbered files differs from a new one after the definitions.' >&2; exit 1; }
+
+# The documented way to fix a function (CONTRIBUTING.md): change its definition file and add its lines to tests/definitions-allowed-differences.txt.
+# Walked here on the facility database, with save_grn.sql changed in its body and get_invoice_detail.sql given a grant. Without the lines the
+# comparison refuses; the lines of one function let that function pass and the other is still named; with both it passes.
+make_temp_dir fixroot; fixroot=$REPLY
+mkdir "$fixroot/migrations"
+cp -r "$ROOT/migrations/." "$fixroot/migrations/"
+sed -i 's/^\( *\)\$function\$;$/\1-- definition fix\n\1$function$;/' "$fixroot/migrations/definitions/save_grn.sql"
+printf 'GRANT EXECUTE ON FUNCTION public.get_invoice_detail(uuid) TO anon;\n' >> "$fixroot/migrations/definitions/get_invoice_detail.sql"
+[[ "$(grep -c 'definition fix' "$fixroot/migrations/definitions/save_grn.sql")" == 1 ]] || { echo 'The test could not change save_grn.sql.' >&2; exit 1; }
+plan_of "$fixroot" | chain_psql >/dev/null 2>&1 || { echo 'The fixed definitions did not apply.' >&2; exit 1; }
+# Both databases here have the definitions table, so the entry for it is left out of the lists (an entry that matches nothing fails the run).
+allow_real="$fixroot/allow-none.txt"
+grep -v 'warehouse_migrations' "$ROOT/tests/definitions-allowed-differences.txt" > "$allow_real"
+{ cat "$allow_real"; printf '%s\n' 'A ^function\|public\.save_grn\(' 'B ^function\|public\.save_grn\('; } > "$fixroot/allow-body.txt"
+{ cat "$allow_real"; printf '%s\n' 'B ^acl\|function\|public\.get_invoice_detail\('; } > "$fixroot/allow-grant.txt"
+{ cat "$allow_real"; printf '%s\n' 'A ^function\|public\.save_grn\(' 'B ^function\|public\.save_grn\(' 'B ^acl\|function\|public\.get_invoice_detail\('; } > "$fixroot/allow-both.txt"
+if same_catalogs "$container" mig_psql "$chain_container" chain_psql "$allow_real" 2>/dev/null; then echo 'A fixed definition passed the comparison without its allow-list lines.' >&2; exit 1; fi
+if same_catalogs "$container" mig_psql "$chain_container" chain_psql "$fixroot/allow-body.txt" 2>"$fixroot/err-body.txt"; then echo 'A grant added to a definition passed the comparison with the lines of another function.' >&2; exit 1; fi
+if same_catalogs "$container" mig_psql "$chain_container" chain_psql "$fixroot/allow-grant.txt" 2>"$fixroot/err-grant.txt"; then echo 'A body fixed in a definition passed the comparison with the lines of another function.' >&2; exit 1; fi
+only_body=$(changed_functions mig_psql chain_psql "$fixroot/allow-body.txt")
+only_grant=$(changed_functions mig_psql chain_psql "$fixroot/allow-grant.txt")
+all_changed=$(changed_functions mig_psql chain_psql "$allow_real")
+[[ "$only_body" == public.get_invoice_detail\(*  && "$only_grant" == public.save_grn\(* && "$(wc -l <<< "$all_changed")" == 2 && -z "$(changed_functions mig_psql chain_psql "$fixroot/allow-both.txt")" ]] \
+  || { printf 'The function comparison did not leave out exactly the functions the allow-list names.\nwith the lines of save_grn: %s\nwith the lines of the get_invoice_detail grant: %s\nwith none: %s\n' "$only_body" "$only_grant" "$all_changed" >&2; exit 1; }
+same_catalogs "$container" mig_psql "$chain_container" chain_psql "$fixroot/allow-both.txt" || { echo 'A fixed definition with its allow-list lines (body and grant) did not pass the comparison.' >&2; exit 1; }
+# Put back: the shipped files differ from the stored checksums, so they are applied again, and the facility equals a new install again.
+plan_of "$ROOT" | chain_psql >/dev/null 2>&1 || { echo 'The shipped definitions did not apply again.' >&2; exit 1; }
+same_catalogs "$chain_container" chain_psql "$container" mig_psql "$chainroot/none.txt" || { echo 'The facility differs from a new install after the fix was put back.' >&2; exit 1; }
+
+# A numbered migration that carries the facility forward is followed by every definition, not only the changed ones: a migration that altered
+# a function with a definition file leaves the file's text in the end (a new install gets the file after the numbered files too). The
+# fixture migration gives get_invoice_detail a setting; a second run, with no migration, skips every file.
+make_temp_dir reapply; reapply=$REPLY
+mkdir "$reapply/migrations"
+cp -r "$ROOT/migrations/." "$reapply/migrations/"
+printf "ALTER FUNCTION public.get_invoice_detail(uuid) SET statement_timeout = '1s';\n" > "$reapply/migrations/00000000000999_definitions_reapply.sql"
+settings_before=$(chain_psql -At -c "SELECT coalesce(proconfig::text, '') FROM pg_proc WHERE oid = 'public.get_invoice_detail(uuid)'::regprocedure")
+reapply_pass=$(plan_of "$reapply" | chain_psql 2>&1) || { echo "$reapply_pass" | tail -20 >&2; echo 'The plan with a further migration failed.' >&2; exit 1; }
+[[ "$reapply_pass" == *'Applying: 00000000000999_definitions_reapply.sql'* && "$(grep -c '^Applying definition: ' <<< "$reapply_pass")" == "$definition_count" && "$reapply_pass" != *'Definition unchanged'* ]] \
+  || { echo "A run that applied a migration must apply every definition again: $reapply_pass" >&2; exit 1; }
+[[ "$(chain_psql -At -c "SELECT coalesce(proconfig::text, '') FROM pg_proc WHERE oid = 'public.get_invoice_detail(uuid)'::regprocedure")" == "$settings_before" ]] || { echo 'A migration that altered a function with a definition file was not overridden by the file.' >&2; exit 1; }
+reapply_second=$(plan_of "$reapply" | chain_psql 2>&1)
+[[ "$reapply_second" != *'Applying definition:'* && "$(grep -c '^Definition unchanged: ' <<< "$reapply_second")" == "$definition_count" ]] || { echo "Nothing applied, yet definitions were applied again: $reapply_second" >&2; exit 1; }
+chain_psql -c "DELETE FROM warehouse_migrations.applied WHERE name = '00000000000999_definitions_reapply.sql'"
+
+# The row of a definition file that was removed goes, so the file added again is applied.
+make_temp_dir removed; removed=$REPLY
+mkdir "$removed/migrations"
+cp -r "$ROOT/migrations/." "$removed/migrations/"
+rm "$removed/migrations/definitions/get_sensor_polling_data.sql"
+plan_of "$removed" | chain_psql >/dev/null 2>&1 || { echo 'The plan without one definition file failed.' >&2; exit 1; }
+[[ "$(chain_psql -At -c "SELECT count(*) FROM warehouse_migrations.definitions WHERE name = 'get_sensor_polling_data.sql'")" == 0 \
+  && "$(chain_psql -At -c 'SELECT count(*) FROM warehouse_migrations.definitions')" == $((definition_count - 1)) ]] || { echo 'The row of a removed definition file stayed.' >&2; exit 1; }
+readd_pass=$(plan_of "$ROOT" | chain_psql 2>&1)
+[[ "$readd_pass" == *'Applying definition: get_sensor_polling_data.sql'* && "$(grep -c '^Applying definition: ' <<< "$readd_pass")" == 1 && "$(definition_rows)" == "$(chain_psql -At -c 'SELECT string_agg(name || $$:$$ || checksum, $$,$$ ORDER BY name COLLATE "C") FROM warehouse_migrations.definitions')" ]] \
+  || { echo "A definition file added again was not applied: $readd_pass" >&2; exit 1; }
+
+# A definition only replaces the function a numbered migration created. A file whose function has another argument list would add a second
+# function: that file is rolled back whole. A migration that drops the function the file replaces stops the plan at that file, naming it, and the
+# function is not brought back.
+make_temp_dir overload; overload=$REPLY
+mkdir "$overload/migrations"
+cp -r "$ROOT/migrations/." "$overload/migrations/"
+sed -i 's/^CREATE OR REPLACE FUNCTION public.get_invoice_detail(p_invoice_id uuid)$/CREATE OR REPLACE FUNCTION public.get_invoice_detail(p_invoice_id uuid, p_extra integer DEFAULT NULL)/' "$overload/migrations/definitions/get_invoice_detail.sql"
+[[ "$(grep -c 'p_extra integer' "$overload/migrations/definitions/get_invoice_detail.sql")" == 1 ]] || { echo 'The test could not change get_invoice_detail.sql.' >&2; exit 1; }
+if overload_out=$(plan_of "$overload" | chain_psql 2>&1); then echo 'A definition that would add an overload was applied.' >&2; exit 1; fi
+[[ "$overload_out" == *'migrations/definitions/get_invoice_detail.sql: the file would add another public.get_invoice_detail'* \
+  && "$(chain_psql -At -c "SELECT count(*) FROM pg_proc WHERE proname = 'get_invoice_detail'")" == 1 \
+  && "$(chain_psql -At -c "SELECT checksum FROM warehouse_migrations.definitions WHERE name = 'get_invoice_detail.sql'")" == "$(sha256sum "$ROOT/migrations/definitions/get_invoice_detail.sql" | cut -d' ' -f1)" ]] \
+  || { echo "A definition with another argument list was not refused and rolled back: $overload_out" >&2; exit 1; }
+make_temp_dir dropped; dropped=$REPLY
+mkdir "$dropped/migrations"
+cp -r "$ROOT/migrations/." "$dropped/migrations/"
+printf 'DROP FUNCTION public.get_invoice_detail(uuid);\n' > "$dropped/migrations/00000000000999_drop_get_invoice_detail.sql"
+if dropped_out=$(plan_of "$dropped" | chain_psql 2>&1); then echo 'A definition of a dropped function was applied.' >&2; exit 1; fi
+[[ "$dropped_out" == *'migrations/definitions/get_invoice_detail.sql: public.get_invoice_detail(uuid) does not exist'* && "$dropped_out" == *'Checking definition: get_invoice_detail.sql'* \
+  && "$dropped_out" != *'Applying definition: get_invoice_detail.sql'* \
+  && "$(chain_psql -At -c "SELECT to_regprocedure('public.get_invoice_detail(uuid)') IS NULL")" == t ]] \
+  || { echo "A definition of a dropped function was not refused by name, or brought the function back: $dropped_out" >&2; exit 1; }
+docker rm -fv "$chain_container" >/dev/null
+# A changed definition is applied again (its checksum row follows, and the API is told to reload); the others are skipped; putting the file
+# back applies it again. A file with a statement that is not a function statement is refused before anything reaches the database.
+make_temp_dir defroot; defroot=$REPLY
+mkdir -p "$defroot/migrations"
+cp -r "$ROOT/migrations/." "$defroot/migrations/"
+sed -i 's/^\( *\)\$function\$;$/\1-- definition probe\n\1$function$;/' "$defroot/migrations/definitions/save_grn.sql"
+[[ "$(grep -c 'definition probe' "$defroot/migrations/definitions/save_grn.sql")" == 1 ]] || { echo 'The test could not change save_grn.sql.' >&2; exit 1; }
+before_save=$(mig_psql -At -c "SELECT checksum FROM warehouse_migrations.definitions WHERE name = 'save_grn.sql'")
+changed_out=$(mktemp "${TMPDIR:-/tmp}/warehouse-changed-out.XXXXXX")
+notified=$(notifications_during 8 bash -c 'PLAN_ROOT="$1" PLAN_MODULE="$2" node -e "import(process.env.PLAN_MODULE).then(m => process.stdout.write(m.migrationPlan(process.env.PLAN_ROOT)))" | docker exec -i -e PGPASSWORD=disposable-test-database-only "$3" psql -X -q -U supabase_admin -d postgres -v ON_ERROR_STOP=1 > "$4" 2>&1' _ "$defroot" "$ROOT/scripts/migration-plan.mjs" "$container" "$changed_out")
+changed_pass=$(cat "$changed_out"); rm -f "$changed_out"
+[[ "$(grep -c '^Applying definition: ' <<< "$changed_pass")" == 1 && "$changed_pass" == *'Applying definition: save_grn.sql'* && "$changed_pass" != *'Applying: '* \
+  && "$(grep -c '^Definition unchanged: ' <<< "$changed_pass")" == $((definition_count - 1)) ]] || { echo "A changed definition must be applied alone: $changed_pass" >&2; exit 1; }
+[[ "$(mig_psql -At -c "SELECT checksum FROM warehouse_migrations.definitions WHERE name = 'save_grn.sql'")" == "$(sha256sum "$defroot/migrations/definitions/save_grn.sql" | cut -d' ' -f1)" \
+  && "$before_save" != "$(sha256sum "$defroot/migrations/definitions/save_grn.sql" | cut -d' ' -f1)" ]] || { echo 'The checksum row did not follow the changed definition.' >&2; exit 1; }
+[[ "$(mig_psql -At -c "SELECT count(*) FROM pg_proc WHERE proname = 'save_grn' AND prosrc LIKE '%definition probe%'")" == 1 ]] || { echo 'The changed definition did not change the function.' >&2; exit 1; }
+[[ "$notified" == 2 ]] || { echo "A changed definition must tell the API to reload right after its COMMIT, besides the reload at the end of the plan (notifications seen: $notified)." >&2; exit 1; }
+unchanged_notified=$(notifications_during 8 bash -c 'PLAN_ROOT="$1" PLAN_MODULE="$2" node -e "import(process.env.PLAN_MODULE).then(m => process.stdout.write(m.migrationPlan(process.env.PLAN_ROOT)))" | docker exec -i -e PGPASSWORD=disposable-test-database-only "$3" psql -X -q -U supabase_admin -d postgres -v ON_ERROR_STOP=1 >/dev/null 2>&1' _ "$defroot" "$ROOT/scripts/migration-plan.mjs" "$container")
+[[ "$unchanged_notified" == 1 ]] || { echo "A plan with nothing to apply must send only the reload at its end (notifications seen: $unchanged_notified)." >&2; exit 1; }
+back_pass=$(plan_of "$ROOT" | mig_psql 2>&1) || { echo "$back_pass" | tail -20 >&2; echo 'The shipped definition did not apply after the changed one.' >&2; exit 1; }
+[[ "$back_pass" == *'Applying definition: save_grn.sql'* && "$(mig_psql -At -c "SELECT count(*) FROM pg_proc WHERE prosrc LIKE '%definition probe%'")" == 0 && "$(definition_rows)" == "$(definition_sums "$ROOT")" ]] || { echo 'Putting the definition back did not restore the function and its row.' >&2; exit 1; }
+printf 'CREATE TABLE public.definition_guard_probe (id int);\n' > "$defroot/migrations/definitions/zz_table.sql"
+cp "$ROOT/migrations/definitions/save_grn.sql" "$defroot/migrations/definitions/save_grn.sql"
+rows_before=$(definition_rows)
+if refused=$( { plan_of "$defroot" | mig_psql; } 2>&1 ); then echo 'A definition file with CREATE TABLE was accepted.' >&2; exit 1; fi
+[[ "$refused" == *'migrations/definitions/zz_table.sql holds more than function definitions'* ]] || { echo "The refusal of a definition with CREATE TABLE is not the expected one: $refused" >&2; exit 1; }
+[[ "$(mig_psql -At -c "SELECT to_regclass('public.definition_guard_probe') IS NULL")" == t && "$(definition_rows)" == "$rows_before" ]] || { echo 'The refused definition changed the database.' >&2; exit 1; }
+rm -rf "$defroot" "$chainroot"
+echo "The definitions ($definition_count files) build the catalog of the numbered files, a changed one is applied alone and announced to the API, and a file with a table statement is refused first."
+
 # A changed baseline must fail closed: a space appended to a temporary copy.
-changed=$(mktemp -d "${TMPDIR:-/tmp}/warehouse-changed.XXXXXX")
+make_temp_dir changed; changed=$REPLY
 mkdir "$changed/migrations"
 cp "$ROOT"/migrations/*.sql "$changed/migrations/"
 printf ' ' >> "$changed/migrations/00000000000000_baseline.sql"
@@ -88,7 +271,7 @@ plan_of "$ROOT" | mig_psql >/dev/null
 
 # The refusal happens before any file runs: a checkout that holds the baseline and a further migration, against a ledger with
 # an unknown name, creates nothing from that further migration.
-probe=$(mktemp -d "${TMPDIR:-/tmp}/warehouse-probe.XXXXXX")
+make_temp_dir probe; probe=$REPLY
 mkdir "$probe/migrations"
 cp "$ROOT"/migrations/*.sql "$probe/migrations/"
 printf 'CREATE TABLE public.ledger_guard_probe (id int);\n' > "$probe/migrations/00000000000999_probe.sql"
@@ -111,7 +294,7 @@ mig_psql -c "INSERT INTO warehouse_migrations.applied SELECT * FROM warehouse_mi
 #    whole (no ledger row, no column), and no migration waits for ever;
 #  - scripts/migrate.sh, which runs the same plan, tries again after a pause and succeeds once the lock is released.
 # The ledger and the table are put back afterwards.
-lockprobe=$(mktemp -d "${TMPDIR:-/tmp}/warehouse-lockprobe.XXXXXX")
+make_temp_dir lockprobe; lockprobe=$REPLY
 mkdir "$lockprobe/migrations" "$lockprobe/state" "$lockprobe/state/config" "$lockprobe/scripts"
 cp "$ROOT"/migrations/*.sql "$lockprobe/migrations/"
 printf 'ALTER TABLE public.dispatch ADD COLUMN lock_probe integer;\n' > "$lockprobe/migrations/00000000000999_lock_probe.sql"
