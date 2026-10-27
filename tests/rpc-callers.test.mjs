@@ -1,6 +1,6 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
-import { existsSync, mkdtempSync, readFileSync, readdirSync, rmSync } from 'node:fs';
+import { copyFileSync, existsSync, mkdirSync, mkdtempSync, readFileSync, readdirSync, rmSync, writeFileSync } from 'node:fs';
 import { spawnSync } from 'node:child_process';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
@@ -50,5 +50,26 @@ test('every RPC the app calls is in the list of rpc_callers_exist.sql', { skip: 
     const names = new Set(JSON.parse(readFileSync(report, 'utf8')).calls.map(call => call.name).filter(Boolean));
     assert.ok(names.size > 50, 'the scanner found the app\'s calls');
     assert.deepEqual([...names].filter(name => !appListed.has(name)), []);
+  } finally { rmSync(scratch, { recursive: true, force: true }); }
+});
+
+// The scanner reads DROP FUNCTION: a migration that drops a function the app calls makes it exit 1 and name the function. (It used to
+// read CREATE statements only, so such a drop passed.) Same gate as above: needs the app's TypeScript.
+test('the contract scanner reports a function the app calls that a later migration drops', { skip: !process.env.MOBILE_CHECKOUT || !existsSync(process.env.MOBILE_CHECKOUT || '') }, () => {
+  const scratch = mkdtempSync(join(tmpdir(), 'rpc-callers-drop-'));
+  try {
+    const scan = (migrations, output) => spawnSync(process.execPath, [join(root, 'scripts/check-mobile-contract.mjs'), process.env.MOBILE_CHECKOUT, '--migrations', migrations, '--output', output], { encoding: 'utf8' });
+    const migrations = join(scratch, 'migrations');
+    mkdirSync(migrations);
+    for (const name of readdirSync(join(root, 'migrations'))) copyFileSync(join(root, 'migrations', name), join(migrations, name));
+    const before = scan(migrations, join(scratch, 'before.json'));
+    const called = JSON.parse(readFileSync(join(scratch, 'before.json'), 'utf8')).rpc.called;
+    assert.deepEqual(JSON.parse(readFileSync(join(scratch, 'before.json'), 'utf8')).rpc.missing, [], `the unchanged migrations define every name the app calls: ${before.stderr}`);
+    const victim = called.find(name => name === 'get_next_grn_number') ?? called[0];
+    writeFileSync(join(migrations, '99999999999999_drop_probe.sql'), `DROP FUNCTION public.${victim};\n`);
+    const after = scan(migrations, join(scratch, 'after.json'));
+    assert.equal(after.status, 1, after.stdout);
+    assert.deepEqual(JSON.parse(readFileSync(join(scratch, 'after.json'), 'utf8')).rpc.missing, [victim]);
+    assert.match(after.stdout, /"missingNames": 1/);
   } finally { rmSync(scratch, { recursive: true, force: true }); }
 });

@@ -13,6 +13,7 @@ source "$ROOT/scripts/baseline/lib.sh"
 suffix=$(openssl rand -hex 6)
 container="warehouse-migrations-$suffix"
 net=''
+rest_container=''
 created=false
 chain_container="warehouse-migrations-chain-$suffix"
 # Temporary directories of the test (make_temp_dir): removed here, so a failed run leaves none behind.
@@ -22,6 +23,7 @@ cleanup() {
   if ((${#temp_dirs[@]})); then rm -rf "${temp_dirs[@]}"; fi
   if [[ "$created" == true ]]; then docker rm -fv "$container" "$chain_container" >/dev/null 2>&1 || true; fi
   remove_storage_containers
+  if [[ -n "$rest_container" ]]; then docker rm -fv "$rest_container" >/dev/null 2>&1 || true; fi
   if [[ -n "$net" ]]; then docker network rm "$net" >/dev/null 2>&1 || true; fi
 }
 trap cleanup EXIT
@@ -826,4 +828,36 @@ bash "$ROOT/tests/retention_queries.sh" "$container"
 # backup and replayed by scripts/verify-restore.sh, once with a session attached to
 # template1 and once with the disk-backed data directory.
 bash "$ROOT/tests/verify-restore-drill.sh" "$container"
+# The REST service (PostgREST, the image docker/docker-compose.yml pins) against this migrated database, with the settings the compose
+# file gives it: tests/postgrest-contract.test.mjs asserts the status, code and message of every refusal the app keys on
+# (docs/API_CONTRACT.md, "What the app may match: codes, not texts"). It runs on the test network, which has no route out; the
+# host reaches it by the container's address on that network. Its own database login gets a password here, as Storage's does above.
+rest_image=$(sed -n 's/^    image: \(postgrest\/postgrest:[^ ]*\)$/\1/p' "$ROOT/docker/docker-compose.yml")
+[[ -n "$rest_image" ]] || { echo 'No postgrest image in docker/docker-compose.yml' >&2; exit 1; }
+docker image inspect "$rest_image" >/dev/null 2>&1 || docker pull -q "$rest_image" >/dev/null
+rest_password=$(openssl rand -hex 32)
+rest_secret=$(openssl rand -hex 32)
+mig_psql -c "ALTER ROLE authenticator PASSWORD '$rest_password'"
+rest_container=$(new_name rest)
+docker run -d --name "$rest_container" --label purpose=slim-tool --network "$net" --memory 512m --cpus 1 \
+  -e PGRST_DB_POOL=5 -e PGRST_DB_POOL_ACQUISITION_TIMEOUT=10 -e PGRST_DB_CONFIG=true -e PGRST_DB_PREPARED_STATEMENTS=true \
+  -e "PGRST_DB_URI=postgres://authenticator:$rest_password@$container:5432/postgres" -e PGRST_DB_SCHEMAS=public -e PGRST_DB_ANON_ROLE=anon \
+  -e "PGRST_JWT_SECRET=$rest_secret" -e PGRST_OPENAPI_MODE=disabled -e PGRST_DB_PRE_REQUEST=public.check_session \
+  "$rest_image" postgrest >/dev/null
+rest_address=$(docker inspect -f "{{(index .NetworkSettings.Networks \"$net\").IPAddress}}" "$rest_container")
+rest_ready=false
+for ((i=0; i<30; i++)); do
+  if [[ "$(curl -s -o /dev/null -w '%{http_code}' --max-time 3 "http://$rest_address:3000/rpc/get_public_config" -X POST -H 'content-type: application/json' -d '{"p_environment":"production"}' || true)" == 200 ]]; then rest_ready=true; break; fi
+  sleep 1
+done
+[[ "$rest_ready" == true ]] || { docker logs -t --tail 20 "$rest_container" >&2 || true; echo 'The REST service did not start for the contract test.' >&2; exit 1; }
+# Nothing may be skipped: a lost variable would otherwise turn every case into a skip and the run would still be green. The TAP reporter
+# is named because the summary lines checked below are its; a case or a docker exec that hangs is cut off by the timeouts.
+contract_report=$(POSTGREST_CONTRACT_URL="http://$rest_address:3000" POSTGREST_CONTRACT_SECRET="$rest_secret" \
+  POSTGREST_CONTRACT_DB_CONTAINER="$container" POSTGREST_CONTRACT_DB_PASSWORD=disposable-test-database-only \
+  node --test --test-reporter=tap --test-timeout=60000 "$ROOT/tests/postgrest-contract.test.mjs" 2>&1) || { printf '%s\n' "$contract_report" >&2; echo 'The REST contract test failed.' >&2; exit 1; }
+[[ "$contract_report" == *'# skipped 0'* && "$contract_report" == *'# fail 0'* ]] || { printf '%s\n' "$contract_report" >&2; echo 'The REST contract test skipped cases.' >&2; exit 1; }
+echo "REST contract: $(sed -n 's/^# pass \([0-9]*\)$/\1/p' <<<"$contract_report") checks against the pinned PostgREST passed."
+docker rm -fv "$rest_container" >/dev/null
+rest_container=''
 echo 'Migration reruns, checksum mismatch rejection, retention, and operator and central auth configuration passed.'

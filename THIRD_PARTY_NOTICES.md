@@ -16,7 +16,7 @@ The complete Apache License 2.0 text is included at
 `LICENSES/Apache-2.0.txt`.
 
 The edge functions carry one third-party library as a built file:
-`functions/vendor/jose.mjs` (`jose` 5.10.0, MIT, Filip Skokan). supabase-js is
+`functions/vendor/jose.mjs` (`jose` 6.2.12, MIT, Filip Skokan). supabase-js is
 no longer bundled: the functions reach PostgREST and Storage through
 `functions/_shared/supabase-rest.ts`, original project code on plain `fetch`.
 The licence text of every package `jose.mjs` may contain is in

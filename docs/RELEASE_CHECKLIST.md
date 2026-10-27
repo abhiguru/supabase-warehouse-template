@@ -26,6 +26,8 @@ The `contract` CI job compares names only against the pinned app commit
       `WAREHOUSE_STATE_DIR=<state> node scripts/check-mobile-contract.mjs <app checkout> --live`.
       It must report no missing RPC, table or function and no `mismatches`
       (overloads, argument names and the grant to signed-in users).
+- [ ] Set `minimumClientVersion` in `app-compat.json` to the oldest app build this release still answers (a backend release supports the newest
+      app release; older builds are told to update, [API_CONTRACT.md](API_CONTRACT.md#which-app-builds-a-release-supports-and-what-the-backend-tells-the-app)).
 - [ ] Record the backend and app commit pair in the pull request.
 
 ## Image scan before a release

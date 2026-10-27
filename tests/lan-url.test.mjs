@@ -46,6 +46,7 @@ const MANIFEST = { schemaVersion: 1, instanceId: '99999999-aaaa-bbbb-cccc-dddddd
 const BASE_ENV = {
   JWT_SECRET: secret, SUPABASE_URL: 'http://gateway:8000', SUPABASE_REST_URL: 'http://rest:3000', SUPABASE_SERVICE_ROLE_KEY: 'unit-service', SUPABASE_ANON_KEY: 'unit-anon',
   SUPABASE_PUBLIC_URL: 'https://api.example.test', APP_ENV: 'production', AUTH_MODE: 'operator', INSTANCE_MANIFEST_JSON: JSON.stringify(MANIFEST),
+  APP_COMPAT_JSON: JSON.stringify({ minimumClientVersion: '0.1.0' }),
 };
 const handlers = {};
 let env = {};

@@ -2,6 +2,7 @@ import { restClient } from '../_shared/supabase-rest.ts';
 import { securityHeaders } from '../_shared/security-headers.ts';
 import { publicBaseUrl } from '../_shared/public-url.ts';
 import { advertisedCentralLogin } from '../_shared/https-address.ts';
+import { AppCompatError, parseMinimumClientVersion, parseRelease } from '../_shared/release-info.ts';
 
 type InstanceManifest = {
   schemaVersion: number;
@@ -11,7 +12,6 @@ type InstanceManifest = {
   canonicalOrigin: string;
   capabilities: Record<string, boolean>;
   supportedApiVersions: string[];
-  minimumClientVersion: string;
 };
 
 async function readInstanceManifest(origin: string): Promise<InstanceManifest> {
@@ -23,7 +23,6 @@ async function readInstanceManifest(origin: string): Promise<InstanceManifest> {
       !manifest.displayName?.trim() || !manifest.companyName?.trim() ||
       manifest.canonicalOrigin !== origin ||
       !Array.isArray(manifest.supportedApiVersions) || !manifest.supportedApiVersions.includes('1') ||
-      !/^\d+\.\d+\.\d+$/.test(manifest.minimumClientVersion) ||
       !manifest.capabilities || typeof manifest.capabilities !== 'object' ||
       Object.values(manifest.capabilities).some(value => typeof value !== 'boolean')) {
     throw new Error('Invalid instance manifest');
@@ -36,6 +35,9 @@ Deno.serve(async (req: Request) => {
   try {
     const baseUrl = publicBaseUrl(Deno.env.get('SUPABASE_PUBLIC_URL'));
     const instance = await readInstanceManifest(baseUrl);
+    // The minimum app build and the release come from files setup.sh writes (functions/_shared/release-info.ts), not from instance.json.
+    const minimumClientVersion = parseMinimumClientVersion(Deno.env.get('APP_COMPAT_JSON'));
+    const release = parseRelease(Deno.env.get('RELEASE_JSON'));
     const environment = Deno.env.get('APP_ENV') || 'development';
     // Central sign-in is offered only where functions/central-exchange could accept a token.
     // localCode: this facility also asks for its own SMS code at every sign-in (CENTRAL_LOCAL_CODE=on).
@@ -55,7 +57,7 @@ Deno.serve(async (req: Request) => {
       instanceId: instance.instanceId, displayName: instance.displayName,
       companyName: instance.companyName, canonicalOrigin: instance.canonicalOrigin,
       capabilities: instance.capabilities, supportedApiVersions: instance.supportedApiVersions,
-      minimumClientVersion: instance.minimumClientVersion,
+      minimumClientVersion, backendRelease: release.backendRelease, schemaHead: release.schemaHead,
       maintenanceMode: config.maintenance_mode,
       centralLogin,
       urls: { publicConfig: `${baseUrl}/functions/v1/get-public-config`, fullConfig: `${baseUrl}/functions/v1/get-config` },
@@ -65,7 +67,9 @@ Deno.serve(async (req: Request) => {
     });
   } catch (error) {
     console.error('Public configuration failed:', error instanceof Error ? error.message : 'unknown error');
-    return new Response(JSON.stringify({ success: false, error: 'Backend configuration unavailable; finish migrations and seed first' }), {
+    // Fails closed (a wrong minimum would mislead every phone), with the cause named: setup.sh writes the file on every run.
+    const reason = error instanceof AppCompatError ? 'app-compat.json is missing or invalid in the state\'s public directory; run setup.sh again' : 'finish migrations and seed first';
+    return new Response(JSON.stringify({ success: false, error: `Backend configuration unavailable; ${reason}` }), {
       status: 503, headers: { ...securityHeaders, 'Content-Type': 'application/json', 'Cache-Control': 'no-store' },
     });
   }

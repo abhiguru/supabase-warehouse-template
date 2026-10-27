@@ -300,6 +300,8 @@ services:
       LETTERHEAD_FILE: ${LETTERHEAD_FILE:-}
       LETTERHEAD_DIR: /etc/warehouse/public
       INSTANCE_MANIFEST_PATH: /etc/warehouse/instance.json
+      # release.json and app-compat.json, which setup.sh writes there (get-public-config, get-config).
+      PUBLIC_DIR: /etc/warehouse/public
     command:
       [
         "start",
