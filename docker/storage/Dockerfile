@@ -1,7 +1,7 @@
 # Stage 1: the publisher's image with its precompiled application and native modules (built with g++, make and
 # python3, which this stage keeps and the final image does not). Patch only locked dependency versions; never run
 # package lifecycle scripts.
-FROM supabase/storage-api:v1.80.2@sha256:95b217a9c59e0ac06c6dcb539df3189a1668a2445fb43dbf29660d6968ffd7d2 AS patched
+FROM supabase/storage-api:v1.84.23@sha256:7112e91307968d3eceffb5228291202d7bac8015a27af25d4b5a4b0543eadf22 AS patched
 WORKDIR /app
 COPY package.json package-lock.json ./
 # npm install is kept (the base image's tree is patched in place), but the lockfile is
