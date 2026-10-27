@@ -1,12 +1,22 @@
 #!/usr/bin/env bash
 # Restore a backup into a disposable, network-isolated database and compare integrity.
-#   npm run db:verify-restore -- [--allow-unsigned] [--no-storage-tree] PATH_TO_BACKUP
+#   npm run db:verify-restore -- [--allow-unsigned] [--no-storage-tree] [--keep] [--restore-only] PATH_TO_BACKUP
+#   npm run db:verify-restore -- --rm CONTAINER
 # The backup signature is checked first with the backup key
 # (WAREHOUSE_BACKUP_KEY_FILE, else $WAREHOUSE_STATE_DIR/config/backup.key).
 # --allow-unsigned is only for when the backup key is lost.
 # Formats v5 (storage.tar.gz) and v6 (a storage/ tree with a signed storage.manifest) are accepted. For v6 every file of
 # the tree is hashed against the manifest; --no-storage-tree leaves that out and checks the chain only (signature, list,
 # manifest), for a backup copy that does not hold the tree (the USB check unpacks only the small files).
+# --restore-only stops after the restore: the comparison with the backup's integrity report and the object catalog is not made (the
+# backup was compared when it went on the verified list; scripts/upgrade-rehearse.sh needs the data, and a newer release's report can
+# differ from an older backup's for reasons that are not the backup's). The signature, the chain, the format and the restore itself
+# are checked as always.
+# --keep leaves the disposable container running after a successful verification and prints its name ("Kept disposable database: NAME"):
+# the restored database is `warehouse_restore`, user supabase_admin, password disposable-restore-only, reachable only with
+# `docker exec` (the container has no network). scripts/upgrade-rehearse.sh applies the migrations of the release an upgrade moves to
+# to it. --rm CONTAINER removes such a container and its disk-backed data directory, and does nothing when it is already gone.
+# A failed run always removes its container, with or without --keep.
 # Optional environment:
 #   WAREHOUSE_VERIFY_DATA_MB      size of the disposable data directory (default: from the dump sizes, at least 768)
 #   WAREHOUSE_VERIFY_SIZE_FACTOR  restored size estimate per dump byte (default 10)
@@ -19,14 +29,38 @@ umask 077
 ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 # Same image, by digest, as docker/postgres/Dockerfile builds the production database from.
 IMAGE="$(bash "$ROOT/scripts/db-image.sh")"
-usage() { echo 'Usage: npm run db:verify-restore -- [--allow-unsigned] [--no-storage-tree] PATH_TO_BACKUP   (--allow-unsigned: only for when the backup key is lost)' >&2; exit 1; }
+usage() { echo 'Usage: npm run db:verify-restore -- [--allow-unsigned] [--no-storage-tree] [--keep] [--restore-only] PATH_TO_BACKUP   (--allow-unsigned: only for when the backup key is lost)
+       npm run db:verify-restore -- --rm CONTAINER   (removes a container that --keep left)' >&2; exit 1; }
+# --rm: remove a container that --keep left, with its data directory. Only a container of this script's name and label is touched.
+remove_kept() {
+  local name="${1:-}" label dir
+  [[ "$name" =~ ^warehouse-restore-[0-9a-f]{12}$ ]] || { echo "Not the name of a disposable restore container: '$name'" >&2; exit 1; }
+  docker inspect "$name" >/dev/null 2>&1 || exit 0
+  label="$(docker inspect --format '{{index .Config.Labels "purpose"}}' "$name")"
+  [[ "$label" == warehouse-restore-test ]] || { echo "$name is not a disposable restore container (it lacks the label purpose=warehouse-restore-test); not removed." >&2; exit 1; }
+  dir="$(docker inspect --format '{{index .Config.Labels "warehouse.restore-disk-dir"}}' "$name")"
+  docker rm -f -v "$name" >/dev/null
+  if [[ -n "$dir" ]]; then
+    [[ "$dir" == /* && "$(basename "$dir")" == .verify-restore.* ]] || { echo "Not removing the data directory '$dir' (it is not one this script makes)." >&2; exit 1; }
+    if [[ -d "$dir" ]]; then
+      docker run --rm --network none --user 0:0 --entrypoint /bin/rm -v "$dir:/scratch" "$IMAGE" -rf /scratch/data >/dev/null 2>&1 || true
+      rm -rf -- "$dir" 2>/dev/null || echo "Could not remove the disposable data directory $dir; remove it with: sudo rm -rf $dir" >&2
+    fi
+  fi
+  exit 0
+}
 allow_unsigned=false
 BACKUP_TREE=check
+keep=false
+restore_only=false
 backup=''
 while (($#)); do
   case "$1" in
     --allow-unsigned) allow_unsigned=true ;;
     --no-storage-tree) BACKUP_TREE=skip ;;
+    --keep) keep=true ;;
+    --restore-only) restore_only=true ;;
+    --rm) (($# == 2)) || usage; remove_kept "$2" ;;
     -h|--help) usage ;;
     -*) echo "Unknown option: $1" >&2; usage ;;
     *) [[ -z "$backup" ]] || usage; backup="$1" ;;
@@ -89,6 +123,7 @@ catalog_query="SELECT p FROM (SELECT bucket_id||'/'||name||COALESCE('/'||version
 scratch=$(mktemp -d "${TMPDIR:-/tmp}/warehouse-restore.XXXXXX")
 container="warehouse-restore-$(openssl rand -hex 6)"
 created=false
+kept=false
 disk_dir=''
 # A failed run keeps the evidence: the container log, its state and the database
 # sessions are saved before the disposable container is removed.
@@ -115,11 +150,11 @@ save_diagnostics() {
 cleanup() {
   local status=$?
   trap - EXIT
-  if [[ "$created" == true ]]; then
+  if [[ "$created" == true && "$kept" != true ]]; then
     if ((status != 0)); then save_diagnostics || true; fi
     docker rm -f -v "$container" >/dev/null 2>&1 || true
   fi
-  if [[ -n "$disk_dir" && -d "$disk_dir" ]]; then
+  if [[ "$kept" != true && -n "$disk_dir" && -d "$disk_dir" ]]; then
     # PostgreSQL files belong to the container's postgres user, so the image removes them.
     docker run --rm --network none --user 0:0 --entrypoint /bin/rm -v "$disk_dir:/scratch" "$IMAGE" -rf /scratch/data >/dev/null 2>&1 || true
     rm -rf -- "$disk_dir" 2>/dev/null || echo "Could not remove the disposable data directory $disk_dir; remove it with: sudo rm -rf $disk_dir" >&2
@@ -231,14 +266,17 @@ if [[ "$storage" == disk ]]; then
   mkdir -m 700 "$disk_dir/data"
   data_args=(-v "$disk_dir/data:/var/lib/postgresql/data" -e PGDATA=/var/lib/postgresql/data)
 fi
-docker run -d --pull missing --name "$container" --label purpose=warehouse-restore-test \
+# The init scripts run as the image's postgres user, so the file it reads must be world-readable whatever the umask of the caller
+# (this script's own is 077, and so is the one of an operator whose tree was unpacked by git archive): it is mounted from a 0644 copy.
+install -m 0644 -- "$ROOT/docker/volumes/db/00-bootstrap.sql" "$scratch/00-bootstrap.sql"
+docker run -d --pull missing --name "$container" --label purpose=warehouse-restore-test --label "warehouse.restore-disk-dir=$disk_dir" \
   --network none --memory "${memory_mb}m" --cpus 1 \
   "${data_args[@]}" \
   -e JWT_SECRET=isolated-restore-secret-not-for-deployment-12345 -e JWT_EXP=3600 \
   -e AUTH_MODE=disabled -e APP_ENV=verification \
   -e POSTGRES_USER=supabase_admin -e POSTGRES_DB=postgres -e POSTGRES_PASSWORD=disposable-restore-only \
   -e POSTGRES_INITDB_ARGS=--locale=en_US.UTF-8 \
-  -v "$ROOT/docker/volumes/db/00-bootstrap.sql:/docker-entrypoint-initdb.d/00-bootstrap.sql:ro" \
+  -v "$scratch/00-bootstrap.sql:/docker-entrypoint-initdb.d/00-bootstrap.sql:ro" \
   "$IMAGE" >/dev/null
 created=true
 ready=false
@@ -313,18 +351,27 @@ docker exec -e PGPASSWORD=disposable-restore-only "$container" pg_restore \
 if [[ -e "$backup/_supabase.dump" ]]; then
   echo 'Note: the backup contains _supabase.dump (the pooler tenant). It is skipped: the pooler recreates its tenant when it starts.'
 fi
-docker exec -i -e PGPASSWORD=disposable-restore-only "$container" \
-  psql -X -q -v ON_ERROR_STOP=1 -U supabase_admin -d warehouse_restore \
-  < "$ROOT/scripts/backup-integrity.sql" > "$scratch/integrity.txt"
-diff -u "$backup/integrity.txt" "$scratch/integrity.txt"
-# The restored catalog must list exactly what the backup catalogued, and the
-# storage listing above already proved every entry has a file.
-docker exec -e PGPASSWORD=disposable-restore-only "$container" \
-  psql -X -A -t -v ON_ERROR_STOP=1 -U supabase_admin -d warehouse_restore \
-  -c "$catalog_query" > "$scratch/storage_objects.txt"
-diff -u "$backup/storage_objects.txt" "$scratch/storage_objects.txt"
-if [[ "$BACKUP_SIGNED" == true ]]; then
-  echo "Backup signature, checksums, $storage_safety, database restore, and integrity comparison passed."
+if [[ "$restore_only" == true ]]; then
+  compared='database restore (the integrity comparison was not asked for)'
 else
-  echo "Backup checksums, $storage_safety, database restore, and integrity comparison passed. The backup is UNSIGNED: its origin was not proven."
+  docker exec -i -e PGPASSWORD=disposable-restore-only "$container" \
+    psql -X -q -v ON_ERROR_STOP=1 -U supabase_admin -d warehouse_restore \
+    < "$ROOT/scripts/backup-integrity.sql" > "$scratch/integrity.txt"
+  diff -u "$backup/integrity.txt" "$scratch/integrity.txt"
+  # The restored catalog must list exactly what the backup catalogued, and the
+  # storage listing above already proved every entry has a file.
+  docker exec -e PGPASSWORD=disposable-restore-only "$container" \
+    psql -X -A -t -v ON_ERROR_STOP=1 -U supabase_admin -d warehouse_restore \
+    -c "$catalog_query" > "$scratch/storage_objects.txt"
+  diff -u "$backup/storage_objects.txt" "$scratch/storage_objects.txt"
+  compared='database restore, and integrity comparison'
+fi
+if [[ "$BACKUP_SIGNED" == true ]]; then
+  echo "Backup signature, checksums, $storage_safety, $compared passed."
+else
+  echo "Backup checksums, $storage_safety, $compared passed. The backup is UNSIGNED: its origin was not proven."
+fi
+if [[ "$keep" == true ]]; then
+  kept=true
+  echo "Kept disposable database: $container (database warehouse_restore, user supabase_admin; remove it with: bash scripts/verify-restore.sh --rm $container)"
 fi

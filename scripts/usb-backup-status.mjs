@@ -1,5 +1,5 @@
 // Doctor warning for the USB backup drive (scripts/backup-usb.sh). Returns null when
-// USB backup is not set up for this state or the last copy is recent and successful and,
+// USB backup is not set up for this state or the last copy is recent and successful (the saved images included) and,
 // when archives are encrypted, the operator has confirmed a copy of the backup key. It warns first when the installation
 // still writes readable archives although nobody typed --no-encrypt: it never ran `backup-usb.sh setup` after encryption
 // became the default.
@@ -63,5 +63,7 @@ export function usbBackupWarning(state, {
   const success = Number(run.last_success_epoch) * 1000;
   const days = Math.floor((now - success) / 86400000);
   if (!Number.isFinite(days) || days >= maxAgeDays) return `The last successful USB backup is ${Number.isFinite(days) ? `${days} days` : 'of unknown age'} old: attach the enrolled USB drive.`;
+  // The archive was copied; only the saved images were not (scripts/backup-usb.sh records that apart from a failed copy).
+  if (run.images_problem) return `The last USB backup copied the archive but not the saved images: ${run.images_problem}. The drive then holds no saved images or an earlier copy, and a lost-host restore from it builds the images it lacks.`;
   return null;
 }

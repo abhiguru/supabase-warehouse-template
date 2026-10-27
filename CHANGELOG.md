@@ -180,6 +180,30 @@ reload** in `docs/OPERATOR_INSTALL.md`; a new installation needs none of that. A
     not fas-sync as such: fas-sync opens a session for each statement, so a run that is between two statements is not seen. Let fas-sync's run
     finish, start no other until the upgrade has finished, then use it again. A `--dry-run` only warns about an open session. **This applies from the upgrade after the move to
     this release:** the move **to** this release is made by the `upgrade.sh` you have now, which closes nothing and checks nothing.
+19. **Give the USB drive about 2.5 GiB more room (twice that while the images change).** From the next copy, a USB run also copies
+    `$WAREHOUSE_STATE_DIR/images` (about 2.5 GiB) to `warehouse-backups/<state name>/images` on the drive, once and again only after the folder
+    changes, so the drive needs that much room more than the archives, and as much again free while a changed set is written beside the old one. The run starts from your checkout, so neither `backup-usb.sh setup` nor a new
+    enrolment is needed. The images are copied last, after the archive is on the drive and the drive is pruned: a drive too small for them does not fail the run or hold back the pruning (the archive copy counts as done); the run says "saved images NOT copied" with the sizes, and `npm run doctor` shows it. Nothing is deleted to make room except what `--keep` already prunes. After a backup-key replacement, run `bash scripts/build-images.sh --save` so that the images are signed with the new key, or they are not copied. `setup.sh` writes the
+    folder when it builds or pulls an image; if nothing needed either, `bash scripts/build-images.sh --save` writes it once. Then a
+    lost-host restore from the drive loads the images with `db:restore-host`, so it needs no Debian, npm or Chrome for Testing; it still needs
+    Docker Hub for the official postgres image (the restore check) and PostgREST, and your key copy
+    ("Recover a lost host from the USB drive" in `docs/OPERATOR_INSTALL.md`). A checkout at a release tag may now pull its images
+    instead of building them (see "Changed"); nothing to do for that.
+
+20. **Upgrades rehearse the release's migrations on a copy of your data first.** The preflight of the release you move to (run by
+    `upgrade.sh`, also with `--dry-run`) restores the newest verified backup into a disposable, network-isolated database and applies the
+    release's migrations to it, file by file. A migration that cannot be applied to your data (for example a unique index over rows that
+    already clash) now refuses the upgrade before the backup, before the checkout and before any change, with the file's name and the
+    database's message and "Nothing was changed"; it used to stop part way through `setup.sh`, after the checkout. Nothing to do on a normal
+    upgrade, but plan for it: it needs a verified backup on record (the nightly one counts; without any, the preflight warns that it did
+    not rehearse), a few minutes and the disk space the restore check already uses, and it prints "applying them took N s" (only the
+    migrations are timed, not the restore; the real ones on the live database take about as long). **If it refuses, do not retry the same command:** read the file
+    name and message, and report them with the release number (the data has to be corrected, or the release has to change). The rehearsal
+    uses the newest verified backup and says how old it is; it warns when that is more than two days. A backup that `bash scripts/backup.sh`
+    has only made is not used: a backup counts once it is verified and recorded, which the nightly pass does and `upgrade.sh` does for the
+    backup it takes (by hand: `bash scripts/verify-restore.sh <the backup folder>`, then `node scripts/watch.mjs record-verified <its name>`).
+    The restore for the rehearsal does not compare the backup with the new release's integrity report, so only the data and the migrations
+    decide. This applies from the move after the one **to** this release, like the rest of the preflight.
 
 ### Changed
 
@@ -204,6 +228,16 @@ reload** in `docs/OPERATOR_INSTALL.md`; a new installation needs none of that. A
   API through a gateway that is closed on purpose and say so as a warning (the LAN probe is skipped the same way); `maintenance.sh off` runs the
   health check again. `scripts/check-release-contents.sh` requires `scripts/maintenance.sh`, because the `upgrade.sh` of the release an
   installation runs now opens the API with the one of the release it moved to.
+- **Migrations: a lock timeout, the schema reload per file, and a rule that keeps the order.** Each file runs in its own transaction with a
+  10 s `lock_timeout`; one that cannot get its lock (a session of the API holds the table) rolls back whole, and `scripts/migrate.sh` runs the
+  plan again, three attempts five seconds apart, before it stops with a message that says what to do. PostgREST is told to reload its schema
+  after every file's `COMMIT`, not only at the end. `scripts/check-migration-order.mjs` (CI job `migration-order`) fails a change that
+  removes, renames or edits a file of `migrations/` or adds one that sorts before an existing one (`CONTRIBUTING.md`); a later squash of
+  the chain is a snapshot kept outside `migrations/` for fresh installs only. `tests/storage_policy_deps.sql` fails when a migration drops a
+  column that the storage policies of `scripts/configure-storage.sql` read, and `tests/migrations.sh` applies the newest migration to a
+  database that already has those policies, as an upgrade does. A weekly `seeded-upgrade` CI job upgrades a facility with data
+  (`tests/seed/`, 300 receipts, 200 dispatches, 40 invoices, photos) and, in a second variant, proves that clashing customer names refuse the
+  upgrade before the checkout with migration 117 named.
 - **The backend tells the app which release it is, and the minimum app build comes from the release.** `setup.sh` writes
   `<state>/public/release.json` (the tag or `git describe`, the commit, the newest applied migration, the time) and
   `<state>/public/app-compat.json` (copied from `app-compat.json` of the checkout) on every run, after the migrations. `get-public-config`
@@ -224,7 +258,6 @@ reload** in `docs/OPERATOR_INSTALL.md`; a new installation needs none of that. A
   and `tests/postgrest-contract.test.mjs` asserts the status, code and message of every refusal the app keys on; the table is in
   [docs/API_CONTRACT.md](docs/API_CONTRACT.md), "What the app may match: codes, not texts".
 - **jose 6.2.12 (was 5.10.0)** in `functions/vendor` and the unit tests; Dependabot proposes jose updates again.
-
 - **`upgrade.sh` runs the release's own preflight before the backup, enforces an oldest release to upgrade from, and keeps the old images for the
   way back.** `upgrade.sh` is the script of the release you run now and cannot know what the release you move to needs, so every release now
   carries `scripts/upgrade-preflight.sh` and `scripts/upgrade-floor.txt`; `upgrade.sh` reads them out of the release (`git archive`, as it reads the
@@ -312,12 +345,40 @@ reload** in `docs/OPERATOR_INSTALL.md`; a new installation needs none of that. A
 - **Built images are saved, and signed.** After a successful build `scripts/build-images.sh` writes the images it built to
   `<state>/images/<service>.tar` (`docker save`, about 2.5 GiB in all; skipped with a warning if under 5 GiB, or the size of the newest
   backup when larger, would stay free) with a copy of the build record, and `db:restore-host` loads them (`--images DIR`, or an `images`
-  folder next to the backup) before the restore, so a lost-host rebuild does not need Docker Hub, Debian, npm and Chrome for Testing.
+  folder next to the backup) before the restore, so a lost-host rebuild does not need Debian, npm and Chrome for Testing (Docker Hub is still needed for the postgres and PostgREST images).
   The folder is signed like a backup (`SHA256SUMS` over every file, `SHA256SUMS.hmac` with the backup key) and `db:restore-host` loads
   nothing that does not authenticate with the key it is given: a folder named with `--images` is refused, one found next to the backup is
   ignored, and `--allow-unsigned` never uses saved images. A tarball whose save was skipped or failed, or that the record no longer
-  names, is removed. The folder is not in a backup: `bash scripts/build-images.sh --save` writes it for an installation that is
-  already built, and the operator copies it with the drive ([docs/OPERATOR_INSTALL.md](docs/OPERATOR_INSTALL.md#backup-and-restore)).
+  names, is removed. The folder is not in a backup, but the USB backup copies it to the drive beside the archives (below);
+  `bash scripts/build-images.sh --save` writes it for an installation that is already built
+  ([docs/OPERATOR_INSTALL.md](docs/OPERATOR_INSTALL.md#backup-and-restore)).
+- **Release images: built and scanned once by the release workflow, pulled by digest at a facility; the USB drive carries the saved
+  images.** The `v*` tag workflow has a second job, `publish-images`: it builds every image with `--no-cache`, scans each with the
+  repository's scan and exception ledger (a HIGH or CRITICAL row no valid exception covers fails the run before anything is pushed),
+  pushes them to `ghcr.io/abhiguru/supabase-warehouse-template/<service>` and attaches `release-images.json` (each image by digest, with the
+  fingerprint of its recipe) to a draft GitHub Release. `setup.sh` now runs `scripts/build-images.sh --from-release`: a checkout exactly at
+  a release tag downloads that file and, for each image it would build whose recipe fingerprint is the released one, pulls the image by
+  digest, checks the digest and records it as a build would; it prints which services were pulled and which built. The facility's
+  build stays the fallback and is what runs for `main`, a branch or a changed recipe, when the file or `ghcr.io` cannot be reached, or when
+  a digest does not match, each with one line that says why. What is scanned is what runs for a pulled image
+  ([docs/CONTAINER_SECURITY.md](docs/CONTAINER_SECURITY.md), "Release images"). `scripts/backup-usb.sh` copies the saved images
+  (`<state>/images`, signed with the backup key) to `warehouse-backups/<state name>/images` on the drive, once and again after a change,
+  unencrypted (they hold nothing of the installation) and outside the archives; `db:restore-host` finds them next to the archive it is given.
+  The enrolment output says how much room they add (twice that while the images change). The copy is the last step of a run: when it fails
+  the archive copy still counts, pruning has already happened, and the run says "saved images NOT copied" (shown by `npm run doctor`).
+  The release checklist gains the publication steps (public packages after the first push, the asset check, publishing the draft).
+- **Release images carry their commit; a final release re-tags its candidate's images; the owner switches on immutable releases.** Every
+  published image has the labels `org.opencontainers.image.revision` (the commit) and `org.opencontainers.image.version` (the tag);
+  `build-images.sh --from-release` refuses a pulled image whose revision is not the checkout's commit (or has none) and builds it instead. A
+  `vX.Y.Z` tag on the commit of its newest `vX.Y.Z-rc.N` builds and scans nothing: it re-tags the candidate's images by digest and lists
+  the same digests, so what ships is what was scanned and rehearsed (the release checklist says what that means for a vulnerability
+  published between the two). The checklist makes GitHub's immutable releases a step before the first candidate, and
+  [docs/CONTAINER_SECURITY.md](docs/CONTAINER_SECURITY.md) states the trust honestly: the account, TLS, the digest, the immutable release and
+  the revision label; there is no cryptographic signature of the images. A pull is stopped after 20 minutes
+  (`WAREHOUSE_IMAGE_PULL_TIMEOUT`, seconds) and the image is built here; a host that is not x86-64 builds instead of pulling.
+  `db:restore-host`, at a checkout exactly at a release tag, runs `build-images.sh --from-release` before the restore, so images the
+  saved ones do not cover are pulled rather than built (`scripts/restore.sh` is unchanged). A pre-release is now recognised from the tag
+  without its `+build` part.
 - **`stop.sh` survives a reboot.** It writes `<state>/config/stopped-by-operator`; `start.sh`, `setup.sh` and `restore.sh` remove it.
   While it exists the boot unit does nothing, the checker does not self-heal, and `status`, `doctor` and the `start.sh` hint say
   "stopped by the operator; run start.sh". A reboot in the middle of a manual procedure (Baseline reload, Major PostgreSQL upgrade,

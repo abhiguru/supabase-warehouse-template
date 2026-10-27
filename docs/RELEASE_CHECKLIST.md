@@ -77,7 +77,59 @@ A `v*` tag runs `release.yml`: the semantic-version gate (`scripts/check-release
 functions recreate in `setup.sh`), `npm test`, `npm audit`, the
 Chrome for Testing freshness check of the PDF renderer (`scripts/check-cft-freshness.mjs --mode warn`: a Chrome more than 14 days
 behind Stable is a warning on the run and never blocks the tag; the weekly issue is the signal) and a Compose validation against
-generated operator state. Wait for it to pass before the next two sections.
+generated operator state. Then its second job, `publish-images`, builds, scans and publishes the images ([below](#image-publication)).
+Wait for both to pass before the next sections.
+
+## Image publication
+
+The `publish-images` job runs after the checks above, with `packages: write` and `contents: write` (no other job has either). It builds
+every Compose image of the tagged commit with `--no-cache`, scans each with `npm run scan:images` (the section "Image scan before a
+release" above, run on the runner with Trivy 0.76.0 pinned by checksum in the workflow; a HIGH or CRITICAL row no valid exception covers, or an
+expired exception, fails the job before anything is pushed), logs in to `ghcr.io`, pushes each image as
+`ghcr.io/abhiguru/supabase-warehouse-template/<service>:<tag>` (`scripts/publish-images.sh`), checks that every image can be read
+without credentials, and attaches `release-images.json` to the GitHub Release (a draft is made when the release does not exist yet).
+Every image carries the labels `org.opencontainers.image.revision` (the commit) and `org.opencontainers.image.version` (the tag), and a facility
+refuses a pulled image whose revision is not its checkout's commit. Facilities at the tag pull by those digests
+([OPERATOR_INSTALL.md](OPERATOR_INSTALL.md#rerun-and-upgrade)); a facility that cannot builds from the recipe as before. The manual scan above
+stays as the early check on the release commit: a scan that fails here fails the tag's job.
+
+**A final tag re-tags the images of its release candidate; it does not rebuild them.** When `vX.Y.Z` is on the same commit as the newest
+`vX.Y.Z-rc.N` (the flow above: tag the rc, rehearse, tag the same commit), and that candidate's `release-images.json` can be downloaded and fits the
+commit, the job builds and scans nothing: it copies each image of the candidate to `<service>:vX.Y.Z` by digest (`docker buildx imagetools
+create --prefer-index=false`, a carbon copy: the digest does not change) and attaches a `release-images.json` with the same digests and
+`"release": "vX.Y.Z"`. The job log says `... they are re-tagged, not built again` and the build and scan steps are skipped. **What ships is
+what was rehearsed**, and what was scanned when the candidate was published: the images carry that day's packages, and a vulnerability
+published between the candidate and the final does not fail the final. That is the point (the bytes under test are the bytes released), and
+the price: if you want the newer packages, cut another candidate (`-rc.N+1`) on the commit, scan it, rehearse again and tag the final on
+that. A final on a commit that has no candidate, or whose newest candidate is on another commit or has no usable list, builds and scans
+as a candidate does; a scan that fails then is handled as in the first item below. The label `org.opencontainers.image.version` of a re-tagged image
+names the candidate it was built for; the revision is the commit of both.
+
+- [ ] **Once, before the first release candidate: switch on GitHub's immutable releases for the repository.** On GitHub: the repository's
+      **Settings**, **General**, the **Releases** section, **Enable release immutability** (the control may move: the GitHub documentation page
+      "Immutable releases" says where it is). From then on a published release's tag and assets cannot be changed or deleted, so
+      `release-images.json` of a published release is what the maintainer published, whoever later holds a token that can write
+      release assets. A draft stays editable (this workflow attaches the file to a draft), the job cannot replace the file of a published
+      release (a re-run after publication fails at the upload), and a mistake in a published candidate is corrected by the next candidate,
+      never by editing it. Without this setting the file is an ordinary release asset that anyone with write access to the repository's releases
+      can replace; the revision label check still refuses an image built from another commit (an older release's image, say).
+- [ ] `publish-images` is green for the tag. If its scan failed, fix the recipe or have the owner renew the exception on `main` and tag
+      again (`-rc.N+1`); never move a tag. Re-running the job on a draft release builds again and replaces `release-images.json` (the
+      digests change; a facility that already pulled keeps what it has); on a published release the upload is refused.
+- [ ] **Once, with the first release candidate (nothing in this job has run against `ghcr.io` before it):** if the push is refused
+      (`denied: permission_denied`), open each package's settings, "Manage Actions access", and add this repository with the Write role,
+      then re-run the job. GitHub creates each package private. For every package of the repository
+      (`github.com/abhiguru?tab=packages`: `db`, `functions`, `gateway`, `pdf-renderer`, `storage` and the optional `cups`, `sensor-bridge` and
+      `supavisor`) open Package settings, link it to this repository if it is not, and set its visibility to **Public**; then re-run the job. The
+      step "Check that the images pull without credentials" fails until every package is public, so a private package is never
+      discovered by a facility silently building instead.
+- [ ] In the release (a draft, or published) check the asset `release-images.json`: `release` is the tag, `commit` is
+      `git rev-parse vX.Y.Z^{commit}`, there is one image for every recipe (`jq -r '.images | keys[]' release-images.json`: the services of
+      `docker/docker-compose.yml` that have `build:`), and each `ref` is `ghcr.io/abhiguru/supabase-warehouse-template/<service>@sha256:<64 hex>`.
+- [ ] A release candidate's draft is **published as a pre-release before the rehearsal** (`gh release edit vX.Y.Z-rc.N --draft=false
+      --prerelease`), or the rehearsal's `setup.sh` finds no file and builds, which proves nothing about the pull. The rehearsal output must
+      say `Pulled N image(s) from the release (...)`. The final's job needs the candidate's list, so keep the candidate's release (draft or
+      published) until the final has been tagged.
 
 ## Upgrade rehearsal from the previous tag
 
@@ -103,7 +155,10 @@ commit afterwards: a failed rehearsal never leaves a published `vX.Y.Z` that has
 
 ## Release note
 
-Publish by hand: `gh release create vX.Y.Z --verify-tag --title '<title>' --notes-file <release-notes.md>`. Operators read this,
+Publish by hand. The `publish-images` job has already made the release as a **draft** that holds `release-images.json`; give it its
+title and note and publish it: `gh release edit vX.Y.Z --draft=false --title '<title>' --notes-file <release-notes.md>` (a pre-release tag
+is made a pre-release: add `--prerelease` if you publish one by hand). If you made the release before the job ran, the job only attaches
+the file. Until the release is published a facility cannot fetch the file and builds, which is the old behaviour. Operators read the note,
 so write it for them. Title: `vX.Y.Z`, or `vX.Y.Z Security: <what, in a few words>` for a security fix (the support policy in
 [SECURITY.md](../SECURITY.md) says a fix is announced by a release with "Security" in its title). Template:
 

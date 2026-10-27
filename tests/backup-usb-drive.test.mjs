@@ -3,11 +3,13 @@
 // one has been written and verified. Fake drives only (tests/usb-test-helpers.mjs): nothing here touches a USB device.
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { mkdirSync, writeFileSync, readFileSync, existsSync, readdirSync, statSync, copyFileSync } from 'node:fs';
+import { mkdirSync, writeFileSync, readFileSync, existsSync, readdirSync, statSync, copyFileSync, rmSync, renameSync } from 'node:fs';
+import { createHash } from 'node:crypto';
 import { spawnSync } from 'node:child_process';
 import { join } from 'node:path';
-import { composeEnv, makeBackup, backupKey, hmacHex } from './backup-test-helpers.mjs';
+import { composeEnv, makeBackup, backupKey, hmacHex, signBackup } from './backup-test-helpers.mjs';
 import { fixture } from './usb-test-helpers.mjs';
+import { usbBackupWarning } from '../scripts/usb-backup-status.mjs';
 
 const PLAIN = { WAREHOUSE_BACKUP_ENCRYPT: '0' };
 const NOVERIFY = { WAREHOUSE_USB_BACKUP_VERIFY_RESTORE: 'no' };
@@ -414,5 +416,286 @@ test('the newest archive on the drive holds an unsigned backup (written by an ea
     assert.doesNotMatch(result.stdout, /Restore verification of the copy on the drive passed/);
     assert.ok(existsSync(out), 'the archive is kept');
     assert.match(f.last(), /^result=failed$/m);
+  } finally { f.cleanup(); }
+});
+
+// ---------------------------------------------------------------- the saved images (<state>/images) go to the drive beside the archives
+// What scripts/build-images.sh leaves in <state>/images: the tarballs, a copy of the build record and SHA256SUMS signed with the backup key.
+const sha = bytes => createHash('sha256').update(bytes).digest('hex');
+function savedImages(f, files = { 'db.tar': 'db image bytes', 'functions.tar': 'functions image bytes' }) {
+  const dir = join(f.state, 'images');
+  mkdirSync(dir, { recursive: true, mode: 0o700 });
+  rmSync(join(dir, 'SHA256SUMS'), { force: true }); rmSync(join(dir, 'SHA256SUMS.hmac'), { force: true });
+  for (const [name, body] of Object.entries({ ...files, 'image-recipes.sha256': `${'1'.repeat(64)}  db  sha256:${'a'.repeat(64)}\n` })) writeFileSync(join(dir, name), body, { mode: 0o600 });
+  const names = readdirSync(dir).sort();
+  writeFileSync(join(dir, 'SHA256SUMS'), names.map(name => `${sha(readFileSync(join(dir, name)))}  ${name}\n`).join(''), { mode: 0o600 });
+  signBackup(dir);
+  return dir;
+}
+// What db:restore-host checks before it loads anything from a folder: backup_authenticate with the backup key.
+const authentic = (f, dir) => spawnSync('bash', ['-c', 'source "$1/scripts/backup-key.sh"; backup_authenticate "$2" false', 'sh', f.root, dir], { encoding: 'utf8',
+  env: { ...process.env, WAREHOUSE_BACKUP_KEY_FILE: join(f.state, 'config/backup.key') } }).status === 0;
+const files = dir => readdirSync(dir).sort();
+
+test('the saved images are copied to the drive beside the archives, unencrypted and signed as they are, once, and again only when their signed list changes', () => {
+  const f = fixture('warehouse-usb-images-');
+  try {
+    f.enroll();
+    const [newest] = f.backups(1);
+    const source = savedImages(f);
+    const first = f.run(RUN, f.verifyEnv());
+    assert.equal(first.status, 0, first.stderr + first.stdout);
+    // Where db:restore-host looks: an `images` folder next to the archive it is given, as build-images.sh wrote it.
+    const copy = join(f.dest, 'images');
+    assert.deepEqual(f.archives(), [`${newest}.tar.enc`]);
+    assert.deepEqual(files(copy), files(source));
+    for (const name of files(source)) assert.equal(readFileSync(join(copy, name), 'utf8'), readFileSync(join(source, name), 'utf8'), `${name} is byte for byte what is signed`);
+    assert.equal(authentic(f, copy), true, 'the copy authenticates with the backup key, as restore-host requires');
+    assert.match(first.stdout, /Copied the saved images to the drive and verified them: 3 file\(s\), \d+(\.\d+)?\w*B?, in images\/ beside the archives\./);
+    assert.match(f.last(), /^message=copied 1, .*, saved images copied$/m);
+    assert.match(first.stdout, /copied=1 already-present=0 failed=0/, 'the images are not counted as archives');
+    // Nothing of them is inside the archive, and the archive's rules (the newest three) are not applied to the folder.
+    assert.doesNotMatch(spawnSync('bash', ['-c', 'set -euo pipefail; source "$1"; backup_key_load "$2"; backup_decrypt "$BACKUP_KEY" < "$3" | tar -tf -', 'sh', join(f.root, 'scripts/backup-key.sh'), join(f.state, 'config/backup.key'), join(f.dest, `${newest}.tar.enc`)], { encoding: 'utf8' }).stdout, /db\.tar|image-recipes/);
+    assert.deepEqual(readdirSync(f.dest).filter(name => name.startsWith('.images')), [], 'no partial or old folder is left');
+
+    // Unchanged list: verified on the drive, not written again.
+    const before = ['db.tar', 'functions.tar', 'SHA256SUMS'].map(name => { const s = statSync(join(copy, name)); return [s.ino, s.mtimeMs]; });
+    const second = f.run(RUN, f.verifyEnv());
+    assert.equal(second.status, 0, second.stderr);
+    assert.match(second.stdout, /The saved images are already on the drive and verified\./);
+    assert.doesNotMatch(second.stdout, /Copied the saved images/);
+    assert.match(f.last(), /saved images already present$/m);
+    assert.deepEqual(['db.tar', 'functions.tar', 'SHA256SUMS'].map(name => { const s = statSync(join(copy, name)); return [s.ino, s.mtimeMs]; }), before, 'not rewritten');
+
+    // A rebuild changed the folder (a new signed list): the new folder replaces the old one whole, a file that is gone is gone.
+    rmSync(join(source, 'functions.tar'));
+    savedImages(f, { 'db.tar': 'db image bytes, rebuilt', 'storage.tar': 'a new storage image' });
+    const third = f.run(RUN, f.verifyEnv());
+    assert.equal(third.status, 0, third.stderr + third.stdout);
+    assert.match(third.stdout, /Copied the saved images to the drive and verified them: 3 file\(s\)/);
+    assert.deepEqual(files(copy), files(source));
+    assert.equal(readFileSync(join(copy, 'db.tar'), 'utf8'), 'db image bytes, rebuilt');
+    assert.equal(authentic(f, copy), true);
+    assert.deepEqual(readdirSync(f.dest).filter(name => name.startsWith('.images')), []);
+
+    // Same list, but the drive's copy was damaged: copied again, which repairs it.
+    writeFileSync(join(copy, 'db.tar'), 'damaged on the drive');
+    const fourth = f.run(RUN, f.verifyEnv());
+    assert.equal(fourth.status, 0, fourth.stderr + fourth.stdout);
+    assert.match(fourth.stdout, /The saved images on the drive do not match their list; copying them again\./);
+    assert.match(fourth.stdout, /Copied the saved images to the drive and verified them/);
+    assert.equal(readFileSync(join(copy, 'db.tar'), 'utf8'), 'db image bytes, rebuilt');
+    assert.equal(readFileSync(join(f.drive, 'holiday-photos.zip'), 'utf8'), 'not ours');
+  } finally { f.cleanup(); }
+});
+
+test('without saved images the run says so and succeeds, and the drive gets none; a copy from an earlier run stays', () => {
+  const f = fixture('warehouse-usb-images-none-');
+  try {
+    f.enroll();
+    f.backups(1);
+    const result = f.run(RUN, f.verifyEnv());
+    assert.equal(result.status, 0, result.stderr + result.stdout);
+    assert.match(result.stdout, new RegExp(`No saved images in ${f.state}/images yet, so none were copied\\. bash scripts/build-images\\.sh --save writes them`));
+    assert.match(f.last(), /^result=ok$/m);
+    assert.match(f.last(), /saved images none yet$/m);
+    assert.equal(existsSync(join(f.dest, 'images')), false);
+    // A folder on the drive from an earlier run is not removed because the host's folder is gone.
+    savedImages(f);
+    assert.equal(f.run(RUN, f.verifyEnv()).status, 0);
+    rmSync(join(f.state, 'images'), { recursive: true });
+    assert.equal(f.run(RUN, f.verifyEnv()).status, 0);
+    assert.ok(existsSync(join(f.dest, 'images', 'db.tar')));
+  } finally { f.cleanup(); }
+});
+
+test('saved images that do not authenticate with the backup key are not copied: the archive copy still succeeds, the run says so and records it, and the earlier copy on the drive is untouched', () => {
+  const f = fixture('warehouse-usb-images-forged-');
+  try {
+    f.enroll();
+    const [newest] = f.backups(1);
+    savedImages(f);
+    assert.equal(f.run(RUN, f.verifyEnv()).status, 0);
+    const good = readFileSync(join(f.dest, 'images', 'db.tar'), 'utf8');
+    // Changed after signing (the list on the drive then differs from the host's only if the list was re-made, so change both kinds).
+    writeFileSync(join(f.state, 'images', 'db.tar'), 'changed after signing');
+    writeFileSync(join(f.state, 'images', 'SHA256SUMS'), readFileSync(join(f.state, 'images', 'SHA256SUMS'), 'utf8').replace(/^[0-9a-f]{64}  db\.tar$/m, `${sha('changed after signing')}  db.tar`));
+    const result = f.run(RUN, f.verifyEnv());
+    assert.equal(result.status, 0, 'the archive was copied and verified; only the images were not: ' + result.stderr + result.stdout);
+    assert.match(result.stderr, new RegExp(`WARNING: saved images NOT copied: ${f.state}/images does not authenticate with the backup key \\(.*\\)\\. Run bash scripts/build-images\\.sh --save, which signs the images with the key in use, then attach the drive again`));
+    assert.doesNotMatch(result.stderr, /FAILED/);
+    assert.equal(readFileSync(join(f.dest, 'images', 'db.tar'), 'utf8'), good, 'the copy that was authentic stays');
+    assert.ok(existsSync(join(f.dest, `${newest}.tar.enc`)), 'the archive is not affected');
+    assert.match(f.last(), /^result=ok$/m);
+    assert.match(f.last(), /^failed=0$/m);
+    assert.match(f.last(), /^images_problem=.*does not authenticate with the backup key/m);
+    assert.match(f.last(), /, saved images NOT copied: .*does not authenticate with the backup key/);
+    // A folder with no signature at all is the same.
+    rmSync(join(f.state, 'images', 'SHA256SUMS.hmac'));
+    rmSync(join(f.dest, 'images'), { recursive: true });
+    const unsigned = f.run(RUN, f.verifyEnv());
+    assert.equal(unsigned.status, 0, unsigned.stderr);
+    assert.match(unsigned.stderr, /saved images NOT copied: .*does not authenticate with the backup key/);
+    assert.equal(existsSync(join(f.dest, 'images')), false, 'nothing unproven reaches the drive');
+  } finally { f.cleanup(); }
+});
+
+test('saved images that do not fit are recorded as not copied and the archive copy stands; the room is measured and the sizes named, and nothing is deleted to make room', () => {
+  const f = fixture('warehouse-usb-images-room-');
+  try {
+    f.enroll();
+    f.backups(1);
+    // The archive first, with room to spare; then the images, with less room than they and the 64 MiB reserve need.
+    seed(f, 1, f.dfEnv({ FAKE_DRIVE_CAP: String(2 ** 30) }));
+    const archives = f.archives();
+    savedImages(f, { 'db.tar': 'x'.repeat(3 * 1024 * 1024) });
+    const used = Number(spawnSync('du', ['-sb', f.drive], { encoding: 'utf8' }).stdout.split('\t')[0]);
+    const tight = f.run(RUN, f.dfEnv({ ...f.verifyEnv(), FAKE_DRIVE_CAP: String(used + 20 * 1024 * 1024) }));
+    assert.equal(tight.status, 0, tight.stderr + tight.stdout);
+    assert.match(tight.stderr, /WARNING: saved images NOT copied: drive too small: they need \d+MiB next to what is on the drive after this run's pruning, and it has 20MiB free \(a changed set is written beside the old one, so a drive needs room for both while it is replaced\)\. The archives are not touched by this\. Use a larger drive\n/);
+    assert.doesNotMatch(tight.stderr, /keep fewer archives|--keep|FAILED/, 'pruning has already run, so fewer archives cannot be the remedy');
+    assert.deepEqual(f.archives(), archives, 'nothing was deleted');
+    assert.equal(existsSync(join(f.dest, 'images')), false);
+    assert.deepEqual(readdirSync(f.dest).filter(name => name.startsWith('.images')), []);
+    assert.match(f.last(), /^result=ok$/m);
+    assert.match(f.last(), /, saved images NOT copied: drive too small: /);
+    // With room it goes through.
+    const roomy = f.run(RUN, f.dfEnv({ ...f.verifyEnv(), FAKE_DRIVE_CAP: String(used + 200 * 1024 * 1024) }));
+    assert.equal(roomy.status, 0, roomy.stderr + roomy.stdout);
+    assert.ok(existsSync(join(f.dest, 'images', 'db.tar')));
+    assert.match(f.last(), /^images_problem=$/m, 'the problem is gone from the record once the images are copied');
+    // The free space cannot be read: not zero, not a guess.
+    savedImages(f, { 'db.tar': 'x'.repeat(1024) });
+    const blind = f.run(RUN, f.dfEnv({ ...f.verifyEnv(), FAKE_DF_BROKEN: 'drive' }));
+    assert.equal(blind.status, 0, blind.stderr);
+    assert.match(blind.stderr, /WARNING: saved images NOT copied: could not read the free space of the drive .* so it cannot be checked that they fit/);
+  } finally { f.cleanup(); }
+});
+
+test('an images problem does not hold back the pruning or the removal of readable archives, does not mark the archive copy failed, and the next run with room copies the images', () => {
+  const f = fixture('warehouse-usb-images-prune-');
+  try {
+    f.enroll();
+    // The drive as the first encrypted run of this release finds it: readable archives of earlier releases and three encrypted ones.
+    for (const day of [1, 2]) seed(f, day, PLAIN);
+    for (const day of [3, 4, 5]) seed(f, day);
+    assert.equal(f.archives().length, 5);
+    savedImages(f, { 'db.tar': 'x'.repeat(3 * 1024 * 1024) });
+    const used = Number(spawnSync('du', ['-sb', f.drive], { encoding: 'utf8' }).stdout.split('\t')[0]);
+    // The images do not fit even on the pruned drive; the run keeps one archive.
+    const result = f.run(RUN, f.dfEnv({ ...f.verifyEnv(), WAREHOUSE_USB_KEEP: '1', FAKE_DRIVE_CAP: String(used + 20 * 1024 * 1024) }));
+    assert.equal(result.status, 0, result.stderr + result.stdout);
+    assert.deepEqual(f.archives(), [`${f.bname(5)}.tar.enc`], 'the readable archives are removed and the archives beyond --keep are deleted, although the images were not copied');
+    assert.match(result.stdout, /copied=0 already-present=1 failed=0 pruned=2 unencrypted-removed=2/);
+    assert.match(result.stderr, /WARNING: saved images NOT copied: drive too small: /);
+    assert.equal(existsSync(join(f.dest, 'images')), false);
+    // Recorded as a successful archive copy (last_success moves) with the images said apart; doctor shows it.
+    const record = Object.fromEntries(f.last().split('\n').filter(line => line.includes('=')).map(line => [line.slice(0, line.indexOf('=')), line.slice(line.indexOf('=') + 1)]));
+    assert.equal(record.result, 'ok');
+    assert.equal(record.failed, '0');
+    assert.equal(record.last_success_epoch, record.finished_epoch, 'the archive copy counts as the last success');
+    assert.match(record.message, /pruned 2, unencrypted removed 2, restore verified .*, saved images NOT copied: drive too small/);
+    assert.match(usbBackupWarning(f.state, { etc: f.etc }), /The last USB backup copied the archive but not the saved images: drive too small: /);
+    // The next run, with room (the same drive after the pruning), copies the images and clears the record.
+    const next = f.run(RUN, f.dfEnv({ ...f.verifyEnv(), WAREHOUSE_USB_KEEP: '1', FAKE_DRIVE_CAP: String(used + 200 * 1024 * 1024) }));
+    assert.equal(next.status, 0, next.stderr + next.stdout);
+    assert.ok(existsSync(join(f.dest, 'images', 'db.tar')));
+    assert.match(f.last(), /^images_problem=$/m);
+    assert.equal(usbBackupWarning(f.state, { etc: f.etc }), null);
+  } finally { f.cleanup(); }
+});
+
+test('the room for the saved images is measured after the pruning of the run: images that fit only once the archives beyond --keep are gone are copied in that same run', () => {
+  const f = fixture('warehouse-usb-images-afterprune-');
+  try {
+    f.enroll();
+    for (const day of [1, 2, 3, 4]) seed(f, day);
+    const source = savedImages(f, { 'db.tar': 'x'.repeat(3 * 1024 * 1024) });
+    // What the script wants for the images: their files (not the list and its signature) and 64 MiB; and what the run is about to delete.
+    const imageBytes = readdirSync(source).filter(name => !name.startsWith('SHA256SUMS')).reduce((sum, name) => sum + sizeOf(join(source, name)), 0);
+    const wanted = imageBytes + 64 * 1024 * 1024;
+    const doomed = readdirSync(f.dest).filter(name => [1, 2, 3].some(day => name.startsWith(f.bname(day)))).reduce((sum, name) => sum + sizeOf(join(f.dest, name)), 0);
+    assert.ok(doomed > 1000, 'the archives about to be pruned take room');
+    const used = Number(spawnSync('du', ['-sb', f.drive], { encoding: 'utf8' }).stdout.split('\t')[0]);
+    // Free before the pruning: half of what the pruning frees short of the need; after it: half of it above the need.
+    const cap = used + wanted - Math.floor(doomed / 2);
+    const result = f.run(RUN, f.dfEnv({ ...f.verifyEnv(), WAREHOUSE_USB_KEEP: '1', FAKE_DRIVE_CAP: String(cap) }));
+    assert.equal(result.status, 0, result.stderr + result.stdout);
+    assert.deepEqual(f.archives(), [`${f.bname(4)}.tar.enc`]);
+    assert.match(result.stdout, /copied=0 already-present=1 failed=0 pruned=3/);
+    assert.doesNotMatch(result.stderr, /NOT copied/);
+    assert.match(result.stdout, /Copied the saved images to the drive and verified them/);
+    assert.equal(authentic(f, join(f.dest, 'images')), true);
+    assert.ok(result.stdout.indexOf('Deleting the archive') < result.stdout.indexOf('Copied the saved images'), 'the archives go first, then the images are copied');
+  } finally { f.cleanup(); }
+});
+
+test('an interrupted replacement of the saved images on the drive never costs the only good copy: the older folder is put back before the leftovers are cleared', () => {
+  const f = fixture('warehouse-usb-images-swap-');
+  try {
+    f.enroll();
+    f.backups(1);
+    const source = savedImages(f);
+    assert.equal(f.run(RUN, f.verifyEnv()).status, 0);
+    // The run died after `mv images .images.old` and before `mv .images.partial images`: the good copy is under the old name.
+    renameSync(join(f.dest, 'images'), join(f.dest, '.images.old'));
+    mkdirSync(join(f.dest, '.images.partial')); writeFileSync(join(f.dest, '.images.partial', 'db.tar'), 'half written');
+    // The host's folder is gone as well (a rebuilt host), so nothing could replace it: only the old copy is left.
+    rmSync(source, { recursive: true });
+    const result = f.run(RUN, f.verifyEnv());
+    assert.equal(result.status, 0, result.stderr + result.stdout);
+    assert.match(result.stdout, /The earlier saved images were put back \(images\/\): the last copy to the drive was interrupted while it replaced them\./);
+    assert.equal(readFileSync(join(f.dest, 'images', 'db.tar'), 'utf8'), 'db image bytes', 'the good copy is back');
+    assert.equal(authentic(f, join(f.dest, 'images')), true);
+    assert.deepEqual(readdirSync(f.dest).filter(name => name.startsWith('.images')), [], 'the half-written folder is gone');
+    // When the images folder is there, an old one is only a leftover.
+    mkdirSync(join(f.dest, '.images.old')); writeFileSync(join(f.dest, '.images.old', 'db.tar'), 'older');
+    assert.equal(f.run(RUN, f.verifyEnv()).status, 0);
+    assert.equal(readFileSync(join(f.dest, 'images', 'db.tar'), 'utf8'), 'db image bytes');
+    assert.deepEqual(readdirSync(f.dest).filter(name => name.startsWith('.images')), []);
+    // When the old copy cannot be put back (the move fails), it is left where it is, with the warning: it is never deleted as a leftover.
+    renameSync(join(f.dest, 'images'), join(f.dest, '.images.old'));
+    const shim = join(f.scratch ?? f.drive, 'mv-shim'); mkdirSync(shim);
+    writeFileSync(join(shim, 'mv'), '#!/bin/sh\ncase "$*" in *"/.images.old "*"/images") echo "mv: cannot move" >&2; exit 1 ;; esac\nexec /bin/mv "$@"\n', { mode: 0o755 });
+    const stuck = f.run(RUN, { ...f.verifyEnv(), PATH: `${shim}:${f.dfEnv().PATH}` });
+    assert.match(stuck.stderr, /Warning: could not put the earlier saved images \(\.images\.old\) back; they are left where they are\./);
+    assert.equal(readFileSync(join(f.dest, '.images.old', 'db.tar'), 'utf8'), 'db image bytes', 'the only good copy was not deleted');
+  } finally { f.cleanup(); }
+});
+
+test('a folder left by an interrupted copy of the images is removed at the next run, and the enrolment output says how much room the images add', () => {
+  const f = fixture('warehouse-usb-images-leftover-');
+  try {
+    const none = f.asRoot(['setup', '--state', f.state, '--enroll', '/dev/sdb1']);
+    assert.equal(none.status, 0, none.stderr + none.stdout);
+    assert.match(none.stdout, new RegExp(`There are no saved images in ${f.state}/images yet\\. Once bash scripts/build-images\\.sh --save has written them \\(about 2\\.5 GiB\\), the drive receives them too, beside the archives`));
+    assert.equal((none.stdout.match(/saved images/gi) ?? []).length, 1, 'said once for the enrolment, not again by the setup that enrolled');
+    assert.match(none.stdout, /the drive needs that much more room \(as much again free while a changed set is written beside the old one\)\./, 'the room while the images change is said too');
+    savedImages(f, { 'db.tar': 'x'.repeat(3 * 1024 * 1024), 'functions.tar': 'y'.repeat(2 * 1024 * 1024) });
+    const enrol = f.asRoot(['enroll', '--device', '/dev/sdb1']);
+    assert.equal(enrol.status, 0, enrol.stderr + enrol.stdout);
+    assert.match(enrol.stdout, new RegExp(`The saved images \\(${f.state}/images, 5\\.0MiB now\\) are copied to the drive as well, once and again after a change, beside the archives: the drive needs that much room more than the archives`));
+    assert.match(enrol.stdout, /\(about 2\.5 GiB at the first install\) and as much again free while a changed set is written beside the old one\. A lost-host restore from the drive then needs no Debian, npm or Chrome for Testing to answer; Docker Hub is still needed for the postgres and PostgREST images\./);
+    const setup = f.asRoot(['setup', '--state', f.state]);
+    assert.equal(setup.status, 0, setup.stderr);
+    assert.match(setup.stdout, /The saved images \(.*\/images, 5\.0MiB now\) are copied to the drive as well/);
+    f.backups(1);
+    const plantLeftovers = () => {
+      mkdirSync(join(f.dest, '.images.partial'), { recursive: true }); writeFileSync(join(f.dest, '.images.partial', 'db.tar'), 'interrupted');
+      mkdirSync(join(f.dest, '.images.old'), { recursive: true }); writeFileSync(join(f.dest, '.images.old', 'db.tar'), 'older');
+    };
+    // The copy that follows an interruption clears them before it writes...
+    mkdirSync(f.dest, { recursive: true });
+    plantLeftovers();
+    const result = f.run(RUN, f.verifyEnv());
+    assert.equal(result.status, 0, result.stderr + result.stdout);
+    assert.deepEqual(readdirSync(f.dest).filter(name => name.startsWith('.images')), []);
+    assert.equal(readFileSync(join(f.dest, 'images', 'db.tar'), 'utf8').length, 3 * 1024 * 1024);
+    // ...and a run with nothing to copy (the drive is current) clears them too.
+    plantLeftovers();
+    const current = f.run(RUN, f.verifyEnv());
+    assert.equal(current.status, 0, current.stderr + current.stdout);
+    assert.match(current.stdout, /The saved images are already on the drive and verified\./);
+    assert.deepEqual(readdirSync(f.dest).filter(name => name.startsWith('.images')), []);
   } finally { f.cleanup(); }
 });

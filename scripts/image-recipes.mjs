@@ -10,6 +10,16 @@
 //     for each line of SAVED_RECORD (the copy build-images.sh keeps next to its saved image tarballs) whose image ID
 //     exists on this host, writes that line into RECORD; restore-host.sh runs it after `docker load`, so the loaded
 //     images count as built by this project and are not built again
+//   docker compose ... config --format json | node image-recipes.mjs fingerprints
+//     prints "<service>\t<fingerprint>\t<image>" for every service that has a recipe, optional ones included
+//     (scripts/publish-images.sh)
+//   docker compose ... config --format json | node image-recipes.mjs manifest RELEASE COMMIT <service>=<reference> ...
+//     prints release-images.json: the release, its commit and, for every recipe, the published image
+//     (ghcr.io/abhiguru/supabase-warehouse-template/<service>@sha256:...) with the recipe's fingerprint (scripts/publish-images.sh)
+//   node image-recipes.mjs release-select RELEASE_IMAGES_JSON TAG COMMIT <service>=<fingerprint> ...
+//     checks a release-images.json that was downloaded for TAG against this checkout's COMMIT and, for each service named,
+//     prints "pull\t<service>\t<reference>" when the release holds an image of the same recipe, or
+//     "build\t<service>\t<why not>"; exits 1 with the reason when the file cannot be used at all (scripts/build-images.sh --from-release)
 //
 // A recipe is a service's build context (every file below it), its Dockerfile
 // path, build target and build arguments. RECORD is a private file in the
@@ -29,11 +39,17 @@ import { join } from 'node:path';
 
 const SERVICE = '[a-zA-Z0-9][a-zA-Z0-9._-]*';
 const LAN_SERVICE = 'gateway-lan';
+// The release workflow pushes here (scripts/publish-images.sh) and a facility pulls from here (scripts/build-images.sh --from-release).
+// A reference to any other place is refused, whatever release-images.json says.
+const REGISTRY = 'ghcr.io/abhiguru/supabase-warehouse-template';
+const PUBLISHED_REFERENCE = new RegExp(`^${REGISTRY.replace(/[./]/g, '\\$&')}/([a-z0-9][a-z0-9-]*)@(sha256:[0-9a-f]{64})$`);
 const [mode, ...rest] = process.argv.slice(2);
-const recordPath = mode === 'optional' ? '' : rest.shift();
+// These take no record file.
+const WITHOUT_RECORD = ['optional', 'fingerprints', 'manifest', 'release-select'];
+const recordPath = WITHOUT_RECORD.includes(mode) ? '' : rest.shift();
 const savedPath = mode === 'adopt' ? rest.shift() : '';
-if (!['plan', 'record', 'optional', 'adopt'].includes(mode) || (mode !== 'optional' && !recordPath) || (mode === 'adopt' && !savedPath)) {
-  console.error('Usage: image-recipes.mjs plan RECORD [--all] | record RECORD service=fingerprint=image ... | optional | adopt RECORD SAVED_RECORD');
+if (!['plan', 'record', 'adopt', ...WITHOUT_RECORD].includes(mode) || (!WITHOUT_RECORD.includes(mode) && !recordPath) || (mode === 'adopt' && !savedPath)) {
+  console.error('Usage: image-recipes.mjs plan RECORD [--all] | record RECORD service=fingerprint=image ... | optional | adopt RECORD SAVED_RECORD | fingerprints | manifest RELEASE COMMIT service=reference ... | release-select FILE TAG COMMIT service=fingerprint ...');
   process.exit(2);
 }
 const fail = message => { console.error(message); process.exit(1); };
@@ -107,6 +123,10 @@ function readConfig() {
 }
 const sorted = services => Object.entries(services).sort(([a], [b]) => a.localeCompare(b));
 const optional = definition => (definition.profiles ?? []).length > 0;
+// The record format without the image ID: what release-images.json commits to. A consistency check only (a truncated or carelessly edited
+// file is noticed): anyone can recompute it, so it is not integrity; the trust in the file is described in docs/CONTAINER_SECURITY.md.
+const recipesHash = images => createHash('sha256')
+  .update(Object.entries(images).sort(([a], [b]) => a.localeCompare(b)).map(([service, { fingerprint: value }]) => `${value}  ${service}\n`).join('')).digest('hex');
 
 if (mode === 'record') {
   const record = readRecord();
@@ -128,6 +148,59 @@ if (mode === 'record') {
     console.log(`adopted ${service}`);
   }
   writeRecord(record);
+} else if (mode === 'fingerprints') {
+  const config = readConfig();
+  for (const [service, definition] of sorted(config.services)) {
+    if (!definition.build?.context) continue;
+    process.stdout.write(`${service}\t${fingerprint(service, definition.build)}\t${definition.image ?? `${config.name}-${service}`}\n`);
+  }
+} else if (mode === 'manifest') {
+  const [release, commit, ...items] = rest;
+  if (!release || !/^[0-9a-f]{40}$/.test(commit ?? '')) fail('Usage: image-recipes.mjs manifest RELEASE COMMIT service=reference ... (COMMIT is the 40-digit commit of the release)');
+  const references = new Map();
+  for (const item of items) {
+    const match = new RegExp(`^(${SERVICE})=(.+)$`).exec(item);
+    if (!match) fail(`Not a service=reference item: ${item}`);
+    references.set(match[1], match[2]);
+  }
+  const images = {};
+  for (const [service, definition] of sorted(readConfig().services)) {
+    if (!definition.build?.context) continue;
+    const reference = references.get(service);
+    if (!reference) fail(`No published image was given for the ${service} recipe.`);
+    if (PUBLISHED_REFERENCE.exec(reference)?.[1] !== service) fail(`Not a ${REGISTRY}/${service}@sha256:<digest> reference: ${reference}`);
+    images[service] = { ref: reference, fingerprint: fingerprint(service, definition.build) };
+    references.delete(service);
+  }
+  if (references.size) fail(`Published images were given for services without a recipe: ${[...references.keys()].join(', ')}`);
+  if (!Object.keys(images).length) fail('The Compose configuration has no recipe to publish.');
+  process.stdout.write(`${JSON.stringify({ release, commit, recipes: recipesHash(images), images }, null, 2)}\n`);
+} else if (mode === 'release-select') {
+  // The file came over the network: nothing in it is used before it has been checked against this checkout.
+  const [file, tag, commit, ...wanted] = rest;
+  if (!file || !tag || !/^[0-9a-f]{40}$/.test(commit ?? '')) fail('Usage: image-recipes.mjs release-select FILE TAG COMMIT service=fingerprint ...');
+  let manifest;
+  try { manifest = JSON.parse(readFileSync(file, 'utf8')); } catch (error) { fail(`release-images.json cannot be read: ${error.message}`); }
+  const unusable = reason => fail(`release-images.json is not usable: ${reason}`);
+  if (manifest?.release !== tag) unusable(`it is for release ${JSON.stringify(manifest?.release ?? null)}, not ${tag}`);
+  if (manifest.commit !== commit) unusable(`it names commit ${JSON.stringify(manifest.commit ?? null)}, and this checkout is at ${commit}`);
+  const entries = manifest.images && typeof manifest.images === 'object' && !Array.isArray(manifest.images) ? Object.entries(manifest.images) : [];
+  if (!entries.length) unusable('it lists no image');
+  const images = new Map();
+  for (const [service, entry] of entries) {
+    if (typeof entry?.ref !== 'string' || PUBLISHED_REFERENCE.exec(entry.ref)?.[1] !== service) unusable(`the reference of ${service} is not ${REGISTRY}/${service}@sha256:<digest>`);
+    if (!/^[0-9a-f]{64}$/.test(entry?.fingerprint ?? '')) unusable(`the recipe fingerprint of ${service} is not a SHA-256`);
+    images.set(service, entry);
+  }
+  if (manifest.recipes !== recipesHash(manifest.images)) unusable('its recipes hash does not match the images it lists');
+  for (const item of wanted) {
+    const match = new RegExp(`^(${SERVICE})=([0-9a-f]{64})$`).exec(item);
+    if (!match) fail(`Not a service=fingerprint item: ${item}`);
+    const entry = images.get(match[1]);
+    if (!entry) process.stdout.write(`build\t${match[1]}\tthe release has no image of it\n`);
+    else if (entry.fingerprint !== match[2]) process.stdout.write(`build\t${match[1]}\tits recipe differs from the release's (a file below its docker directory is not as released)\n`);
+    else process.stdout.write(`pull\t${match[1]}\t${entry.ref}\n`);
+  }
 } else if (mode === 'optional') {
   const config = readConfig();
   const running = containerServices(config.name, { running: true });

@@ -6,7 +6,7 @@
 # (scripts/check-release-contents.sh), so a new minimum or a new floor takes effect on the move to that release, not one release later
 # (for an installation whose upgrade.sh already reads preflights: this release's and later ones').
 #
-# needs: scripts CHANGELOG.md
+# needs: scripts CHANGELOG.md migrations docker
 #
 # From upgrade.sh, in the environment: STATE (the installation's state directory), FROM_SHA, FROM_LABEL, FROM_TAG (the newest release
 # tag at or below the checkout, empty when there is none), TO_SHA, TO_LABEL (a release tag, or "<commit> (--ref <name>)"), DRY (yes for
@@ -20,6 +20,9 @@
 #   3. the floor in scripts/upgrade-floor.txt: an installation older than from_floor goes to the stepping stone first
 #   4. room for the way back: the free space of the state's filesystem against the stored files of the newest verified backup, plus its
 #      database dump and 1 GiB (scripts/restore.sh's rule, and the replay of the dump), because the printed way back is an in-place restore
+#   5. the rehearsal of the migrations (scripts/upgrade-rehearse.sh): the migrations of this release are applied to a disposable copy
+#      of the newest verified backup, so that one that fails on the facility's own data refuses the upgrade now, before the backup and
+#      before any change; it also prints how long it took. A facility with no verified backup yet is told that nothing was rehearsed.
 # Exit 0: go on. Any other exit refuses the upgrade; the message is on standard error and nothing has been changed.
 set -euo pipefail
 
@@ -144,6 +147,11 @@ else
     say "Room for the way back: $((free_bytes / 1048576)) MiB free, $((need_total / 1048576)) MiB needed ($covers)."
   fi
 fi
+
+# --- 5. the migrations, applied to a copy of the facility's data -------------------------------------------------------------
+# With --dry-run too: the live database and its files are only read (the backup is restored into a disposable container).
+say
+STATE="$STATE" TO_LABEL="$TO_LABEL" bash "$HERE/upgrade-rehearse.sh" || exit 1
 
 say
 say "Preflight of $TO_LABEL passed$([[ "$DRY" == yes ]] && echo ' (dry run)')."
