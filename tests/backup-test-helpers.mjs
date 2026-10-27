@@ -18,6 +18,9 @@ export const ledgerText = (bodies = fixtureMigrations, names = Object.keys(bodie
   `migration_count=${names.length}\nmigration_fingerprint=${createHash('sha256').update(names.map(name => `${name}:${createHash('sha256').update(bodies[name]).digest('hex')}`).join('\n')).digest('hex')}\n`;
 // What a backup's integrity report says here, and what the fake docker answers when the restored database is asked for its report.
 export const defaultIntegrity = `fake integrity\n${ledgerText()}`;
+// The shell the fake docker answers a report request with: the fixed text, or FAKE_RESTORED_INTEGRITY when a test sets it (a report that
+// carries the Storage schema head of scripts/backup-integrity.sql, for instance).
+const integrityAnswer = () => `if [ -n "$FAKE_RESTORED_INTEGRITY" ]; then printf '%s' "$FAKE_RESTORED_INTEGRITY"; else printf '%s' ${shellQuote(defaultIntegrity)}; fi`;
 const shellQuote = text => `'${text.replaceAll("'", `'\\''`)}'`;
 export const instanceJson = '{"schemaVersion":1,"instanceId":"0f0f0f0f-0f0f-4f0f-8f0f-0f0f0f0f0f0f"}\n';
 // A fictional central key set (public keys only), as `setup.sh --central-jwks-file` copies it to public/central-jwks.json.
@@ -217,7 +220,7 @@ case "$1" in
       *pg_stat_activity*) printf '41|client backend|template1|idle\\n' ;;
       *' createdb '*) if [ "$FAKE_FAIL_CREATEDB" = yes ]; then echo 'createdb: error: database creation failed: ERROR:  source database is being accessed by other users' >&2; exit 1; fi ;;
       *'storage.objects'*) cat "$FAKE_CATALOG_FILE" ;;
-      *' psql '*' -d warehouse_restore') printf '%s' ${shellQuote(defaultIntegrity)} ;;
+      *' psql '*' -d warehouse_restore') ${integrityAnswer()} ;;
     esac ;;
   compose)
     case "$*" in
@@ -236,7 +239,7 @@ case "$1" in
       *'exec -T db psql'*warehouse_migrations.applied*) printf '0002_second.sql\\n' ;;
       *'exec -T db psql'*jsonb_build_object*) cat "\${FAKE_RETAG_CATALOG:-/dev/null}" ;;
       *'exec -T db psql'*'storage.objects'*) cat "$FAKE_CATALOG_FILE" ;;
-      *'exec -T db psql'*' -d postgres') printf '%s' ${shellQuote(defaultIntegrity)} ;;
+      *'exec -T db psql'*' -d postgres') ${integrityAnswer()} ;;
     esac ;;
 esac
 `, { mode: 0o700 });
@@ -285,7 +288,7 @@ case "$1" in
       *'exec -T db psql'*pg_database_size*) printf '%s\\n' "\${FAKE_DB_SIZE:-10485760}" ;;
       *'exec -T db psql'*' -c SELECT rolname'*) printf 'authenticator\\nsupabase_admin\\n' ;;
       *'exec -T db psql'*'storage.objects'*) printf 'documents/a.pdf/v1\\n' ;;
-      *'exec -T db psql'*) printf '%s' ${shellQuote(defaultIntegrity)} ;;
+      *'exec -T db psql'*) ${integrityAnswer()} ;;
     esac ;;
 esac
 `, { mode: 0o700 });
@@ -305,6 +308,8 @@ export function scriptRoot(scratch) {
   mkdirSync(join(root, 'docker/postgres'), { recursive: true, mode: 0o700 });
   copyFileSync(join(repo, 'docker/postgres/Dockerfile'), join(root, 'docker/postgres/Dockerfile'));
   copyFileSync(join(repo, 'app-compat.json'), join(root, 'app-compat.json'));
+  mkdirSync(join(root, 'docker/storage'), { recursive: true, mode: 0o700 });
+  for (const name of ['Dockerfile', 'migrations-head.txt']) copyFileSync(join(repo, 'docker/storage', name), join(root, 'docker/storage', name));
   mkdirSync(join(root, 'migrations'), { recursive: true, mode: 0o700 });
   for (const [name, body] of Object.entries(fixtureMigrations)) writeFileSync(join(root, 'migrations', name), body);
   if (!existsSync(join(root, 'scripts/operator-lock.sh'))) {

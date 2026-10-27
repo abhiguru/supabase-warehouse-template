@@ -1647,7 +1647,11 @@ The restore refuses, without touching anything, unless all of the following hold
 `--yes` is given; no other operator command holds the state lock; `compose ps -q`
 is empty (run `stop.sh` first); the backup's checksums and its signature under
 this installation's `config/backup.key` are valid; the backup is
-`warehouse-backup-v5` or `-v6` (an older format is refused); the backup's
+`warehouse-backup-v5` or `-v6` (an older format is refused); the backup's catalog is not on a newer Storage schema than this checkout's
+Storage image migrates to (`Refusing: the backup was taken with Storage schema version <n> ..., newer than version <m>, the newest that
+this checkout's Storage image <version> migrates to. Check out a release at least as new as the backup, then retry. Nothing was moved.`;
+`db:verify-restore` and `db:restore-host` refuse it the same way, and a backup from an older Storage schema is fine, Storage migrates it
+forward at its next start); the backup's
 `instance.json` names the same instance as `public/instance.json` (the same `instanceId`, `canonicalOrigin` and `companyName`; the capabilities and the other fields may differ); the backup's `compose.env` equals
 `config/compose.env`, or `--restore-config` is given and the backup names the
 same project and state paths; and `db:verify-restore` passes for the backup; and there is room: the restored files are a second copy next to the kept

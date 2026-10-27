@@ -215,6 +215,9 @@ mapfile -t migrations < <(find "$ROOT/migrations" -maxdepth 1 -type f -name '*.s
 ((count <= ${#migrations[@]})) || die "Refusing: the backup has $count migrations and this checkout only ${#migrations[@]}. Check out a release at least as new as the backup (metadata.txt source_commit=$(sed -n 's/^source_commit=//p' "$backup/metadata.txt"))."
 local_fingerprint="$(for m in "${migrations[@]:0:count}"; do printf '%s:%s\n' "$m" "$(sha256sum "$ROOT/migrations/$m" | cut -d' ' -f1)"; done | head -c -1 | sha256sum | cut -d' ' -f1)"
 [[ "$local_fingerprint" == "$fingerprint" ]] || die 'Refusing: the migrations this backup applied differ from this checkout. Check out the release the backup was made with (metadata.txt source_commit), or a later one.'
+# shellcheck source=scripts/storage-schema.sh
+source "$ROOT/scripts/storage-schema.sh"
+storage_check_backup_head "$backup" || exit 1
 
 # 4. A new host has no trace of this installation's containers.
 [[ -z "$(docker ps -aq --filter "label=com.docker.compose.project=$project")" ]] || die "Refusing: containers of $project already exist on this host. This is not a fresh host for this installation (use npm run db:restore on the original state instead)."

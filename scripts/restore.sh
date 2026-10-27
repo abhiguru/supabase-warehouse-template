@@ -106,6 +106,10 @@ if [[ "$local_fingerprint" != "$fingerprint" ]]; then
   echo 'Refusing: the migrations this backup applied differ from this checkout. Check out the release the backup was made with (metadata.txt source_commit), or a later one.' >&2
   exit 1
 fi
+# Likewise the Storage service: its image is part of this checkout, and an older one would start without complaint on a newer schema.
+# shellcheck source=scripts/storage-schema.sh
+source "$ROOT/scripts/storage-schema.sh"
+storage_check_backup_head "$backup" || exit 1
 # The identity is compared field by field (scripts/instance-identity.mjs), not the bytes: the capabilities, the supported versions and the
 # display name may have changed since the backup. public/release.json and public/app-compat.json are not in a backup: setup.sh writes them.
 if differing="$(node "$ROOT/scripts/instance-identity.mjs" compare "$backup/instance.json" "$state/public/instance.json")"; then :; else
@@ -329,6 +333,7 @@ compose exec -T db vacuumdb -U supabase_admin --all --analyze-in-stages
 # 5. The restored database must report exactly what the backup recorded.
 phase='integrity comparison'
 db_psql -d postgres < "$ROOT/scripts/backup-integrity.sql" > "$scratch/integrity.txt"
+storage_integrity_align "$backup/integrity.txt" "$scratch/integrity.txt"
 diff -u "$backup/integrity.txt" "$scratch/integrity.txt"
 
 # 6. Apply migrations this checkout added after the backup (a no-op otherwise),

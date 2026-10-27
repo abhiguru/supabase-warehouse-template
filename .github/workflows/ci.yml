@@ -125,6 +125,7 @@ jobs:
     runs-on: ${{ github.event.pull_request.head.repo.fork && 'ubuntu-latest' || fromJSON(vars.CI_RUNNER || '"ubuntu-latest"') }}
     outputs:
       renderer: ${{ steps.filter.outputs.renderer }}
+      storage: ${{ steps.filter.outputs.storage }}
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
@@ -135,10 +136,38 @@ jobs:
           BASE: ${{ github.event.pull_request.base.sha || github.event.before }}
         run: |
           renderer=true
+          storage=true
           if [ -n "$BASE" ] && git cat-file -e "$BASE^{commit}" 2>/dev/null; then
             if git diff --name-only "$BASE" HEAD | grep -Eq '^(docker/pdf-renderer/|tests/golden-pdf/|functions/_shared/|\.github/workflows/ci\.yml$)'; then renderer=true; else renderer=false; fi
+            if git diff --name-only "$BASE" HEAD | grep -Eq '^(docker/storage/|docker/volumes/db/|docker/postgres/|docker/docker-compose\.yml$|scripts/baseline/lib\.sh$|scripts/db-image\.sh$|tests/storage-drill\.sh$|\.github/workflows/ci\.yml$)'; then storage=true; else storage=false; fi
           fi
           echo "renderer=$renderer" >> "$GITHUB_OUTPUT"
+          echo "storage=$storage" >> "$GITHUB_OUTPUT"
+  storage-drill:
+    name: Storage drill (seeded catalog, current image, then the next minor)
+    # tests/storage-drill.sh, the rehearsal that docker/storage/README.md ("The quarterly move") requires before the Storage image moves:
+    # 5000 fictional objects, the current image applied and read through the API, then the next tag of the same major with the freeze
+    # still set and then lifted. The current-image part must pass. The next-minor part only WARNS (continues, with a warning annotation)
+    # while no tag is chosen: it then rehearses the newest tag on Docker Hub. Once the repository variable STORAGE_NEXT_TAG names the tag
+    # of the coming quarterly move (for example v1.84.28), that move must pass the drill. Not a required check; it runs weekly, on demand,
+    # and when a change touches docker/storage, the compose file, the database image and bootstrap, the drill or this workflow.
+    needs: [validate, changes]
+    if: github.event_name == 'schedule' || github.event_name == 'workflow_dispatch' || needs.changes.outputs.storage == 'true'
+    runs-on: ${{ github.event.pull_request.head.repo.fork && 'ubuntu-latest' || fromJSON(vars.CI_RUNNER || '"ubuntu-latest"') }}
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0
+        with:
+          node-version: '22'
+      - name: Rehearse the Storage move on a seeded catalog
+        env:
+          STORAGE_DRILL_OBJECTS: '5000'
+          STORAGE_NEXT_TAG: ${{ vars.STORAGE_NEXT_TAG }}
+          STORAGE_DRILL_NEXT_REQUIRED: ${{ vars.STORAGE_NEXT_TAG != '' && 'true' || 'false' }}
+        run: bash tests/storage-drill.sh
   pdf-renderer:
     name: PDF renderer unit tests, integration and golden pages
     # docker/pdf-renderer: the unit tests run on a fake browser (no Chrome needed); the image is built once, then

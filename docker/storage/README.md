@@ -28,8 +28,55 @@ old tag's dependency set under the new application.
    the scan still names and repeat from step 3. The build fails if the image's npm
    rewrites `package-lock.json` (sha256 compared before and after `npm install`) or if
    `npm ls --omit=dev --all` finds an invalid package; regenerate the lockfile as in step 3.
-5. Update the version in `docs/CONTAINER_SECURITY.md`, then run the operator
+5. Move the Storage schema version with the tag (the section below): `migrations-head.txt` and `DB_MIGRATIONS_FREEZE_AT`.
+6. Update the version in `docs/CONTAINER_SECURITY.md`, then run the operator
    API tests, which upload and read photos and documents.
+
+## The Storage schema version, and the quarterly move
+
+Storage keeps its own database schema in `storage.migrations` and applies the migrations of its image to the catalog every time it
+starts, in the schema `storage` that the facility's photos and documents hang from. Upstream adds about 34 a year (object versioning,
+for one, rewrote `storage.objects`), so a pin that is never moved ends in one forced jump over dozens of migrations on years of rows,
+at the moment a security fix or an end-of-life base image forces it. Owner decision of 2026-10-26: **move the pin every quarter, a few
+minors at a time, after the seeded drill.**
+
+Three places hold the version, and `tests/storage-schema.test.mjs` and `tests/migrations.sh` fail when they disagree:
+
+- `migrations-head.txt`: the number (`id=`) and name (`name=`) of the newest migration the image in the `Dockerfile` ships
+  (`docker run --rm --entrypoint ls <image> /app/migrations/tenant`; the highest number).
+- `docker/docker-compose.yml`, the `storage` service: `DB_MIGRATIONS_FREEZE_AT` is that name. Storage applies no migration beyond it,
+  so an image that moved by accident (a Dependabot pull request that was merged without the steps below) cannot change the schema.
+- `metadata.txt` and `integrity.txt` of every backup (`scripts/backup-integrity.sql`, `scripts/backup.sh`): `storage_image=` and
+  `storage_schema_head=`; `integrity.txt` has `storage_migrations_count=` and `storage_migrations_head=` (the number). `db:verify-restore`,
+  `db:restore` and `db:restore-host` refuse a backup whose head is higher than `migrations-head.txt` of the checkout, before anything is
+  touched ("check out a release at least as new as the backup"): an older Storage image would start without complaint on a schema it was not built for (it ignores the migrations it does not know), and a
+  Storage migration cannot be undone. A lower head is fine; Storage migrates it forward at the next start, as it always did.
+
+**The quarterly move** (a few minors at a time; Dependabot proposes the minor update as a notice, and its pull request fails the tests
+until the following is done in it):
+
+1. Choose the target tag: the newest patch of the next one to three minors. Do not jump to the newest minor if it is many migrations
+   ahead; the point is small steps.
+2. Do the manifest steps above (1 to 4) for the tag, and set in the same change: the stage-1 tag and digest, `ENV VERSION`,
+   `migrations-head.txt` (its highest migration) and `DB_MIGRATIONS_FREEZE_AT` in the compose file (the name from the file).
+3. Run the drill against the target: `STORAGE_NEXT_TAG=<tag> STORAGE_DRILL_NEXT_REQUIRED=true bash tests/storage-drill.sh`, or set the
+   repository variable `STORAGE_NEXT_TAG` and run the `storage-drill` job of the CI workflow. It builds a catalog of thousands of objects
+   on the current image and reads every object and a signed URL. It then starts the target with the freeze still set, as an accidental
+   bump would (the schema must not move, and the new code must still read every object, sign a URL and take an upload), and then with the
+   freeze set to the name of the target's own newest migration file, as you will put it in the compose file. The catalog must end at exactly
+   that migration (equal to the current head when the target ships no new Storage migration; the drill says so), with nothing lost, every
+   object and signed URL working, and an upload working. It prints how long the start took: `setup.sh` waits 180 s for Storage's migrations,
+   and the drill fails above 150 s. That limit is a smoke limit on 5,000 small rows, not a sizing figure: before a move whose migrations touch
+   `storage.objects`, run it with `STORAGE_DRILL_OBJECTS` near the object count of the largest facility (`select count(*) from storage.objects`). The drill refuses a `STORAGE_NEXT_TAG` that is not newer than the tag in the `Dockerfile`: **clear the
+   variable once the move has merged.**
+4. `npm test` and `npm run test:migrations`, then deploy the Dev facility first and look at a photo and a document before any other.
+
+Rehearse the move **before** the first of these is forced on you. When a tag has no usable successor yet, the drill's second half warns
+and the first half still proves the current image on a seeded catalog.
+
+`pg-boss` in `package.json` is pinned to one commit of the publisher's fork (`github:supabase/pg-boss#<sha>`), the one the lock
+resolved when it was pinned (2026-10-27), so that the branch it used to name cannot move under a rebuild. When a new tag brings another
+commit, take it from the new image's own manifest and lock (step 1 above) and run step 3.
 
 2026-10-12, v1.79.14 to v1.80.2: the new tag's lockfile pinned fastify 5.11.2
 and `@fastify/busboy` 3.1.1, both with HIGH findings, so `fastify` is raised

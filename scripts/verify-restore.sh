@@ -88,6 +88,9 @@ backup_check_database_image "$backup" || exit 1
 # Signature, then checksums (and, for v6, the storage tree against the manifest): nothing below reads the backup before this passes.
 backup_authenticate "$backup" "$allow_unsigned" || exit 1
 backup_check_layout "$backup" || exit 1
+# shellcheck source=scripts/storage-schema.sh
+source "$ROOT/scripts/storage-schema.sh"
+storage_check_backup_head "$backup" || exit 1
 for file in compose.env instance.json roles.txt storage_objects.txt; do
   [[ -f "$backup/$file" && ! -L "$backup/$file" ]] || { echo "Incomplete backup: missing $file" >&2; exit 1; }
   grep -Fq "  $file" "$backup/SHA256SUMS" || { echo "Backup checksum missing for $file" >&2; exit 1; }
@@ -357,6 +360,7 @@ else
   docker exec -i -e PGPASSWORD=disposable-restore-only "$container" \
     psql -X -q -v ON_ERROR_STOP=1 -U supabase_admin -d warehouse_restore \
     < "$ROOT/scripts/backup-integrity.sql" > "$scratch/integrity.txt"
+  storage_integrity_align "$backup/integrity.txt" "$scratch/integrity.txt"
   diff -u "$backup/integrity.txt" "$scratch/integrity.txt"
   # The restored catalog must list exactly what the backup catalogued, and the
   # storage listing above already proved every entry has a file.

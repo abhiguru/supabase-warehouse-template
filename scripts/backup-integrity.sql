@@ -90,3 +90,15 @@ SELECT 'payment_count=' || count(*) FROM public.payments;
 SELECT 'order_item_count=' || count(*) FROM public.order_items;
 SELECT 'order_revision_count=' || count(*) FROM public.order_revisions;
 \endif
+-- The Storage service's own schema version (storage.migrations, kept by the Storage service): the number of migrations it has
+-- applied and the id of the newest. scripts/restore.sh and scripts/verify-restore.sh refuse a backup whose head is newer than the
+-- Storage image of the checkout (scripts/storage-schema.sh). Both are 0 before Storage has ever started. A backup from before
+-- these lines has none; the comparison then leaves them out (storage_integrity_align).
+SELECT to_regclass('storage.migrations') IS NOT NULL AS storage_migrations_recorded \gset
+\if :storage_migrations_recorded
+SELECT 'storage_migrations_count=' || count(*) FROM storage.migrations;
+SELECT 'storage_migrations_head=' || COALESCE(max(id), 0) FROM storage.migrations;
+\else
+SELECT 'storage_migrations_count=0';
+SELECT 'storage_migrations_head=0';
+\endif

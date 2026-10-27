@@ -4,7 +4,7 @@ import { mkdtempSync, writeFileSync, readFileSync, existsSync, readdirSync, rmSy
 import { spawnSync } from 'node:child_process';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
-import { makeBackup, makeState, fakeDocker, scriptRoot, composeEnv, dbRoleLines, poolerOnLines, legacyPoolerLines, previousReleaseDbLines, instanceJson, signBackup, currentDatabaseImage, fixtureMigrations, ledgerText } from './backup-test-helpers.mjs';
+import { makeBackup, makeState, fakeDocker, scriptRoot, composeEnv, dbRoleLines, poolerOnLines, legacyPoolerLines, previousReleaseDbLines, instanceJson, signBackup, currentDatabaseImage, fixtureMigrations, ledgerText, defaultIntegrity as defaultIntegrityLines } from './backup-test-helpers.mjs';
 import { scramVerifier } from '../scripts/db-roles.mjs';
 import { readEnv } from '../scripts/doctor-common.mjs';
 
@@ -620,5 +620,44 @@ test('verify-restore refuses an old image backup with no container started', () 
     assert.notEqual(result.status, 0);
     assert.match(result.stderr, /supabase\/postgres.*migrations-pre-baseline.*Baseline reload/s);
     assert.equal(readFileSync(log, 'utf8'), '');
+  } finally { rmSync(scratch, { recursive: true, force: true }); }
+});
+
+// The Storage service migrates its own catalog forward at start and cannot read a newer one: a backup whose catalog is on a newer
+// Storage schema than this checkout's image (docker/storage/migrations-head.txt) is refused before anything moves; an older one,
+// or one from before the head was recorded, is not.
+const storageHead = Number(readFileSync(new URL('../docker/storage/migrations-head.txt', import.meta.url), 'utf8').match(/^id=(\d+)$/m)[1]);
+test('restore refuses, before moving anything, a backup with a newer Storage schema than this checkout, and not an older, equal or unrecorded one', () => {
+  const report = head => `${defaultIntegrityLines}${head === null ? '' : `storage_migrations_count=${head}\nstorage_migrations_head=${head}\n`}`;
+  const newer = fixture('warehouse-restore-storage-newer-', { integrity: report(storageHead + 1) });
+  try {
+    const result = restore(newer.scratch, ['--yes', newer.backup], {}, root => writeFileSync(join(root, 'scripts/verify-restore.sh'), `touch '${join(newer.scratch, 'verify-ran')}'\nexit 0\n`));
+    assert.notEqual(result.status, 0);
+    assert.match(result.stderr, new RegExp(`Refusing: the backup was taken with Storage schema version ${storageHead + 1} .*newer than version ${storageHead}, the newest that this checkout's Storage image [0-9.]+ migrates to\\. Check out a release at least as new as the backup.*Nothing was moved\\.`));
+    assert.doesNotMatch(result.calls, /run |up -d| cp |createdb|pg_restore|DROP DATABASE/, 'no restore was started');
+    // restore.sh's own refusal comes before the disposable verification (verify-restore.sh would refuse with the same text, later).
+    assert.equal(existsSync(join(newer.scratch, 'verify-ran')), false, 'refused before verify-restore.sh was started');
+    untouched(newer.state);
+  } finally { rmSync(newer.scratch, { recursive: true, force: true }); }
+  for (const [what, head] of [['an older head', storageHead - 1], ['an equal head', storageHead], ['no recorded head', null]]) {
+    const { scratch, backup } = fixture('warehouse-restore-storage-ok-', { integrity: report(head) });
+    try {
+      const result = restore(scratch, ['--yes', backup]);
+      assert.doesNotMatch(result.stderr, /Storage schema/, `${what}: not refused for the Storage schema`);
+    } finally { rmSync(scratch, { recursive: true, force: true }); }
+  }
+});
+
+// A backup made before the Storage head was recorded has none in its report, but the restored database reports one: the comparison
+// drops those two lines (storage_integrity_align), so the restore gets past it, to the start of the services.
+test('restore of a backup made before the Storage head was recorded passes the integrity comparison', () => {
+  const { scratch, state, backup } = fixture('warehouse-restore-storage-legacy-');
+  try {
+    const restored = `${defaultIntegrityLines}storage_migrations_count=${storageHead}\nstorage_migrations_head=${storageHead}\n`;
+    const result = restore(scratch, ['--yes', backup], { FAKE_CATALOG_FILE: join(backup, 'storage_objects.txt'), FAKE_RESTORED_INTEGRITY: restored, FAKE_FAIL_START: 'yes' });
+    assert.notEqual(result.status, 0, 'the injected start failure propagates');
+    assert.match(result.stderr, /Restore failed during: (migrations|start services)/, result.stderr);
+    assert.doesNotMatch(result.stderr, /Restore failed during: integrity comparison/);
+    assert.ok(existsSync(state));
   } finally { rmSync(scratch, { recursive: true, force: true }); }
 });

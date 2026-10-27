@@ -58,7 +58,8 @@ SQL
 dump -d postgres > "$backup/database.dump"
 sql -d postgres < "$ROOT/scripts/backup-integrity.sql" > "$backup/integrity.txt"
 for line in '^invoice_discount_history_count=[1-9][0-9]*$' '^invoice_zero_charge_history_count=[1-9][0-9]*$' '^item_price_history_count=[1-9][0-9]*$' \
-  '^acl_authenticated_invoice_internal_columns=0$' '^acl_authenticated_invoice_total_select=true$'; do
+  '^acl_authenticated_invoice_internal_columns=0$' '^acl_authenticated_invoice_total_select=true$' \
+  '^storage_migrations_count=[1-9][0-9]*$' "^storage_migrations_head=$(sed -n 's/^id=//p' "$ROOT/docker/storage/migrations-head.txt")\$"; do
   grep -Eq "$line" "$backup/integrity.txt" || { echo "Restore drill: the integrity report has no line $line:" >&2; cat "$backup/integrity.txt" >&2; exit 1; }
 done
 # A backup taken before migration 48 recorded none of those lines, and restore.sh
@@ -66,7 +67,7 @@ done
 # migrations 0 to 110, so with its row renamed to an earlier marker (in a transaction that is rolled
 # back), and no row for 48, the report must be the earlier one, line for line by name.
 earlier="$( { printf "BEGIN;\nUPDATE warehouse_migrations.applied SET name='00000000000047_earlier_marker.sql' WHERE name='00000000000000_baseline.sql';\n"; cat "$ROOT/scripts/backup-integrity.sql"; printf '\nROLLBACK;\n'; } | sql -d postgres | sed 's/=.*//' | tr '\n' ' ')"
-expected='migration_count migration_fingerprint public_table_count public_function_count customer_count user_profile_count grn_count dispatch_count invoice_count order_count storage_object_count acl_anon_feature_flags_select acl_anon_orders_select acl_authenticated_orders_select acl_service_operator_prepare acl_anon_operator_prepare acl_anon_legacy_send_otp acl_authenticated_enrollment_review '
+expected='migration_count migration_fingerprint public_table_count public_function_count customer_count user_profile_count grn_count dispatch_count invoice_count order_count storage_object_count acl_anon_feature_flags_select acl_anon_orders_select acl_authenticated_orders_select acl_service_operator_prepare acl_anon_operator_prepare acl_anon_legacy_send_otp acl_authenticated_enrollment_review storage_migrations_count storage_migrations_head '
 [[ "$earlier" == "$expected" ]] || { echo "Restore drill: on a ledger without the baseline and migration 48 the integrity report is not the earlier one: $earlier" >&2; exit 1; }
 # TW-BE-011: the payment, order line and order revision counts belong to a release with
 # migration 95 or later. A database without one prints none of them; with the

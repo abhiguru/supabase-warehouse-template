@@ -36,6 +36,8 @@ if ! operator_lock_or_inherited "$state" 2>/dev/null; then echo 'Another operato
 source "$ROOT/scripts/backup-key.sh"
 backup_key_ensure "$state"
 backup_key_load "$state/config/backup.key"
+# shellcheck source=scripts/storage-schema.sh
+source "$ROOT/scripts/storage-schema.sh"
 # Recorded before anything is stopped; a source archive without .git has no commit.
 source_commit="$(git -C "$ROOT" rev-parse HEAD 2>/dev/null || true)"
 mkdir -p "$state/backups"
@@ -452,6 +454,8 @@ format=warehouse-backup-v6
 created_at_utc=$timestamp
 source_commit=${source_commit:-unknown}
 database_image=$pin
+storage_image=$(storage_image_version)
+storage_schema_head=$(sed -n 's/^storage_migrations_head=//p' "$stage/integrity.txt" | head -n 1)
 link_base=$base_name
 storage_files=$storage_files
 storage_bytes=$storage_bytes
