@@ -126,10 +126,17 @@ Rules that keep `upgrade.sh` working for the installed base:
   record), so that a release which names its tags differently cannot remove the set that was just made; the way back that
   `scripts/upgrade-record.mjs` prints calls `restore` from the old release's checkout (the same copy that tagged), then `scripts/build-images.sh --save`
   of that release.
-- **A new baseline names what it replaces.** If the migrations are squashed again, the new baseline file and the release note list the
-  names of the migration files it replaces. `upgrade.sh` refuses to move a database that recorded a migration the release lacks, and
-  points to the Baseline reload; without the list an operator cannot tell a squash from a downgrade. Tell the owner first: a squash
-  strands every installed facility behind the manual reload.
+- **`migrations/` only grows at its end: never remove, rename or edit a file, and never add a file that sorts before an existing one.** The
+  ledger of an installed facility records file names and checksums, and the plan applies the files it has not recorded in name order: a
+  removed or renamed file strands every facility that recorded it, an edited one is refused by its checksum, and a file inserted before the
+  last one runs on a fresh install before files that an installed facility ran earlier, so two databases of one release differ. The CI job
+  `migration-order` (`scripts/check-migration-order.mjs`, run locally with `node scripts/check-migration-order.mjs origin/main`) fails a
+  change that breaks it. Number a new file after the last one (`00000000000127_...` is next).
+- **A later squash is a snapshot, not a replacement.** The chain in `migrations/` stays as it is for the installed facilities. If the chain
+  grows too long for a fresh install, a snapshot (a schema dump that the baseline verification proves equal to the chain) is kept outside
+  `migrations/`, is used only when the ledger is empty, and records the names and checksums of the files it stands for; the first migration
+  after it continues the numbers. A facility's ledger then still matches the chain, and `upgrade.sh` never meets a ledger name the release
+  lacks. Replacing the chain by a new baseline file strands every installed facility behind the manual reload: tell the owner first.
 - **A release changes the PostgreSQL major only on purpose.** `upgrade.sh` refuses it; the release note must say so and link the
   "Major PostgreSQL upgrade" procedure.
 

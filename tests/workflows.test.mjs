@@ -368,6 +368,29 @@ test('the three weekly workflows find their issue among the ones the bot itself 
   }
 });
 
+test('migration-order checks the base with the ordering script in its own job, and seeded-upgrade is scheduled only, with a plain and a clash variant', () => {
+  const ci = readFileSync(new URL('../.github/workflows/ci.yml', import.meta.url), 'utf8');
+  const job = name => ci.slice(ci.indexOf(`\n  ${name}:\n`) + 1).split(/\n  [a-z-]+:\n/)[0];
+  const order = job('migration-order');
+  assert.ok(order.length > 100, 'the job exists');
+  assert.match(order, /\n          fetch-depth: 0\n/, 'the base commit must be in the clone');
+  assert.match(order, /BASE_SHA: \$\{\{ github\.event\.pull_request\.base\.sha \}\}/);
+  assert.match(order, /PUSH_BEFORE: \$\{\{ github\.event\.before \}\}/);
+  assert.match(order, /node scripts\/check-migration-order\.mjs "\$base"/);
+  assert.doesNotMatch(job('validate'), /check-migration-order/, 'its own job: validate is edited by other changes');
+  const seeded = job('seeded-upgrade');
+  assert.ok(seeded.length > 100, 'the job exists');
+  assert.match(seeded, /\n    if: github\.event_name == 'schedule' \|\| github\.event_name == 'workflow_dispatch'\n/, 'never on a push or a pull request');
+  assert.match(seeded, /variant: \[plain, clash\]/);
+  assert.match(seeded, /bash scripts\/ci-previous-tag\.sh "\$BASE_BRANCH"/);
+  assert.match(seeded, /tests\/seed\/make-seed\.mjs/);
+  assert.match(seeded, /--clash/);
+  assert.match(seeded, /grep -q 'Rehearsal of the migrations: passed'/, 'the plain variant proves the rehearsal ran');
+  assert.match(seeded, /00000000000117_customer_name_rule\.sql/, 'the clash variant proves the refusal names migration 117');
+  assert.match(seeded, /grep -q 'customers_name_norm_key' "\$RUNNER_TEMP\/\$out\.out"/, 'and that the refusal came from the unique index over the clashing names');
+  assert.match(seeded, /fingerprint-before/, 'and that the database is untouched');
+});
+
 test('release.yml publishes the release images in a job of their own: build, scan, then login, push and attach, with write permissions in that job only', () => {
   const release = readFileSync(new URL('../.github/workflows/release.yml', import.meta.url), 'utf8');
   // The workflow stays read-only; the checks job inherits that and asks for nothing.

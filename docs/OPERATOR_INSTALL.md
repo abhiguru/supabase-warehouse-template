@@ -2047,6 +2047,19 @@ for the whole span, checks the host against what **that** release needs (the Nod
 fails now), and enforces the oldest release it accepts an upgrade from (`scripts/upgrade-floor.txt`: an older installation is told which
 release to upgrade to first, then to run the command again). It also refuses when the free space is below the stored files of the newest
 verified backup plus its database dump plus 1 GiB, because the way back from the upgrade is an in-place restore ([Disk space](#disk-space)).
+*The rehearsal.* The preflight also applies the release's migrations to a disposable copy of your data: it restores the newest verified backup
+(`config/backups-verified.list`) into a network-isolated container (`scripts/verify-restore.sh --keep`), runs the release's migration plan on
+it (`scripts/upgrade-rehearse.sh`), prints `applying them took N s` (only the migrations are timed) and removes the container. The live database and its files are only read, so a
+`--dry-run` rehearses too. A migration that fails on your data refuses the upgrade before the backup and the checkout: the message names the
+file (for example `00000000000117_customer_name_rule.sql`) and the database's own error, and says "Nothing was changed". Do not retry the same
+command: the failure is in the data or in the release, and it repeats. Report the message with the release number; for the customer-name
+index, the query under "Before migration 117" in the changelog finds the names that clash. The rehearsal is of the newest verified backup, not
+of the moment: it prints that backup's name and age and warns when it is more than two days old. A backup only counts once it is verified and
+recorded: the nightly pass does that, and so does `upgrade.sh` for the backup it takes; to do it by hand run `bash scripts/backup.sh`, then
+`bash scripts/verify-restore.sh <the new folder under backups/>`, then `node scripts/watch.mjs record-verified <its name>`. If the copy cannot
+be restored, the refusal quotes the restore's own last message: the host (free disk space or memory, a database image that has to be pulled
+while the host is offline) is as likely a cause as the backup. With no verified backup on record it warns that it did not rehearse and the
+upgrade goes on (the migrations then run for the first time on the live database, after the checkout).
 Any refusal says "Nothing was changed". A release from before the preflight has none: `upgrade.sh` says so and goes on with its own checks. The
 `upgrade.sh` that reads a preflight is the one of the release you run now, so the move **to** the first release that has one is still made by
 the older script, and the preflight works from the move after it. The facility is closed to phones for the backup, the proof that it restores and

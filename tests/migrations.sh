@@ -103,6 +103,59 @@ if err=$(plan_of "$ROOT" | mig_psql 2>&1 >/dev/null); then echo 'An untracked da
 [[ "$(mig_psql -At -c 'SELECT count(*) FROM warehouse_migrations.applied')" == 0 ]] || { echo 'The untracked-database refusal wrote to the ledger.' >&2; exit 1; }
 mig_psql -c "INSERT INTO warehouse_migrations.applied SELECT * FROM warehouse_migrations.applied_saved; DROP TABLE warehouse_migrations.applied_saved;"
 
+# Lock timeout and retry (scripts/migration-plan.mjs, scripts/migrate.sh). A fixture migration that changes public.dispatch is applied
+# while a second session holds ACCESS EXCLUSIVE on that table:
+#  - the plan fails after about 10 s (the lock_timeout each file runs under) with the lock timeout error (55P03), the file rolls back
+#    whole (no ledger row, no column), and no migration waits for ever;
+#  - scripts/migrate.sh, which runs the same plan, tries again after a pause and succeeds once the lock is released.
+# The ledger and the table are put back afterwards.
+lockprobe=$(mktemp -d "${TMPDIR:-/tmp}/warehouse-lockprobe.XXXXXX")
+mkdir "$lockprobe/migrations" "$lockprobe/state" "$lockprobe/state/config" "$lockprobe/scripts"
+cp "$ROOT"/migrations/*.sql "$lockprobe/migrations/"
+printf 'ALTER TABLE public.dispatch ADD COLUMN lock_probe integer;\n' > "$lockprobe/migrations/00000000000999_lock_probe.sql"
+hold_dispatch() {
+  # Holds the lock for $1 seconds in a background session; returns when the lock is granted.
+  mig_psql -c "BEGIN; LOCK TABLE public.dispatch IN ACCESS EXCLUSIVE MODE; SELECT pg_sleep($1); COMMIT;" >/dev/null 2>&1 &
+  lock_holder=$!
+  for ((i=0; i<50; i++)); do
+    [[ "$(mig_psql -At -c "SELECT count(*) FROM pg_locks WHERE relation = 'public.dispatch'::regclass AND mode = 'AccessExclusiveLock' AND granted")" == 1 ]] && return 0
+    sleep 0.2
+  done
+  echo 'The session that should hold the lock on public.dispatch never got it.' >&2; exit 1
+}
+release_dispatch() {
+  mig_psql -At -c "SELECT pg_terminate_backend(pid) FROM pg_stat_activity WHERE query LIKE 'BEGIN; LOCK TABLE public.dispatch%' AND pid <> pg_backend_pid()" >/dev/null
+  wait "$lock_holder" 2>/dev/null || true
+}
+hold_dispatch 60
+waited_from=$SECONDS
+if err=$(plan_of "$lockprobe" | mig_psql 2>&1 >/dev/null); then echo 'A migration that needs a locked table was applied.' >&2; exit 1; fi
+waited=$((SECONDS - waited_from))
+release_dispatch
+[[ "$err" == *'canceling statement due to lock timeout'* ]] || { echo "A migration blocked by a lock failed, but not with the lock timeout: $err" >&2; exit 1; }
+((waited >= 9 && waited <= 25)) || { echo "A migration blocked by a lock failed after $waited s, not after about 10 s." >&2; exit 1; }
+[[ "$(mig_psql -At -c "SELECT (SELECT count(*) FROM warehouse_migrations.applied WHERE name = '00000000000999_lock_probe.sql') || ',' || (SELECT count(*) FROM information_schema.columns WHERE table_name = 'dispatch' AND column_name = 'lock_probe')")" == 0,0 ]] \
+  || { echo 'A migration that timed out on a lock left a ledger row or its change behind.' >&2; exit 1; }
+echo "A migration blocked by a lock failed after $waited s with the lock timeout and rolled back whole."
+# migrate.sh with the same plan: a shim stands in for compose.sh and sends psql to this container.
+cp "$ROOT/scripts/migrate.sh" "$ROOT/scripts/migration-plan.mjs" "$ROOT/scripts/is-main.mjs" "$ROOT/scripts/operator-lock.sh" "$lockprobe/scripts/"
+cat > "$lockprobe/scripts/compose.sh" <<SHIM
+#!/usr/bin/env bash
+[[ "\$1 \$2 \$3 \$4" == "exec -T db psql" ]] || exit 1
+shift 4
+exec docker exec -i -e PGPASSWORD=disposable-test-database-only "$container" psql "\$@"
+SHIM
+hold_dispatch 12
+retried=$(WAREHOUSE_STATE_DIR="$lockprobe/state" WAREHOUSE_MIGRATE_RETRY_SECONDS=2 bash "$lockprobe/scripts/migrate.sh" --operator 2>&1) \
+  || { echo "migrate.sh did not succeed once the lock was released: $retried" >&2; exit 1; }
+release_dispatch
+[[ "$retried" == *'canceling statement due to lock timeout'* && "$retried" == *'attempt 1 of 3'* ]] || { echo "migrate.sh did not report the first attempt's lock timeout and the retry: $retried" >&2; exit 1; }
+[[ "$(mig_psql -At -c "SELECT (SELECT count(*) FROM warehouse_migrations.applied WHERE name = '00000000000999_lock_probe.sql') || ',' || (SELECT count(*) FROM information_schema.columns WHERE table_name = 'dispatch' AND column_name = 'lock_probe')")" == 1,1 ]] \
+  || { echo 'migrate.sh did not apply the migration on its second attempt.' >&2; exit 1; }
+echo 'migrate.sh tried again after the lock timeout and applied the migration.'
+mig_psql -c "ALTER TABLE public.dispatch DROP COLUMN lock_probe; DELETE FROM warehouse_migrations.applied WHERE name = '00000000000999_lock_probe.sql'"
+rm -rf "$lockprobe"
+
 # Storage, as setup.sh does after the migrations: the real Storage 1.80.2 builds its own tables in the schema the bootstrap made.
 # The image that ships (docker/storage, a multi-stage recipe on a clean Node image), built here from the same Dockerfile, not
 # the publisher's image: a native module or file the slimmed image lacks would fail Storage's start. Layers are cached.
@@ -112,6 +165,65 @@ run_storage "$container" "$net" "$storage_recipe" >/dev/null
 [[ "$(mig_psql -At -c 'SELECT count(*) > 0 FROM storage.migrations')" == t && "$(mig_psql -At -c "SELECT count(*) FROM pg_tables WHERE schemaname = 'storage' AND tablename IN ('buckets', 'objects')")" == 2 ]] || { echo 'Storage did not build its tables.' >&2; exit 1; }
 # The baseline did not need Storage, and Storage did not need the baseline's help: the three API roles can use the schema.
 [[ "$(mig_psql -At -c "SELECT bool_and(has_schema_privilege(r, 'storage', 'USAGE')) FROM unnest(ARRAY['anon','authenticated','service_role']) r")" == t ]] || { echo 'An API role cannot use the storage schema.' >&2; exit 1; }
+# An installed facility already has the storage policies (scripts/configure-storage.sql) when the next release's migrations run; setup.sh
+# on a new install migrates first. So the NEWEST migration is also applied here the way an upgrade applies it: a second database gets
+# the migrations up to the one before it, the Storage tables (the schema just built by the real Storage, without data), the policies,
+# and only then the newest file. A migration that changes a column the policies read fails it (a plain DROP COLUMN is refused by the
+# database), and tests/storage_policy_deps.sql, run on that database too, fails when one is dropped with CASCADE.
+newest=$(cd "$ROOT/migrations" && ls -1 *.sql | LC_ALL=C sort | tail -n 1)
+previous=$(cd "$ROOT/migrations" && ls -1 *.sql | LC_ALL=C sort | tail -n 2 | head -n 1)
+[[ "$newest" != "$previous" ]] || { echo 'The storage-policy upgrade step needs at least two migration files.' >&2; exit 1; }
+plan_through() { PLAN_MODULE="$ROOT/scripts/migration-plan.mjs" PLAN_ROOT="$ROOT" PLAN_THROUGH="$1" node -e "import(process.env.PLAN_MODULE).then(m => process.stdout.write(m.migrationPlan(process.env.PLAN_ROOT, { through: process.env.PLAN_THROUGH })))"; }
+# A second database of this container: the bootstrap's schemas, the migrations up to $2, and the empty Storage tables of the main database.
+make_probe() {
+  mig_psql -c "CREATE DATABASE $1 TEMPLATE template0" >/dev/null
+  sed -n '/^-- Schemas the migrations and Storage expect to exist\./,$p' "$ROOT/docker/volumes/db/00-bootstrap.sql" | mig_psql -d "$1" >/dev/null
+  plan_through "$2" | mig_psql -d "$1" >/dev/null
+  mig_psql -d "$1" -c 'DROP SCHEMA storage CASCADE' >/dev/null
+  docker exec -e PGPASSWORD=disposable-test-database-only "$container" pg_dump -U supabase_admin -d postgres --schema-only --no-owner -n storage | mig_psql -d "$1" >/dev/null
+}
+make_probe policy_probe "$previous"
+probe_psql() { mig_psql -d policy_probe "$@"; }
+probe_psql < "$ROOT/scripts/configure-storage.sql" >/dev/null
+probe_psql -At -c "SELECT count(*) FROM pg_policy WHERE polrelid = 'storage.objects'::regclass" | grep -qv '^0$' || { echo 'The probe database has no storage policy.' >&2; exit 1; }
+if ! applied_newest=$(plan_of "$ROOT" | probe_psql 2>&1); then echo "$applied_newest" | tail -n 20 >&2; echo "The newest migration ($newest) does not apply to a database that already has the storage policies." >&2; exit 1; fi
+[[ "$applied_newest" == *"Applying: $newest"* && "$applied_newest" != *"Applying: $previous"* ]] || { echo "The probe database did not apply exactly the newest migration: $applied_newest" >&2; exit 1; }
+probe_psql < "$ROOT/tests/storage_policy_deps.sql"
+# A migration that drops a column a policy reads: refused as it is; with CASCADE the policy goes, and the dependency test names the column.
+if err=$(printf 'ALTER TABLE public.goodsreceived DROP COLUMN gr_image_url;\n' | probe_psql 2>&1 >/dev/null); then echo 'A column read by a storage policy was dropped without CASCADE.' >&2; exit 1; fi
+[[ "$err" == *'cannot drop column gr_image_url of table goodsreceived because other objects depend on it'* ]] || { echo "Dropping gr_image_url was refused, but not for the policy: $err" >&2; exit 1; }
+if err=$( { printf 'BEGIN;\nALTER TABLE public.goodsreceived DROP COLUMN gr_image_url CASCADE;\n'; cat "$ROOT/tests/storage_policy_deps.sql"; printf 'ROLLBACK;\n'; } | probe_psql 2>&1 >/dev/null); then
+  echo 'tests/storage_policy_deps.sql did not notice a column dropped with CASCADE.' >&2; exit 1
+fi
+[[ "$err" == *'storage policy dependency lost'* && "$err" == *'public.goodsreceived.gr_image_url'* ]] || { echo "The dependency test failed, but not with its own message: $err" >&2; exit 1; }
+mig_psql -c 'DROP DATABASE policy_probe WITH (FORCE)' >/dev/null
+echo "The newest migration ($newest) applies on top of the storage policies, and a dropped policy column is named by tests/storage_policy_deps.sql."
+
+# The seeded drill's data (tests/seed/make-seed.mjs). It loads into a migrated database with the counts it promises. With the clashing
+# customer names ("Seed Harbour Traders" and " seed  HARBOUR traders ") it loads only into a database before migration 117 (the unique
+# customers_name_norm_key), the state of a facility on an earlier release; the plan of this release then refuses at 117 itself, names
+# the file, and changes nothing (the ledger, the index and the rows are as they were).
+seed_psql() { mig_psql -d "$1" "${@:2}"; }
+seed_counts() { seed_psql "$1" -At -c "SELECT (SELECT count(*) FROM public.customers) || ',' || (SELECT count(*) FROM public.goodsreceived) || ',' || (SELECT count(*) FROM public.dispatch) || ',' || (SELECT count(*) FROM public.invoice) || ',' || (SELECT count(*) FROM public.orders) || ',' || (SELECT count(*) FROM public.order_items) || ',' || (SELECT count(*) FROM storage.objects) || ',' || (SELECT count(*) FROM warehouse_migrations.applied)"; }
+make_probe seed_probe "$newest"
+seed_psql seed_probe < "$ROOT/scripts/configure-storage.sql" >/dev/null   # the buckets the photos belong to
+node "$ROOT/tests/seed/make-seed.mjs" | seed_psql seed_probe >/dev/null
+[[ "$(seed_counts seed_probe)" == "8,300,200,40,3,4,6,$migration_count" ]] || { echo "The seed did not load the counts it promises (customers, receipts, dispatches, invoices, orders, order lines, photos): $(seed_counts seed_probe)" >&2; exit 1; }
+if node "$ROOT/tests/seed/make-seed.mjs" --clash | seed_psql seed_probe >/dev/null 2>&1; then echo 'The clashing seed loaded into a database that has the unique customer name index.' >&2; exit 1; fi
+mig_psql -c 'DROP DATABASE seed_probe WITH (FORCE)' >/dev/null
+before117=$(cd "$ROOT/migrations" && ls -1 *.sql | LC_ALL=C sort | awk '/^00000000000117_/ { exit } { last = $0 } END { print last }')
+[[ -n "$before117" ]] || { echo 'Migration 117 was not found.' >&2; exit 1; }
+make_probe seed_clash "$before117"
+seed_psql seed_clash < "$ROOT/scripts/configure-storage.sql" >/dev/null
+node "$ROOT/tests/seed/make-seed.mjs" --clash | seed_psql seed_clash >/dev/null
+clash_before=$(seed_counts seed_clash)
+if refused=$(plan_of "$ROOT" | seed_psql seed_clash 2>&1); then echo 'A database with clashing customer names took migration 117.' >&2; exit 1; fi
+[[ "$refused" == *'Applying: 00000000000117_customer_name_rule.sql'* && "$refused" == *'customers_name_norm_key'* ]] || { echo "The refusal does not name migration 117 and its index: $refused" >&2; exit 1; }
+[[ "$(seed_counts seed_clash)" == "$clash_before" ]] || { echo "The refused migration changed the database: $clash_before -> $(seed_counts seed_clash)" >&2; exit 1; }
+[[ "$(seed_psql seed_clash -At -c "SELECT count(*) FROM pg_indexes WHERE indexname = 'customers_name_norm_key'")" == 0 ]] || { echo 'The refused migration left its index behind.' >&2; exit 1; }
+mig_psql -c 'DROP DATABASE seed_clash WITH (FORCE)' >/dev/null
+echo 'The seed loads with its counts; with clashing names the plan refuses at migration 117 and changes nothing.'
+
 # Storage 1.80.2 guards storage.objects and storage.buckets with a statement trigger that refuses every DELETE unless
 # storage.allow_delete_query is 'true', also a DELETE that row-level security would leave with 0 rows. The SQL suites below delete
 # as staff to prove that the policies hide the rows, so the setting is on for them (database level of this disposable database
@@ -120,7 +232,7 @@ mig_psql -c "ALTER DATABASE postgres SET storage.allow_delete_query = 'true'"
 test_files=(
   "$ROOT/tests/baseline_roles.sql" "$ROOT/tests/baseline_owners.sql" "$ROOT/tests/security_baseline.sql" "$ROOT/tests/operator_auth.sql"
   "$ROOT/tests/invoice_duration.sql" "$ROOT/tests/core_pilot.sql"
-  "$ROOT/scripts/configure-storage.sql" "$ROOT/scripts/configure-storage.sql"
+  "$ROOT/scripts/configure-storage.sql" "$ROOT/scripts/configure-storage.sql" "$ROOT/tests/storage_policy_deps.sql"
   "$ROOT/tests/staff_grn_access.sql" "$ROOT/tests/staff_dispatch_invoice_access.sql"
   "$ROOT/tests/storage_delete_rules.sql"
   "$ROOT/tests/user_status_enrollment.sql" "$ROOT/tests/retention.sql" "$ROOT/tests/audit_log_retention.sql"
@@ -166,6 +278,9 @@ test_files=(
 for test_sql in "${test_files[@]}"; do
   docker exec -i -e PGPASSWORD=disposable-test-database-only "$container" psql -X -q -U supabase_admin -d postgres -v ON_ERROR_STOP=1 < "$test_sql"
 done
+# With the storage policies in place (configure-storage.sql ran above), the plan is still a no-op: nothing in it drops or rewrites them.
+third=$(plan_of "$ROOT" | mig_psql 2>&1) || { echo "$third" | tail -20 >&2; echo 'The ledger pass after the storage policies failed.' >&2; exit 1; }
+[[ "$third" == *'Already applied: 00000000000000_baseline.sql'* && "$third" != *'Applying:'* ]] || { echo "The ledger pass after the storage policies must skip every file: $third" >&2; exit 1; }
 
 
 # Migration 123's guard (the block between the GUARD-BEGIN and GUARD-END lines of its file) refuses while a table to be dropped holds a

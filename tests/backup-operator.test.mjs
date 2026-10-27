@@ -237,6 +237,54 @@ test('restore verifier replays the database in isolation and matches the object 
   } finally { rmSync(scratch, { recursive: true, force: true }); }
 });
 
+test('restore verifier mounts a world-readable copy of the bootstrap file whatever the umask of the tree and of the caller', () => {
+  const scratch = mkdtempSync(join(tmpdir(), 'warehouse-verify-umask-'));
+  try {
+    // A tree as `git archive | tar -x` leaves it under umask 077: every file 0600. The postgres user of the container reads the mounted file.
+    const tree = join(scratch, 'tree');
+    for (const dir of ['scripts', 'docker/postgres', 'docker/volumes/db']) mkdirSync(join(tree, dir), { recursive: true });
+    const here = new URL('..', import.meta.url).pathname;
+    for (const file of readdirSync(join(here, 'scripts')).filter(f => /\.(sh|mjs|cjs|sql)$/.test(f))) writeFileSync(join(tree, 'scripts', file), readFileSync(join(here, 'scripts', file)), { mode: 0o600 });
+    writeFileSync(join(tree, 'docker/postgres/Dockerfile'), readFileSync(join(here, 'docker/postgres/Dockerfile')), { mode: 0o600 });
+    writeFileSync(join(tree, 'docker/volumes/db/00-bootstrap.sql'), 'SELECT 1;\n', { mode: 0o600 });
+    const backup = makeBackup(join(scratch, 'backup'));
+    const real = fakeDocker(join(scratch, 'bin'));
+    const bin = join(scratch, 'wrap'); mkdirSync(bin);
+    const modes = join(scratch, 'modes.log');
+    writeFileSync(join(bin, 'docker'), `#!/bin/sh
+if [ "$1" = run ]; then
+  for a; do case "$a" in *:/docker-entrypoint-initdb.d/00-bootstrap.sql:ro) src="\${a%%:*}"; echo "$(stat -c %a "$src") $src" >> "${modes}" ;; esac; done
+fi
+exec "${real}/docker" "$@"
+`, { mode: 0o700 });
+    const log = join(scratch, 'docker.log'); writeFileSync(log, '');
+    const result = spawnSync('bash', ['-c', 'umask 077; exec bash "$0" "$@"', join(tree, 'scripts/verify-restore.sh'), backup], { encoding: 'utf8',
+      env: { ...process.env, PATH: `${bin}:${process.env.PATH}`, FAKE_DOCKER_LOG: log, FAKE_CATALOG_FILE: join(backup, 'storage_objects.txt'), WAREHOUSE_STATE_DIR: '', WAREHOUSE_VERIFY_SCRATCH_DIR: '',
+        WAREHOUSE_BACKUP_KEY_FILE: writeKey(join(scratch, 'backup.key')), WAREHOUSE_DIAGNOSTICS_DIR: join(scratch, 'diagnostics') } });
+    assert.equal(result.status, 0, result.stderr);
+    const [mode, src] = readFileSync(modes, 'utf8').trim().split(' ');
+    assert.equal(Number.parseInt(mode, 8) & 0o044, 0o044, `the mounted bootstrap file must be readable by the container's postgres user (mode ${mode})`);
+    assert.notEqual(src, join(tree, 'docker/volumes/db/00-bootstrap.sql'), 'a copy is mounted, not the tree\'s own file');
+    assert.equal(statSync(join(tree, 'docker/volumes/db/00-bootstrap.sql')).mode & 0o777, 0o600, 'the tree is left as it was');
+  } finally { rmSync(scratch, { recursive: true, force: true }); }
+});
+
+test('restore verifier with --restore-only restores and stops: no integrity or catalog comparison, and says so', () => {
+  const scratch = mkdtempSync(join(tmpdir(), 'warehouse-verify-restore-only-'));
+  try {
+    const backup = makeBackup(join(scratch, 'backup'), { objects: ['documents/a.pdf/v1'] });
+    // A restored catalog and an integrity report that differ from the backup's fail the full verification, and not this mode.
+    writeFileSync(join(scratch, 'other-catalog.txt'), 'documents/a.pdf/v1\ndocuments/b.pdf/v1\n');
+    const env = { FAKE_CATALOG_FILE: join(scratch, 'other-catalog.txt') };
+    assert.notEqual(verify(backup, scratch, env).status, 0, 'the full verification sees the difference');
+    const only = verify(backup, scratch, env, ['--restore-only']);
+    assert.equal(only.status, 0, only.stderr);
+    assert.match(only.stdout, /database restore \(the integrity comparison was not asked for\) passed/);
+    assert.equal(only.calls.split('\n').filter(line => line.includes('pg_restore') && line.includes('-d warehouse_restore')).length, 4, 'the restore itself is complete');
+    assert.doesNotMatch(only.calls, /storage\.objects|backup-integrity/, 'nothing is read back for comparison');
+  } finally { rmSync(scratch, { recursive: true, force: true }); }
+});
+
 test('restore verifier fails when a catalogued object is missing from the archive and warns on extra files', () => {
   const scratch = mkdtempSync(join(tmpdir(), 'warehouse-verify-catalog-'));
   try {

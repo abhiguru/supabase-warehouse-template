@@ -190,6 +190,21 @@ reload** in `docs/OPERATOR_INSTALL.md`; a new installation needs none of that. A
     ("Recover a lost host from the USB drive" in `docs/OPERATOR_INSTALL.md`). A checkout at a release tag may now pull its images
     instead of building them (see "Changed"); nothing to do for that.
 
+20. **Upgrades rehearse the release's migrations on a copy of your data first.** The preflight of the release you move to (run by
+    `upgrade.sh`, also with `--dry-run`) restores the newest verified backup into a disposable, network-isolated database and applies the
+    release's migrations to it, file by file. A migration that cannot be applied to your data (for example a unique index over rows that
+    already clash) now refuses the upgrade before the backup, before the checkout and before any change, with the file's name and the
+    database's message and "Nothing was changed"; it used to stop part way through `setup.sh`, after the checkout. Nothing to do on a normal
+    upgrade, but plan for it: it needs a verified backup on record (the nightly one counts; without any, the preflight warns that it did
+    not rehearse), a few minutes and the disk space the restore check already uses, and it prints "applying them took N s" (only the
+    migrations are timed, not the restore; the real ones on the live database take about as long). **If it refuses, do not retry the same command:** read the file
+    name and message, and report them with the release number (the data has to be corrected, or the release has to change). The rehearsal
+    uses the newest verified backup and says how old it is; it warns when that is more than two days. A backup that `bash scripts/backup.sh`
+    has only made is not used: a backup counts once it is verified and recorded, which the nightly pass does and `upgrade.sh` does for the
+    backup it takes (by hand: `bash scripts/verify-restore.sh <the backup folder>`, then `node scripts/watch.mjs record-verified <its name>`).
+    The restore for the rehearsal does not compare the backup with the new release's integrity report, so only the data and the migrations
+    decide. This applies from the move after the one **to** this release, like the rest of the preflight.
+
 ### Changed
 
 - **An upgrade is a planned downtime: the API is closed to phones from before the backup to the end of setup, and the checker follows it.**
@@ -213,7 +228,16 @@ reload** in `docs/OPERATOR_INSTALL.md`; a new installation needs none of that. A
   API through a gateway that is closed on purpose and say so as a warning (the LAN probe is skipped the same way); `maintenance.sh off` runs the
   health check again. `scripts/check-release-contents.sh` requires `scripts/maintenance.sh`, because the `upgrade.sh` of the release an
   installation runs now opens the API with the one of the release it moved to.
-
+- **Migrations: a lock timeout, the schema reload per file, and a rule that keeps the order.** Each file runs in its own transaction with a
+  10 s `lock_timeout`; one that cannot get its lock (a session of the API holds the table) rolls back whole, and `scripts/migrate.sh` runs the
+  plan again, three attempts five seconds apart, before it stops with a message that says what to do. PostgREST is told to reload its schema
+  after every file's `COMMIT`, not only at the end. `scripts/check-migration-order.mjs` (CI job `migration-order`) fails a change that
+  removes, renames or edits a file of `migrations/` or adds one that sorts before an existing one (`CONTRIBUTING.md`); a later squash of
+  the chain is a snapshot kept outside `migrations/` for fresh installs only. `tests/storage_policy_deps.sql` fails when a migration drops a
+  column that the storage policies of `scripts/configure-storage.sql` read, and `tests/migrations.sh` applies the newest migration to a
+  database that already has those policies, as an upgrade does. A weekly `seeded-upgrade` CI job upgrades a facility with data
+  (`tests/seed/`, 300 receipts, 200 dispatches, 40 invoices, photos) and, in a second variant, proves that clashing customer names refuse the
+  upgrade before the checkout with migration 117 named.
 - **`upgrade.sh` runs the release's own preflight before the backup, enforces an oldest release to upgrade from, and keeps the old images for the
   way back.** `upgrade.sh` is the script of the release you run now and cannot know what the release you move to needs, so every release now
   carries `scripts/upgrade-preflight.sh` and `scripts/upgrade-floor.txt`; `upgrade.sh` reads them out of the release (`git archive`, as it reads the

@@ -74,6 +74,33 @@ jobs:
         with:
           node-version: '22'
       - run: bash tests/migrations.sh
+  migration-order:
+    name: Migration ordering rule
+    # CONTRIBUTING.md, "Migrations": never remove, rename or edit a file in migrations/, and never add one that sorts before an existing
+    # one. The base is the branch tip a pull request merges into (the checkout is the merge of the two, so a file that main gained meanwhile
+    # is part of both and a new file numbered below it is found), or the commit a push replaces. Its own job, so that a change to the
+    # validate job does not collide with it.
+    runs-on: ${{ github.event.pull_request.head.repo.fork && 'ubuntu-latest' || fromJSON(vars.CI_RUNNER || '"ubuntu-latest"') }}
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          fetch-depth: 0
+          persist-credentials: false
+      - uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0
+        with:
+          node-version: '22'
+      - name: Compare migrations/ with the base
+        env:
+          BASE_SHA: ${{ github.event.pull_request.base.sha }}
+          PUSH_BEFORE: ${{ github.event.before }}
+        run: |
+          base="$BASE_SHA"
+          if [ -z "$base" ] && [ "${GITHUB_EVENT_NAME}" = push ]; then base="$PUSH_BEFORE"; fi
+          if [ -z "$base" ] || [ "$base" = 0000000000000000000000000000000000000000 ] || ! git cat-file -e "$base^{commit}" 2>/dev/null; then
+            echo "::notice title=Migration ordering rule not checked::There is no base commit to compare with (a scheduled or manual run, a new branch or a forced push)."
+            exit 0
+          fi
+          node scripts/check-migration-order.mjs "$base"
   bridge:
     name: Sensor bridge unit tests
     # docker/sensor-bridge (GPL-3.0-or-later): the Python package and its tests
@@ -693,6 +720,164 @@ jobs:
           fi
           npm run test:db-roles
           node tests/operator-api-core.mjs
+      - name: Stop only the drill installation
+        if: always() && steps.previous.outputs.skip != 'true'
+        run: |
+          cd "$RUNNER_TEMP/previous" || exit 0
+          test -z "${WAREHOUSE_STATE_DIR:-}" || test ! -f "$WAREHOUSE_STATE_DIR/config/compose.env" || bash scripts/compose.sh --profile '*' down
+
+  seeded-upgrade:
+    name: Seeded upgrade (${{ matrix.variant }})
+    # The upgrade drill with a facility that has data (tests/seed/make-seed.mjs: 8 customers, 300 receipts, 200 dispatches, 40 invoices,
+    # 3 orders and 6 photos), run weekly and on demand, never on a pull request and not a required check. It starts where operator-upgrade
+    # starts (scripts/ci-previous-tag.sh): the newest release tag of this PostgreSQL major, and until a tag exists on this line, the merge
+    # base with the branch (the commit before HEAD on the branch itself), with this commit's upgrade.sh and helpers added.
+    #   plain  loads the seed, takes a backup and proves it (what upgrade.sh does before a move, and what the target's preflight rehearses
+    #          the migrations on), moves to this commit with upgrade.sh --ref, and checks that the rehearsal ran and that the rows of the
+    #          seeded tables and the stored photos are as they were.
+    #   clash  makes the database look like one on an earlier release (migration 117's unique customer-name index, its function and its
+    #          ledger row removed), loads the seed with two customers whose names differ only in capitals and spaces, takes the backup,
+    #          and runs upgrade.sh --ref: it must be refused before the checkout with migration 117 named, and the facility's database,
+    #          checkout and upgrade record must be exactly as they were.
+    if: github.event_name == 'schedule' || github.event_name == 'workflow_dispatch'
+    runs-on: ${{ github.event.pull_request.head.repo.fork && 'ubuntu-latest' || fromJSON(vars.OPERATOR_INSTALL_RUNNER || '"ubuntu-latest"') }}
+    timeout-minutes: 75
+    needs: validate
+    strategy:
+      fail-fast: false
+      matrix:
+        variant: [plain, clash]
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          path: backend
+          fetch-depth: 0
+          persist-credentials: false
+      - uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0
+        with:
+          node-version: '22'
+      - name: Choose the starting point
+        id: previous
+        env:
+          BASE_BRANCH: ${{ github.ref_name }}
+        run: bash scripts/ci-previous-tag.sh "$BASE_BRANCH" | tee -a "$GITHUB_OUTPUT"
+        working-directory: backend
+      - name: Seeded upgrade skipped
+        if: steps.previous.outputs.skip == 'true'
+        env:
+          REASON: ${{ steps.previous.outputs.reason }}
+        run: echo "::notice title=Seeded upgrade skipped::$REASON"
+      - name: Install the previous release and load the seed
+        if: steps.previous.outputs.skip != 'true'
+        env:
+          PREVIOUS_REF: ${{ steps.previous.outputs.ref }}
+          PREVIOUS_KIND: ${{ steps.previous.outputs.kind }}
+          VARIANT: ${{ matrix.variant }}
+        run: |
+          set -euo pipefail
+          previous="$RUNNER_TEMP/previous"
+          git -C backend worktree prune
+          git -C backend worktree add --detach "$previous" "$PREVIOUS_REF"
+          if [ "$PREVIOUS_KIND" = tag ] && git -C "$previous" cat-file -e HEAD:upgrade.sh 2>/dev/null && git -C "$previous" cat-file -e HEAD:scripts/pg-major.sh 2>/dev/null; then
+            echo "The drill runs the upgrade.sh of $PREVIOUS_REF, unchanged."
+          else
+            echo "The drill adds the upgrade.sh and pg-major.sh of the change under test to $PREVIOUS_REF (with the two helpers upgrade.sh sources and calls)."
+            cp backend/upgrade.sh "$previous/upgrade.sh"
+            cp backend/scripts/pg-major.sh backend/scripts/upgrade-lib.sh backend/scripts/pre-images.sh "$previous/scripts/"
+            git -C "$previous" add upgrade.sh scripts/pg-major.sh scripts/upgrade-lib.sh scripts/pre-images.sh
+            if ! git -C "$previous" diff --cached --quiet; then
+              git -C "$previous" -c user.name=ci -c user.email=ci@example.invalid commit -q -m 'CI: upgrade.sh and its helpers of the change under test'
+            fi
+          fi
+          install -m 600 /dev/null "$RUNNER_TEMP/msg91-upgrade.env"
+          cat > "$RUNNER_TEMP/msg91-upgrade.env" <<'ENV'
+          SMS_PROVIDER=msg91
+          MSG91_AUTH_KEY=isolated-no-delivery-key
+          MSG91_TEMPLATE_ID=000000000000000000000001
+          MSG91_PE_ID=0000000000000000001
+          MSG91_SENDER_ID=CITEST
+          ENV
+          state="$RUNNER_TEMP/core-backend-test-20261027"   # the operator-api fixtures only accept this name pattern
+          mkdir -m 700 "$state"
+          echo "WAREHOUSE_STATE_DIR=$state" >> "$GITHUB_ENV"
+          export WAREHOUSE_STATE_DIR="$state"
+          # The options that release's setup.sh knows: one from before the Slack and letterhead questions has neither.
+          options=()
+          for option in --alert-webhook-file --letterhead-file; do
+            if grep -q -- "$option" "$previous/setup.sh"; then options+=("$option" off); fi
+          done
+          cd "$previous"
+          bash setup.sh --operator --state-dir "$state" \
+            --api-url https://backend-seeded.example.test --company 'Fictional Seeded Warehouse' \
+            --provider-env "$RUNNER_TEMP/msg91-upgrade.env" \
+            --admin-phone 919888888872 --admin-name 'Seeded Demo Administrator' \
+            "${options[@]}"
+          query() { bash scripts/compose.sh exec -T db psql -X -qAt -v ON_ERROR_STOP=1 -U supabase_admin -d postgres "$@"; }
+          if [ "$VARIANT" = clash ]; then
+            # A facility on an earlier release: no unique index over the normalised customer name yet (migration 117), so that two
+            # names which differ only in capitals and spaces were accepted. The function and the ledger row go with it, as 117 recreates both.
+            query -c "DROP INDEX public.customers_name_norm_key; DROP FUNCTION utils.customer_name_key(text); DELETE FROM warehouse_migrations.applied WHERE name LIKE '00000000000117\_%'"
+          fi
+          node "$GITHUB_WORKSPACE/backend/tests/seed/make-seed.mjs" $([ "$VARIANT" = clash ] && echo --clash) --photos "$RUNNER_TEMP/seed-photos" > "$RUNNER_TEMP/seed.sql"
+          query < "$RUNNER_TEMP/seed.sql"
+          bash scripts/compose.sh cp "$RUNNER_TEMP/seed-photos/stub" storage:/var/lib/storage/
+          test "$(bash scripts/compose.sh exec -T storage sh -c 'find /var/lib/storage/stub/stub/grn-images /var/lib/storage/stub/stub/dispatch-images -type f | wc -l')" = 6
+          # What upgrade.sh does first, by hand: a backup, proved, and on the list of verified ones, which is what the target's
+          # preflight rehearses the migrations on (the first move of a facility has none, and says so).
+          if grep -q 'record-verified' scripts/watch.mjs; then
+            bash scripts/backup.sh | tee "$RUNNER_TEMP/backup.out"
+            backup="$(sed -n 's/^Backup created at \(\/.*\)$/\1/p' "$RUNNER_TEMP/backup.out" | tail -n 1)"
+            test -d "$backup"
+            bash scripts/verify-restore.sh "$backup"
+            node scripts/watch.mjs record-verified "$backup" 1 > /dev/null
+          fi
+          bash scripts/data-fingerprint.sh --counts > "$RUNNER_TEMP/counts-before"
+          bash scripts/data-fingerprint.sh > "$RUNNER_TEMP/fingerprint-before"
+          git rev-parse HEAD > "$RUNNER_TEMP/head-before"
+      - name: Upgrade to this commit and check the rows
+        if: steps.previous.outputs.skip != 'true'
+        env:
+          VARIANT: ${{ matrix.variant }}
+        run: |
+          set -euo pipefail
+          ref="$(git -C "$GITHUB_WORKSPACE/backend" rev-parse HEAD)"
+          cd "$RUNNER_TEMP/previous"
+          rehearsal=no
+          if git cat-file -e "$ref:scripts/upgrade-rehearse.sh" 2>/dev/null && grep -q 'upgrade-preflight' upgrade.sh && grep -q 'record-verified' scripts/watch.mjs; then rehearsal=yes; fi
+          if [ "$VARIANT" = clash ]; then
+            test "$rehearsal" = yes   # the starting point must be able to run the rehearsal, or this variant proves nothing
+            # The dry run refuses too: the rehearsal is part of it, and it changes nothing.
+            if bash upgrade.sh --dry-run --ref "$ref" > "$RUNNER_TEMP/dry.out" 2>&1; then echo "The dry run accepted a clashing customer name."; exit 1; fi
+            if bash upgrade.sh --ref "$ref" > "$RUNNER_TEMP/upgrade.out" 2>&1; then echo "The upgrade accepted a clashing customer name."; exit 1; fi
+            for out in dry upgrade; do
+              grep -q '00000000000117_customer_name_rule.sql' "$RUNNER_TEMP/$out.out"
+              grep -q 'Nothing was changed' "$RUNNER_TEMP/$out.out"
+              # The reason must be the unique index over the clashing names, not any other failure of 117.
+              grep -q 'customers_name_norm_key' "$RUNNER_TEMP/$out.out"
+            done
+            test "$(git rev-parse HEAD)" = "$(cat "$RUNNER_TEMP/head-before")"
+            test ! -e "$WAREHOUSE_STATE_DIR/config/upgrade-in-progress"
+            bash scripts/data-fingerprint.sh | diff -u "$RUNNER_TEMP/fingerprint-before" -
+            bash scripts/data-fingerprint.sh --counts | diff -u "$RUNNER_TEMP/counts-before" -
+            exit 0
+          fi
+          bash upgrade.sh --dry-run --ref "$ref" | tee "$RUNNER_TEMP/dry.out"
+          bash upgrade.sh --ref "$ref" | tee "$RUNNER_TEMP/upgrade.out"
+          test "$(git rev-parse HEAD)" = "$ref"
+          tail -n 1 "$WAREHOUSE_STATE_DIR/config/upgrades.log" | grep -q ' ok$'
+          if [ "$rehearsal" = yes ]; then
+            grep -q 'Rehearsal of the migrations: passed' "$RUNNER_TEMP/dry.out"
+            grep -q 'Rehearsal of the migrations: passed' "$RUNNER_TEMP/upgrade.out"
+          fi
+          npm ci
+          bash scripts/data-fingerprint.sh --counts > "$RUNNER_TEMP/counts-after"
+          # The seeded tables keep exactly their rows (a migration may add tables and seed other rows).
+          for table in customers goodsreceived goodsreceived_trl dispatch dispatch_trl invoice invoice_trl orders order_items grn_images dispatch_images; do
+            test "$(grep "^public.$table " "$RUNNER_TEMP/counts-before")" = "$(grep "^public.$table " "$RUNNER_TEMP/counts-after")"
+          done
+          test "$(grep '^storage.objects ' "$RUNNER_TEMP/counts-before")" = "$(grep '^storage.objects ' "$RUNNER_TEMP/counts-after")"
+          test "$(bash scripts/compose.sh exec -T storage sh -c 'find /var/lib/storage/stub/stub/grn-images /var/lib/storage/stub/stub/dispatch-images -type f | wc -l')" = 6
+          node scripts/doctor.mjs --local
       - name: Stop only the drill installation
         if: always() && steps.previous.outputs.skip != 'true'
         run: |

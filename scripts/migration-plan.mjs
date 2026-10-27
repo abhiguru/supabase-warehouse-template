@@ -19,6 +19,10 @@ export function migrationPlan(root, { through } = {}) {
   });
   // The names of this directory as a SQL array; every name matched ^\d+_[a-z0-9_]+\.sql$ above, so no quote can occur.
   const namesLiteral = `ARRAY[${files.map(name => `'${name}'`).join(', ')}]::text[]`;
+  // Each file runs in its own transaction with a lock_timeout of 10 s: a file that has to wait longer than that for a lock (a live session
+  // holding the table) fails with 55P03 and rolls back whole, and scripts/migrate.sh runs the plan again, which skips the files the
+  // ledger already holds. The API schema cache is told to reload right after each COMMIT, not only at the end, so that a run that stops
+  // part way leaves the API on the schema the database really has.
   // 71041 serializes migration runs. Session level: released at the end, or when psql stops on an error.
   const result = [String.raw`\set ON_ERROR_STOP on
 SELECT pg_advisory_lock(71041);
@@ -56,9 +60,11 @@ SELECT EXISTS (SELECT 1 FROM warehouse_migrations.applied WHERE name='${name}') 
 \else
   \echo Applying: ${name}
   BEGIN;
+  SET LOCAL lock_timeout = '10s';
 ${sql}
   INSERT INTO warehouse_migrations.applied(name,checksum) VALUES ('${name}','${checksum}');
   COMMIT;
+  NOTIFY pgrst, 'reload schema';
 \endif`);
   }
   result.push("NOTIFY pgrst, 'reload schema';\nSELECT pg_advisory_unlock(71041);\n");
