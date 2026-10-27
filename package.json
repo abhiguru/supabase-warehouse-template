@@ -35,6 +35,6 @@
     "baseline:verify": "bash scripts/baseline/verify-baseline.sh"
   },
   "devDependencies": {
-    "jose": "6.2.12"
+    "jose": "6.2.13"
   }
 }
