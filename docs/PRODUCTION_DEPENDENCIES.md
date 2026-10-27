@@ -1,6 +1,6 @@
 # Remaining production work
 
-The list of what is open before production use. Production use stays gated until these are done. Each line says what closes it. Credentials never belong in this file;
+The dated, recurring obligations (renewals, end-of-life dates, the 2029 PostgreSQL move) are in [MAINTENANCE_CALENDAR.md](MAINTENANCE_CALENDAR.md). The list of what is open before production use. Production use stays gated until these are done. Each line says what closes it. Credentials never belong in this file;
 they go in the operator's secret store. Nothing here authorizes production deployment, new billing policy or deletion.
 
 ## Needs the operator or the owner
@@ -117,7 +117,10 @@ they go in the operator's secret store. Nothing here authorizes production deplo
   - Image-scan exception renewals: the six entries of `docker/image-exceptions.json` expire on **2027-01-15**. After that date
     `npm run scan:images` and the release checklist fail until the owner reviews and renews them (CI does not run the scan). End-of-life
     dates behind it: Node 22 on the host 2027-04-30, Node 24 in the storage and PDF images 2028-04-30, Debian 12 for the
-    functions image 2028-06-30.
+    functions image 2028-06-30. The rest of the end-of-life dates, with the forecast ones marked as such (Ubuntu 22.04 under CUPS
+    2027-04 to 05, Alpine 3.23 2027-11-01, Python 3.15 for the sensor bridge about 2031-10, Debian 13 and the PostgreSQL major move in
+    2029 H1, PostgreSQL 18 2030-11), are in [MAINTENANCE_CALENDAR.md](MAINTENANCE_CALENDAR.md), which lists every dated obligation
+    and where it is checked.
   - Mitigation, **unverified**: `.github/workflows/keep-alive.yml` commits a timestamp once a month to the orphan branch `keep-alive`
     and calls the documented endpoint that enables the weekly CI run and the weekly Chrome for Testing, dependency advisory and
     base image checks, to keep GitHub from disabling them after 60 days without repository activity. GitHub does not say what counts as activity, so whether this works is not

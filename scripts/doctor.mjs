@@ -4,7 +4,7 @@ import { join, resolve, sep } from 'node:path';
 import { createConnection } from 'node:net';
 import { spawnSync } from 'node:child_process';
 import { createHash, createHmac, timingSafeEqual } from 'node:crypto';
-import { backupToolProblems, centralKeyFault, gatewayPortText, letterheadProblem, probe, projectPublishesPort, readEnv, root, supportedNode } from './doctor-common.mjs';
+import { backupToolProblems, centralKeyFault, collationProblem, gatewayPortText, letterheadProblem, probe, projectPublishesPort, readEnv, root, supportedNode } from './doctor-common.mjs';
 import { canonicalOrigin } from './configure.mjs';
 import { validateDbValues } from './db-roles.mjs';
 import { isFixtureAddress, isProviderPlaceholder } from './provider-placeholder.mjs';
@@ -189,6 +189,12 @@ export async function lanDoctor(options = {}) {
   return [report.address, ...report.warnings.map(text => `Warning: ${text}`), 'The LAN fallback answers from this host as this installation.'].join('\n');
 }
 
+// What the collation check asks, through the db container; rotate-db-passwords.sh, rotate-keys.sh and restore.sh run it alone as
+// `node scripts/doctor.mjs --collation`, so that a collation fault is told as one and not as a fault of what they changed.
+export function databaseCollationProblem() {
+  return collationProblem(args => probe('bash', [resolve(root, 'scripts/compose.sh'), 'exec', '-T', 'db', ...args]));
+}
+
 export async function doctor({ hostPreflight = false, preflight = false, local = false } = {}) {
   if (process.platform !== 'linux' || process.arch !== 'x64') throw new Error('Linux x86-64 required.');
   if (!supportedNode()) throw new Error('Node.js 22.18+ required.');
@@ -240,6 +246,9 @@ export async function doctor({ hostPreflight = false, preflight = false, local =
   const upgradeWarning = interruptedUpgradeWarning(state);
   if (!health.ok) throw new Error(`Local service health check failed: ${health.lines.filter(line => !line.ok).map(line => line.text).join('; ')}.${stoppedByOperator(state) ? ` ${stoppedWarning}` : ''}${upgradeWarning ? ` ${upgradeWarning}` : ''}`);
   for (const line of health.lines.filter(l => l.warn)) console.error(`Warning: ${line.text}`);
+  // The database is up (the health check passed): its text indexes are only right while the C library's collation is the one they were built with.
+  const collation = databaseCollationProblem();
+  if (collation) throw new Error(collation);
   // The LAN fallback, when it is on. Its address is printed here (`--local` is what start.sh and setup.sh show last). A fault of
   // it never stops a start, an upgrade or a setup: with `--local` it is a warning, because the public path is the facility's;
   // `node scripts/doctor.mjs` (the full check) and `--lan` fail on it.
@@ -311,8 +320,12 @@ export function checkLetterhead(env, stateDir) {
 if (isMain(import.meta.url)) {
   try {
     const args = process.argv.slice(2);
-    if (args.some(arg => !['--host-preflight', '--preflight', '--local', '--lan'].includes(arg)) || args.length > 1) throw new Error('Usage: node scripts/doctor.mjs [--host-preflight|--preflight|--local|--lan]');
-    if (args.includes('--lan')) console.log(await lanDoctor());
+    if (args.some(arg => !['--host-preflight', '--preflight', '--local', '--lan', '--collation'].includes(arg)) || args.length > 1) throw new Error('Usage: node scripts/doctor.mjs [--host-preflight|--preflight|--local|--lan|--collation]');
+    if (args.includes('--collation')) {
+      const collation = databaseCollationProblem();
+      if (collation) throw new Error(collation);
+      console.log('The collation version of the postgres database matches its C library.');
+    } else if (args.includes('--lan')) console.log(await lanDoctor());
     else console.log(await doctor({ hostPreflight: args.includes('--host-preflight'), preflight: args.includes('--preflight'), local: args.includes('--local') }));
   } catch (error) {
     // Node's fetch reports only "fetch failed"; the reason (DNS, refused, unreachable) is in error.cause.

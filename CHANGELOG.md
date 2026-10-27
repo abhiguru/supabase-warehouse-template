@@ -58,6 +58,7 @@ reload** in `docs/OPERATOR_INSTALL.md`; a new installation needs none of that. A
    may be in the middle of the backup. The command also writes `<project>-stack.service` (starts the stopped services at boot, never
    recreating or building, so a power cut during the backup window no longer leaves them stopped and a reboot cannot apply a release that
    `setup.sh` has not) and moves the units to a Node.js link (`~/.local/opt/node-current`) so a Node.js upgrade only moves the link.
+   The units now carry a recipe hash: `root_copy_stale` reminds weekly until this rerun is done.
    Optional: `config/heartbeat-url` for an external dead-man switch
    ([docs/MONITORING.md](docs/MONITORING.md#external-heartbeat-the-dead-man-switch)).
 11. **`setup.sh` recreates the `db` and `rest` containers** (a few seconds of downtime): `PGRST_DB_CONFIG` is now `true`, so anonymous API
@@ -131,7 +132,8 @@ reload** in `docs/OPERATOR_INSTALL.md`; a new installation needs none of that. A
    and keep the key copy; old unencrypted archives are removed after the first encrypted one is verified.** The rerun is for everyone
    who set USB backup up with an earlier release, not only for those who want encryption: it installs the new unit (a 6-hour time
    limit for a run instead of 2 hours, which is too short for a large drive, and the keep count) and the new root helper, and until it
-   is done `backup-usb.sh status`, `npm run doctor` and the `usb_backup` alert warn when the installation still writes readable archives.
+   is done `backup-usb.sh status`, `npm run doctor` and the `usb_backup` alert warn when the installation still writes readable archives,
+   and `root_copy_stale` reminds weekly.
    USB archives are now encrypted with the backup key unless `--no-encrypt` is typed. An installation whose USB backup was set up by
    an earlier release (readable archives were the default) is switched to encrypted archives by that rerun, which prints a notice; a
    `--no-encrypt` you typed is kept, and then no warning is shown. A typed `--encrypt` over a typed `--no-encrypt` prints the same notice. Because the backup key lives only on the host's disk, a lost host
@@ -529,6 +531,16 @@ reload** in `docs/OPERATOR_INSTALL.md`; a new installation needs none of that. A
   yearly stable move needs no test edit. (5) The `functions` image runs `edge-runtime --version` once at build, so a base that no longer
   matches the binary's libc fails the build and not the start of every edge function; `setup.sh` rebuilds that image once (it already
   rebuilds for this release, Operator actions item 1), and nothing else changes for an operator.
+
+- **A maintenance calendar, host warnings and a collation check.** [docs/MAINTENANCE_CALENDAR.md](docs/MAINTENANCE_CALENDAR.md) lists every dated
+  obligation of the next four years (renewals, end-of-life dates, the PostgreSQL move planned for 2029 H1), where each is checked and what
+  happens if it is missed; forecasts are marked as such. The monitoring checker raises three weekly warnings that call no network:
+  `cloudflared_old` (the installed version is 11 months old, or the tunnel still runs a replaced binary), `host_node_eol` (the host's Node.js
+  major is within 60 days of its end) and `root_copy_stale` (a file installed with `sudo` was written by an earlier release; the USB-backup rule and
+  unit and the checker, daily and boot units now carry a `# Recipe: sha256:` line, so `watch-timer.sh install` and `backup-usb.sh setup` are
+  the commands the alert names after an upgrade). `node scripts/doctor.mjs` fails when the `postgres` database's recorded collation version
+  differs from its C library's (`rotate-keys.sh` and `db:rotate-passwords` run that check first and refuse before changing anything), pointing at the new "Collation changes" section of `docs/OPERATOR_INSTALL.md`, which also records the rule that
+  the database image's Debian base is never changed in place. See [docs/MONITORING.md](docs/MONITORING.md).
 
 ### Removed
 

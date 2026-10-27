@@ -44,6 +44,7 @@ with a real SMS code.
 - Something went wrong: [docs/TROUBLESHOOTING.md](docs/TROUBLESHOOTING.md)
 - What staff and customers may do: [docs/STAFF_GRN_POLICY.md](docs/STAFF_GRN_POLICY.md)
 - What is still open before production use: [docs/PRODUCTION_DEPENDENCIES.md](docs/PRODUCTION_DEPENDENCIES.md)
+- What has to be done when, over the next years (renewals, end-of-life dates): [docs/MAINTENANCE_CALENDAR.md](docs/MAINTENANCE_CALENDAR.md)
 
 ## Isolation and migration safety
 

@@ -3739,3 +3739,23 @@ test('runHealth with maintenance mode on: the gateway is not probed, the line is
     assert.equal(sick.lines.some(l => /maintenance mode is on/.test(l.text) && l.warn), true);
   } finally { clean(h); }
 });
+
+test('watch-timer.sh hint prints the install command when a unit carries another recipe or none (what root_copy_stale would flag)', () => {
+  const f = timerFixture();
+  try {
+    assert.equal(f.asRoot(['install', '--node', join(f.nodeDir, 'node')]).status, 0);
+    assert.equal(f.run(['hint']).stdout, '', 'units written by this script: silent');
+    for (const name of ['watch', 'daily', 'stack']) {
+      const path = join(f.units, `warehouse-acme-${name}.service`);
+      const original = readFileSync(path, 'utf8');
+      for (const changed of [original.replace(/sha256:[0-9a-f]{64}/, `sha256:${'0'.repeat(64)}`), original.replace(/^# Recipe:.*\n/m, '')]) {
+        writeFileSync(path, changed);
+        const hint = f.run(['hint']).stdout;
+        assert.match(hint, /written by an earlier release of watch-timer\.sh/, name);
+        assert.ok(hint.includes(`sudo bash ${repo.replace(/\/$/, '')}/scripts/watch-timer.sh install --state ${f.state}`), `${name}: ${hint}`);
+      }
+      writeFileSync(path, original);
+      assert.equal(f.run(['hint']).stdout, '', `${name} restored: silent`);
+    }
+  } finally { rmSync(f.scratch, { recursive: true, force: true }); }
+});

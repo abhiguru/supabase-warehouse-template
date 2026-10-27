@@ -17,6 +17,8 @@ RUN gosu nobody id \
 # package differs (a Dependabot digest bump) can reorder strings and corrupt every text index until a REINDEX. The
 # versions below are the ones the data of the facilities was built with. A bump that changes them fails this build:
 # check the glibc changelog for collation changes, plan a REINDEX if there are any, then update the line below.
+# The base is never changed in place (a new Debian release, a different glibc line): that happens only through the dump-and-restore major
+# move planned for 2029 H1. `node scripts/doctor.mjs` fails when the recorded collation version differs (docs/OPERATOR_INSTALL.md, "Collation changes").
 RUN set -eu; \
     expected='libc-bin 2.41-12+deb13u4 libc6 2.41-12+deb13u4 locales 2.41-12+deb13u4'; \
     actual="$(dpkg-query -W -f='${Package} ${Version}\n' libc6 libc-bin locales | LC_ALL=C sort | tr '\n' ' ' | sed 's/ $//')"; \
