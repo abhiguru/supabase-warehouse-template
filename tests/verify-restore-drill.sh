@@ -14,10 +14,13 @@
 #      dump holds: the verification must fail on exactly that line. Before, the
 #      three append-only histories were in no comparison, so a restore that lost
 #      them passed.
+#   4. --keep leaves the verified container (and its disk-backed data directory) for the migration rehearsal and --rm removes both;
+#      scripts/upgrade-rehearse.sh then applies the migrations of a tree to the restored copy: those of this checkout apply (all
+#      recorded already), and a tree with one more migration that raises is refused with that file named, the container gone.
 # Before the replays: the integrity report of this database counts the histories
 # and the closed invoice columns, and the same file run on a ledger without the
 # baseline prints only the lines an earlier backup recorded.
-# Only disposable, network-isolated containers are used; no operator state is read.
+# Only disposable, network-isolated containers are used; no operator state is read (step 4b builds a small state directory of its own).
 set -euo pipefail
 umask 077
 ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
@@ -159,6 +162,46 @@ if [[ -s "$backup6/storage_objects.txt" ]]; then
   grep -q 'does not match storage.manifest' <<<"$damaged" || { echo "Restore drill: the damaged v6 tree was refused for another reason: $damaged" >&2; exit 1; }
 fi
 echo 'Restore drill 2c passed: a v6 backup (storage tree and manifest) verifies, and a tree file that differs from its manifest is refused.'
+
+# 4. --keep and --rm, then the rehearsal of scripts/upgrade-rehearse.sh on a real restored copy.
+kept_out="$(env -u WAREHOUSE_STATE_DIR WAREHOUSE_BACKUP_KEY_FILE="$work/backup.key" WAREHOUSE_DIAGNOSTICS_DIR="$work/diagnostics" \
+  WAREHOUSE_VERIFY_SCRATCH_DIR="$work/scratch" WAREHOUSE_VERIFY_STORAGE=disk bash "$ROOT/scripts/verify-restore.sh" --keep "$backup" 2>&1)" \
+  || { echo "Restore drill: verify-restore.sh --keep failed: $kept_out" >&2; exit 1; }
+kept_name="$(sed -n 's/^Kept disposable database: \(warehouse-restore-[0-9a-f]\{12\}\) .*/\1/p' <<<"$kept_out")"
+[[ -n "$kept_name" ]] || { echo "Restore drill: --keep did not name the container: $kept_out" >&2; exit 1; }
+[[ "$(docker inspect --format '{{.State.Running}}' "$kept_name")" == true ]] || { echo 'Restore drill: the kept container is not running.' >&2; exit 1; }
+[[ -n "$(ls -A "$work/scratch")" ]] || { echo 'Restore drill: --keep removed the data directory of the kept container.' >&2; exit 1; }
+[[ "$(docker exec -e PGPASSWORD=disposable-restore-only "$kept_name" psql -X -qAt -U supabase_admin -d warehouse_restore -c 'SELECT count(*) > 0 FROM warehouse_migrations.applied')" == t ]] \
+  || { echo 'Restore drill: the kept database does not hold the restored ledger.' >&2; exit 1; }
+bash "$ROOT/scripts/verify-restore.sh" --rm "$kept_name"
+! docker inspect "$kept_name" >/dev/null 2>&1 || { echo 'Restore drill: --rm left the container.' >&2; exit 1; }
+[[ -z "$(ls -A "$work/scratch")" ]] || { echo "Restore drill: --rm left the data directory: $(ls -A "$work/scratch")" >&2; exit 1; }
+bash "$ROOT/scripts/verify-restore.sh" --rm "$kept_name"   # already gone: not an error
+if bash "$ROOT/scripts/verify-restore.sh" --rm 'not-a-container' 2>/dev/null; then echo 'Restore drill: --rm accepted a name that is not a restore container.' >&2; exit 1; fi
+echo 'Restore drill 4 passed: --keep leaves a running verified copy, --rm removes it and its data directory.'
+
+# 4b. The rehearsal on a state directory that holds this backup as its newest verified one.
+state="$work/state"
+mkdir -p "$state/config" "$state/backups" "$state/data"
+cp -a "$backup" "$state/backups/"
+cp "$work/backup.key" "$state/config/backup.key"
+printf '%s 1\n' "$(basename "$backup")" > "$state/config/backups-verified.list"
+existing_after="$(docker ps -aq --filter label=purpose=warehouse-restore-test | sort)"
+rehearse() { env WAREHOUSE_VERIFY_STORAGE=tmpfs WAREHOUSE_DIAGNOSTICS_DIR="$work/diagnostics" STATE="$state" TO_LABEL="drill-target" bash "$1/scripts/upgrade-rehearse.sh"; }
+passed="$(rehearse "$ROOT" 2>&1)" || { echo "Restore drill: the rehearsal of this checkout's own migrations failed: $passed" >&2; exit 1; }
+grep -Eq 'Rehearsal of the migrations: passed \(0 to apply, [0-9]+ already applied\) on a copy of warehouse-20260101T000000Z; applying them took [0-9]+ s\.' <<<"$passed" \
+  || { echo "Restore drill: the rehearsal did not report a pass with timing: $passed" >&2; exit 1; }
+tree="$work/tree"
+mkdir -p "$tree"
+# This script runs under umask 077, so the copy is unreadable to the container's postgres user: verify-restore.sh must not depend on that.
+cp -r "$ROOT/scripts" "$ROOT/migrations" "$ROOT/docker" "$tree/"
+printf "DO \$\$ BEGIN RAISE EXCEPTION 'rehearsal fixture refuses these rows'; END \$\$;\n" > "$tree/migrations/00000000000999_rehearsal_fixture.sql"
+if refused="$(rehearse "$tree" 2>&1)"; then echo "Restore drill: a migration that raises passed the rehearsal: $refused" >&2; exit 1; fi
+grep -q 'the migration 00000000000999_rehearsal_fixture.sql does not apply to a copy of your data' <<<"$refused" \
+  && grep -q 'rehearsal fixture refuses these rows' <<<"$refused" && grep -q 'Nothing was changed' <<<"$refused" \
+  || { echo "Restore drill: the rehearsal refused for another reason, or without naming the file: $refused" >&2; exit 1; }
+[[ "$(docker ps -aq --filter label=purpose=warehouse-restore-test | sort)" == "$existing_after" ]] || { echo 'Restore drill: the rehearsal left its container behind.' >&2; exit 1; }
+echo 'Restore drill 4b passed: the rehearsal applies the migrations of a tree to a restored copy and refuses, naming the file, one that raises.'
 
 # 3. A history row fewer than the backup recorded is a failed verification.
 recorded="$(sed -n 's/^item_price_history_count=//p' "$backup/integrity.txt")"

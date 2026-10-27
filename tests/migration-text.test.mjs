@@ -47,3 +47,40 @@ test('every tests/*.sql is registered exactly once in the test_files list of tes
   const files = readdirSync(new URL('./', import.meta.url)).filter(name => name.endsWith('.sql')).sort();
   assert.deepEqual([...registered].sort(), files);
 });
+
+test('every migration file runs under a 10 s lock_timeout and tells the API to reload its schema right after its COMMIT', async () => {
+  const { migrationPlan } = await import('../scripts/migration-plan.mjs');
+  const { mkdtempSync, mkdirSync, writeFileSync, rmSync } = await import('node:fs');
+  const { tmpdir } = await import('node:os');
+  const { join } = await import('node:path');
+  const dir = mkdtempSync(join(tmpdir(), 'warehouse-plan-text-'));
+  try {
+    mkdirSync(join(dir, 'migrations'));
+    for (const name of ['00000000000001_one.sql', '00000000000002_two.sql', '00000000000003_three.sql']) writeFileSync(join(dir, 'migrations', name), `SELECT '${name}';\n`);
+    const plan = migrationPlan(dir);
+    const blocks = plan.split('\\echo Applying: ').slice(1);
+    assert.equal(blocks.length, 3);
+    for (const block of blocks) {
+      const name = block.split('\n')[0];
+      assert.match(block, new RegExp(`^${name}\\n  BEGIN;\\n  SET LOCAL lock_timeout = '10s';\\nSELECT '${name}';\\n`), `${name}: the timeout is set inside the transaction, before the file's SQL`);
+      assert.match(block, /  COMMIT;\n  NOTIFY pgrst, 'reload schema';\n\\endif/, `${name}: the schema reload follows the COMMIT`);
+    }
+    assert.ok(plan.trimEnd().endsWith("NOTIFY pgrst, 'reload schema';\nSELECT pg_advisory_unlock(71041);"), 'the final reload and the unlock stay at the end');
+  } finally { rmSync(dir, { recursive: true, force: true }); }
+});
+
+test('the ordering rule: a new migration must sort after every migration of the base (scripts/check-migration-order.mjs)', async () => {
+  const { migrationOrderProblems } = await import('../scripts/check-migration-order.mjs');
+  const file = text => Buffer.from(text);
+  const base = new Map([['00000000000000_baseline.sql', file('a')], ['00000000000126_last.sql', file('b')]]);
+  const withNew = name => new Map([...base, [name, file('c')]]);
+  assert.deepEqual(migrationOrderProblems(base, withNew('00000000000127_next.sql')), [], 'a file that sorts last is fine');
+  assert.deepEqual(migrationOrderProblems(base, withNew('00000000000126_last_b.sql')), [], '... also one that shares the number but sorts after');
+  assert.equal(migrationOrderProblems(base, withNew('00000000000125_early.sql')).length, 1, 'a file below the last one is a problem');
+  assert.match(migrationOrderProblems(base, withNew('00000000000126_a.sql'))[0], /sorts before 00000000000126_last\.sql/, '... also one that shares the number but sorts before');
+  assert.deepEqual(migrationOrderProblems(new Map(), withNew('00000000000001_first.sql')), [], 'an empty base accepts anything');
+  // The repository itself: its own files, read as base and as current, satisfy the rule (a file in a wrong place would be named).
+  const directory = new URL('../migrations/', import.meta.url);
+  const own = new Map(readdirSync(directory).filter(name => name.endsWith('.sql')).map(name => [name, readFileSync(new URL(name, directory))]));
+  assert.deepEqual(migrationOrderProblems(own, own), []);
+});

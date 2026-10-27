@@ -45,7 +45,28 @@ function world({ floor = 'from_floor=\nstepping_stone=\n', doctor = 0, changelog
   const tree = join(scratch, 'tree');
   const state = join(scratch, 'state');
   for (const dir of [join(tree, 'scripts'), join(state, 'config'), join(state, 'data'), join(state, 'backups'), join(scratch, 'bin')]) mkdirSync(dir, { recursive: true });
-  for (const file of ['scripts/upgrade-preflight.sh', 'scripts/upgrade-lib.sh']) copyFileSync(join(root, file), join(tree, file));
+  for (const file of ['scripts/upgrade-preflight.sh', 'scripts/upgrade-lib.sh', 'scripts/upgrade-rehearse.sh', 'scripts/migration-plan.mjs', 'scripts/is-main.mjs']) copyFileSync(join(root, file), join(tree, file));
+  // The rehearsal's two outside parts are stand-ins that log to rehearsal.log: verify-restore.sh (--keep names a container, --rm removes it;
+  // FAKE_VERIFY_FAIL makes it fail) and docker (`docker exec ... psql` reads the plan, echoes its "Applying:" lines and fails with an
+  // ERROR at the file named by FAKE_FAIL_FILE). The migrations are two small files of the test's own.
+  mkdirSync(join(tree, 'migrations'));
+  writeFileSync(join(tree, 'migrations/00000000000001_one.sql'), 'SELECT 1;\n');
+  writeFileSync(join(tree, 'migrations/00000000000002_two.sql'), 'SELECT 2;\n');
+  writeFileSync(join(tree, 'scripts/verify-restore.sh'), `#!/bin/bash
+echo "verify-restore $*" >> "$FAKE_LOG"
+if [ "$1" = --rm ]; then exit 0; fi
+if [ -n "$FAKE_VERIFY_SLEEP" ]; then sleep "$FAKE_VERIFY_SLEEP"; fi
+if [ "$FAKE_VERIFY_FAIL" = diag ]; then echo "Restore database did not start (fake)." >&2; echo "Restore verification failed. Container log, state and database sessions were saved in /x" >&2; echo "  (the database did not answer)" >&2; exit 1; fi
+if [ -n "$FAKE_VERIFY_FAIL" ]; then echo "Integrity comparison differs (fake)." >&2; exit 1; fi
+echo "Restore verification: disposable database of 768 MiB (fake)."
+echo "Kept disposable database: warehouse-restore-0123456789ab (database warehouse_restore, user supabase_admin; remove it with: bash scripts/verify-restore.sh --rm warehouse-restore-0123456789ab)"
+`);
+  writeFileSync(join(scratch, 'bin/docker'), `#!/bin/sh
+echo "docker $*" >> "$FAKE_LOG"
+cat > "$FAKE_LOG.plan"
+awk -v fail="$FAKE_FAIL_FILE" '/echo Applying: / { name = $3; print "Applying: " name; if (name == fail) { print "psql:<stdin>:7: ERROR:  fixture failure in " name > "/dev/stderr"; exit 3 } }' "$FAKE_LOG.plan"
+`);
+  chmodSync(join(scratch, 'bin/docker'), 0o755);
   writeFileSync(join(tree, 'scripts/doctor.mjs'), `import { appendFileSync } from 'node:fs';
 appendFileSync(new URL('doctor.log', import.meta.url), process.argv.slice(2).join(' ') + ' state=' + process.env.WAREHOUSE_STATE_DIR + '\\n');
 if (${doctor} !== 0) { console.error('Doctor: Missing or unavailable prerequisite: rsync (fake).'); process.exit(${doctor}); }
@@ -65,8 +86,9 @@ console.log('Host prerequisites and state filesystem preflight passed.');
     // `pty`: through the `script` command, which gives the preflight a real pseudo-terminal as standard input (the repo's other terminal tests do the same).
     const [command, args] = pty ? ['script', ['-qec', `bash ${join(tree, 'scripts/upgrade-preflight.sh')}`, '/dev/null']] : ['bash', [join(tree, 'scripts/upgrade-preflight.sh')]];
     const r = spawnSync(command, args, { cwd: tree, encoding: 'utf8', input,
-      env: { ...process.env, PATH: `${join(scratch, 'bin')}:${process.env.PATH}`, STATE: state, ...env, ...extra } });
-    return { ...r, doctorLog: existsSync(join(tree, 'scripts/doctor.log')) ? readFileSync(join(tree, 'scripts/doctor.log'), 'utf8') : '' };
+      env: { ...process.env, PATH: `${join(scratch, 'bin')}:${process.env.PATH}`, STATE: state, FAKE_LOG: join(scratch, 'rehearsal.log'), ...env, ...extra } });
+    return { ...r, rehearsalLog: existsSync(join(scratch, 'rehearsal.log')) ? readFileSync(join(scratch, 'rehearsal.log'), 'utf8') : '',
+      plan: existsSync(join(scratch, 'rehearsal.log.plan')) ? readFileSync(join(scratch, 'rehearsal.log.plan'), 'utf8') : '', doctorLog: existsSync(join(tree, 'scripts/doctor.log')) ? readFileSync(join(tree, 'scripts/doctor.log'), 'utf8') : '' };
   };
   // A verified backup with the size of its stored files (format v6: storage_bytes in metadata.txt) and, when `dump` is given, of its database
   // dump, put on the verified list.
@@ -305,5 +327,96 @@ test('on a real pseudo-terminal the preflight waits for Enter after the operator
     const yes = w.run({ ASSUME_YES: 'yes' }, { pty: true, input: '' });
     assert.equal(yes.status, 0, yes.stdout + yes.stderr);
     assert.ok(!yes.stdout.includes('Press Enter'));
+  } finally { w.cleanup(); }
+});
+
+test('the migrations of the target are rehearsed on a restored copy of the newest verified backup, with --dry-run too, and the copy is removed', () => {
+  const w = world();
+  try {
+    w.backup('warehouse-20260101T000000Z', 1024, { dump: 1024 });
+    w.backup('warehouse-20260102T000000Z', 1024, { dump: 1024 });
+    for (const DRY of ['no', 'yes']) {
+      const r = w.run({ DRY });
+      assert.equal(r.status, 0, r.stdout + r.stderr);
+      assert.match(r.stdout, /Rehearsal of the migrations of v0\.2\.0: restoring warehouse-20260102T000000Z into a disposable database/, 'the newest verified backup is the one restored');
+      assert.match(r.stdout, /Rehearsal of the migrations: passed \(2 to apply, 0 already applied\) on a copy of warehouse-20260102T000000Z; applying them took \d+ s\./);
+      assert.ok(r.stdout.indexOf('Rehearsal of the migrations: passed') < r.stdout.indexOf('Preflight of v0.2.0 passed'), 'the rehearsal is part of the preflight');
+      assert.match(r.rehearsalLog, /verify-restore --keep --no-storage-tree .*\/backups\/warehouse-20260102T000000Z\n/);
+      assert.match(r.rehearsalLog, /docker exec -i -e PGPASSWORD=disposable-restore-only warehouse-restore-0123456789ab psql .* -d warehouse_restore/, 'the plan goes to the kept container');
+      assert.match(r.plan, /Applying: 00000000000001_one\.sql[^]*Applying: 00000000000002_two\.sql/, 'the plan is the target tree\'s own migrations');
+      assert.match(r.rehearsalLog, /verify-restore --rm warehouse-restore-0123456789ab\n$/, 'the disposable database is removed at the end');
+      rmSync(join(w.scratch, 'rehearsal.log'), { force: true });
+    }
+  } finally { w.cleanup(); }
+});
+
+test('a migration that fails on the copy refuses the upgrade before anything changes, naming the file and the database\'s message, and still removes the copy', () => {
+  const w = world();
+  try {
+    w.backup(NAME, 1024, { dump: 1024 });
+    const r = w.run({ FAKE_FAIL_FILE: '00000000000002_two.sql' });
+    assert.equal(r.status, 1);
+    assert.match(r.stderr, /ERROR:  fixture failure in 00000000000002_two\.sql/, 'the database\'s own message is shown');
+    assert.match(r.stderr, /Refusing: v0\.2\.0 cannot be installed on this facility: the migration 00000000000002_two\.sql does not apply to a copy of your data[^]*the facility is unchanged[^]*Nothing was changed\./);
+    assert.doesNotMatch(r.stdout, /Rehearsal of the migrations: passed|Preflight of v0\.2\.0 passed/);
+    assert.match(r.rehearsalLog, /verify-restore --rm warehouse-restore-0123456789ab\n$/, 'a refusal removes the copy too');
+  } finally { w.cleanup(); }
+});
+
+test('a backup that cannot be restored for the rehearsal refuses the upgrade; with no verified backup the rehearsal says it was not made', () => {
+  const w = world();
+  try {
+    const none = w.run();
+    assert.equal(none.status, 0, none.stderr);
+    assert.match(none.stderr, /Warning: the migrations were NOT rehearsed: no verified backup is on record yet/, 'a warning on standard error, not a line among the others');
+    assert.doesNotMatch(none.stdout, /not made|NOT rehearsed/);
+    assert.equal(none.rehearsalLog, '', 'nothing was started');
+    w.backup(NAME, 1024, { dump: 1024 });
+    const r = w.run({ FAKE_VERIFY_FAIL: '1' });
+    assert.equal(r.status, 1);
+    assert.match(r.stderr, /Integrity comparison differs \(fake\)\.[^]*Refusing: the newest verified backup \(warehouse-20260101T000000Z\) could not be restored into the disposable database[^]*Nothing was changed\./);
+    assert.doesNotMatch(r.rehearsalLog, /docker exec/, 'no plan was sent');
+  } finally { w.cleanup(); }
+});
+
+// The name of a backup made `hours` ago, as scripts/backup.sh names it (UTC).
+const backupNamed = hours => `warehouse-${new Date(Date.now() - hours * 3600e3).toISOString().replace(/[-:]/g, '').replace(/\.\d+Z$/, 'Z')}`;
+
+test('the rehearsal restores only (no integrity comparison) and says which backup it used and how old it is; an old one is warned about on standard error', () => {
+  const w = world();
+  try {
+    const fresh = backupNamed(5);
+    w.backup(fresh, 1024, { dump: 1024 });
+    const r = w.run();
+    assert.equal(r.status, 0, r.stdout + r.stderr);
+    assert.match(r.rehearsalLog, /verify-restore --keep --no-storage-tree --restore-only .*\/backups\/warehouse-/, 'the copy is restored without the target\'s integrity comparison');
+    assert.match(r.stdout, new RegExp(`restoring ${fresh} into[^]*That backup was made \\d{4}-\\d\\d-\\d\\d \\d\\d:\\d\\d:\\d\\d UTC, 5 hours ago\\.`), 'name, time and age are printed');
+    assert.doesNotMatch(r.stderr, /Warning: this backup is/, 'a recent backup is not warned about');
+    const w2 = world();
+    try {
+      w2.backup('warehouse-20260101T030405Z', 1024, { dump: 1024 });
+      const o = w2.run();
+      assert.equal(o.status, 0, o.stdout + o.stderr);
+      assert.match(o.stdout, /That backup was made 2026-01-01 03:04:05 UTC, \d+ days ago\./);
+      assert.match(o.stderr, /Warning: this backup is \d+ days old\. Rows entered after 2026-01-01 03:04:05 UTC are not on the copy[^]*node scripts\/watch\.mjs record-verified/);
+    } finally { w2.cleanup(); }
+  } finally { w.cleanup(); }
+});
+
+test('only the migrations are timed, not the restore; a failed restore shows its own last line and advice that works', () => {
+  const w = world();
+  try {
+    w.backup(backupNamed(1), 1024, { dump: 1024 });
+    const r = w.run({ FAKE_VERIFY_SLEEP: '3' });
+    assert.equal(r.status, 0, r.stdout + r.stderr);
+    const took = Number(/applying them took (\d+) s\./.exec(r.stdout)?.[1]);
+    assert.ok(took < 3, `the restore (3 s here) is not in the time: ${took}`);
+    const failed = w.run({ FAKE_VERIFY_FAIL: '1' });
+    assert.equal(failed.status, 1);
+    assert.match(failed.stderr, /The restore said: Integrity comparison differs \(fake\)\./, 'the restore\'s own last line is in the refusal');
+    assert.match(failed.stderr, /free disk space or memory[^]*bash scripts\/backup\.sh[^]*verify-restore\.sh[^]*record-verified/);
+    const diag = w.run({ FAKE_VERIFY_FAIL: 'diag' });
+    assert.match(diag.stderr, /The restore said: Restore database did not start \(fake\)\. The host may be/, 'the message before the diagnostics, not the diagnostics\' last line');
+    assert.doesNotMatch(failed.stderr, /Take a new backup/, 'a backup that is only made is not used; the advice no longer says that');
   } finally { w.cleanup(); }
 });

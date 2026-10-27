@@ -45,6 +45,10 @@ echo "Backup created at $d"
   'scripts/verify-restore.sh': `#!/usr/bin/env bash
 set -euo pipefail
 ${REC_FN}
+# The migration rehearsal of the target's preflight (scripts/upgrade-rehearse.sh) keeps a disposable database and removes it again; it is
+# not the verification of the upgrade's own backup, so it is not logged here (tests/upgrade-preflight.test.mjs covers it).
+if [[ "$1" == --rm ]]; then exit 0; fi
+if [[ "$1" == --keep ]]; then echo 'Kept disposable database: warehouse-restore-0123456789ab (stub)'; exit 0; fi
 echo "verify-restore $1 lock=${LOG_LOCK} version=$(cat "$(dirname "$0")/../VERSION") ${REC}" >> "$FAKE_LOG"
 [[ "\${FAKE_FAIL:-}" != verify ]] || { echo 'verify failed (fake)' >&2; exit 1; }
 `,
@@ -160,8 +164,9 @@ function world({ at = 'v0.1.0' } = {}) {
   //   outside its tree; v0.2.16 the real preflight and a CHANGELOG section with no operator actions.
   const S0212 = '## v0.2.12 (2026-04-01)\n\n### Operator actions\n\n1. Before the upgrade, do this: BEFORE-ACTION-TWO-TWO.\n\n### Changed\n\n- HIDDEN-CHANGE-TWO-TWO.\n\n';
   const realPreflight = (floor, sections = S0212) => ({ upgrade: true, changelog: changelog(sections + S020 + S011 + S010), migrations: ['00000000000000_baseline.sql', '00000000000001_more.sql'],
-    copy: ['scripts/upgrade-preflight.sh', 'scripts/upgrade-lib.sh'],
-    files: { 'scripts/upgrade-floor.txt': `# fixture\n${floor}`, 'scripts/doctor.mjs': `import { appendFileSync } from 'node:fs';
+    copy: ['scripts/upgrade-preflight.sh', 'scripts/upgrade-lib.sh', 'scripts/upgrade-rehearse.sh', 'scripts/migration-plan.mjs'],
+    // The real preflight's `# needs:` line also names docker/ (the rehearsal reads the database image from it); these facilities have no verified backup, so nothing is rehearsed.
+    files: { 'docker/.keep': '', 'scripts/upgrade-floor.txt': `# fixture\n${floor}`, 'scripts/doctor.mjs': `import { appendFileSync } from 'node:fs';
 import { dirname } from 'node:path';
 import { fileURLToPath } from 'node:url';
 appendFileSync(process.env.FAKE_LOG + '.pre', 'doctor ' + process.argv.slice(2).join(' ') + ' from=' + dirname(fileURLToPath(import.meta.url)) + '\\n');
@@ -752,6 +757,8 @@ function roomFor(w, bytes, avail, dump = 0) {
   const bin = join(w.scratch, 'bin');
   mkdirSync(bin, { recursive: true });
   writeFileSync(join(bin, 'df'), '#!/bin/sh\nprintf "Avail\\n%s\\n" "$FAKE_DF_AVAIL"\n', { mode: 0o755 });
+  // The rehearsal of the target's migrations (a backup with a dump is rehearsed) sends its plan to `docker exec ... psql`: accepted and ignored here.
+  writeFileSync(join(bin, 'docker'), '#!/bin/sh\ncat > /dev/null\n', { mode: 0o755 });
   return { PATH: `${bin}:${process.env.PATH}`, FAKE_DF_AVAIL: String(avail) };
 }
 
@@ -870,7 +877,10 @@ test('the room for the way back is checked before the backup: below the newest v
     const withDump = w.run(['v0.2.12'], roomFor(w, 5 * GIB, 6 * GIB, 512 * 1024 * 1024));
     assert.notEqual(withDump.status, 0);
     assert.match(withDump.stderr, /needs at least 6656 MiB free[^]*\(5120 MiB of stored files of warehouse-20251231T000000Z, 512 MiB of its database dump, and 1 GiB to spare\)[^]*only 6144 MiB are free/);
-    assert.equal(w.run(['v0.2.12'], roomFor(w, 5 * GIB, 6 * GIB + 512 * 1024 * 1024, 512 * 1024 * 1024)).status, 0, 'exactly the three parts is enough');
+    const exact = w.run(['v0.2.12'], roomFor(w, 5 * GIB, 6 * GIB + 512 * 1024 * 1024, 512 * 1024 * 1024));
+    assert.equal(exact.status, 0, 'exactly the three parts is enough');
+    // A backup with a dump is restored for the rehearsal of the target's migrations, which the target's preflight runs through upgrade.sh.
+    assert.match(exact.stdout, /Rehearsal of the migrations: passed \(\d+ to apply, \d+ already applied\) on a copy of warehouse-20251231T000000Z; applying them took \d+ s\./);
   } finally { w.cleanup(); }
 });
 
