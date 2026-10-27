@@ -565,3 +565,17 @@ test('doctor: the LAN report is made after the health check and before the local
   // The preflight (start.sh, before anything starts) does not look at the fallback at all.
   assert.ok(source.indexOf("return 'Operator configuration, private paths and gateway port preflight passed.'") < report);
 });
+
+test('doctor: while maintenance mode is on the LAN listener is not probed (it answers 503 on purpose), and the full run says why it cannot pass, after the local return and before the public check', () => {
+  const source = readFileSync(new URL('../scripts/doctor.mjs', import.meta.url), 'utf8');
+  const health = source.indexOf('const health = await runHealth(');
+  const marked = source.indexOf('const maintenance = maintenanceMarked(state);');
+  const report = source.indexOf('await lanReport(env, manifest.instanceId)');
+  const local = source.indexOf('if (local) return `Local operator services and gateway are healthy.${note}`;');
+  const refusal = source.indexOf("if (maintenance) throw new Error('Maintenance mode is on (config/maintenance)");
+  const external = source.indexOf('await fetch(`${origin}/functions/v1/get-public-config`');
+  assert.ok(health > 0 && marked > health && report > marked && local > report && refusal > local && external > refusal, 'the steps are in this order');
+  assert.match(source, /const lan = maintenance \? \{ failures: \[\], warnings: \[\], address: '' \} : await lanReport\(env, manifest\.instanceId\);/);
+  assert.match(source, /the external check cannot pass\. Open it with: bash scripts\/maintenance\.sh off'\);/);
+  assert.match(source, /import \{[^}]*\bmaintenanceMarked\b[^}]*\} from '\.\/watch\.mjs';/);
+});

@@ -171,7 +171,16 @@ reload** in `docs/OPERATOR_INSTALL.md`; a new installation needs none of that. A
     start `gateway-lan` apart, so a fault of the fallback (its port is taken, the container is unhealthy) is a warning and never stops
     them; `rotate-keys.sh` recreates it with the new keys; the checker alerts `lan_ip_changed` and `lan_http_down` only while the
     fallback is on.
-18. **Give the USB drive about 2.5 GiB more room (twice that while the images change).** From the next copy, a USB run also copies
+18. **Pause fas-sync (and close any `psql` session you left open on the database) before you run `upgrade.sh`, and run the upgrade after
+    hours.** An upgrade now closes the API to phones from before its backup to the end of setup (maintenance mode, below), so that nothing is
+    recorded that the way back would lose, which makes the facility unavailable for the backup, the proof that it restores and the migrations.
+    fas-sync is not behind the API: it writes straight to the database with `docker exec ... psql`, so `upgrade.sh` cannot stop it, and
+    pausing it is your job. As a safety net `upgrade.sh` **refuses to start** (changing nothing) while a `psql` session from outside the stack
+    is open on the database; it asks twice, three seconds apart, so a run that is just ending does not count. That catches a session left open,
+    not fas-sync as such: fas-sync opens a session for each statement, so a run that is between two statements is not seen. Let fas-sync's run
+    finish, start no other until the upgrade has finished, then use it again. A `--dry-run` only warns about an open session. **This applies from the upgrade after the move to
+    this release:** the move **to** this release is made by the `upgrade.sh` you have now, which closes nothing and checks nothing.
+19. **Give the USB drive about 2.5 GiB more room (twice that while the images change).** From the next copy, a USB run also copies
     `$WAREHOUSE_STATE_DIR/images` (about 2.5 GiB) to `warehouse-backups/<state name>/images` on the drive, once and again only after the folder
     changes, so the drive needs that much room more than the archives, and as much again free while a changed set is written beside the old one. The run starts from your checkout, so neither `backup-usb.sh setup` nor a new
     enrolment is needed. The images are copied last, after the archive is on the drive and the drive is pruned: a drive too small for them does not fail the run or hold back the pruning (the archive copy counts as done); the run says "saved images NOT copied" with the sizes, and `npm run doctor` shows it. Nothing is deleted to make room except what `--keep` already prunes. After a backup-key replacement, run `bash scripts/build-images.sh --save` so that the images are signed with the new key, or they are not copied. `setup.sh` writes the
@@ -182,6 +191,28 @@ reload** in `docs/OPERATOR_INSTALL.md`; a new installation needs none of that. A
     instead of building them (see "Changed"); nothing to do for that.
 
 ### Changed
+
+- **An upgrade is a planned downtime: the API is closed to phones from before the backup to the end of setup, and the checker follows it.**
+  After its preflight, before the backup, `upgrade.sh` runs `bash scripts/maintenance.sh on`: both gateways (`gateway`, and `gateway-lan` when it
+  runs) answer every request for `/rest/v1/`, `/storage/v1/` and `/functions/v1/` with HTTP 503, `Retry-After: 120` and the body
+  `{"code":"upgrading","message":"The facility's server is being updated. Try again in a few minutes."}`, before the key check and the path check;
+  the CORS preflight, `/health` and the `X-Warehouse-Path` header are as before. After the setup of the new release it runs that release's
+  `maintenance.sh off`, which recreates the gateways and ends with the health check. The state is the marker `config/maintenance` (not a line of
+  `compose.env`): `scripts/compose.sh` hands Compose `WAREHOUSE_MAINTENANCE=upgrading` for every command while it exists, so nothing that
+  recreates a gateway meanwhile (the setup of the new release, `start.sh`, a restore) can open the API half way; the gateway reads the word
+  `off` or `upgrading` and refuses any other at start. **When a step fails after the checkout has moved, the API stays closed** (the facility may be
+  half upgraded): the printed way forward says so, and the way back gains the line `bash scripts/maintenance.sh off` before its health check;
+  when nothing was changed yet (a refused check, a failed backup or proof, a checkout that did not move) it is opened again at once. `bash scripts/maintenance.sh on|off|status` is also
+  for a planned stop of the API by hand: `on` removes a gateway container that is not running or cannot be recreated (so none can start again open), and `off` creates the gateway again if it has no container; `off` exits 2 when the API is open but the health check failed, and the record then says `maintenance=opened`. The record gains `maintenance=on`, and the way back says that phones recorded nothing after the backup.
+  `backup.sh` now stops `gateway-lan` with the gateway (the nightly dump is consistent for phones on the warehouse network too) and starts it
+  again apart, as a warning when it will not start; it never lifts maintenance mode. Checker: while an upgrade is recorded the operator lock is
+  called stuck after the longer of 2 hours and twice the last backup plus the last verify (at most a day; the verify time is the third field
+  of `config/backups-verified.list` that `upgrade.sh` records, the backup's own time stands in for a nightly one that has none); the new alert
+  `upgrade_interrupted` fires at once when the record exists and the lock is free, and is never muted; self-healing starts and restarts nothing
+  while the record exists; `node scripts/watch.mjs status` says "Maintenance mode: upgrading". `doctor --local` and the health check cannot probe the
+  API through a gateway that is closed on purpose and say so as a warning (the LAN probe is skipped the same way); `maintenance.sh off` runs the
+  health check again. `scripts/check-release-contents.sh` requires `scripts/maintenance.sh`, because the `upgrade.sh` of the release an
+  installation runs now opens the API with the one of the release it moved to.
 
 - **`upgrade.sh` runs the release's own preflight before the backup, enforces an oldest release to upgrade from, and keeps the old images for the
   way back.** `upgrade.sh` is the script of the release you run now and cannot know what the release you move to needs, so every release now

@@ -183,6 +183,15 @@ client address and has no hourly window**. Since the gateway became nginx (2026-
 - **An answer of 429** has the body `{"message":"API rate limit exceeded"}` and `Retry-After: 1`; the access log line has status 429
   (the checker's `api_429_rate_high` counts them). The error log is not written for a refusal (`limit_req_log_level info`).
 
+- **Maintenance mode** (`WAREHOUSE_MAINTENANCE`, `off` or `upgrading`; docs/OPERATOR_INSTALL.md, "Rerun and upgrade", "While it upgrades"). It is not
+  a setting of the installation: `scripts/maintenance.sh` and `upgrade.sh` write the marker `config/maintenance`, which `scripts/compose.sh`
+  turns into the word for every Compose command. While it is `upgrading` each of the three API routes answers 503 with the body
+  `{"code":"upgrading",...}` and `Retry-After: 120` after the CORS preflight and before the path and key checks, so a request does not use
+  a rate-limit bucket and nothing reaches an upstream. It is an `if` that only does `return` (the one safe use of `if` in a location), the
+  word is one `map` value written by the entrypoint, and the container refuses to start on any word but `off` and `upgrading` (an unset
+  word is `off`: `docker-entrypoint.d/17-maintenance-default.envsh`). `/health`, the LAN Host pin and the allow list are in front of or
+  beside it and unchanged. `gateway-lan` takes the same word.
+
 `tests/gateway-config.test.mjs` pins the table above, the arithmetic and this wording; `tests/gateway-nginx.test.mjs` runs the
 real image against stand-in upstreams and checks that a burst of 1800 is passed and the next request is refused (the request that opens the bucket makes it 1801), and that another address is not affected.
 

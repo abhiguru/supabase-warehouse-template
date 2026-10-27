@@ -48,6 +48,11 @@ export function readUpgradeRecord(state) {
     // Whether the release had a preflight (ok | absent), and the tag upgrade.sh gave the images of the old release (pre-<label>), '' when it
     // saved none: a record of an upgrade.sh from before these fields has neither, and its way back is the one that rebuilds the images.
     preflight: clean(fields.preflight), preImages: PRE_IMAGES_TAG.test(fields.pre_images ?? '') ? fields.pre_images : '',
+    // Whether upgrade.sh closed the API (maintenance mode, scripts/maintenance.sh) for this upgrade: a record of an upgrade.sh from before it has
+    // no such line, and its way back is the one that does not mention maintenance mode (the old release may not have the script).
+    maintenance: fields.maintenance === 'on',
+    // upgrade.sh opened the API at the end and the health check that follows failed: the API is OPEN (maintenance=opened), whatever the step says.
+    apiOpen: fields.maintenance === 'opened',
   };
 }
 
@@ -62,15 +67,20 @@ export function interruptedMessage(record, { own = false } = {}) {
     `An upgrade from ${record.fromLabel} to ${record.toLabel} was interrupted at step "${record.step}" (started ${record.started || 'at an unknown time'}; ${RECORD_FILE}). The facility may be half upgraded.${own ? '' : ' If upgrade.sh is still running in another terminal, wait for it.'}`,
     `Continue: bash upgrade.sh ${record.command || '<the same command as before>'}   (it reuses the verified backup and takes no new one).`,
     `Or go back to ${record.fromLabel}: node scripts/upgrade-record.mjs rollback   (prints the commands).`,
+    ...(record.apiOpen ? ['The API is open to phones again (maintenance mode is off); the health check that follows failed, so look at it: node scripts/watch.mjs health.'] : []),
+    ...(record.maintenance ? ['The API stays closed to phones (maintenance mode: they are told the server is being updated) until the upgrade has finished or you run: bash scripts/maintenance.sh off.'] : []),
   ].join(' ');
 }
 
-// What an operator runs to put the facility back on the old release, in order. Everything recorded after the backup is lost.
+// What an operator runs to put the facility back on the old release, in order. Everything recorded after the backup is lost: with the API closed
+// (maintenance mode, from before the backup) that is only what reached the database another way, fas-sync if it was not paused.
 export function rollbackLines(record) {
   const phone = mask(record.adminPhone);
   const setup = `bash setup.sh --operator --state-dir ${quote(record.state)} --admin-phone 91XXXXXXXXXX --admin-name NAME${record.webhookOff ? ' --alert-webhook-file off' : ''}`;
   return [
-    `To go back to ${record.fromLabel} (${record.fromSha}) instead, run these in the checkout, in this order. Everything the facility recorded after the backup was taken is lost:`,
+    `To go back to ${record.fromLabel} (${record.fromSha}) instead, run these in the checkout, in this order. ${record.maintenance
+      ? 'The API has been closed to phones since before the backup, so phones recorded nothing after it; what reached the database another way (fas-sync, if it was not paused, or a psql session) is lost:'
+      : 'Everything the facility recorded after the backup was taken is lost:'}`,
     `  (umask 022; git checkout --detach ${record.fromSha})`,
     '  bash stop.sh',
     ...(record.preImages ? [
@@ -85,6 +95,10 @@ export function rollbackLines(record) {
       `      (builds nothing: writes the old release's images and their signed build record to ${join(record.state, 'images')} again, where the new release's still are, because setup found the images current and so saved none; a lost-host restore loads that folder)`,
     ] : []),
     '  bash scripts/compose.sh up -d --force-recreate --no-deps --wait --wait-timeout 180 functions',
+    ...(record.maintenance ? [
+      '  bash scripts/maintenance.sh off',
+      '      (opens the API to phones again: the upgrade closed it, and it stays closed, through the restore and the setup above, until this line; it ends with the health check)',
+    ] : []),
     '  node scripts/doctor.mjs --local',
     `  rm -f ${quote(join(record.state, RECORD_FILE))}`,
     'The last line only ends the report of an interrupted upgrade; run it when the facility is healthy on the old release. docs/OPERATOR_INSTALL.md, "If it stops", explains each line.',

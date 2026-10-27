@@ -9,6 +9,8 @@
 #     release (a relative path without `..`, the rule of run_target_preflight in upgrade.sh), and scripts/upgrade-floor.txt exists
 #     with one `from_floor=` and one `stepping_stone=` line, each empty or a release tag: the upgrade.sh of the release an installation
 #     runs now reads both out of THIS release before it changes anything, so a release without them cannot be moved to
+#   - scripts/maintenance.sh exists: the upgrade.sh of the release an installation runs now closed the API before its backup, and opens it
+#     again at the end by calling THIS release's maintenance.sh (`off`); without it the facility would stay closed to phones
 #   - setup.sh takes the operator lock upgrade.sh holds (operator_lock_or_inherited)
 #   - setup.sh recreates the functions container, because upgrade.sh no longer does it after the checkout (the release being
 #     moved to decides how it is moved into)
@@ -29,6 +31,7 @@ section() {
 section "$tag" || section "$release" || fail "CHANGELOG.md has no section '## $release (YYYY-MM-DD)' for $tag: rename '## Unreleased' (docs/RELEASE_CHECKLIST.md, 'Changelog before the tag'). upgrade.sh prints the operator actions by that heading."
 [[ -f "$ROOT/upgrade.sh" ]] || fail 'upgrade.sh is missing: a release without it cannot be moved to with upgrade.sh.'
 [[ -f "$ROOT/scripts/pg-major.sh" ]] || fail 'scripts/pg-major.sh is missing: upgrade.sh needs it to tell a PostgreSQL major change.'
+[[ -f "$ROOT/scripts/maintenance.sh" ]] || fail 'scripts/maintenance.sh is missing: the upgrade.sh of the release an installation runs now opens the API again with the maintenance.sh of the release it moved to, and without it the facility stays closed to phones.'
 if [[ -f "$ROOT/scripts/upgrade-preflight.sh" ]]; then
   read -r -a needed <<< "$(sed -n 's/^# needs:[[:space:]]*//p' "$ROOT/scripts/upgrade-preflight.sh" | head -n 1)"
   for path in "${needed[@]+"${needed[@]}"}"; do
@@ -55,4 +58,4 @@ fi
 grep -q 'operator_lock_or_inherited' "$ROOT/setup.sh" 2>/dev/null || fail 'setup.sh does not call operator_lock_or_inherited: upgrade.sh holds the operator lock while it runs setup.sh.'
 grep -Eq '^bash "\$ROOT/scripts/compose\.sh" up -d --force-recreate --no-deps .*functions$' "$ROOT/setup.sh" 2>/dev/null || fail 'setup.sh does not recreate the functions container (up -d --force-recreate --no-deps ... functions): new SQL would run under old function code.'
 ((failed == 0)) || exit 1
-echo "Release contents: $tag has its CHANGELOG section, upgrade.sh, scripts/pg-major.sh, scripts/upgrade-preflight.sh, scripts/upgrade-floor.txt, the inherited operator lock and the functions recreate in setup.sh."
+echo "Release contents: $tag has its CHANGELOG section, upgrade.sh, scripts/pg-major.sh, scripts/maintenance.sh, scripts/upgrade-preflight.sh, scripts/upgrade-floor.txt, the inherited operator lock and the functions recreate in setup.sh."

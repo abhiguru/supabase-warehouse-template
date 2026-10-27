@@ -575,10 +575,10 @@ jobs:
           if [ "$PREVIOUS_KIND" = tag ] && git -C "$previous" cat-file -e HEAD:upgrade.sh 2>/dev/null && git -C "$previous" cat-file -e HEAD:scripts/pg-major.sh 2>/dev/null; then
             echo "The drill runs the upgrade.sh of $PREVIOUS_REF, unchanged."
           else
-            echo "The drill adds the upgrade.sh and pg-major.sh of the change under test to $PREVIOUS_REF (with the two helpers upgrade.sh sources and calls)."
+            echo "The drill adds the upgrade.sh and pg-major.sh of the change under test to $PREVIOUS_REF (with the three helpers upgrade.sh sources and calls)."
             cp backend/upgrade.sh "$previous/upgrade.sh"
-            cp backend/scripts/pg-major.sh backend/scripts/upgrade-lib.sh backend/scripts/pre-images.sh "$previous/scripts/"
-            git -C "$previous" add upgrade.sh scripts/pg-major.sh scripts/upgrade-lib.sh scripts/pre-images.sh
+            cp backend/scripts/pg-major.sh backend/scripts/upgrade-lib.sh backend/scripts/pre-images.sh backend/scripts/maintenance.sh "$previous/scripts/"
+            git -C "$previous" add upgrade.sh scripts/pg-major.sh scripts/upgrade-lib.sh scripts/pre-images.sh scripts/maintenance.sh
             if ! git -C "$previous" diff --cached --quiet; then
               git -C "$previous" -c user.name=ci -c user.email=ci@example.invalid commit -q -m 'CI: upgrade.sh and its helpers of the change under test'
             fi
@@ -624,11 +624,57 @@ jobs:
           test "$(git rev-parse HEAD)" = "$before"
           test ! -e "$WAREHOUSE_STATE_DIR/config/upgrades.log"
           test ! -e "$WAREHOUSE_STATE_DIR/config/upgrade-in-progress"
+          # The write freeze (maintenance mode), when the upgrade.sh that runs has it: a release tag from before it runs its own script, unchanged, and
+          # closes nothing. Then (1) a psql session from outside the stack, which is how fas-sync reaches the database, makes the run refuse before it
+          # changes anything, and (2) while the upgrade runs, a request to the API (the anon-callable get_public_config RPC, through the loopback
+          # gateway the tunnel uses) is answered 503 "upgrading" at least once, and after it the route answers normally.
+          freeze=no
+          if grep -q 'scripts/maintenance.sh' upgrade.sh; then freeze=yes; fi
+          port="$(bash scripts/compose.sh port gateway 8000 | head -n 1 | sed 's/.*://')"
+          anon="$(sed -n 's/^ANON_KEY=//p' "$WAREHOUSE_STATE_DIR/config/compose.env")"
+          rpc() { curl -s -o "$RUNNER_TEMP/rpc-body" -w '%{http_code}' -X POST -H "apikey: $anon" -H 'Content-Type: application/json' -d '{"p_environment":"production"}' "http://127.0.0.1:$port/rest/v1/rpc/get_public_config" || true; }
+          if [ "$freeze" = yes ]; then
+            test "$(rpc)" != 503
+            bash scripts/compose.sh exec -T db psql -X -q -U supabase_admin -d postgres -c 'SELECT pg_sleep(600)' &
+            session=$!
+            # upgrade.sh looks for the session after its own checks: wait until it is visible, so that a slow runner cannot make the run go ahead.
+            seen=no
+            for _ in $(seq 1 60); do
+              if [ "$(bash scripts/compose.sh exec -T db psql -X -qAt -U supabase_admin -d postgres -c "SELECT count(*) FROM pg_stat_activity WHERE application_name = 'psql' AND query LIKE '%pg_sleep(600)%' AND query NOT LIKE '%pg_stat_activity%'")" -ge 1 ]; then seen=yes; break; fi
+              sleep 1
+            done
+            [ "$seen" = yes ] || { echo "::error::the psql session never appeared in pg_stat_activity"; exit 1; }
+            if bash upgrade.sh --ref "$ref" > "$RUNNER_TEMP/refused.log" 2>&1; then cat "$RUNNER_TEMP/refused.log"; echo "::error::upgrade.sh started while a psql session was open on the database"; exit 1; fi
+            cat "$RUNNER_TEMP/refused.log"
+            grep -q 'That is a psql session on the database from outside the stack' "$RUNNER_TEMP/refused.log"
+            grep -q 'Nothing was changed' "$RUNNER_TEMP/refused.log"
+            test "$(git rev-parse HEAD)" = "$before"
+            test ! -e "$WAREHOUSE_STATE_DIR/config/upgrade-in-progress"
+            test ! -e "$WAREHOUSE_STATE_DIR/config/maintenance"
+            test "$(rpc)" != 503
+            # End the session on purpose (it would run for ten minutes).
+            bash scripts/compose.sh exec -T db psql -X -qAt -U supabase_admin -d postgres -c "SELECT pg_terminate_backend(pid) FROM pg_stat_activity WHERE query LIKE '%pg_sleep(600)%' AND query NOT LIKE '%pg_stat_activity%'" > /dev/null
+            kill "$session" 2>/dev/null || true
+            wait "$session" 2>/dev/null || true
+            : > "$RUNNER_TEMP/freeze-probe.log"
+            ( while :; do printf '%s %s\n' "$(rpc)" "$(head -c 200 "$RUNNER_TEMP/rpc-body" | tr '\n' ' ')" >> "$RUNNER_TEMP/freeze-probe.log"; sleep 0.25; done ) &
+            probe=$!
+            trap 'kill "$probe" 2>/dev/null || true' EXIT
+          else
+            echo "::notice title=Write freeze not exercised::The upgrade.sh of $(git rev-parse --short HEAD) does not close the API (a release from before maintenance mode); the drill checks it once the starting point has it."
+          fi
           bash upgrade.sh --ref "$ref"
           test "$(git rev-parse HEAD)" = "$ref"
           tail -n 1 "$WAREHOUSE_STATE_DIR/config/upgrades.log" | grep -q ' ok$'
-          # A finished upgrade leaves no record of an interrupted one.
+          # A finished upgrade leaves no record of an interrupted one, and no marker: the API is open.
           test ! -e "$WAREHOUSE_STATE_DIR/config/upgrade-in-progress"
+          test ! -e "$WAREHOUSE_STATE_DIR/config/maintenance"
+          if [ "$freeze" = yes ]; then
+            kill "$probe" 2>/dev/null || true
+            sort "$RUNNER_TEMP/freeze-probe.log" | uniq -c | sort -rn | head -n 10
+            grep -q '^503 {"code":"upgrading","message":"The facility.s server is being updated. Try again in a few minutes."}' "$RUNNER_TEMP/freeze-probe.log"
+            test "$(rpc)" = 200
+          fi
       - name: The upgraded installation is healthy and the same facility
         if: steps.previous.outputs.skip != 'true'
         run: |

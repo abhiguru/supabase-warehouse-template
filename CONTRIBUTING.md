@@ -77,7 +77,7 @@ Rules that keep `upgrade.sh` working for the installed base:
 
 - **Every release line keeps `upgrade.sh` and the inherited operator lock in `setup.sh`** (`operator_lock_or_inherited`); `upgrade.sh`
   refuses a release without `upgrade.sh`, and `scripts/check-release-contents.sh` (run by `release.yml`) fails a tag whose `CHANGELOG.md`
-  has no section, or that lacks `upgrade.sh`, `scripts/pg-major.sh`, `scripts/upgrade-preflight.sh`, `scripts/upgrade-floor.txt`, the inherited lock
+  has no section, or that lacks `upgrade.sh`, `scripts/pg-major.sh`, `scripts/maintenance.sh`, `scripts/upgrade-preflight.sh`, `scripts/upgrade-floor.txt`, the inherited lock
   or the functions recreate in `setup.sh`.
 - **What a release needs done after its checkout belongs in its `setup.sh`.** `upgrade.sh` is the OLD release's script, still running
   from memory after the checkout; it does only this: the lock, the backup and its verification, the checkout, `setup.sh` of the new
@@ -85,10 +85,20 @@ Rules that keep `upgrade.sh` working for the installed base:
   old images for the way back, and the removal of the older tags once setup has succeeded). Everything that depends on the release being moved to (images, migrations, roles,
   configuration, recreating the `functions` container, the local doctor) is a step of that release's `setup.sh`, so a release can change
   how it is moved into without the old script knowing, and a hand-made upgrade gets the same steps. A new post-checkout step goes into
-  `setup.sh`, never into `upgrade.sh`.
+  `setup.sh`, never into `upgrade.sh`. The one thing `upgrade.sh` does around setup is the write freeze (next rule).
+- **Keep the write freeze's contract: `scripts/maintenance.sh on|off|status`, the marker `config/maintenance`, and `WAREHOUSE_MAINTENANCE`.**
+  The `upgrade.sh` of the release an installation runs now closes the API before its backup with ITS `maintenance.sh on`, and after the
+  checkout opens it with the NEW release's `maintenance.sh off` (the script must end with the health check, because `doctor --local` in setup cannot
+  probe the API through a closed gateway). While the marker exists, `scripts/compose.sh` hands every Compose command
+  `WAREHOUSE_MAINTENANCE=upgrading`, so the setup of the new release recreates the gateways closed; a release that stops doing that would open
+  the API half way through the migrations. The gateway image reads `off` or `upgrading` (`docker/nginx/docker-entrypoint.d/17-maintenance-default.envsh`,
+  `18-require-env.sh`) and answers 503 `{"code":"upgrading",...}` with `Retry-After: 120` on the three API routes, after the CORS preflight; the app
+  may rely on that body. Add what a new service needs to keep it frozen (a second way in to the API is another gateway; `backup.sh` stops them
+  all), never a way to bypass it. `/health` and the preflight are not part of the freeze.
 - **`upgrade.sh` leaves a record while it runs** (`$WAREHOUSE_STATE_DIR/config/upgrade-in-progress`, read by
-  `scripts/upgrade-record.mjs`; doctor, `start.sh` and the status commands report it). Keep its format (`format=1`, `key=value` lines)
-  readable by every later release: add fields, never rename or remove one.
+  `scripts/upgrade-record.mjs`; doctor, `start.sh` and the status commands report it; the checker raises `upgrade_interrupted` when it exists and
+  the lock is free, and does no self-healing meanwhile). Keep its format (`format=1`, `key=value` lines)
+  readable by every later release: add fields, never rename or remove one (`maintenance=on` is the latest).
 - **Every release carries `scripts/upgrade-preflight.sh` and `scripts/upgrade-floor.txt`, and they are how a release tells the installed
   `upgrade.sh` what it needs.** `upgrade.sh` is the script of the release an installation runs now, so a check that must happen before the
   backup (a higher host minimum, a "before" operator action, the oldest release it accepts an upgrade from) cannot live in it. It reads the

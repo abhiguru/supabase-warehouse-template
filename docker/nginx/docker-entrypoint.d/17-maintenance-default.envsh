@@ -1,0 +1,6 @@
+# Sourced by the image's entrypoint (a .envsh file, like the image's own 15-local-resolvers.envsh) before 18-require-env.sh and the
+# envsubst of the templates: a container that was not given WAREHOUSE_MAINTENANCE is not in maintenance mode. Without a value the
+# template would keep the text of the variable, and nginx would refuse to start on it. Only an unset or empty value gets the
+# default; 18-require-env.sh refuses any word but off and upgrading.
+: "${WAREHOUSE_MAINTENANCE:=off}"
+export WAREHOUSE_MAINTENANCE

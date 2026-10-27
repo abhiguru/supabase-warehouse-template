@@ -58,8 +58,17 @@ while IFS= read -r -d '' leftover; do
 done < <(find "$parent" -mindepth 1 -maxdepth 1 -type d -name '.warehouse-backup-staging.*' -mmin +120 -print0 2>/dev/null)
 stage="$(mktemp -d "$parent/.warehouse-backup-staging.XXXXXXXX")"
 restart=()
+# The LAN fallback (gateway-lan) is the other way in to the same API: while the backup holds the services stopped it is stopped too, and comes
+# back apart from the others (lan.sh start: a fault of the fallback is a warning, never a failed backup).
+lan_stopped=no
+lan_back() {
+  [[ "$lan_stopped" == yes ]] || return 0
+  lan_stopped=no
+  bash "$ROOT/scripts/lan.sh" start || echo 'Warning: the LAN fallback was not started again (message above). Run: bash scripts/lan.sh start' >&2
+}
 # Only the services this script stopped come back: --no-deps keeps compose from also starting what they depend
-# on (restarting storage would start rest, which the operator may have stopped on purpose).
+# on (restarting storage would start rest, which the operator may have stopped on purpose). They come back as they were: --no-recreate
+# keeps the container, and with it a gateway in maintenance mode (scripts/maintenance.sh), which a backup never lifts.
 cleanup() {
   status=$?
   trap - EXIT
@@ -70,6 +79,7 @@ cleanup() {
       status=1
     fi
   fi
+  lan_back
   if [[ -d "$stage" ]]; then find "$stage" -type d -exec chmod u+rwx {} + 2>/dev/null || true; rm -rf "$stage"; fi
   [[ -z "${scratch:-}" ]] || rm -rf -- "$scratch"
   exit "$status"
@@ -262,12 +272,15 @@ fi
 
 # Stop ingress first, then all services that can write the database or object
 # storage. Capture only running services so the cleanup never starts an optional
-# service the operator had intentionally stopped.
+# service the operator had intentionally stopped. Ingress is both gateways: the LAN one only if it runs.
 for service in gateway functions rest storage supavisor; do
   id=$(compose ps -q "$service")
   if [[ -n "$id" && "$(docker inspect --format '{{.State.Running}}' "$id")" == true ]]; then restart+=("$service"); fi
 done
+lan_id=$(compose --profile lan ps -q gateway-lan)
+if [[ -n "$lan_id" && "$(docker inspect --format '{{.State.Running}}' "$lan_id")" == true ]]; then lan_stopped=yes; fi
 stopped=$SECONDS
+if [[ "$lan_stopped" == yes ]]; then compose --profile lan stop gateway-lan; fi
 for service in "${restart[@]}"; do compose stop "$service"; done
 
 echo 'Creating transaction-consistent logical database dumps.'
@@ -308,6 +321,7 @@ bad="$(unsafe_entry)"
 
 # The services are only needed stopped for the dump and the final pass; everything below reads the finished stage.
 if ((${#restart[@]})); then compose up -d --no-recreate --no-deps --wait --wait-timeout 180 "${restart[@]}"; restart=(); fi
+lan_back
 stop_seconds=$((SECONDS - stopped))
 
 # The first pass's tree has done its job (everything pass 2 still needed from it is linked into storage/). What it holds that
