@@ -63,6 +63,7 @@ echo "verify-restore $*" >> "$FAKE_LOG"
 if [ "$1" = --rm ]; then exit 0; fi
 if [ -n "$FAKE_VERIFY_SLEEP" ]; then sleep "$FAKE_VERIFY_SLEEP"; fi
 if [ "$FAKE_VERIFY_FAIL" = diag ]; then echo "Restore database did not start (fake)." >&2; echo "Restore verification failed. Container log, state and database sessions were saved in /x" >&2; echo "  (the database did not answer)" >&2; exit 1; fi
+if [ "$FAKE_VERIFY_FAIL" = offline ]; then echo "docker: Error response from daemon: Get \\"https://registry-1.docker.io/v2/\\": dial tcp: lookup registry-1.docker.io: no such host (fake)." >&2; echo >&2; echo "Run 'docker run --help' for more information" >&2; exit 125; fi
 if [ -n "$FAKE_VERIFY_FAIL" ]; then echo "Integrity comparison differs (fake)." >&2; exit 1; fi
 echo "Restore verification: disposable database of 768 MiB (fake)."
 echo "Kept disposable database: warehouse-restore-0123456789ab (database warehouse_restore, user supabase_admin; remove it with: bash scripts/verify-restore.sh --rm warehouse-restore-0123456789ab)"
@@ -468,6 +469,9 @@ test('only the migrations are timed, not the restore; a failed restore shows its
     assert.match(failed.stderr, /free disk space or memory[^]*bash scripts\/backup\.sh[^]*verify-restore\.sh[^]*record-verified/);
     const diag = w.run({ FAKE_VERIFY_FAIL: 'diag' });
     assert.match(diag.stderr, /The restore said: Restore database did not start \(fake\)\. The host may be/, 'the message before the diagnostics, not the diagnostics\' last line');
+    const offline = w.run({ FAKE_VERIFY_FAIL: 'offline' });
+    assert.match(offline.stderr, /The restore said: docker: Error response from daemon: .*no such host \(fake\)\. The host may be/, 'the error, not Docker\'s help hint after it');
+    assert.doesNotMatch(offline.stderr, /The restore said: Run /);
     assert.doesNotMatch(failed.stderr, /Take a new backup/, 'a backup that is only made is not used; the advice no longer says that');
   } finally { w.cleanup(); }
 });

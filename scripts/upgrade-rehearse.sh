@@ -65,7 +65,8 @@ if ! WAREHOUSE_STATE_DIR="$STATE" bash "$HERE/verify-restore.sh" --keep --no-sto
   cat "$scratch/verify.err" >&2
   # A failed verify-restore removed its own container.
   # Its last message, before the diagnostics it appends when its container failed ("Restore verification failed. Container log ...").
-  last="$(awk '/^Restore verification failed\./ { exit } NF { line = $0 } END { print line }' "$scratch/verify.err")"
+  # (Docker's own closing hint, "Run 'docker run --help' for more information", is not the error: it follows the real one.)
+  last="$(awk '/^Restore verification failed\./ { exit } /^Run .docker [a-z ]*--help. for more information/ { next } NF { line = $0 } END { print line }' "$scratch/verify.err")"
   last="${last%.}"
   refuse "the newest verified backup ($(basename "$backup")) could not be restored into the disposable database, so the migrations of $TO_LABEL cannot be rehearsed on a copy of your data. The restore said: ${last:-nothing on standard error (see above)}. The host may be the cause (free disk space or memory, a database image that has to be pulled while the host is offline) as well as the backup; once that is dealt with, run this command again. If the backup is at fault, make a new one that is verified and recorded: bash scripts/backup.sh, then bash scripts/verify-restore.sh <the new folder under backups/>, then node scripts/watch.mjs record-verified <its name> (a backup that is only made is not used until then; the nightly pass does the same)."
 fi
