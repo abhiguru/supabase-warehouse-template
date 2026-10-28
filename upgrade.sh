@@ -621,7 +621,7 @@ main() {
       fi
     fi
     say
-    say 'Dry run: nothing was changed (the tags were fetched into git; the working tree, the state and the containers are as they were).'
+    say 'Dry run: nothing was changed (the tags were fetched into git, the rehearsal may have pulled the database image of the release and used a disposable directory under the state, which it removed; the working tree, the data, the configuration and the containers are as they were).'
     exit 0
   fi
 
