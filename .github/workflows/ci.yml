@@ -90,10 +90,10 @@ jobs:
     # is part of both and a new file numbered below it is found), or the commit a push replaces. Its own job, so that a change to the
     # validate job does not collide with it.
     runs-on: ${{ github.event.pull_request.head.repo.fork && 'ubuntu-latest' || fromJSON(vars.CI_RUNNER || '"ubuntu-latest"') }}
+    timeout-minutes: 10
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
-          fetch-depth: 0
           persist-credentials: false
       - uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0
         with:
@@ -105,6 +105,8 @@ jobs:
         run: |
           base="$BASE_SHA"
           if [ -z "$base" ] && [ "${GITHUB_EVENT_NAME}" = push ]; then base="$PUSH_BEFORE"; fi
+          # Only the base commit is fetched, not the history (a commit that is gone, as after a forced push, cannot be fetched: the notice below).
+          if [ -n "$base" ] && [ "$base" != 0000000000000000000000000000000000000000 ]; then git fetch --no-tags --depth=1 origin "$base" 2>/dev/null || true; fi
           if [ -z "$base" ] || [ "$base" = 0000000000000000000000000000000000000000 ] || ! git cat-file -e "$base^{commit}" 2>/dev/null; then
             echo "::notice title=Migration ordering rule not checked::There is no base commit to compare with (a scheduled or manual run, a new branch or a forced push)."
             exit 0

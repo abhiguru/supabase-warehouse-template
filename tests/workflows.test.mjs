@@ -470,7 +470,9 @@ test('migration-order checks the base with the ordering script in its own job, a
   const job = name => ci.slice(ci.indexOf(`\n  ${name}:\n`) + 1).split(/\n  [a-z-]+:\n/)[0];
   const order = job('migration-order');
   assert.ok(order.length > 100, 'the job exists');
-  assert.match(order, /\n          fetch-depth: 0\n/, 'the base commit must be in the clone');
+  assert.doesNotMatch(order, /fetch-depth: 0/, 'the history is not cloned');
+  assert.match(order, /git fetch --no-tags --depth=1 origin "\$base"[^\n]*\|\| true; fi\n/, 'the base commit must be in the clone: only it is fetched');
+  assert.match(order, /\n    timeout-minutes: 10\n/, 'a hung job ends');
   assert.match(order, /BASE_SHA: \$\{\{ github\.event\.pull_request\.base\.sha \}\}/);
   assert.match(order, /PUSH_BEFORE: \$\{\{ github\.event\.before \}\}/);
   assert.match(order, /node scripts\/check-migration-order\.mjs "\$base"/);
