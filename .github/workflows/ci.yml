@@ -105,9 +105,20 @@ jobs:
         run: |
           base="$BASE_SHA"
           if [ -z "$base" ] && [ "${GITHUB_EVENT_NAME}" = push ]; then base="$PUSH_BEFORE"; fi
-          # Only the base commit is fetched, not the history (a commit that is gone, as after a forced push, cannot be fetched: the notice below).
-          if [ -n "$base" ] && [ "$base" != 0000000000000000000000000000000000000000 ]; then git fetch --no-tags --depth=1 origin "$base" 2>/dev/null || true; fi
+          # Only the base commit is fetched, not the history. On a push, a commit that is gone (after a forced push) cannot be fetched: the
+          # notice below. On a pull request the base is the branch tip and must be there, so a failed fetch is an error: a check that compared
+          # nothing is not a pass.
+          if [ -n "$base" ] && [ "$base" != 0000000000000000000000000000000000000000 ]; then
+            if ! git fetch --no-tags --depth=1 origin "$base" && [ -n "$BASE_SHA" ]; then
+              echo "::error title=Migration ordering rule not checked::The base commit $base of this pull request could not be fetched, so nothing was compared. Run the check again."
+              exit 1
+            fi
+          fi
           if [ -z "$base" ] || [ "$base" = 0000000000000000000000000000000000000000 ] || ! git cat-file -e "$base^{commit}" 2>/dev/null; then
+            if [ -n "$BASE_SHA" ]; then
+              echo "::error title=Migration ordering rule not checked::The base commit $base of this pull request is not in this checkout, so nothing was compared. Run the check again."
+              exit 1
+            fi
             echo "::notice title=Migration ordering rule not checked::There is no base commit to compare with (a scheduled or manual run, a new branch or a forced push)."
             exit 0
           fi
@@ -740,7 +751,7 @@ jobs:
           test ! -e "$WAREHOUSE_STATE_DIR/config/maintenance"
           if [ "$freeze" = yes ]; then
             kill "$probe" 2>/dev/null || true
-            sort "$RUNNER_TEMP/freeze-probe.log" | uniq -c | sort -rn | head -n 10
+            cut -d" " -f2- "$RUNNER_TEMP/freeze-probe.log" | sort | uniq -c | sort -rn | head -n 10
             grep -q '^[0-9]* 503 {"code":"upgrading","message":"The facility.s server is being updated. Try again in a few minutes."}' "$RUNNER_TEMP/freeze-probe.log"
             # And during the backup itself: the upgrade.sh that runs has the write freeze, so the API is closed from before the backup.
             bash scripts/ci-freeze-check.sh "$RUNNER_TEMP/upgrade-timed.log" "$RUNNER_TEMP/freeze-probe.log"

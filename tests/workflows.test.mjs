@@ -1,6 +1,6 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { readFileSync, readdirSync, mkdtempSync, mkdirSync, writeFileSync, rmSync, renameSync } from 'node:fs';
+import { readFileSync, readdirSync, mkdtempSync, mkdirSync, writeFileSync, rmSync, renameSync, existsSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { spawnSync } from 'node:child_process';
@@ -471,7 +471,7 @@ test('migration-order checks the base with the ordering script in its own job, a
   const order = job('migration-order');
   assert.ok(order.length > 100, 'the job exists');
   assert.doesNotMatch(order, /fetch-depth: 0/, 'the history is not cloned');
-  assert.match(order, /git fetch --no-tags --depth=1 origin "\$base"[^\n]*\|\| true; fi\n/, 'the base commit must be in the clone: only it is fetched');
+  assert.match(order, /git fetch --no-tags --depth=1 origin "\$base"/, 'the base commit must be in the clone: only it is fetched');
   assert.match(order, /\n    timeout-minutes: 10\n/, 'a hung job ends');
   assert.match(order, /BASE_SHA: \$\{\{ github\.event\.pull_request\.base\.sha \}\}/);
   assert.match(order, /PUSH_BEFORE: \$\{\{ github\.event\.before \}\}/);
@@ -575,4 +575,48 @@ test('release.yml makes the draft of a pre-release a pre-release by the version 
     assert.equal(run.status, 0, `${ref}: ${run.stderr}`);
     assert.equal(run.stdout, expected, `${ref} is ${expected ? 'a pre-release' : 'final'}`);
   }
+});
+
+// ---- the migration ordering step, run for real with a stand-in git and node ---------------------------------------------------------
+
+function orderingStep({ event, baseSha = '', before = '', fetchWorks, commitPresent }) {
+  const dir = mkdtempSync(join(tmpdir(), 'warehouse-order-step-'));
+  try {
+    mkdirSync(join(dir, 'bin'));
+    writeFileSync(join(dir, 'bin/git'), `#!/bin/sh
+echo "git $*" >> "${dir}/calls"
+case "$1" in
+  fetch) ${fetchWorks ? 'exit 0' : 'echo "fatal: unable to access" >&2; exit 128'} ;;
+  cat-file) ${commitPresent ? 'exit 0' : 'exit 128'} ;;
+esac
+`, { mode: 0o700 });
+    writeFileSync(join(dir, 'bin/node'), `#!/bin/sh\necho "node $*" >> "${dir}/calls"\n`, { mode: 0o700 });
+    const r = spawnSync('bash', ['-e', '-c', stepScript('ci.yml', 'Compare migrations/ with the base')], { encoding: 'utf8',
+      env: { PATH: `${join(dir, 'bin')}:${process.env.PATH}`, GITHUB_EVENT_NAME: event, BASE_SHA: baseSha, PUSH_BEFORE: before } });
+    const calls = existsSync(join(dir, 'calls')) ? readFileSync(join(dir, 'calls'), 'utf8') : '';
+    return { ...r, calls };
+  } finally { rmSync(dir, { recursive: true, force: true }); }
+}
+
+test('migration ordering step: on a pull request a base that cannot be fetched is an error, never a pass; a push keeps the notice', () => {
+  const sha = 'a'.repeat(40);
+  let r = orderingStep({ event: 'pull_request', baseSha: sha, fetchWorks: false, commitPresent: false });
+  assert.equal(r.status, 1);
+  assert.match(r.stdout, /::error title=Migration ordering rule not checked::The base commit a{40} of this pull request could not be fetched/);
+  assert.doesNotMatch(r.calls, /node /, 'nothing was compared');
+  r = orderingStep({ event: 'pull_request', baseSha: sha, fetchWorks: true, commitPresent: false });
+  assert.equal(r.status, 1, 'fetched but still not there');
+  assert.match(r.stdout, /::error /);
+  r = orderingStep({ event: 'pull_request', baseSha: sha, fetchWorks: true, commitPresent: true });
+  assert.equal(r.status, 0, r.stdout + r.stderr);
+  assert.match(r.calls, new RegExp(`node scripts/check-migration-order\\.mjs ${sha}`));
+  // A push whose previous commit is gone (forced push): the notice, exit 0, nothing compared.
+  r = orderingStep({ event: 'push', before: sha, fetchWorks: false, commitPresent: false });
+  assert.equal(r.status, 0);
+  assert.match(r.stdout, /::notice title=Migration ordering rule not checked/);
+  assert.doesNotMatch(r.calls, /node /);
+  r = orderingStep({ event: 'push', before: '0'.repeat(40), fetchWorks: true, commitPresent: false });
+  assert.equal(r.status, 0); assert.match(r.stdout, /::notice /);
+  r = orderingStep({ event: 'schedule', fetchWorks: true, commitPresent: false });
+  assert.equal(r.status, 0); assert.match(r.stdout, /::notice /);
 });
