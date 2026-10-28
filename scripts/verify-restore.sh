@@ -24,6 +24,10 @@
 #   WAREHOUSE_VERIFY_STORAGE      auto (default: memory when it fits, else disk), tmpfs or disk
 #   WAREHOUSE_VERIFY_SCRATCH_DIR  parent of the disk-backed data directory (default: $WAREHOUSE_STATE_DIR)
 #   WAREHOUSE_DIAGNOSTICS_DIR     where a failed run leaves the container log (default: $WAREHOUSE_STATE_DIR/diagnostics)
+#   TMPDIR                        where the copy of docker/volumes/db/00-bootstrap.sql is made (default /tmp). The container bind-mounts it, so
+#                                 it must be a directory of the machine the Docker daemon runs on: a systemd unit with PrivateTmp=yes, or a
+#                                 remote DOCKER_HOST, does not see it (the restore container then fails to start). Set TMPDIR to a directory
+#                                 under the state in such a case.
 set -euo pipefail
 umask 077
 ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
