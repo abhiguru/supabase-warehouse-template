@@ -41,7 +41,19 @@ remove_kept() {
   dir="$(docker inspect --format '{{index .Config.Labels "warehouse.restore-disk-dir"}}' "$name")"
   docker rm -f -v "$name" >/dev/null
   if [[ -n "$dir" ]]; then
-    [[ "$dir" == /* && "$(basename "$dir")" == .verify-restore.* ]] || { echo "Not removing the data directory '$dir' (it is not one this script makes)." >&2; exit 1; }
+    [[ "$dir" == /* && "$(basename "$dir")" == .verify-restore.* && "/$dir/" != */../* ]] || { echo "Not removing the data directory '$dir' (it is not one this script makes)." >&2; exit 1; }
+    # The label is the container's own word, so it is not trusted further than the script's own rules: the directory is a real one (a link
+    # could lead the root `rm` anywhere) and sits directly in the place this script makes them (the scratch directory, else the state), as far
+    # as the environment names one.
+    [[ ! -L "$dir" ]] || { echo "Not removing the data directory '$dir' (it is a symbolic link)." >&2; exit 1; }
+    roots=()
+    [[ "${WAREHOUSE_VERIFY_SCRATCH_DIR:-}" != /* ]] || roots+=("${WAREHOUSE_VERIFY_SCRATCH_DIR%/}")
+    [[ "${WAREHOUSE_STATE_DIR:-}" != /* ]] || roots+=("${WAREHOUSE_STATE_DIR%/}")
+    if ((${#roots[@]})); then
+      inside=no
+      for root in "${roots[@]}"; do [[ "$(dirname "$dir")" == "$root" ]] && inside=yes; done
+      [[ "$inside" == yes ]] || { echo "Not removing the data directory '$dir' (it is not directly in ${roots[*]}). Remove it yourself if it is a leftover of this script." >&2; exit 1; }
+    fi
     if [[ -d "$dir" ]]; then
       docker run --rm --network none --user 0:0 --entrypoint /bin/rm -v "$dir:/scratch" "$IMAGE" -rf /scratch/data >/dev/null 2>&1 || true
       rm -rf -- "$dir" 2>/dev/null || echo "Could not remove the disposable data directory $dir; remove it with: sudo rm -rf $dir" >&2
