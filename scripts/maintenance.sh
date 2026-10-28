@@ -124,6 +124,10 @@ case "$command" in
       write_marker || true
       # The new container was created without the word and may still run, or start again, open: remove it, as `on` does.
       compose rm -sf gateway >/dev/null 2>&1 || true
+      if exists gateway; then
+        echo "The gateway did not come up (message above) and could not be removed, so it may still run, or start again, with the API open ($marker was put back, but a container created without the word does not read it). Remove it: bash scripts/compose.sh rm -sf gateway" >&2
+        exit 1
+      fi
       echo "The gateway did not come up (message above). Maintenance mode is still on ($marker was put back): the API is closed or down, never half open. Fix the cause and run this again." >&2
       exit 1
     fi
