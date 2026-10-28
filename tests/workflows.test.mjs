@@ -394,6 +394,25 @@ test('dependency-audit issue step: an open issue gets ONE comment with only the 
   assert.deepEqual(unread.verbs, []);
 });
 
+test('dependency-audit and cft-freshness: a killed check (137) or any status but 0/1 fails the step and never closes or edits the issue', () => {
+  const steps = [
+    { file: 'dependency-audit.yml', name: 'Open or update the issue, or close it when the audit is clean', first: 'Audit both trees against the exception ledger' },
+    { file: 'cft-freshness.yml', name: 'Open or update the issue, or close it when the pin is current', first: 'Compare the pinned CHS_VERSION with Chrome for Testing Stable' },
+  ];
+  for (const { file, name, first } of steps) {
+    for (const status of [137, 3, 127]) {
+      const killed = issueStep({ file, name, status, files: { 'advisories.md': '', 'findings.txt': '' }, issue: { number: 5, body: 'open issue' } });
+      assert.notEqual(killed.code, 0, `${file}: status ${status} fails the step`);
+      assert.deepEqual(killed.verbs, [], `${file}: status ${status} does not close, edit or comment on the issue`);
+      assert.match(killed.stdout, /^::error title=/m);
+    }
+    // The step that runs the check also refuses to pass such a status on: only 0 and 1 are handed over.
+    const text = readFileSync(new URL(`../.github/workflows/${file}`, import.meta.url), 'utf8');
+    assert.ok(text.includes(`- name: ${first}`), first);
+    assert.match(text, /\[\[ "\$status" == 0 \|\| "\$status" == 1 \]\] \|\| \{ echo "::error title=[^\n]*exit 1; \}/, `${file}: the check step passes only 0 and 1`);
+  }
+});
+
 test('the three weekly workflows find their issue among the ones the bot itself opened, and never run twice at once', () => {
   const steps = {
     'cft-freshness.yml': 'Open or update the issue, or close it when the pin is current',
