@@ -2908,13 +2908,19 @@ fails with `collation version changed; REINDEX required before use`; `rotate-key
 (`node scripts/doctor.mjs --collation`) before they change anything and refuse on it. The database image's own guard refuses to build a
 base image whose `libc6` or `locales` differ from the recorded versions, so the usual cause is that a glibc update was accepted into that
 line on purpose, or that a data directory was kept across a database image with another glibc. Do not use the facility for writes until
-it is repaired. The repair, with the API closed so that nothing writes meanwhile:
+it is repaired. The repair, with the API closed so that nothing writes meanwhile. Every database the query lists is repaired before
+the query is run, and maintenance stays on until the query prints nothing and `doctor` passes:
 
 ```bash
 npm run db:backup
 bash scripts/maintenance.sh on
 bash scripts/compose.sh exec -T db psql -X -U supabase_admin -d postgres -c 'REINDEX DATABASE postgres'
 bash scripts/compose.sh exec -T db psql -X -U supabase_admin -d postgres -c 'ALTER DATABASE postgres REFRESH COLLATION VERSION'
+# Only when the pooler is on: its _supabase database, the REINDEX connected to that database.
+bash scripts/compose.sh exec -T db psql -X -U supabase_admin -d _supabase -c 'REINDEX DATABASE _supabase'
+bash scripts/compose.sh exec -T db psql -X -U supabase_admin -d postgres -c 'ALTER DATABASE _supabase REFRESH COLLATION VERSION'
+# Only when the query below lists template1: its version alone is refreshed, from -d postgres, with no REINDEX.
+bash scripts/compose.sh exec -T db psql -X -U supabase_admin -d postgres -c 'ALTER DATABASE template1 REFRESH COLLATION VERSION'
 bash scripts/compose.sh exec -T db psql -X -U supabase_admin -d postgres -At -c "SELECT datname FROM pg_database WHERE datcollversion IS NOT NULL AND datcollversion <> pg_database_collation_actual_version(oid)"
 node scripts/doctor.mjs --local
 bash scripts/maintenance.sh off
@@ -2923,18 +2929,11 @@ bash scripts/maintenance.sh off
 `REINDEX DATABASE` rebuilds every index outside the system catalogs (since PostgreSQL 16 it skips them; harmless, they use the `C`
 collation) and blocks writes to each table while it works, so the downtime is the time to
 build all indexes from nothing; it grows with the database, and is not measured here: try it on a restored copy of the newest backup
-first and plan the window from that. The query before `doctor` lists databases whose recorded version still differs (a database with no recorded version passes, as in the
-doctor); it should print nothing. The pooler's `_supabase` database (when the pooler is on) is repaired with two more commands, the
-`REINDEX` while connected to that database:
-
-```bash
-bash scripts/compose.sh exec -T db psql -X -U supabase_admin -d _supabase -c 'REINDEX DATABASE _supabase'
-bash scripts/compose.sh exec -T db psql -X -U supabase_admin -d postgres -c 'ALTER DATABASE _supabase REFRESH COLLATION VERSION'
-```
-
-`template0` needs nothing: initdb records no collation version for it, and it holds no collation-dependent objects. `template1` holds
-no index that depends on the C library either (the catalogs use the `C` collation), so when the query lists it, only its version is
-refreshed, from `-d postgres`, with no `REINDEX`: `ALTER DATABASE template1 REFRESH COLLATION VERSION`.
+first and plan the window from that. The query lists databases whose recorded version still differs (a database with no recorded version
+passes, as in the doctor); it should print nothing before you run `doctor` and turn maintenance off. `template0` needs nothing: initdb
+records no collation version for it, and it holds no collation-dependent objects. `template1` holds no index that depends on the C library
+either (the catalogs use the `C` collation), so when the query lists it, only its version is refreshed, and the `ALTER DATABASE template1`
+line is the whole repair.
 If the doctor says it could not read the version, run the `SELECT` of the block above by hand; the check retries three
 times before it gives up and then fails closed.
 
