@@ -954,3 +954,62 @@ test('backup never lifts maintenance mode: with the marker every Compose command
     assert.deepEqual([...new Set(w.envCalls().filter(line => /\|compose /.test(line)).map(line => line.split('|')[0]))], ['unset']);
   } finally { w.done(); }
 });
+
+// --rm removes the data directory a kept container's label names, and trusts the label no further than the script's own rules.
+test('verify-restore --rm: removes the directory it made; refuses a symbolic link, a directory outside the scratch place and a ".." path', () => {
+  const scratch = mkdtempSync(join(tmpdir(), 'warehouse-verify-rm-'));
+  try {
+    const bin = join(scratch, 'bin'); mkdirSync(bin);
+    const log = join(scratch, 'docker.log'); writeFileSync(log, '');
+    writeFileSync(join(bin, 'docker'), `#!/bin/sh
+echo "$*" >> "${log}"
+case "$1" in
+  inspect) case "$*" in *'index .Config.Labels "purpose"'*) echo warehouse-restore-test ;; *restore-disk-dir*) printf '%s\\n' "$FAKE_LABEL_DIR" ;; esac; exit 0 ;;
+esac
+exit 0
+`, { mode: 0o700 });
+    const parent = join(scratch, 'state'); mkdirSync(parent);
+    const rm = (dir, env = {}) => {
+      writeFileSync(log, '');
+      const r = spawnSync('bash', [new URL('../scripts/verify-restore.sh', import.meta.url).pathname, '--rm', 'warehouse-restore-0123456789ab'], { encoding: 'utf8',
+        env: { ...process.env, PATH: `${bin}:${process.env.PATH}`, FAKE_LABEL_DIR: dir, WAREHOUSE_STATE_DIR: parent, WAREHOUSE_VERIFY_SCRATCH_DIR: '', ...env } });
+      return { ...r, calls: readFileSync(log, 'utf8') };
+    };
+    const rootRm = calls => calls.split('\n').filter(line => line.startsWith('run --rm') && line.endsWith('-rf /scratch/data'));
+    // The directory this script makes, in the state: emptied and removed.
+    const own = join(parent, '.verify-restore.AbC123'); mkdirSync(own);
+    const ok = rm(own);
+    assert.equal(ok.status, 0, ok.stderr);
+    assert.equal(rootRm(ok.calls).length, 1);
+    assert.equal(existsSync(own), false);
+    // A link with the right name: not followed, nothing removed, no root rm.
+    const target = join(scratch, 'precious'); mkdirSync(target); writeFileSync(join(target, 'keep'), 'x');
+    const link = join(parent, '.verify-restore.link'); symlinkSync(target, link);
+    const linked = rm(link);
+    assert.equal(linked.status, 1);
+    assert.match(linked.stderr, /symbolic link/);
+    assert.equal(rootRm(linked.calls).length, 0);
+    assert.equal(existsSync(join(target, 'keep')), true);
+    // A refusal comes before the container is removed (the container is the only record of the directory) and says how to remove both.
+    const removesContainer = calls => calls.split('\n').filter(line => line.startsWith('rm -f -v '));
+    assert.deepEqual(removesContainer(linked.calls), [], 'the container is left');
+    assert.match(linked.stderr, /docker rm -f -v warehouse-restore-0123456789ab; sudo rm -rf -- '[^']*\.verify-restore\.link'/);
+    assert.equal(removesContainer(ok.calls).length, 1, 'a removal that passes the rules removes the container');
+    // Right name, wrong place (not directly in the state or the scratch directory), and a path with "..".
+    const elsewhere = join(scratch, 'other'); mkdirSync(join(elsewhere, '.verify-restore.x'), { recursive: true });
+    const outside = rm(join(elsewhere, '.verify-restore.x'));
+    assert.equal(outside.status, 1);
+    assert.match(outside.stderr, /not directly in/);
+    assert.equal(rootRm(outside.calls).length, 0);
+    assert.deepEqual(removesContainer(outside.calls), []);
+    assert.equal(existsSync(join(elsewhere, '.verify-restore.x')), true);
+    const dotdot = rm(`${parent}/../other/.verify-restore.x`);
+    assert.equal(dotdot.status, 1);
+    assert.equal(rootRm(dotdot.calls).length, 0);
+    // The scratch directory the run was made with is accepted as well.
+    const scratchRoot = join(scratch, 'scratchdir'); mkdirSync(join(scratchRoot, '.verify-restore.Zz9'), { recursive: true });
+    const viaScratch = rm(join(scratchRoot, '.verify-restore.Zz9'), { WAREHOUSE_VERIFY_SCRATCH_DIR: scratchRoot });
+    assert.equal(viaScratch.status, 0, viaScratch.stderr);
+    assert.equal(existsSync(join(scratchRoot, '.verify-restore.Zz9')), false);
+  } finally { rmSync(scratch, { recursive: true, force: true }); }
+});

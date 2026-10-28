@@ -1056,6 +1056,15 @@ test('the operator actions are followed by a pause only at a terminal, in a real
     assert.deepEqual(readdirSync(join(stop.state, 'backups')), []);
     assert.deepEqual(readdirSync(tmp), [], 'the copy of the preflight is removed');
   } finally { stop.cleanup(); }
+  // ASSUME_YES=yes in the operator's environment is not --yes: only the option skips the pause.
+  const envYes = world({ at: 'v0.2.0' });
+  try {
+    const r = envYes.run(['v0.2.12'], { ...asTerminal(envYes), ASSUME_YES: 'yes' });
+    assert.notEqual(r.status, 0);
+    assert.ok(r.stdout.includes('Press Enter to continue, Ctrl-C to stop'), 'the pause is still made');
+    assert.match(r.stderr, /Refusing: no answer was read/);
+    assert.deepEqual(r.log, [], 'no backup');
+  } finally { envYes.cleanup(); }
   // --yes: no pause, though standard input is a terminal and says nothing. --dry-run: no pause either (nothing would change).
   const skip = world({ at: 'v0.2.0' });
   try {
@@ -1322,7 +1331,7 @@ test('fas-sync: the plan says to pause it, and a psql session from outside the s
     const dry = w.run(['--dry-run', 'v0.2.0']);
     assert.equal(dry.status, 0, dry.stderr);
     assert.match(dry.stdout, /The facility is closed for the backup, its verification and the migrations: before step 1 both gateways are put in maintenance mode/);
-    assert.match(dry.stdout, /Pause fas-sync now \(it writes straight to the database\): nothing may write meanwhile, or the way back would lose it\./);
+    assert.match(dry.stdout, /fas-sync \(it writes straight to the database\) has to be paused before the real run: nothing may write meanwhile, or the way back would lose it\. The real run checks for a psql session and refuses to start while one is open\./);
     assert.doesNotMatch(dry.stderr, /psql session/, 'none is open');
     // What is asked: sessions of psql (the way fas-sync reaches the database) other than the one asking, among client backends.
     const query = maintLog(w).find(line => line.startsWith('sessions-query'));

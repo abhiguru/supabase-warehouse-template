@@ -46,7 +46,7 @@ jobs:
           if [[ "$status" == 3 ]]; then
             echo "::warning title=Base image check incomplete::Docker Hub rate limited the age check (HTTP 429) or did not answer. The library check ran; nothing is changed in the issue. The next weekly run asks again."
           fi
-          # Status 2 is a failure of the check itself (the library could not be read); it fails the run and leaves the issue alone.
+          # Status 2 is a failure of the check itself (the library could not be read, or Docker Hub gave an answer the script does not understand or could not be reached twice); it fails the run and leaves the issue alone.
           [[ "$status" != 2 ]] || exit 2
           exit 0
       - name: Open or update the issue, or close it when nothing needs attention

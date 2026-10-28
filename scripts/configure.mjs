@@ -239,8 +239,11 @@ export function withGatewayPort(text, port) {
 }
 // Every rerun of setup renames a compose.env line that has only the old name (KONG_HTTP_PORT, a state from the Kong gateway) to
 // GATEWAY_HTTP_PORT, in place and with the same value, whether or not --gateway-port was given; Compose reads the same port from either
-// name, so nothing is recreated. A file that has GATEWAY_HTTP_PORT already (renamed earlier, or both lines by hand) is left as it is.
-// This is what lets a later release drop the KONG_HTTP_PORT fallback of docker-compose.yml, doctor-common.mjs and the check above.
+// name, so nothing is recreated. A file that has GATEWAY_HTTP_PORT already (renamed earlier, or both lines by hand) is left as it is,
+// an EMPTY `GATEWAY_HTTP_PORT=` line included: it is read as unset and the KONG_HTTP_PORT value still applies (a hand edit; setup
+// never writes one), so such a file is not renamed.
+// This is what lets a later release drop the KONG_HTTP_PORT fallback of docker-compose.yml, doctor-common.mjs and the check above,
+// for every installation that setup has written; a hand-made empty line with KONG_HTTP_PORT beside it must be fixed by hand first.
 export function renameKongPort(text) {
   return /^GATEWAY_HTTP_PORT=/m.test(text) ? text : text.replace(/^KONG_HTTP_PORT=/m, 'GATEWAY_HTTP_PORT=');
 }

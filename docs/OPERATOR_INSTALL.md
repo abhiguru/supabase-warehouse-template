@@ -2093,7 +2093,7 @@ sudo bash scripts/backup-usb.sh setup --state "$WAREHOUSE_STATE_DIR"   # only if
 judges nothing meanwhile; its `operator_lock_stuck` alert fires after 2 hours, or after twice the time of the last backup plus the last verify when that is longer) and prints the operator actions of `CHANGELOG.md` between your
 release and the new one **twice**: first, before anything is changed, as part of the release's preflight (below), and again at the end. The first
 print is the dry run's: the real run prints it too, but then the backup follows. At a terminal the real run waits after the list when it has
-operator actions ("Press Enter to continue, Ctrl-C to stop"; the lock is held while it waits, and Ctrl-C releases it with nothing changed);
+operator actions, as the last step of the preflight (after the host, floor, room and rehearsal checks; "Press Enter to continue, Ctrl-C to stop"; the lock is held while it waits, and Ctrl-C releases it with nothing changed; with no answer for 30 minutes the upgrade stops by itself, also with nothing changed);
 `--yes` skips that pause, and a run without a terminal (cron, CI, `ssh host command`, `</dev/null`) never pauses, so an action that says
 "before" is done only if the dry run was read.
 
@@ -2908,13 +2908,19 @@ fails with `collation version changed; REINDEX required before use`; `rotate-key
 (`node scripts/doctor.mjs --collation`) before they change anything and refuse on it. The database image's own guard refuses to build a
 base image whose `libc6` or `locales` differ from the recorded versions, so the usual cause is that a glibc update was accepted into that
 line on purpose, or that a data directory was kept across a database image with another glibc. Do not use the facility for writes until
-it is repaired. The repair, with the API closed so that nothing writes meanwhile:
+it is repaired. The repair, with the API closed so that nothing writes meanwhile. Every database the query lists is repaired before
+the query is run, and maintenance stays on until the query prints nothing and `doctor` passes:
 
 ```bash
 npm run db:backup
 bash scripts/maintenance.sh on
 bash scripts/compose.sh exec -T db psql -X -U supabase_admin -d postgres -c 'REINDEX DATABASE postgres'
 bash scripts/compose.sh exec -T db psql -X -U supabase_admin -d postgres -c 'ALTER DATABASE postgres REFRESH COLLATION VERSION'
+# Only when the pooler is on: its _supabase database, the REINDEX connected to that database.
+bash scripts/compose.sh exec -T db psql -X -U supabase_admin -d _supabase -c 'REINDEX DATABASE _supabase'
+bash scripts/compose.sh exec -T db psql -X -U supabase_admin -d postgres -c 'ALTER DATABASE _supabase REFRESH COLLATION VERSION'
+# Only when the query below lists template1: its version alone is refreshed, from -d postgres, with no REINDEX.
+bash scripts/compose.sh exec -T db psql -X -U supabase_admin -d postgres -c 'ALTER DATABASE template1 REFRESH COLLATION VERSION'
 bash scripts/compose.sh exec -T db psql -X -U supabase_admin -d postgres -At -c "SELECT datname FROM pg_database WHERE datcollversion IS NOT NULL AND datcollversion <> pg_database_collation_actual_version(oid)"
 node scripts/doctor.mjs --local
 bash scripts/maintenance.sh off
@@ -2923,18 +2929,11 @@ bash scripts/maintenance.sh off
 `REINDEX DATABASE` rebuilds every index outside the system catalogs (since PostgreSQL 16 it skips them; harmless, they use the `C`
 collation) and blocks writes to each table while it works, so the downtime is the time to
 build all indexes from nothing; it grows with the database, and is not measured here: try it on a restored copy of the newest backup
-first and plan the window from that. The query before `doctor` lists databases whose recorded version still differs (a database with no recorded version passes, as in the
-doctor); it should print nothing. The pooler's `_supabase` database (when the pooler is on) is repaired with two more commands, the
-`REINDEX` while connected to that database:
-
-```bash
-bash scripts/compose.sh exec -T db psql -X -U supabase_admin -d _supabase -c 'REINDEX DATABASE _supabase'
-bash scripts/compose.sh exec -T db psql -X -U supabase_admin -d postgres -c 'ALTER DATABASE _supabase REFRESH COLLATION VERSION'
-```
-
-`template0` needs nothing: initdb records no collation version for it, and it holds no collation-dependent objects. `template1` holds
-no index that depends on the C library either (the catalogs use the `C` collation), so when the query lists it, only its version is
-refreshed, from `-d postgres`, with no `REINDEX`: `ALTER DATABASE template1 REFRESH COLLATION VERSION`.
+first and plan the window from that. The query lists databases whose recorded version still differs (a database with no recorded version
+passes, as in the doctor); it should print nothing before you run `doctor` and turn maintenance off. `template0` needs nothing: initdb
+records no collation version for it, and it holds no collation-dependent objects. `template1` holds no index that depends on the C library
+either (the catalogs use the `C` collation), so when the query lists it, only its version is refreshed, and the `ALTER DATABASE template1`
+line is the whole repair.
 If the doctor says it could not read the version, run the `SELECT` of the block above by hand; the check retries three
 times before it gives up and then fails closed.
 

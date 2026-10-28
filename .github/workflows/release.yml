@@ -15,6 +15,7 @@ jobs:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           persist-credentials: false
+          fetch-depth: 0
       - name: Release readiness gate
         # Semantic version tags only (vMAJOR.MINOR.PATCH[-prerelease][+build]);
         # anything else is refused before the checks run.
@@ -28,7 +29,18 @@ jobs:
           cache: npm
       - run: npm ci
       - run: npm test
-      - run: npm audit --audit-level=high
+      - name: Dependency advisories this release adds (root, docker/storage, docker/pdf-renderer)
+        # The same compare-with-base gate as the pull-request check in ci.yml (owner decision of 2026-10-28), with the previous final release
+        # tag as the base and the root package.json (devDependencies included) added: a tag is blocked by an advisory this release
+        # brings, never by one published since the last tag. An audit that cannot be read, or no previous tag to compare with, fails.
+        run: |
+          # The base is the newest FINAL release tag reachable from this commit whose version is not this tag's own (v1.2.0-rc.2 and v1.2.0
+          # both have the version v1.2.0): a pre-release as the base would compare a release candidate with the one before it, and the final,
+          # which sits on the same commit as its last candidate, with itself. On a release/<line> branch only that line's tags are reachable.
+          version="${GITHUB_REF_NAME%%[-+]*}"
+          previous="$(git tag --merged HEAD --list 'v[0-9]*' --sort=-v:refname | grep -E '^v[0-9]+\.[0-9]+\.[0-9]+$' | grep -vxF "$version" | head -n 1)"
+          [[ -n "$previous" ]] || { echo "::error title=No previous release tag::The dependency audit compares with the previous final release tag, and no final release tag other than this version's own is reachable from this tag."; exit 1; }
+          node scripts/audit-compare.mjs --base-ref "$previous" --with-root
       - name: Chrome for Testing freshness of the PDF renderer (warning only)
         # Trivy cannot see the chrome-headless-shell binary of docker/pdf-renderer. A Chrome more than 14 days behind
         # Stable shows as a warning on this run and never blocks a tag, a security backport included: Chrome ships
@@ -107,11 +119,11 @@ jobs:
         id: rehearsed
         # A final tag (vX.Y.Z) on the commit of the newest vX.Y.Z-rc.N whose release-images.json can be downloaded and fits this checkout
         # reuses those images (the next steps re-tag them); the step prints the pre-release's tag, and nothing for any other tag, which
-        # then builds and scans as before. The tags are fetched because the checkout of a tag has only that one.
+        # then builds and scans as before. The tags are fetched (--depth=1: only the commits the tags point at, not the history) because the checkout of a tag has only that one.
         env:
           GH_TOKEN: ${{ github.token }}
         run: |
-          git fetch --force --no-tags origin 'refs/tags/v*:refs/tags/v*'
+          git fetch --force --no-tags --depth=1 origin 'refs/tags/v*:refs/tags/v*'
           rc="$(bash scripts/publish-images.sh --rehearsed "$GITHUB_REF_NAME" "$RUNNER_TEMP/rehearsed-images.json")"
           echo "rc=$rc" >> "$GITHUB_OUTPUT"
       - name: Install Trivy 0.76.0

@@ -464,7 +464,8 @@ test('restore-host usage and key message say what --allow-unsigned is for', () =
   const f = fixture('warehouse-restore-host-wording-');
   try {
     const usage = f.run(['--help'], {}, { key: null });
-    assert.match(usage.stderr, /--allow-unsigned instead of --backup-key: only for when the backup key is lost/);
+    assert.equal(usage.status, 0, 'an explicit --help is not an error');
+    assert.match(usage.stdout, /--allow-unsigned instead of --backup-key: only for when the backup key is lost/);
     f.resum({ sign: false });
     const result = f.run(['--state-dir', f.state, '--yes', f.backup], {}, { key: null });
     assert.equal(result.status, 1);

@@ -77,7 +77,7 @@ fresh build and scan before each release instead). Before every release tag:
 
 A `v*` tag runs `release.yml`: the semantic-version gate (`scripts/check-release.sh`), the release contents gate
 (`scripts/check-release-contents.sh`: the `CHANGELOG.md` section, `upgrade.sh`, `scripts/pg-major.sh`, the inherited lock and the
-functions recreate in `setup.sh`), `npm test`, `npm audit`, the
+functions recreate in `setup.sh`), `npm test`, the dependency advisories this release adds over the previous tag (`scripts/audit-compare.mjs --with-root`), the
 Chrome for Testing freshness check of the PDF renderer (`scripts/check-cft-freshness.mjs --mode warn`: a Chrome more than 14 days
 behind Stable is a warning on the run and never blocks the tag; the weekly issue is the signal) and a Compose validation against
 generated operator state. Then its second job, `publish-images`, builds, scans and publishes the images ([below](#image-publication)).
@@ -117,7 +117,9 @@ names the candidate it was built for; the revision is the commit of both.
       never by editing it. Without this setting the file is an ordinary release asset that anyone with write access to the repository's releases
       can replace; the revision label check still refuses an image built from another commit (an older release's image, say).
 - [ ] `publish-images` is green for the tag. If its scan failed, fix the recipe or have the owner renew the exception on `main` and tag
-      again (`-rc.N+1`); never move a tag. Re-running the job on a draft release builds again and replaces `release-images.json` (the
+      again (`-rc.N+1`); never move a tag. A **final** whose own build or scan fails is not repaired by `-rc.N+1` (the final's tag stays where it
+      is, and there may be no draft to publish with `gh release edit --draft=false`): publish that release with `gh release create vX.Y.Z --verify-tag`
+      (facilities then build the images from the recipe, as for any release without a list), or cut the next patch release. Re-running the job on a draft release builds again and replaces `release-images.json` (the
       digests change; a facility that already pulled keeps what it has); on a published release the upload is refused.
 - [ ] **Once, with the first release candidate (nothing in this job has run against `ghcr.io` before it):** if the push is refused
       (`denied: permission_denied`), open each package's settings, "Manage Actions access", and add this repository with the Write role,

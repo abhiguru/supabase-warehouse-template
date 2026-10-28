@@ -203,6 +203,19 @@ test('off: removes the marker, recreates the gateway without the word, starts th
   } finally { done(f); }
 });
 
+test('off: a gateway that did not come up and cannot be removed fails the command and says so, instead of claiming it is never half open', () => {
+  const f = fixture();
+  try {
+    assert.equal(f.maintenance(['on']).status, 0);
+    f.clear();
+    const r = f.maintenance(['off'], { FAKE_FAIL_UP: 'gateway', FAKE_FAIL_RM: 'gateway' });
+    assert.equal(r.status, 1);
+    assert.match(r.stderr, /The gateway did not come up \(message above\) and could not be removed, so it may still run, or start again, with the API open .*Remove it: bash scripts\/compose\.sh rm -sf gateway/);
+    assert.doesNotMatch(r.stderr, /never half open/);
+    assert.equal(readFileSync(f.marker, 'utf8'), 'upgrading\n', 'the marker is still put back');
+  } finally { done(f); }
+});
+
 test('off: a gateway that does not come up puts the marker back (it stays closed); a failing health check is said, with the API open', () => {
   const f = fixture();
   try {

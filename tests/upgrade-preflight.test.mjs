@@ -63,6 +63,7 @@ echo "verify-restore $*" >> "$FAKE_LOG"
 if [ "$1" = --rm ]; then exit 0; fi
 if [ -n "$FAKE_VERIFY_SLEEP" ]; then sleep "$FAKE_VERIFY_SLEEP"; fi
 if [ "$FAKE_VERIFY_FAIL" = diag ]; then echo "Restore database did not start (fake)." >&2; echo "Restore verification failed. Container log, state and database sessions were saved in /x" >&2; echo "  (the database did not answer)" >&2; exit 1; fi
+if [ "$FAKE_VERIFY_FAIL" = offline ]; then echo "docker: Error response from daemon: Get \\"https://registry-1.docker.io/v2/\\": dial tcp: lookup registry-1.docker.io: no such host (fake)." >&2; echo >&2; echo "Run 'docker run --help' for more information" >&2; exit 125; fi
 if [ -n "$FAKE_VERIFY_FAIL" ]; then echo "Integrity comparison differs (fake)." >&2; exit 1; fi
 echo "Restore verification: disposable database of 768 MiB (fake)."
 echo "Kept disposable database: warehouse-restore-0123456789ab (database warehouse_restore, user supabase_admin; remove it with: bash scripts/verify-restore.sh --rm warehouse-restore-0123456789ab)"
@@ -90,11 +91,14 @@ console.log('Host prerequisites and state filesystem preflight passed.');
   const env = { FROM_SHA: 'a'.repeat(40), FROM_LABEL: 'v0.1.0', FROM_TAG: 'v0.1.0', TO_SHA: 'b'.repeat(40), TO_LABEL: 'v0.2.0', DRY: 'no' };
   // `terminal: true` puts a `tty` on the PATH that says standard input is a terminal (the preflight asks `tty -s`); no pseudo-terminal is opened,
   // and without it the child's standard input is a pipe. `input` is what that pipe holds.
-  const run = (extra = {}, { terminal = false, input = undefined, pty = false } = {}) => {
+  const run = (extra = {}, { terminal = false, input = undefined, pty = false, hold = false } = {}) => {
     if (terminal) { writeFileSync(join(scratch, 'bin/tty'), '#!/bin/sh\nexit 0\n'); chmodSync(join(scratch, 'bin/tty'), 0o755); } else rmSync(join(scratch, 'bin/tty'), { force: true });
     // `pty`: through the `script` command, which gives the preflight a real pseudo-terminal as standard input (the repo's other terminal tests do the same).
     const [command, args] = pty ? ['script', ['-qec', `bash ${join(tree, 'scripts/upgrade-preflight.sh')}`, '/dev/null']] : ['bash', [join(tree, 'scripts/upgrade-preflight.sh')]];
-    const r = spawnSync(command, args, { cwd: tree, encoding: 'utf8', input,
+    // `hold`: standard input is a pipe that stays open for 5 seconds (the message tells a time-out from the input ending) and says nothing (an operator who walked away).
+    const r = hold ? spawnSync('sh', ['-c', 'sleep 5 | bash "$0"', join(tree, 'scripts/upgrade-preflight.sh')], { cwd: tree, encoding: 'utf8',
+      env: { ...process.env, PATH: `${join(scratch, 'bin')}:${process.env.PATH}`, STATE: state, FAKE_LOG: join(scratch, 'rehearsal.log'), ...env, ...extra } })
+      : spawnSync(command, args, { cwd: tree, encoding: 'utf8', input,
       env: { ...process.env, PATH: `${join(scratch, 'bin')}:${process.env.PATH}`, STATE: state, FAKE_LOG: join(scratch, 'rehearsal.log'), ...env, ...extra } });
     return { ...r, rehearsalLog: existsSync(join(scratch, 'rehearsal.log')) ? readFileSync(join(scratch, 'rehearsal.log'), 'utf8') : '',
       plan: existsSync(join(scratch, 'rehearsal.log.plan')) ? readFileSync(join(scratch, 'rehearsal.log.plan'), 'utf8') : '', doctorLog: existsSync(join(tree, 'scripts/doctor.log')) ? readFileSync(join(tree, 'scripts/doctor.log'), 'utf8') : '' };
@@ -298,7 +302,17 @@ test('the pause after the operator actions: at a terminal in a real run it waits
     const eof = w.run({}, { terminal: true });
     assert.equal(eof.status, 1);
     assert.match(eof.stderr, /Refusing: no answer was read, so the upgrade did not go on\. Do the actions listed above, then run this command again\. Nothing was changed\./);
-    assert.equal(eof.doctorLog, entered.doctorLog, 'the doctor was not asked again: the refusal came before the host checks');
+    // The pause is the LAST step: the host check ran (and would have refused first) before the operator was asked anything, and "passed" was not printed.
+    assert.equal(eof.doctorLog, `${entered.doctorLog}${entered.doctorLog.split('\n').slice(-2)[0]}\n`, 'the doctor was asked again: the refusal came after the host checks');
+    assert.ok(!eof.stdout.includes('Preflight of v0.2.0 passed'));
+    // A host that fails its check is refused WITHOUT the question: the operator is not asked to confirm a run that is then refused.
+    const bad = world({ doctor: 1 });
+    try {
+      const refused = bad.run({}, { terminal: true, input: '\n' });
+      assert.equal(refused.status, 1);
+      assert.ok(!refused.stdout.includes('Press Enter'), 'no prompt before a refusal');
+      assert.match(refused.stderr, /this host does not meet what v0\.2\.0 needs/);
+    } finally { bad.cleanup(); }
     // No terminal: no prompt, a different line, the run passes. ASSUME_YES=yes at a terminal: no prompt. DRY=yes at a terminal: no prompt.
     const piped = w.run();
     assert.equal(piped.status, 0, piped.stderr);
@@ -317,6 +331,19 @@ test('the pause after the operator actions: at a terminal in a real run it waits
       assert.ok(!r.stdout.includes('Press Enter'));
       assert.match(r.stdout, /\(no operator actions listed\)/);
     } finally { quiet.cleanup(); }
+  } finally { w.cleanup(); }
+});
+
+test('the pause ends by itself when nobody answers: refused with "Nothing was changed", and a window of silence is not mistaken for an answer', () => {
+  const w = world();
+  try {
+    const silent = w.run({ UPGRADE_PAUSE_SECONDS: '1' }, { terminal: true, hold: true });
+    assert.equal(silent.status, 1, silent.stdout + silent.stderr);
+    assert.match(silent.stderr, /Refusing: nobody pressed Enter within 1 seconds, so the upgrade did not go on and the operator lock is released\. Do the actions listed above, then run this command again\. Nothing was changed\./);
+    assert.ok(!silent.stdout.includes('Preflight of v0.2.0 passed'));
+    // An unusable limit falls back to 30 minutes (here: Enter arrives at once, so the run passes).
+    const fallback = w.run({ UPGRADE_PAUSE_SECONDS: 'soon' }, { terminal: true, input: '\n' });
+    assert.equal(fallback.status, 0, fallback.stderr);
   } finally { w.cleanup(); }
 });
 
@@ -425,6 +452,16 @@ test('the rehearsal restores only (no integrity comparison) and says which backu
       assert.match(o.stdout, /That backup was made 2026-01-01 03:04:05 UTC, \d+ days ago\./);
       assert.match(o.stderr, /Warning: this backup is \d+ days old\. Rows entered after 2026-01-01 03:04:05 UTC are not on the copy[^]*node scripts\/watch\.mjs record-verified/);
     } finally { w2.cleanup(); }
+    // A name that has the pattern but no valid date (month 99) has no age: not "20000+ days", and no age warning.
+    const w3 = world();
+    try {
+      w3.backup('warehouse-20269999T030405Z', 1024, { dump: 1024 });
+      const bad = w3.run();
+      assert.equal(bad.status, 0, bad.stdout + bad.stderr);
+      assert.match(bad.stdout, /That backup was made 2026-99-99 03:04:05 UTC \(of unknown age: its name holds no valid date\)\./);
+      assert.doesNotMatch(bad.stdout + bad.stderr, /\d{4,} days/);
+      assert.doesNotMatch(bad.stderr, /Warning: this backup is/);
+    } finally { w3.cleanup(); }
   } finally { w.cleanup(); }
 });
 
@@ -442,6 +479,9 @@ test('only the migrations are timed, not the restore; a failed restore shows its
     assert.match(failed.stderr, /free disk space or memory[^]*bash scripts\/backup\.sh[^]*verify-restore\.sh[^]*record-verified/);
     const diag = w.run({ FAKE_VERIFY_FAIL: 'diag' });
     assert.match(diag.stderr, /The restore said: Restore database did not start \(fake\)\. The host may be/, 'the message before the diagnostics, not the diagnostics\' last line');
+    const offline = w.run({ FAKE_VERIFY_FAIL: 'offline' });
+    assert.match(offline.stderr, /The restore said: docker: Error response from daemon: .*no such host \(fake\)\. The host may be/, 'the error, not Docker\'s help hint after it');
+    assert.doesNotMatch(offline.stderr, /The restore said: Run /);
     assert.doesNotMatch(failed.stderr, /Take a new backup/, 'a backup that is only made is not used; the advice no longer says that');
   } finally { w.cleanup(); }
 });

@@ -600,6 +600,25 @@ test('doctor names public/app-compat.json when it is missing or invalid, and pas
   } finally { rmSync(state, { recursive: true, force: true }); }
 });
 
+test('a missing app-compat.json after an interrupted upgrade still says so, and so does a maintenance marker', () => {
+  const state = keyState();
+  try {
+    mkdirSync(join(state, 'config'));
+    const sha = char => char.repeat(40);
+    writeFileSync(join(state, 'config/upgrade-in-progress'), `format=1\nfrom_sha=${sha('a')}\nto_sha=${sha('b')}\nfrom_label=v0.1.0\nto_label=v0.2.0\nverified=yes\nbackup=/x/warehouse-20260101T000000Z\nstep=Setup\ncommand=v0.2.0\nmaintenance=on\n`);
+    writeFileSync(join(state, 'config/maintenance'), 'upgrading\n');
+    assert.throws(() => checkAppCompatFile(state), error => {
+      assert.match(error.message, /is missing or invalid[^]*Run setup\.sh again/);
+      assert.match(error.message, /An upgrade from v0\.1\.0 to v0\.2\.0 was interrupted at step "Setup"[^]*Continue: bash upgrade\.sh v0\.2\.0/);
+      assert.match(error.message, /Maintenance mode is on \(config\/maintenance\)[^]*bash scripts\/maintenance\.sh off/);
+      return true;
+    });
+    // Without either, the message is what it was.
+    rmSync(join(state, 'config'), { recursive: true });
+    assert.throws(() => checkAppCompatFile(state), error => { assert.doesNotMatch(error.message, /interrupted|Maintenance mode/); return true; });
+  } finally { rmSync(state, { recursive: true, force: true }); }
+});
+
 test('the full doctor checks app-compat.json before the health check, so its own message is the one an operator reads', () => {
   const source = readFileSync(new URL('../scripts/doctor.mjs', import.meta.url), 'utf8');
   const check = source.indexOf('  checkAppCompatFile(state);');

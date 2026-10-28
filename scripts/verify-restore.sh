@@ -24,13 +24,19 @@
 #   WAREHOUSE_VERIFY_STORAGE      auto (default: memory when it fits, else disk), tmpfs or disk
 #   WAREHOUSE_VERIFY_SCRATCH_DIR  parent of the disk-backed data directory (default: $WAREHOUSE_STATE_DIR)
 #   WAREHOUSE_DIAGNOSTICS_DIR     where a failed run leaves the container log (default: $WAREHOUSE_STATE_DIR/diagnostics)
+#   TMPDIR                        where the copy of docker/volumes/db/00-bootstrap.sql is made (default /tmp). The container bind-mounts it, so
+#                                 it must be a directory of the machine the Docker daemon runs on: a systemd unit with PrivateTmp=yes, or a
+#                                 remote DOCKER_HOST, does not see it (the restore container then fails to start). Set TMPDIR to a directory
+#                                 under the state in such a case.
 set -euo pipefail
 umask 077
 ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 # Same image, by digest, as docker/postgres/Dockerfile builds the production database from.
 IMAGE="$(bash "$ROOT/scripts/db-image.sh")"
-usage() { echo 'Usage: npm run db:verify-restore -- [--allow-unsigned] [--no-storage-tree] [--keep] [--restore-only] PATH_TO_BACKUP   (--allow-unsigned: only for when the backup key is lost)
-       npm run db:verify-restore -- --rm CONTAINER   (removes a container that --keep left)' >&2; exit 1; }
+# usage [0]: with 0 (an explicit --help) the text goes to standard output and the exit status is 0; otherwise it is an error.
+usage_text='Usage: npm run db:verify-restore -- [--allow-unsigned] [--no-storage-tree] [--keep] [--restore-only] PATH_TO_BACKUP   (--allow-unsigned: only for when the backup key is lost)
+       npm run db:verify-restore -- --rm CONTAINER   (removes a container that --keep left)'
+usage() { if [[ "${1:-}" == 0 ]]; then echo "$usage_text"; exit 0; fi; echo "$usage_text" >&2; exit 1; }
 # --rm: remove a container that --keep left, with its data directory. Only a container of this script's name and label is touched.
 remove_kept() {
   local name="${1:-}" label dir
@@ -39,13 +45,32 @@ remove_kept() {
   label="$(docker inspect --format '{{index .Config.Labels "purpose"}}' "$name")"
   [[ "$label" == warehouse-restore-test ]] || { echo "$name is not a disposable restore container (it lacks the label purpose=warehouse-restore-test); not removed." >&2; exit 1; }
   dir="$(docker inspect --format '{{index .Config.Labels "warehouse.restore-disk-dir"}}' "$name")"
-  docker rm -f -v "$name" >/dev/null
   if [[ -n "$dir" ]]; then
-    [[ "$dir" == /* && "$(basename "$dir")" == .verify-restore.* ]] || { echo "Not removing the data directory '$dir' (it is not one this script makes)." >&2; exit 1; }
-    if [[ -d "$dir" ]]; then
-      docker run --rm --network none --user 0:0 --entrypoint /bin/rm -v "$dir:/scratch" "$IMAGE" -rf /scratch/data >/dev/null 2>&1 || true
-      rm -rf -- "$dir" 2>/dev/null || echo "Could not remove the disposable data directory $dir; remove it with: sudo rm -rf $dir" >&2
+    # The rules for the directory come BEFORE anything is removed: the container is the only record of which directory is its own, and a
+    # refusal after `docker rm` would leave a directory nobody can name. The directory belongs to the container's postgres user, so the
+    # words of a refusal give the root command (the label is the container's own word: check the path by eye before running it).
+    refuse() {
+      echo "Not removing the data directory '$dir' ($1). The container $name is left as it is." >&2
+      echo "If '$dir' is a leftover of this script, remove the container and the directory yourself: docker rm -f -v $name; sudo rm -rf -- '$dir'" >&2
+      exit 1
+    }
+    [[ "$dir" == /* && "$(basename "$dir")" == .verify-restore.* && "/$dir/" != */../* ]] || refuse 'it is not one this script makes'
+    # The directory is a real one (a link could lead the root `rm` anywhere) and sits directly in the place this script makes them (the
+    # scratch directory, else the state), as far as the environment names one.
+    [[ ! -L "$dir" ]] || refuse 'it is a symbolic link'
+    roots=()
+    [[ "${WAREHOUSE_VERIFY_SCRATCH_DIR:-}" != /* ]] || roots+=("${WAREHOUSE_VERIFY_SCRATCH_DIR%/}")
+    [[ "${WAREHOUSE_STATE_DIR:-}" != /* ]] || roots+=("${WAREHOUSE_STATE_DIR%/}")
+    if ((${#roots[@]})); then
+      inside=no
+      for root in "${roots[@]}"; do [[ "$(dirname "$dir")" == "$root" ]] && inside=yes; done
+      [[ "$inside" == yes ]] || refuse "it is not directly in ${roots[*]}"
     fi
+  fi
+  docker rm -f -v "$name" >/dev/null
+  if [[ -n "$dir" && -d "$dir" ]]; then
+    docker run --rm --network none --user 0:0 --entrypoint /bin/rm -v "$dir:/scratch" "$IMAGE" -rf /scratch/data >/dev/null 2>&1 || true
+    rm -rf -- "$dir" 2>/dev/null || echo "Could not remove the disposable data directory $dir; remove it with: sudo rm -rf $dir" >&2
   fi
   exit 0
 }
@@ -61,7 +86,7 @@ while (($#)); do
     --keep) keep=true ;;
     --restore-only) restore_only=true ;;
     --rm) (($# == 2)) || usage; remove_kept "$2" ;;
-    -h|--help) usage ;;
+    -h|--help) usage 0 ;;
     -*) echo "Unknown option: $1" >&2; usage ;;
     *) [[ -z "$backup" ]] || usage; backup="$1" ;;
   esac

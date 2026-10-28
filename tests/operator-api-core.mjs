@@ -248,6 +248,11 @@ const raceArgs = [1, 2].map(n => ({ p_dispatch_data: { ...dispatchData, disp_no:
 const raceResults = await Promise.all(raceArgs.map(args => rpc('create_dispatch_with_stock_check', adminToken, args)));
 assert.equal(raceResults.filter(result => result.ok && result.data?.success === true).length, 1,
   'only one conflicting dispatch succeeds');
+// The other one is refused for stock (the figure it saw is the 3 left by the winner), not for some other reason such as a lock or a number clash.
+const refused = raceResults.filter(result => !(result.ok && result.data?.success === true));
+assert.equal(refused.length, 1, 'the other conflicting dispatch is refused');
+assert.ok(refused[0].ok && refused[0].data?.success === false && /^Insufficient stock: /.test(refused[0].data?.error ?? ''),
+  `the refused dispatch says why: insufficient stock (got HTTP ${refused[0].status} ${JSON.stringify(refused[0].data)})`);
 assert.equal((await api(`/rest/v1/goodsreceived_trl?id=eq.${raceStock}&select=stock`, adminToken)).data[0].stock, 3,
   'concurrent stock balance is 3');
 const refreshed = good(await rpc('refresh_jwt_token', anon, { p_refresh_token: sessionA.refresh_token }), 'refresh');

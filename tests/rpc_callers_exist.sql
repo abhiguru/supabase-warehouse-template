@@ -70,7 +70,10 @@ FROM (VALUES
   ('get_next_dispatch_number','{}')) AS f(name, arguments)
 WHERE NOT EXISTS (SELECT 1 FROM pg_proc p WHERE p.pronamespace = 'public'::regnamespace AND p.proname = f.name
   AND COALESCE(p.proargnames, '{}') @> f.arguments::text[]
-  AND COALESCE(p.proargnames[1:p.pronargs - p.pronargdefaults], '{}') <@ f.arguments::text[]);
+  AND COALESCE(p.proargnames[1:p.pronargs - p.pronargdefaults], '{}') <@ f.arguments::text[]
+  -- proargnames is NULL when no parameter is named: the two lines above then pass whatever the function requires, so the number of
+  -- required parameters is compared as well.
+  AND p.pronargs - p.pronargdefaults <= cardinality(f.arguments::text[]));
 -- create_dispatch_with_stock_check: the four-argument form fas-sync calls (by name, without p_generate_invoice) is there.
 SELECT pg_temp.rc_assert(to_regprocedure('public.create_dispatch_with_stock_check(jsonb,jsonb[],integer,text)') IS NOT NULL,
   'create_dispatch_with_stock_check(jsonb, jsonb[], integer, text) exists');

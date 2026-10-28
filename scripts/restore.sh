@@ -17,7 +17,8 @@ set -euo pipefail
 umask 077
 ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 compose() { bash "$ROOT/scripts/compose.sh" "$@"; }
-usage() { echo 'Usage: npm run db:restore -- --yes PATH_TO_BACKUP [--restore-config] [--allow-unsigned]   (--allow-unsigned: only for when the backup key is lost)' >&2; exit 1; }
+# usage [0]: with 0 (an explicit --help) the text goes to standard output and the exit status is 0; otherwise it is an error.
+usage() { if [[ "${1:-}" == 0 ]]; then echo 'Usage: npm run db:restore -- --yes PATH_TO_BACKUP [--restore-config] [--allow-unsigned]   (--allow-unsigned: only for when the backup key is lost)'; exit 0; fi; echo 'Usage: npm run db:restore -- --yes PATH_TO_BACKUP [--restore-config] [--allow-unsigned]   (--allow-unsigned: only for when the backup key is lost)' >&2; exit 1; }
 
 confirm=false
 restore_config=false
@@ -32,7 +33,7 @@ while (($#)); do
     --restore-config) restore_config=true ;;
     --relocated) relocated=true ;;
     --allow-unsigned) allow_unsigned=true ;;
-    -h|--help) usage ;;
+    -h|--help) usage 0 ;;
     -*) echo "Unknown option: $1" >&2; usage ;;
     *) [[ -z "$backup" ]] || usage; backup="$1" ;;
   esac
@@ -177,10 +178,10 @@ db_image_stale() {
   printf '%s\n' "$plan" | cut -f1 | grep -qx db
 }
 if db_image_stale; then
-  echo 'The db image does not match this checkout (the database version changed): rebuilding the images first (scripts/build-images.sh).'
-  bash "$ROOT/scripts/build-images.sh" || { echo 'Refusing: the db image could not be rebuilt, so the restore would start the new cluster on the old PostgreSQL. Nothing was moved. Run bash scripts/build-images.sh, then retry.' >&2; exit 1; }
+  echo 'The db image does not match this checkout (the database version changed): rebuilding the images first (scripts/build-images.sh --from-release: the images of the release this checkout is at are pulled, the rest built here).'
+  bash "$ROOT/scripts/build-images.sh" --from-release || { echo 'Refusing: the db image could not be rebuilt, so the restore would start the new cluster on the old PostgreSQL. Nothing was moved. Run bash scripts/build-images.sh --from-release, then retry.' >&2; exit 1; }
   if db_image_stale; then
-    echo 'Refusing: the db image still does not match this checkout after the rebuild. Nothing was moved. Run bash scripts/build-images.sh, then retry.' >&2
+    echo 'Refusing: the db image still does not match this checkout after the rebuild. Nothing was moved. Run bash scripts/build-images.sh --from-release, then retry.' >&2
     exit 1
   fi
 fi
@@ -202,6 +203,16 @@ finish() {
   if ((status != 0)) && [[ "$phase" != done ]]; then
     cat >&2 <<MSG
 Restore failed during: $phase
+MSG
+    if [[ "$phase" == 'release files' ]]; then
+      cat >&2 <<MSG
+The database and the stored files ARE restored; only public/release.json and public/app-compat.json were not written (message above). Rerunning
+bash setup.sh writes them and finishes the restore; the rollback below is needed only if you want to undo the whole restore.
+Setup does not set the content type and cache control of the stored files again (the step after the services start): when setup has finished,
+run npm run storage:retag -- --if-missing (npm run storage:retag sets them for every file).
+MSG
+    fi
+    cat >&2 <<MSG
 The replaced data was kept for rollback:
   $old_db
   $old_storage

@@ -210,27 +210,67 @@ test('a migration forgets the recorded definitions in its own transaction; a pla
 // it, or patches its text with pg_get_functiondef would be overwritten on a new install and kept on a facility; one that drops the signature
 // the file holds would leave the file bringing the function back. DROP of another signature, and CREATE FUNCTION (no OR REPLACE) of a new one
 // followed by a REVOKE on it (a new function is executable by PUBLIC until then), are how a signature changes, and the plan checks the file against the database.
+// A definition file may carry its own floor, `-- Migration history floor: 00000000000130`, for a function that a migration above 126 created
+// (the numbered files up to the floor are that function's history; the default is 126, the last migration before the extraction).
+const FLOOR_LINE = /^-- Migration history floor: (\d+)$/m;
+const DEFAULT_FLOOR = 126;
+// The floor of a file: its header line, else 126. A header must be well formed and name a migration number from the extraction (126) up to the
+// newest numbered file; a floor below 126 would re-open the history the extraction took over, and one above the newest hides every migration.
+function floorOf(file, sql, migrations) {
+  if (/^-- Migration history floor/m.test(sql) && !FLOOR_LINE.test(sql)) throw new Error(`${file}: the floor line must read "-- Migration history floor: <migration number>"`);
+  const floor = Number(FLOOR_LINE.exec(sql)?.[1] ?? DEFAULT_FLOOR);
+  const newest = Math.max(...Object.keys(migrations).map(name => Number(name.split('_')[0])));
+  if (!(floor >= DEFAULT_FLOOR && floor <= newest)) throw new Error(`${file}: the migration history floor ${floor} is outside ${DEFAULT_FLOOR} to ${newest} (the newest migration)`);
+  return floor;
+}
+// The spellings PostgreSQL treats as the same type, so that DROP/GRANT with `varchar` or `timestamptz` are found against a file that says
+// `character varying` (the ones format_type prints).
+const TYPE_ALIASES = [[/\bint4\b|\bint\b/g, 'integer'], [/\bint8\b/g, 'bigint'], [/\bint2\b/g, 'smallint'], [/\bvarchar\b/g, 'character varying'],
+  [/\btimestamptz\b/g, 'timestamp with time zone'], [/\bbool\b/g, 'boolean'], [/\bfloat8\b/g, 'double precision'], [/\bfloat4\b/g, 'real'], [/\bdecimal\b/g, 'numeric']];
+const canonicalTypes = text => TYPE_ALIASES.reduce((out, [alias, type]) => out.replace(alias, type), text.toLowerCase());
 function definitionConflicts(migrations, definitions) {
   const found = [];
   const identities = Object.entries(definitions).map(([file, sql]) => {
-    const identity = /\nREVOKE ALL ON FUNCTION (.+?) FROM /.exec(sql)[1];
-    return { file, identity, name: identity.slice(0, identity.indexOf('(')), bare: identity.slice(identity.indexOf('.') + 1, identity.indexOf('(')) };
+    const identity = canonicalTypes(/\nREVOKE ALL ON FUNCTION (.+?) FROM /.exec(sql)[1]);
+    return { file, identity, floor: floorOf(file, sql, migrations), name: identity.slice(0, identity.indexOf('(')), bare: identity.slice(identity.indexOf('.') + 1, identity.indexOf('(')) };
   });
   for (const [migration, text] of Object.entries(migrations)) {
-    if (!(Number(migration.split('_')[0]) > 126)) continue;
-    const sql = text.replace(/\/\*[^]*?\*\//g, ' ').replace(/--.*$/gm, ' ').replace(/\s+/g, ' ');
-    for (const { file, identity, name, bare } of identities) {
+    // Comments go, quoted identifiers lose their quotes (`"public"."save_grn"`), and types are spelled one way.
+    const sql = canonicalTypes(text.replace(/\/\*[^]*?\*\//g, ' ').replace(/--.*$/gm, ' ').replace(/"([a-z_][a-z0-9_]*)"/gi, '$1').replace(/\s+/g, ' '));
+    for (const { file, identity, floor, name, bare } of identities) {
+      if (!(Number(migration.split('_')[0]) > floor)) continue;
       const ref = `(?:${name.replace('.', '\\.')}|${bare})`;
       const types = identity.slice(identity.indexOf('(')).replace(/[()[\]]/g, '\\$&').replace(/,/g, '\\s*,\\s*');
       for (const [what, pattern] of [
         ['creates or replaces it', `CREATE OR REPLACE FUNCTION ${ref}\\s*\\(`],
-        ['alters it', `ALTER FUNCTION ${ref}\\s*\\(`],
-        ['comments on it', `COMMENT ON FUNCTION ${ref}\\s*\\(`],
-        ['patches its text', `pg_get_functiondef\\([^;]*${ref}\\s*\\(`],
-        ['changes its grants', `GRANT [^;]*? ON FUNCTION ${ref}${types}`],
-        [`drops it (remove ${file} in the same commit)`, `DROP FUNCTION (?:IF EXISTS )?${ref}${types}`],
+        ['alters it', `ALTER (?:FUNCTION|ROUTINE) ${ref}\\s*\\(`],
+        ['comments on it', `COMMENT ON (?:FUNCTION|ROUTINE) ${ref}\\s*\\(`],
+        ['patches its text', `pg_get_functiondef\\([^;]*${ref}(?![\\w])`],
+        ['changes its grants', `GRANT [^;]*? ON (?:FUNCTION|ROUTINE) ${ref}${types}`],
+        // Without an argument list PostgreSQL drops the one function of that name.
+        [`drops it (remove ${file} in the same commit)`, `DROP (?:FUNCTION|ROUTINE) (?:IF EXISTS )?${ref}(?:${types}|\\s*(?:;|,|$|cascade|restrict))`],
       ]) {
         if (new RegExp(pattern, 'i').test(sql)) found.push(`${migration} ${what}: ${identity} is defined in migrations/definitions/${file}`);
+      }
+    }
+  }
+  return found;
+}
+
+// A re-signing migration creates the new signature with CREATE FUNCTION (no OR REPLACE). A new function is executable by PUBLIC until it is
+// revoked (the docs say the migration "must" do it, in the same file), so the REVOKE ALL ... FROM PUBLIC, anon, authenticated has to follow.
+function resignWithoutRevoke(migrations, definitions) {
+  const found = [];
+  for (const [file, definition] of Object.entries(definitions)) {
+    const bare = /\nREVOKE ALL ON FUNCTION (?:[a-z_]+\.)?([a-z_0-9]+)\(/.exec(definition)[1];
+    const floor = floorOf(file, definition, migrations);
+    for (const [migration, text] of Object.entries(migrations)) {
+      if (!(Number(migration.split('_')[0]) > floor)) continue;
+      const sql = text.replace(/\/\*[^]*?\*\//g, ' ').replace(/--.*$/gm, ' ').replace(/"([a-z_][a-z0-9_]*)"/gi, '$1').replace(/\s+/g, ' ');
+      const ref = `(?:[a-z_]+\\.)?${bare}`;
+      for (const created of sql.matchAll(new RegExp(`CREATE FUNCTION ${ref}\\s*\\(`, 'gi'))) {
+        const revoked = new RegExp(`REVOKE ALL ON (?:FUNCTION|ROUTINE) ${ref}\\s*\\([^)]*\\) FROM PUBLIC\\s*,\\s*anon\\s*,\\s*authenticated`, 'i');
+        if (!revoked.test(sql.slice(created.index))) found.push(`${migration} creates a new signature of ${bare} (defined in migrations/definitions/${file}) with no REVOKE ALL ... FROM PUBLIC, anon, authenticated after it`);
       }
     }
   }
@@ -263,4 +303,65 @@ test('the check for a migration that changes a defined function finds each kind,
     'CREATE OR REPLACE FUNCTION public.save_grn_other(p_a uuid) RETURNS void LANGUAGE sql AS $$ SELECT 3 $$;',
   ]) assert.deepEqual(definitionConflicts(at(127, text), definitions), [], text);
   assert.deepEqual(definitionConflicts(at(126, 'ALTER FUNCTION public.save_grn(uuid, text) SET jit = off;'), definitions), [], 'the history up to 126 is as it is');
+});
+
+test('a re-signing migration revokes the new signature from PUBLIC, anon and authenticated in the same file (real migrations, and each way it can fail)', () => {
+  const migrations = Object.fromEntries(readdirSync(join(root, 'migrations')).filter(name => name.endsWith('.sql')).map(name => [name, readFileSync(join(root, 'migrations', name), 'utf8')]));
+  const definitions = Object.fromEntries(files.map(name => [name, readFileSync(join(directory, name), 'utf8')]));
+  assert.deepEqual(resignWithoutRevoke(migrations, definitions), []);
+  const sample = { 'save_grn.sql': 'CREATE OR REPLACE FUNCTION public.save_grn(p_a uuid) RETURNS void LANGUAGE sql AS $$ SELECT 1 $$;\nREVOKE ALL ON FUNCTION public.save_grn(uuid) FROM PUBLIC;\n' };
+  const at = text => ({ '00000000000127_x.sql': text });
+  const create = 'DROP FUNCTION public.save_grn(uuid);\nCREATE FUNCTION public.save_grn(p_a uuid, p_b text) RETURNS void LANGUAGE sql AS $$ SELECT 3 $$;\n';
+  assert.equal(resignWithoutRevoke(at(create + 'GRANT EXECUTE ON FUNCTION public.save_grn(uuid,text) TO service_role;'), sample).length, 1, 'no REVOKE');
+  assert.equal(resignWithoutRevoke(at(create + 'REVOKE ALL ON FUNCTION public.save_grn(uuid,text) FROM PUBLIC;'), sample).length, 1, 'anon and authenticated missing');
+  assert.equal(resignWithoutRevoke(at('REVOKE ALL ON FUNCTION public.save_grn(uuid,text) FROM PUBLIC, anon, authenticated;\n' + create), sample).length, 1, 'the REVOKE comes before the function exists');
+  assert.deepEqual(resignWithoutRevoke(at(create + 'REVOKE ALL ON FUNCTION public.save_grn(uuid,text) FROM PUBLIC, anon, authenticated;'), sample), []);
+  assert.deepEqual(resignWithoutRevoke(at('CREATE OR REPLACE FUNCTION public.save_grn(p_a uuid) RETURNS void LANGUAGE sql AS $$ SELECT 3 $$;'), sample), [], 'OR REPLACE keeps the function\'s grants');
+});
+
+test('the check for a migration that changes a defined function also finds the forms a lint would miss: no argument list, ROUTINE, quoted names, type aliases, regproc', () => {
+  const definitions = {
+    'save_grn.sql': 'CREATE OR REPLACE FUNCTION public.save_grn(p_a uuid, p_b text) RETURNS void LANGUAGE sql AS $$ SELECT 1 $$;\nREVOKE ALL ON FUNCTION public.save_grn(uuid,text) FROM PUBLIC;\n',
+    'list_x.sql': 'CREATE OR REPLACE FUNCTION public.list_x(p_a character varying, p_b timestamp with time zone) RETURNS void LANGUAGE sql AS $$ SELECT 1 $$;\nREVOKE ALL ON FUNCTION public.list_x(character varying,timestamp with time zone) FROM PUBLIC;\n',
+  };
+  const at = text => ({ '00000000000127_x.sql': text });
+  for (const text of [
+    'DROP FUNCTION public.save_grn;',
+    'DROP FUNCTION IF EXISTS save_grn CASCADE;',
+    'DROP ROUTINE public.save_grn(uuid, text);',
+    'ALTER ROUTINE public.save_grn(uuid, text) SET jit = off;',
+    "COMMENT ON ROUTINE public.save_grn(uuid, text) IS 'x';",
+    'GRANT EXECUTE ON ROUTINE public.save_grn(uuid, text) TO anon;',
+    'ALTER FUNCTION "public"."save_grn"(uuid, text) SET jit = off;',
+    "DO $p$ DECLARE d text := pg_get_functiondef('public.save_grn'::regproc); BEGIN NULL; END $p$;",
+    'GRANT EXECUTE ON FUNCTION public.list_x(varchar, timestamptz) TO anon;',
+    'DROP FUNCTION public.list_x(varchar,timestamptz);',
+  ]) assert.equal(definitionConflicts(at(text), definitions).length, 1, text);
+  assert.deepEqual(definitionConflicts(at('DROP FUNCTION public.save_grn_other;'), definitions), [], 'another function whose name starts the same');
+});
+
+test('a definition file with its own floor is checked from that migration on, so a function created after 126 can get a file; the others keep 126', () => {
+  const file = (floor) => `${floor ? `-- Migration history floor: ${floor}\n` : ''}CREATE OR REPLACE FUNCTION public.new_rpc(p_a uuid) RETURNS void LANGUAGE sql AS $$ SELECT 1 $$;\nREVOKE ALL ON FUNCTION public.new_rpc(uuid) FROM PUBLIC;\n`;
+  const migrations = { '00000000000130_new_rpc.sql': 'CREATE OR REPLACE FUNCTION public.new_rpc(p_a uuid) RETURNS void LANGUAGE sql AS $$ SELECT 0 $$;\nGRANT EXECUTE ON FUNCTION public.new_rpc(uuid) TO service_role;',
+    '00000000000131_later.sql': 'ALTER FUNCTION public.new_rpc(uuid) SET jit = off;' };
+  assert.equal(definitionConflicts(migrations, { 'new_rpc.sql': file() }).length, 3, 'with the default floor the migration that created it is flagged');
+  const floored = definitionConflicts(migrations, { 'new_rpc.sql': file('00000000000130') });
+  assert.equal(floored.length, 1, 'with floor 130 only the later one is');
+  assert.match(floored[0], /^00000000000131_later\.sql alters it/);
+  assert.equal(definitionConflicts({ '00000000000127_other.sql': 'ALTER FUNCTION public.save_grn(uuid) SET jit = off;' }, { 'save_grn.sql': file().replaceAll('new_rpc', 'save_grn') }).length, 1, 'another file keeps the default floor');
+});
+
+test('a definition file\'s history floor must lie between 126 and the newest migration, and the line must be well formed', () => {
+  const file = header => `${header}CREATE OR REPLACE FUNCTION public.new_rpc(p_a uuid) RETURNS void LANGUAGE sql AS $$ SELECT 1 $$;\nREVOKE ALL ON FUNCTION public.new_rpc(uuid) FROM PUBLIC;\n`;
+  const migrations = { '00000000000127_a.sql': 'SELECT 1;', '00000000000130_b.sql': 'SELECT 2;' };
+  const conflicts = header => definitionConflicts(migrations, { 'new_rpc.sql': file(header) });
+  assert.deepEqual(conflicts(''), []);
+  assert.deepEqual(conflicts('-- Migration history floor: 126\n'), []);
+  assert.deepEqual(conflicts('-- Migration history floor: 130\n'), []);
+  assert.throws(() => conflicts('-- Migration history floor: 125\n'), /floor 125 is outside 126 to 130/);
+  assert.throws(() => conflicts('-- Migration history floor: 0\n'), /outside/);
+  assert.throws(() => conflicts('-- Migration history floor: 131\n'), /floor 131 is outside 126 to 130/);
+  assert.throws(() => conflicts('-- Migration history floor: 00000000000999\n'), /outside/);
+  assert.throws(() => conflicts('-- Migration history floor 130\n'), /must read/);
+  assert.throws(() => resignWithoutRevoke(migrations, { 'new_rpc.sql': file('-- Migration history floor: 5\n') }), /outside/, 'the re-sign check reads the floor the same way');
 });

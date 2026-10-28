@@ -14,7 +14,9 @@
 # a temporary copy; the facility's own checkout is never changed by it. Its standard input is upgrade.sh's.
 #   1. prints what CHANGELOG.md asks of the operator between the two releases, so that a "before" action is read before anything changes;
 #      when that text lists operator actions, the run is real (not --dry-run), no --yes was given and standard input is a terminal,
-#      it then waits for Enter ("Press Enter to continue, Ctrl-C to stop"): the one moment an action that says "before" can still be done
+#      it then waits for Enter ("Press Enter to continue, Ctrl-C to stop") as the LAST step, after steps 2 to 5 and just before "passed": the
+#      one moment an action that says "before" can still be done. No Enter within 30 minutes (UPGRADE_PAUSE_SECONDS) refuses, so a forgotten
+#      prompt does not hold the operator lock for ever
 #   2. the host minimums of this release: the Node.js floor, then `node scripts/doctor.mjs --host-preflight` of this release (Docker
 #      Engine and Compose with `up --wait-timeout`, rsync with extended attributes, GNU tar --xattrs, the free-space rule of setup)
 #   3. the floor in scripts/upgrade-floor.txt: an installation older than from_floor goes to the stepping stone first
@@ -47,6 +49,8 @@ FROM_LABEL="${FROM_LABEL:-${FROM_SHA:0:12}}"
 FROM_TAG="${FROM_TAG:-}"
 DRY="${DRY:-no}"
 ASSUME_YES="${ASSUME_YES:-no}"
+PAUSE_SECONDS="${UPGRADE_PAUSE_SECONDS:-1800}"
+[[ "$PAUSE_SECONDS" =~ ^[1-9][0-9]{0,5}$ ]] || PAUSE_SECONDS=1800
 [[ "$STATE" == /* && -d "$STATE/config" ]] || refuse "STATE is not an installed operator state ('$STATE')."
 
 # --- 1. what the release asks of the operator -------------------------------------------------------------------------------
@@ -69,12 +73,6 @@ else
 fi
 say
 printf '%s\n' "$actions"
-if [[ "$pause" == yes ]]; then
-  printf '\nPress Enter to continue, Ctrl-C to stop (--yes skips this pause): '
-  IFS= read -r _ || { echo >&2; refuse "no answer was read, so the upgrade did not go on. Do the actions listed above, then run this command again."; }
-  say
-fi
-
 # --- 2. the host minimums of this release ----------------------------------------------------------------------------------
 node_version="$(node -p 'process.versions.node' 2>/dev/null || true)"
 [[ "$node_version" =~ ^([0-9]+)\.([0-9]+)\. ]] || refuse "could not read the Node.js version (node -p process.versions.node printed '$node_version')."
@@ -154,4 +152,14 @@ say
 STATE="$STATE" TO_LABEL="$TO_LABEL" bash "$HERE/upgrade-rehearse.sh" || exit 1
 
 say
+if [[ "$pause" == yes ]]; then
+  # The pause comes last, after every refusal a host could earn, so an operator is not asked to confirm a run that is then refused. It
+  # holds the operator lock (upgrade.sh took it), so it ends by itself: after UPGRADE_PAUSE_SECONDS (default 30 minutes) with no key.
+  printf '\nPress Enter to continue, Ctrl-C to stop (--yes skips this pause): '
+  # read returns 1 when the input ends and more than 128 when the time is up.
+  IFS= read -r -t "$PAUSE_SECONDS" _ || { code=$?; echo >&2
+    if ((code > 128)); then refuse "nobody pressed Enter within $PAUSE_SECONDS seconds, so the upgrade did not go on and the operator lock is released. Do the actions listed above, then run this command again."; fi
+    refuse "no answer was read, so the upgrade did not go on. Do the actions listed above, then run this command again."; }
+  say
+fi
 say "Preflight of $TO_LABEL passed$([[ "$DRY" == yes ]] && echo ' (dry run)')."

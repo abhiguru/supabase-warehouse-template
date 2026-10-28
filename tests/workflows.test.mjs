@@ -1,9 +1,10 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { readFileSync, readdirSync, mkdtempSync, mkdirSync, writeFileSync, rmSync, renameSync } from 'node:fs';
+import { readFileSync, readdirSync, mkdtempSync, mkdirSync, writeFileSync, rmSync, renameSync, existsSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { spawnSync } from 'node:child_process';
+import { fileURLToPath } from 'node:url';
 
 test('workflow actions are referenced by commit, with the release in a comment', () => {
   const directory = new URL('../.github/workflows/', import.meta.url);
@@ -148,6 +149,38 @@ test('operator-upgrade installs the previous release, moves it to the commit wit
   const picker = readFileSync(new URL('../scripts/ci-previous-tag.sh', import.meta.url), 'utf8');
   assert.match(picker, /skip=true/);
   assert.match(picker, /kind=merge-base/);
+});
+
+test('the upgrade drill ties the 503 to the backup: ci-freeze-check.sh passes only with an "upgrading" answer between the Backup and Setup steps', () => {
+  const dir = mkdtempSync(join(tmpdir(), 'warehouse-freeze-check-'));
+  try {
+    const body = '{"code":"upgrading","message":"The facility\'s server is being updated. Try again in a few minutes."}';
+    const upgradeLog = ['1000 Upgrade of v1', '2000 ==> Close the API to phones (maintenance mode)', '3000 ==> Backup', '4000 backup done', '5000 ==> Verify the backup restores', '6000 ==> Setup (the same inputs as the installation)', '7000 ==> Done'].join('\n') + '\n';
+    writeFileSync(join(dir, 'upgrade.log'), upgradeLog);
+    const run = probes => {
+      writeFileSync(join(dir, 'probe.log'), probes.join('\n') + '\n');
+      return spawnSync('bash', [fileURLToPath(new URL('../scripts/ci-freeze-check.sh', import.meta.url)), join(dir, 'upgrade.log'), join(dir, 'probe.log')], { encoding: 'utf8' });
+    };
+    const during = run(['2500 200 {"x":1}', `4500 503 ${body}`, '6500 200 {"x":1}']);
+    assert.equal(during.status, 0, during.stderr);
+    assert.match(during.stdout, /1 time\(s\)/);
+    // A 503 only before the backup (closing) or after it (setup, health check) does not prove the backup was done with the API closed.
+    const outside = run([`2500 503 ${body}`, '4500 200 {"x":1}', `6500 503 ${body}`]);
+    assert.equal(outside.status, 1);
+    assert.match(outside.stderr, /the API was open while the backup was taken/);
+    // A 503 with another body (a gateway fault) is not the maintenance answer.
+    assert.equal(run(['4500 503 <html>bad gateway</html>']).status, 1);
+    // A log without the steps cannot be waved through.
+    writeFileSync(join(dir, 'upgrade.log'), '1000 nothing here\n');
+    const unbounded = run([`4500 503 ${body}`]);
+    assert.equal(unbounded.status, 1);
+    assert.match(unbounded.stderr, /cannot be proved/);
+    // The job runs the script on the timed output, and the probe lines carry a time.
+    const ci = readFileSync(new URL('../.github/workflows/ci.yml', import.meta.url), 'utf8');
+    assert.match(ci, /bash upgrade\.sh --ref "\$ref" 2>&1 \| while IFS= read -r line; do printf '%s %s\\n' "\$\(date \+%s%3N\)" "\$line"; done \| tee "\$RUNNER_TEMP\/upgrade-timed\.log"/);
+    assert.match(ci, /printf '%s %s %s\\n' "\$\(date \+%s%3N\)" "\$\(rpc\)"/);
+    assert.match(ci, /bash scripts\/ci-freeze-check\.sh "\$RUNNER_TEMP\/upgrade-timed\.log" "\$RUNNER_TEMP\/freeze-probe\.log"/);
+  } finally { rmSync(dir, { recursive: true, force: true }); }
 });
 
 test('the checks also run for the release branches, and a pull request into one may not change migrations', () => {
@@ -394,6 +427,25 @@ test('dependency-audit issue step: an open issue gets ONE comment with only the 
   assert.deepEqual(unread.verbs, []);
 });
 
+test('dependency-audit and cft-freshness: a killed check (137) or any status but 0/1 fails the step and never closes or edits the issue', () => {
+  const steps = [
+    { file: 'dependency-audit.yml', name: 'Open or update the issue, or close it when the audit is clean', first: 'Audit both trees against the exception ledger' },
+    { file: 'cft-freshness.yml', name: 'Open or update the issue, or close it when the pin is current', first: 'Compare the pinned CHS_VERSION with Chrome for Testing Stable' },
+  ];
+  for (const { file, name, first } of steps) {
+    for (const status of [137, 3, 127]) {
+      const killed = issueStep({ file, name, status, files: { 'advisories.md': '', 'findings.txt': '' }, issue: { number: 5, body: 'open issue' } });
+      assert.notEqual(killed.code, 0, `${file}: status ${status} fails the step`);
+      assert.deepEqual(killed.verbs, [], `${file}: status ${status} does not close, edit or comment on the issue`);
+      assert.match(killed.stdout, /^::error title=/m);
+    }
+    // The step that runs the check also refuses to pass such a status on: only 0 and 1 are handed over.
+    const text = readFileSync(new URL(`../.github/workflows/${file}`, import.meta.url), 'utf8');
+    assert.ok(text.includes(`- name: ${first}`), first);
+    assert.match(text, /\[\[ "\$status" == 0 \|\| "\$status" == 1 \]\] \|\| \{ echo "::error title=[^\n]*exit 1; \}/, `${file}: the check step passes only 0 and 1`);
+  }
+});
+
 test('the three weekly workflows find their issue among the ones the bot itself opened, and never run twice at once', () => {
   const steps = {
     'cft-freshness.yml': 'Open or update the issue, or close it when the pin is current',
@@ -418,7 +470,9 @@ test('migration-order checks the base with the ordering script in its own job, a
   const job = name => ci.slice(ci.indexOf(`\n  ${name}:\n`) + 1).split(/\n  [a-z-]+:\n/)[0];
   const order = job('migration-order');
   assert.ok(order.length > 100, 'the job exists');
-  assert.match(order, /\n          fetch-depth: 0\n/, 'the base commit must be in the clone');
+  assert.doesNotMatch(order, /fetch-depth: 0/, 'the history is not cloned');
+  assert.match(order, /git fetch --no-tags --depth=1 origin "\$base"/, 'the base commit must be in the clone: only it is fetched');
+  assert.match(order, /\n    timeout-minutes: 10\n/, 'a hung job ends');
   assert.match(order, /BASE_SHA: \$\{\{ github\.event\.pull_request\.base\.sha \}\}/);
   assert.match(order, /PUSH_BEFORE: \$\{\{ github\.event\.before \}\}/);
   assert.match(order, /node scripts\/check-migration-order\.mjs "\$base"/);
@@ -476,7 +530,7 @@ test('release.yml publishes the release images in a job of their own: build, sca
   // The build, the scan, Trivy and the push run only when no pre-release's images are reused; the re-tag only when they are.
   const reuse = step('Reuse the images of the pre-release at this commit, if there is one');
   assert.match(reuse, /\n        id: rehearsed\n/);
-  assert.match(reuse, /git fetch --force --no-tags origin 'refs\/tags\/v\*:refs\/tags\/v\*'\n/, 'the tags of the pre-releases are fetched: a tag checkout has only its own');
+  assert.match(reuse, /git fetch --force --no-tags --depth=1 origin 'refs\/tags\/v\*:refs\/tags\/v\*'\n/, 'the tags of the pre-releases are fetched, only the commits they point at (--depth=1): a tag checkout has only its own');
   assert.match(reuse, /rc="\$\(bash scripts\/publish-images\.sh --rehearsed "\$GITHUB_REF_NAME" "\$RUNNER_TEMP\/rehearsed-images\.json"\)"\n\s+echo "rc=\$rc" >> "\$GITHUB_OUTPUT"/);
   for (const name of ['Install Trivy 0.76.0', 'Build every image without the cache and scan it', 'Push the images that were scanned and write release-images.json']) {
     assert.match(step(name), /\n        if: steps\.rehearsed\.outputs\.rc == ''\n/, `${name} runs only when no pre-release's images are reused`);
@@ -521,4 +575,91 @@ test('release.yml makes the draft of a pre-release a pre-release by the version 
     assert.equal(run.status, 0, `${ref}: ${run.stderr}`);
     assert.equal(run.stdout, expected, `${ref} is ${expected ? 'a pre-release' : 'final'}`);
   }
+});
+
+// ---- the migration ordering step, run for real with a stand-in git and node ---------------------------------------------------------
+
+function orderingStep({ event, baseSha = '', before = '', fetchWorks, commitPresent }) {
+  const dir = mkdtempSync(join(tmpdir(), 'warehouse-order-step-'));
+  try {
+    mkdirSync(join(dir, 'bin'));
+    writeFileSync(join(dir, 'bin/git'), `#!/bin/sh
+echo "git $*" >> "${dir}/calls"
+case "$1" in
+  fetch) ${fetchWorks ? 'exit 0' : 'echo "fatal: unable to access" >&2; exit 128'} ;;
+  cat-file) ${commitPresent ? 'exit 0' : 'exit 128'} ;;
+esac
+`, { mode: 0o700 });
+    writeFileSync(join(dir, 'bin/node'), `#!/bin/sh\necho "node $*" >> "${dir}/calls"\n`, { mode: 0o700 });
+    const r = spawnSync('bash', ['-e', '-c', stepScript('ci.yml', 'Compare migrations/ with the base')], { encoding: 'utf8',
+      env: { PATH: `${join(dir, 'bin')}:${process.env.PATH}`, GITHUB_EVENT_NAME: event, BASE_SHA: baseSha, PUSH_BEFORE: before } });
+    const calls = existsSync(join(dir, 'calls')) ? readFileSync(join(dir, 'calls'), 'utf8') : '';
+    return { ...r, calls };
+  } finally { rmSync(dir, { recursive: true, force: true }); }
+}
+
+test('migration ordering step: on a pull request a base that cannot be fetched is an error, never a pass; a push keeps the notice', () => {
+  const sha = 'a'.repeat(40);
+  let r = orderingStep({ event: 'pull_request', baseSha: sha, fetchWorks: false, commitPresent: false });
+  assert.equal(r.status, 1);
+  assert.match(r.stdout, /::error title=Migration ordering rule not checked::The base commit a{40} of this pull request could not be fetched/);
+  assert.doesNotMatch(r.calls, /node /, 'nothing was compared');
+  r = orderingStep({ event: 'pull_request', baseSha: sha, fetchWorks: true, commitPresent: false });
+  assert.equal(r.status, 1, 'fetched but still not there');
+  assert.match(r.stdout, /::error /);
+  r = orderingStep({ event: 'pull_request', baseSha: sha, fetchWorks: true, commitPresent: true });
+  assert.equal(r.status, 0, r.stdout + r.stderr);
+  assert.match(r.calls, new RegExp(`node scripts/check-migration-order\\.mjs ${sha}`));
+  // A push whose previous commit is gone (forced push): the notice, exit 0, nothing compared.
+  r = orderingStep({ event: 'push', before: sha, fetchWorks: false, commitPresent: false });
+  assert.equal(r.status, 0);
+  assert.match(r.stdout, /::notice title=Migration ordering rule not checked/);
+  assert.doesNotMatch(r.calls, /node /);
+  r = orderingStep({ event: 'push', before: '0'.repeat(40), fetchWorks: true, commitPresent: false });
+  assert.equal(r.status, 0); assert.match(r.stdout, /::notice /);
+  r = orderingStep({ event: 'schedule', fetchWorks: true, commitPresent: false });
+  assert.equal(r.status, 0); assert.match(r.stdout, /::notice /);
+});
+
+// ---- the release job's base tag, run for real in a scratch repository ---------------------------------------------------------------
+
+function baseTagFor(tag, build) {
+  const dir = mkdtempSync(join(tmpdir(), 'warehouse-release-base-'));
+  try {
+    const git = (...args) => { const r = spawnSync('git', ['-C', dir, '-c', 'user.name=T', '-c', 'user.email=t@example.test', ...args], { encoding: 'utf8' }); assert.equal(r.status, 0, `git ${args.join(' ')}: ${r.stderr}`); return r.stdout; };
+    git('init', '-q', '-b', 'main');
+    let n = 0;
+    const commit = () => git('commit', '-q', '--allow-empty', '-m', `c${++n}`);
+    build({ git, commit });
+    mkdirSync(join(dir, '.bin'));
+    writeFileSync(join(dir, '.bin/node'), '#!/bin/sh\necho "$@"\n', { mode: 0o700 });
+    const r = spawnSync('bash', ['-e', '-c', stepScript('release.yml', 'Dependency advisories this release adds (root, docker/storage, docker/pdf-renderer)')],
+      { cwd: dir, encoding: 'utf8', env: { PATH: `${join(dir, '.bin')}:${process.env.PATH}`, GITHUB_REF_NAME: tag } });
+    return { status: r.status, base: /--base-ref (\S+)/.exec(r.stdout)?.[1], out: r.stdout + r.stderr };
+  } finally { rmSync(dir, { recursive: true, force: true }); }
+}
+
+test('release.yml audits against the newest FINAL tag of another version: a release candidate and its final both compare with the release before', () => {
+  const history = ({ git, commit }) => {
+    commit(); git('tag', 'v0.9.0');
+    commit(); git('tag', 'v1.0.0-rc.1');
+    commit(); git('tag', 'v1.0.0-rc.2');
+  };
+  assert.equal(baseTagFor('v1.0.0-rc.2', history).base, 'v0.9.0', 'rc.2 is not compared with rc.1');
+  assert.equal(baseTagFor('v1.0.0-rc.1', ctx => { history(ctx); }).base, 'v0.9.0');
+  assert.equal(baseTagFor('v1.0.0', ({ git, commit }) => { history({ git, commit }); git('tag', 'v1.0.0'); }).base, 'v0.9.0', 'the final on the commit of its last candidate is not compared with itself');
+  assert.equal(baseTagFor('v1.0.0+build.5', ({ git, commit }) => { history({ git, commit }); git('tag', 'v1.0.0+build.5'); }).base, 'v0.9.0', 'build metadata is not a version');
+  // A patch-only release on a release/<line> branch: the line's own tags, not the newer minor of main.
+  const line = tag => baseTagFor(tag, ({ git, commit }) => {
+    commit(); git('tag', 'v1.0.0'); git('branch', 'release/1.0');
+    commit(); git('tag', 'v1.1.0');
+    git('checkout', '-q', 'release/1.0');
+    commit(); git('tag', 'v1.0.1');
+    commit(); git('tag', 'v1.0.2-rc.1');
+    commit(); git('tag', 'v1.0.2');
+  });
+  assert.equal(line('v1.0.2').base, 'v1.0.1');
+  assert.equal(line('v1.0.2-rc.1').base, 'v1.0.1');
+  assert.equal(baseTagFor('v1.0.0', ({ commit, git }) => { commit(); git('tag', 'v1.0.0'); }).status, 1, 'no other final tag: an error');
+  assert.match(baseTagFor('v1.0.0-rc.1', ({ commit, git }) => { commit(); git('tag', 'v1.0.0-rc.1'); }).out, /No previous release tag/);
 });

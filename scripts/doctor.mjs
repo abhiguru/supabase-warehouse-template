@@ -285,7 +285,10 @@ export function checkAppCompatFile(stateDir) {
   let version;
   try { version = JSON.parse(readFileSync(path, 'utf8'))?.minimumClientVersion; } catch { /* reported below */ }
   if (typeof version !== 'string' || !/^\d+\.\d+\.\d+$/.test(version)) {
-    throw new Error(`${path} is missing or invalid, so the public configuration answers 503 and no phone can sign in. Run setup.sh again (it writes the file).`);
+    // An upgrade that stopped inside migrate.sh (before release-info.sh wrote the file) lands here, and "run setup.sh again" alone would hide
+    // that it is an interrupted upgrade whose way forward is upgrade.sh: the notes of the full doctor follow.
+    const notes = [interruptedUpgradeWarning(stateDir), maintenanceMarked(stateDir) ? 'Maintenance mode is on (config/maintenance): the API answers 503 "upgrading" to phones on purpose. Open it with: bash scripts/maintenance.sh off' : ''].filter(Boolean);
+    throw new Error(`${path} is missing or invalid, so the public configuration answers 503 and no phone can sign in. Run setup.sh again (it writes the file).${notes.length ? ` ${notes.join(' ')}` : ''}`);
   }
 }
 

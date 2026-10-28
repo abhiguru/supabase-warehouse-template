@@ -65,13 +65,20 @@ pages() { node -e 'const s=require("fs").readFileSync(process.argv[1]).toString(
 # Without pdftotext on the host (a self-hosted runner without sudo), a wrapper runs it in the pinned poppler container of
 # tests/golden-pdf (fixed Debian snapshot; no network, read-only root, only $TMP mounted read-only).
 if ! command -v pdftotext >/dev/null 2>&1 && [ -f "$ROOT/../../tests/golden-pdf/Dockerfile" ]; then
-  POPPLER_IMAGE="pdf-golden-tools:it-$SUF"
-  if ${LOCK:+flock "$LOCK"} docker build -q -t "$POPPLER_IMAGE" "$ROOT/../../tests/golden-pdf" >/dev/null 2>&1; then
+  # Every image id on the host before the build: an id in this list is never this script's to remove. A cached build of tests/golden-pdf can
+  # come out with the id of an image that was here (untagged, or under another name, or built by a run of this script on the same host a
+  # moment ago), so the image is built untagged and named by its id. An id that is new gets a tag of this run, and only that tag is removed
+  # at the end (without -f): the image goes when no other name is left, so two runs never remove each other's. An id that was there gets no tag.
+  if PREEXISTING_IMAGES="$(docker image ls -aq --no-trunc 2>/dev/null)" \
+     && POPPLER_IMAGE="$(${LOCK:+flock "$LOCK"} docker build -q "$ROOT/../../tests/golden-pdf" 2>/dev/null)" \
+     && [[ "$POPPLER_IMAGE" =~ ^sha256:[0-9a-f]{64}$ ]]; then
     mkdir -p "$TMP/bin"
     printf '#!/bin/sh\nexec docker run --rm -i --network none --read-only -u "$(id -u):$(id -g)" -v "%s:%s:ro" --entrypoint pdftotext "%s" "$@"\n' "$TMP" "$TMP" "$POPPLER_IMAGE" >"$TMP/bin/pdftotext"
     chmod +x "$TMP/bin/pdftotext"
     export PATH="$TMP/bin:$PATH"
-    trap 'docker rmi -f "$POPPLER_IMAGE" >/dev/null 2>&1; cleanup' EXIT
+    if ! grep -qxF -- "$POPPLER_IMAGE" <<<"$PREEXISTING_IMAGES" && POPPLER_TAG="pdf-golden-tools:it-$SUF" && docker tag "$POPPLER_IMAGE" "$POPPLER_TAG"; then
+      trap 'docker image rm "$POPPLER_TAG" >/dev/null 2>&1; cleanup' EXIT
+    fi
   fi
 fi
 HAVE_PDFTOTEXT=0; command -v pdftotext >/dev/null 2>&1 && HAVE_PDFTOTEXT=1

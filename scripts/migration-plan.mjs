@@ -222,7 +222,7 @@ CREATE TABLE IF NOT EXISTS warehouse_migrations.definitions (
 SELECT to_regprocedure('${identity}') IS NOT NULL AS defn_exists \gset
 \if :defn_exists
 \else
-  DO $$ BEGIN RAISE EXCEPTION 'migrations/definitions/${name}: ${identity} does not exist; a definition only replaces a function that a numbered migration created (remove the file, or change it to the new signature in the same commit as the migration)'; END $$;
+  DO $$ BEGIN RAISE EXCEPTION 'migrations/definitions/${name}: ${identity} does not exist (the REVOKE line must give argument types only, no argument names); a definition only replaces a function that a numbered migration created (remove the file, or change it to the new signature in the same commit as the migration)'; END $$;
 \endif
 SELECT count(*) AS defn_overloads FROM pg_proc WHERE pronamespace = '${schema}'::regnamespace AND proname = '${proname}' \gset
 SELECT coalesce((SELECT checksum='${checksum}' FROM warehouse_migrations.definitions WHERE name='${name}'), false) AS unchanged \gset

@@ -236,6 +236,9 @@ test('restore rebuilds a stale db image before moving any data, then initialises
   try {
     const result = restore(scratch, ['--yes', backup], { ...staleDbImage(scratch), FAKE_CATALOG_FILE: join(backup, 'storage_objects.txt') });
     assert.match(result.stdout, /db image does not match this checkout/);
+    // The rebuild goes through --from-release (a restore at a release tag pulls the release's images as setup does); the fixture checkout is
+    // at no tag, so build-images.sh says it builds here.
+    assert.match(result.stdout, /Not pulling release images: this checkout is not at a release tag/);
     const calls = result.calls.split('\n');
     const build = calls.findIndex(line => / build /.test(line) && /\bdb$/.test(line));
     const init = calls.findIndex(line => line.endsWith('up -d --wait --wait-timeout 180 db'));
@@ -277,6 +280,25 @@ test('restore refuses with the data untouched when the db image check itself fai
     assert.match(result.stderr, /Refusing: could not check whether the db image matches this checkout\. Nothing was moved\./);
     assert.doesNotMatch(result.calls, /up -d --wait --wait-timeout 180 db/);
     untouched(state);
+  } finally { rmSync(scratch, { recursive: true, force: true }); }
+});
+
+test('a restore that fails only at the release files says the data is restored and that setup.sh finishes it, before the rollback text', () => {
+  const { scratch, backup } = fixture('warehouse-restore-release-files-');
+  try {
+    const stubs = root => {
+      writeFileSync(join(root, 'scripts/migrate.sh'), '#!/usr/bin/env bash\nexit 0\n', { mode: 0o700 });
+      writeFileSync(join(root, 'scripts/release-info.sh'), '#!/usr/bin/env bash\necho "fake: release.json could not be written" >&2\nexit 1\n', { mode: 0o700 });
+    };
+    const result = restore(scratch, ['--yes', backup], { FAKE_CATALOG_FILE: join(backup, 'storage_objects.txt') }, stubs);
+    assert.notEqual(result.status, 0);
+    assert.match(result.stderr, /Restore failed during: release files\nThe database and the stored files ARE restored; only public\/release\.json and public\/app-compat\.json were not written \(message above\)\. Rerunning\nbash setup\.sh writes them and finishes the restore;/);
+    assert.ok(result.stderr.indexOf('Rerunning') < result.stderr.indexOf('Rollback: bash stop.sh'), 'before the rollback text, which stays');
+    assert.match(result.stderr, /Setup does not set the content type and cache control of the stored files again[^]*npm run storage:retag -- --if-missing \(npm run storage:retag sets them for every file\)/);
+    assert.ok(result.stderr.indexOf('npm run storage:retag') < result.stderr.indexOf('Rollback: bash stop.sh'));
+    // Any other phase does not say so.
+    const other = restore(scratch, ['--yes', backup], { FAKE_CATALOG_FILE: join(backup, 'storage_objects.txt'), FAKE_FAIL_START: 'yes' }, root => writeFileSync(join(root, 'scripts/migrate.sh'), '#!/usr/bin/env bash\nexit 0\n', { mode: 0o700 }));
+    assert.doesNotMatch(other.stderr, /ARE restored/);
   } finally { rmSync(scratch, { recursive: true, force: true }); }
 });
 
@@ -660,4 +682,19 @@ test('restore of a backup made before the Storage head was recorded passes the i
     assert.doesNotMatch(result.stderr, /Restore failed during: integrity comparison/);
     assert.ok(existsSync(state));
   } finally { rmSync(scratch, { recursive: true, force: true }); }
+});
+
+test('an explicit --help prints the usage on standard output and exits 0; a missing argument is still an error on standard error', () => {
+  for (const script of ['restore.sh', 'restore-host.sh', 'verify-restore.sh']) {
+    const path = new URL(`../scripts/${script}`, import.meta.url).pathname;
+    for (const flag of ['--help', '-h']) {
+      const help = spawnSync('bash', [path, flag], { encoding: 'utf8' });
+      assert.equal(help.status, 0, `${script} ${flag}: ${help.stderr}`);
+      assert.match(help.stdout, /^Usage: npm run db:/, script);
+      assert.equal(help.stderr, '', script);
+    }
+    const none = spawnSync('bash', [path], { encoding: 'utf8', env: { ...process.env, WAREHOUSE_STATE_DIR: '' } });
+    assert.equal(none.status, 1, `${script} without arguments`);
+    assert.match(none.stderr, /Usage: npm run db:/, script);
+  }
 });

@@ -609,7 +609,7 @@ main() {
   say '  4. print the operator actions of CHANGELOG.md between the two releases'
   say "  5. append a line to $STATE/config/upgrades.log, remove $RECORD, and remove the pre-* image tags of earlier upgrades"
   say '  The facility is closed for the backup, its verification and the migrations: before step 1 both gateways are put in maintenance mode (phones are told the server is being updated)'
-  say '  and after step 3 they are opened again. Pause fas-sync now (it writes straight to the database): nothing may write meanwhile, or the way back would lose it.'
+  say '  and after step 3 they are opened again. fas-sync (it writes straight to the database) has to be paused before the real run: nothing may write meanwhile, or the way back would lose it. The real run checks for a psql session and refuses to start while one is open.'
   if [[ "$DRY" == yes ]]; then
     [[ "$DB_OK" == yes ]] || warn "not checked: the migration ledger and the administrator ($DB_NOTE)"
     if [[ "$DB_OK" == yes ]]; then
@@ -621,7 +621,7 @@ main() {
       fi
     fi
     say
-    say 'Dry run: nothing was changed (the tags were fetched into git; the working tree, the state and the containers are as they were).'
+    say 'Dry run: nothing was changed (the tags were fetched into git, the rehearsal may have pulled the database image of the release and used a disposable directory under the state, which it removed; the working tree, the data, the configuration and the containers are as they were).'
     exit 0
   fi
 

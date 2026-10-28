@@ -5,7 +5,7 @@ import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { spawnSync } from 'node:child_process';
 import { MAX_EXCEPTION_DAYS } from '../scripts/validate-image-report.mjs';
-import { LEDGER, TREES, advisoriesOf, classify, compare, gate, live, runNpmAudit, validateExceptions } from '../scripts/audit-compare.mjs';
+import { LEDGER, ROOT_TREE, TREES, advisoriesOf, classify, compare, gate, live, runNpmAudit, validateExceptions } from '../scripts/audit-compare.mjs';
 
 const DAY = 24 * 60 * 60 * 1000;
 const repo = new URL('..', import.meta.url).pathname;
@@ -462,4 +462,42 @@ test('ci.yml: the live audit is not in the pull-request check; the comparison wi
   assert.match(weekly, /if \[\[ -n "\$new" \]\]; then\n[^\n]*\n\s+gh issue comment "\$number"[^\n]*\n\s+fi\n\s+gh issue edit "\$number"/, 'the comment sits under the "new findings" condition, before the edit');
   assert.match(weekly, /permissions:\n  contents: read\n  issues: write\n/);
   assert.match(readFileSync(join(repo, 'package.json'), 'utf8'), /"check:container-dependencies": "npm audit --prefix docker\/storage --omit=dev --audit-level=high && npm audit --prefix docker\/pdf-renderer --omit=dev --audit-level=high"/, 'the live audit stays available by hand');
+});
+
+// ---- the release job's root tree ----------------------------------------------------------------------------------------------
+
+test('gate --with-root: the repository root (devDependencies included) is compared with the base like the container trees; without the flag it is left alone', async () => {
+  const f = fixture({ 'docker/storage': 'base', 'docker/pdf-renderer': 'base' });
+  try {
+    writeFileSync(join(f.root, 'package.json'), '{"name":"root"}\n');
+    writeFileSync(join(f.root, 'package-lock.json'), 'undici\n');
+    git(f.root, 'add', 'package.json', 'package-lock.json');
+    git(f.root, 'commit', '-q', '-m', 'root');
+    const base = git(f.root, 'rev-parse', 'HEAD');
+    const seen = [];
+    const audit = async (dir, options) => { seen.push(options.omitDev); return standIn()(dir); };
+    const same = await runGate({ ...f, base }, { audit, withRoot: true });
+    assert.equal(same.code, 0);
+    assert.match(same.out, /^\.: package\.json and package-lock\.json are the base's/m, 'an unchanged root is not audited');
+    writeFileSync(join(f.root, 'package-lock.json'), 'undici lodash\n');
+    const without = await runGate({ ...f, base }, { audit });
+    assert.equal(without.code, 0, 'the container-tree gate of a pull request never looks at the root');
+    const added = await runGate({ ...f, base }, { audit, withRoot: true });
+    assert.equal(added.code, 1);
+    assert.match(added.err, /\.: lodash GHSA-35jh-r3h4-6jhm .*added by this change/);
+    assert.doesNotMatch(added.err, /undici/, 'what the previous tag already had is not blamed on this one');
+    assert.deepEqual(seen, [false, false], 'the root audit includes devDependencies (jose is one)');
+    // A ledger entry for the root covers it.
+    writeFileSync(join(f.root, LEDGER), `${JSON.stringify(ledger(entry({ id: 'GHSA-35jh-r3h4-6jhm', package: 'lodash', manifest: ROOT_TREE })), null, 2)}\n`);
+    assert.equal((await runGate({ ...f, base }, { audit, withRoot: true })).code, 0);
+  } finally { rmSync(f.root, { recursive: true, force: true }); }
+});
+
+test('release.yml gates the root audit on the previous release tag with audit-compare, and no longer runs a bare npm audit', () => {
+  const release = readFileSync(join(repo, '.github/workflows/release.yml'), 'utf8');
+  const commands = release.split('\n').filter(line => !line.trim().startsWith('#')).join('\n');
+  assert.doesNotMatch(commands, /npm audit/);
+  assert.match(release, /fetch-depth: 0/, 'the previous tag must be in the checkout');
+  assert.match(release, /node scripts\/audit-compare\.mjs --base-ref "\$previous" --with-root/);
+  assert.ok(release.indexOf('- run: npm test') < release.indexOf('--with-root'), 'after npm test');
 });

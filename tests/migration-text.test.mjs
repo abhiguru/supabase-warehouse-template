@@ -84,3 +84,41 @@ test('the ordering rule: a new migration must sort after every migration of the 
   const own = new Map(readdirSync(directory).filter(name => name.endsWith('.sql')).map(name => [name, readFileSync(new URL(name, directory))]));
   assert.deepEqual(migrationOrderProblems(own, own), []);
 });
+
+// Every migration file runs as ONE transaction (scripts/migration-plan.mjs wraps it in BEGIN ... COMMIT with a lock_timeout): a lock timeout
+// rolls the file back whole and scripts/migrate.sh runs the plan again. A file with a transaction statement of its own, or a statement that
+// cannot run inside a transaction (CREATE INDEX CONCURRENTLY), would be half applied and then run again, and would leave the wrapper's SET LOCAL.
+// The check reads the statements only: comments, string literals and dollar-quoted bodies (a plpgsql BEGIN) are removed first.
+export function statementText(sql) {
+  return sql
+    .replace(/\/\*[^]*?\*\//g, ' ')
+    .replace(/--[^\n]*/g, ' ')
+    .replace(/(\$[A-Za-z_]*\$)[^]*?\1/g, ' ')
+    .replace(/'(?:[^']|'')*'/g, "''");
+}
+export function transactionProblems(sql) {
+  const text = statementText(sql);
+  const found = [];
+  for (const match of text.matchAll(/(?:^|;)\s*(BEGIN|START\s+TRANSACTION|COMMIT|ROLLBACK|ABORT|END)\b\s*(?:WORK|TRANSACTION)?\s*(?=;|$)/gi)) found.push(match[1].toUpperCase());
+  if (/\bCONCURRENTLY\b/i.test(text)) found.push('CONCURRENTLY');
+  return found;
+}
+
+test('no migration or definition file holds a transaction statement of its own or CONCURRENTLY', () => {
+  const directory = new URL('../migrations/', import.meta.url);
+  const files = [...readdirSync(directory).filter(name => name.endsWith('.sql')).map(name => name),
+    ...readdirSync(new URL('definitions/', directory)).filter(name => name.endsWith('.sql')).map(name => `definitions/${name}`)];
+  assert.ok(files.length > 10);
+  for (const name of files) {
+    assert.deepEqual(transactionProblems(readFileSync(new URL(name, directory), 'utf8')), [], `${name}: a migration is one transaction; no BEGIN, COMMIT, ROLLBACK or CONCURRENTLY of its own`);
+  }
+});
+
+test('the transaction-statement check sees BEGIN, COMMIT and CONCURRENTLY as statements, and not in comments, strings or function bodies', () => {
+  assert.deepEqual(transactionProblems('SELECT 1;\nCOMMIT;\n'), ['COMMIT']);
+  assert.deepEqual(transactionProblems('BEGIN;\nSELECT 1;'), ['BEGIN']);
+  assert.deepEqual(transactionProblems('SELECT 1; begin transaction ;'), ['BEGIN']);
+  assert.deepEqual(transactionProblems('SELECT 1; START TRANSACTION;'), ['START TRANSACTION']);
+  assert.deepEqual(transactionProblems('CREATE INDEX CONCURRENTLY i ON t (a);'), ['CONCURRENTLY']);
+  assert.deepEqual(transactionProblems("-- COMMIT;\n/* BEGIN; */ SELECT 'COMMIT;', 'CONCURRENTLY';\nCREATE FUNCTION f() RETURNS void LANGUAGE plpgsql AS $body$ BEGIN PERFORM 1; END; $body$;\nDO $$ BEGIN NULL; END $$;"), []);
+});

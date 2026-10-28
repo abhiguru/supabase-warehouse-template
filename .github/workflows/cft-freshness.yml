@@ -45,6 +45,8 @@ jobs:
           } >> "$GITHUB_OUTPUT"
           # Status 2 is a failure of the check itself (network, bad answer); it fails the run without an issue.
           [[ "$status" != 2 ]] || exit 2
+          # Any other status but 0 (current) and 1 (behind), e.g. 137 (killed), is no result either: never "current".
+          [[ "$status" == 0 || "$status" == 1 ]] || { echo "::error title=Chrome for Testing check failed::scripts/check-cft-freshness.mjs exited with status $status."; exit 1; }
       - name: Open or update the issue, or close it when the pin is current
         # Status 2 (unknown: the release dates could not be read) neither opens nor closes an issue.
         if: steps.check.outputs.status != '2'
@@ -53,6 +55,10 @@ jobs:
           STATUS: ${{ steps.check.outputs.status }}
           MESSAGE: ${{ steps.check.outputs.message }}
         run: |
+          if [[ "$STATUS" != 0 && "$STATUS" != 1 ]]; then
+            echo "::error title=Chrome for Testing check failed::scripts/check-cft-freshness.mjs exited with status $STATUS, so there is no result. The issue is left as it is."
+            exit 1
+          fi
           title='Chrome for Testing pin is more than 14 days behind Stable'
           # Only this workflow's own issue (the repository is public: anyone can open one with the same title).
           number=$(gh issue list --repo "$GITHUB_REPOSITORY" --author app/github-actions --state open --search "\"$title\" in:title" --json number,title --jq "map(select(.title == \"$title\")) | .[0].number // empty")

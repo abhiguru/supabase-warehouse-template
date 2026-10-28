@@ -123,7 +123,7 @@ chain_first=$(plan_of "$chainroot" | chain_psql 2>&1) || { echo "$chain_first" |
 # the identity, ACL text, settings, owner and body of every function are compared as they are stored, too, one line per function.
 function_lines() { "$1" -At -c "SELECT n.nspname || '.' || p.proname || '(' || pg_get_function_identity_arguments(p.oid) || ')|' || md5(coalesce(p.proacl::text, '') || coalesce(p.proconfig::text, '') || p.prosecdef || pg_get_userbyid(p.proowner) || md5(p.prosrc)) FROM pg_proc p JOIN pg_namespace n ON n.oid = p.pronamespace WHERE n.nspname IN ('public', 'warehouse_security') ORDER BY 1"; }
 # schema.name of the functions an allow-list names (its ^function\| and ^acl\|function\| entries; every overload of the name).
-allowed_functions() { sed -n -E 's/^[AB] \^(function|acl\\\|function)\\\|([a-z_0-9]+)\\\.([a-z_0-9]+)\\\(.*/\2.\3/p' "$1" | sort -u; }
+allowed_functions() { sed -n -E 's/^[AB](@[a-z0-9]+)? \^(function|acl\\\|function)\\\|([a-z_0-9]+)\\\.([a-z_0-9]+)\\\(.*/\3.\4/p' "$1" | sort -u; }
 # changed_functions <psql A> <psql B> <allow-list>: the functions whose stored text differs, without those the allow-list names.
 changed_functions() {
   local skip
