@@ -45,25 +45,32 @@ remove_kept() {
   label="$(docker inspect --format '{{index .Config.Labels "purpose"}}' "$name")"
   [[ "$label" == warehouse-restore-test ]] || { echo "$name is not a disposable restore container (it lacks the label purpose=warehouse-restore-test); not removed." >&2; exit 1; }
   dir="$(docker inspect --format '{{index .Config.Labels "warehouse.restore-disk-dir"}}' "$name")"
-  docker rm -f -v "$name" >/dev/null
   if [[ -n "$dir" ]]; then
-    [[ "$dir" == /* && "$(basename "$dir")" == .verify-restore.* && "/$dir/" != */../* ]] || { echo "Not removing the data directory '$dir' (it is not one this script makes)." >&2; exit 1; }
-    # The label is the container's own word, so it is not trusted further than the script's own rules: the directory is a real one (a link
-    # could lead the root `rm` anywhere) and sits directly in the place this script makes them (the scratch directory, else the state), as far
-    # as the environment names one.
-    [[ ! -L "$dir" ]] || { echo "Not removing the data directory '$dir' (it is a symbolic link)." >&2; exit 1; }
+    # The rules for the directory come BEFORE anything is removed: the container is the only record of which directory is its own, and a
+    # refusal after `docker rm` would leave a directory nobody can name. The directory belongs to the container's postgres user, so the
+    # words of a refusal give the root command (the label is the container's own word: check the path by eye before running it).
+    refuse() {
+      echo "Not removing the data directory '$dir' ($1). The container $name is left as it is." >&2
+      echo "If '$dir' is a leftover of this script, remove the container and the directory yourself: docker rm -f -v $name; sudo rm -rf -- '$dir'" >&2
+      exit 1
+    }
+    [[ "$dir" == /* && "$(basename "$dir")" == .verify-restore.* && "/$dir/" != */../* ]] || refuse 'it is not one this script makes'
+    # The directory is a real one (a link could lead the root `rm` anywhere) and sits directly in the place this script makes them (the
+    # scratch directory, else the state), as far as the environment names one.
+    [[ ! -L "$dir" ]] || refuse 'it is a symbolic link'
     roots=()
     [[ "${WAREHOUSE_VERIFY_SCRATCH_DIR:-}" != /* ]] || roots+=("${WAREHOUSE_VERIFY_SCRATCH_DIR%/}")
     [[ "${WAREHOUSE_STATE_DIR:-}" != /* ]] || roots+=("${WAREHOUSE_STATE_DIR%/}")
     if ((${#roots[@]})); then
       inside=no
       for root in "${roots[@]}"; do [[ "$(dirname "$dir")" == "$root" ]] && inside=yes; done
-      [[ "$inside" == yes ]] || { echo "Not removing the data directory '$dir' (it is not directly in ${roots[*]}). Remove it yourself if it is a leftover of this script." >&2; exit 1; }
+      [[ "$inside" == yes ]] || refuse "it is not directly in ${roots[*]}"
     fi
-    if [[ -d "$dir" ]]; then
-      docker run --rm --network none --user 0:0 --entrypoint /bin/rm -v "$dir:/scratch" "$IMAGE" -rf /scratch/data >/dev/null 2>&1 || true
-      rm -rf -- "$dir" 2>/dev/null || echo "Could not remove the disposable data directory $dir; remove it with: sudo rm -rf $dir" >&2
-    fi
+  fi
+  docker rm -f -v "$name" >/dev/null
+  if [[ -n "$dir" && -d "$dir" ]]; then
+    docker run --rm --network none --user 0:0 --entrypoint /bin/rm -v "$dir:/scratch" "$IMAGE" -rf /scratch/data >/dev/null 2>&1 || true
+    rm -rf -- "$dir" 2>/dev/null || echo "Could not remove the disposable data directory $dir; remove it with: sudo rm -rf $dir" >&2
   fi
   exit 0
 }

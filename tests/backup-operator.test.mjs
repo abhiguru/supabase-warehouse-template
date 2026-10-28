@@ -990,12 +990,18 @@ exit 0
     assert.match(linked.stderr, /symbolic link/);
     assert.equal(rootRm(linked.calls).length, 0);
     assert.equal(existsSync(join(target, 'keep')), true);
+    // A refusal comes before the container is removed (the container is the only record of the directory) and says how to remove both.
+    const removesContainer = calls => calls.split('\n').filter(line => line.startsWith('rm -f -v '));
+    assert.deepEqual(removesContainer(linked.calls), [], 'the container is left');
+    assert.match(linked.stderr, /docker rm -f -v warehouse-restore-0123456789ab; sudo rm -rf -- '[^']*\.verify-restore\.link'/);
+    assert.equal(removesContainer(ok.calls).length, 1, 'a removal that passes the rules removes the container');
     // Right name, wrong place (not directly in the state or the scratch directory), and a path with "..".
     const elsewhere = join(scratch, 'other'); mkdirSync(join(elsewhere, '.verify-restore.x'), { recursive: true });
     const outside = rm(join(elsewhere, '.verify-restore.x'));
     assert.equal(outside.status, 1);
     assert.match(outside.stderr, /not directly in/);
     assert.equal(rootRm(outside.calls).length, 0);
+    assert.deepEqual(removesContainer(outside.calls), []);
     assert.equal(existsSync(join(elsewhere, '.verify-restore.x')), true);
     const dotdot = rm(`${parent}/../other/.verify-restore.x`);
     assert.equal(dotdot.status, 1);
