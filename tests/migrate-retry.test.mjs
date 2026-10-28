@@ -1,7 +1,7 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import { mkdtempSync, mkdirSync, writeFileSync, readFileSync, existsSync, rmSync } from 'node:fs';
-import { spawnSync } from 'node:child_process';
+import { spawn, spawnSync } from 'node:child_process';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 
@@ -32,6 +32,7 @@ case "$outcome" in
   lock) echo 'psql:<stdin>:40: ERROR:  canceling statement due to lock timeout' >&2; exit 3 ;;
   sqlstate) printf 'psql:<stdin>:40: ERROR:  55P03: la requete a ete annulee (verrou)\\nLOCATION:  ProcSleep, proc.c:1500\\n' >&2; exit 3 ;;
   notice) printf 'psql:<stdin>:12: NOTICE:  00000: note about SQLSTATE 55P03 and a lock timeout\\nLOCATION:  exec_stmt_raise, pl_exec.c:3921\\npsql:<stdin>:41: ERROR:  42601: syntax error at or near "BOOM"\\nLOCATION:  scanner_yyerror, scan.l:1188\\n' >&2; exit 3 ;;
+  stream) echo 'psql:<stdin>:12: NOTICE:  00000: streamed-notice' >&2; i=0; while [ ! -e "${calls}.release" ] && [ "$i" -lt 100 ]; do sleep 0.1; i=$((i+1)); done; [ -e "${calls}.release" ] || exit 9 ;;
   other) echo 'psql:<stdin>:41: ERROR:  syntax error at or near "BOOM"' >&2; exit 3 ;;
 esac
 exit 0
@@ -43,7 +44,15 @@ exit 0
       env: { ...process.env, PATH: `${bin}:${process.env.PATH}`, WAREHOUSE_STATE_DIR: state, FAKE_PSQL_RESULTS: results, WAREHOUSE_MIGRATE_RETRY_SECONDS: '0', ...extra } });
     return { ...r, args: existsSync(`${calls}.args`) ? readFileSync(`${calls}.args`, 'utf8') : '', attempts: existsSync(calls) ? readFileSync(calls, 'utf8').split('\n').filter(Boolean).length : 0 };
   };
-  return { run, cleanup: () => rmSync(scratch, { recursive: true, force: true }) };
+  // Started, not awaited: `release` lets the fake psql finish, so a message that is shown only when the run is over can be told from one shown at once.
+  const start = (results, extra = {}) => {
+    rmSync(calls, { force: true });
+    rmSync(`${calls}.release`, { force: true });
+    const child = spawn('bash', [join(root, 'scripts/migrate.sh'), '--operator'],
+      { env: { ...process.env, PATH: `${bin}:${process.env.PATH}`, WAREHOUSE_STATE_DIR: state, FAKE_PSQL_RESULTS: results, WAREHOUSE_MIGRATE_RETRY_SECONDS: '0', ...extra } });
+    return { child, release: () => writeFileSync(`${calls}.release`, '') };
+  };
+  return { start, run, cleanup: () => rmSync(scratch, { recursive: true, force: true }) };
 }
 
 test('a lock timeout (55P03) runs the plan again, up to three attempts, and the second attempt can finish the upgrade', () => {
@@ -107,5 +116,22 @@ test('the pause between attempts must be a whole number of seconds', () => {
     assert.equal(r.status, 1);
     assert.match(r.stderr, /WAREHOUSE_MIGRATE_RETRY_SECONDS must be a whole number of seconds/);
     assert.equal(r.attempts, 0);
+  } finally { w.cleanup(); }
+});
+
+test('psql\'s messages are shown while the plan runs, not only when it ends', async () => {
+  const w = world();
+  try {
+    const { child, release } = w.start('stream');
+    let stderr = '';
+    const seen = new Promise((resolve, reject) => {
+      const timer = setTimeout(() => { child.kill(); reject(new Error(`no message while psql was still running: ${JSON.stringify(stderr)}`)); }, 8000);
+      child.stderr.on('data', chunk => { stderr += chunk; if (stderr.includes('NOTICE:  streamed-notice')) { clearTimeout(timer); resolve(); } });
+    });
+    const exited = new Promise(resolve => child.on('close', resolve));
+    await seen;
+    release();
+    assert.equal(await exited, 0, stderr);
+    assert.doesNotMatch(stderr, /00000:/, 'the code is still removed');
   } finally { w.cleanup(); }
 });

@@ -37,9 +37,15 @@ trap 'rm -f "$errors"' EXIT
 attempt=1
 while :; do
   status=0
+  # psql's messages are kept for the retry check AND shown as they arrive (without the code and the LOCATION lines), so that a NOTICE or an
+  # error keeps its place among the "Applying:" lines of the plan on standard output. The reader of fd 3 is waited for before the check.
+  : > "$errors"
+  exec 3> >(tee -a "$errors" | sed -u -E '/^LOCATION:/d; s/^(.*(ERROR|FATAL|WARNING|NOTICE|INFO|LOG|DEBUG):  )[0-9A-Z]{5}: /\1/' >&2)
+  reader=$!
   printf '%s\n' "$plan" |
-    compose exec -T db psql -X -q -U supabase_admin -d postgres -v ON_ERROR_STOP=1 -v VERBOSITY=verbose 2> "$errors" || status=$?
-  sed -E '/^LOCATION:/d; s/^(.*(ERROR|FATAL|WARNING|NOTICE|INFO|LOG|DEBUG):  )[0-9A-Z]{5}: /\1/' "$errors" >&2
+    compose exec -T db psql -X -q -U supabase_admin -d postgres -v ON_ERROR_STOP=1 -v VERBOSITY=verbose 2>&3 || status=$?
+  exec 3>&-
+  wait "$reader" 2>/dev/null || true
   ((status != 0)) || break
   if grep -Eq "$lock_timeout_re" "$errors" && ((attempt < 3)); then
     echo "A migration waited more than 10 s for a lock and was rolled back whole (attempt $attempt of 3). Trying again in ${pause} s; the files already applied are skipped." >&2
