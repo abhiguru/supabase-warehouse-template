@@ -60,11 +60,15 @@ test('cloudflared_old: fires at 11 months after the release date, not at 10 mont
   try { assert.equal(W.checkCloudflared(s.ctx())[0].ok, false, 'the 1st of the version month stands in for the date'); } finally { s.clean(); }
 });
 
-test('cloudflared_old: a host without cloudflared is not judged; output it does not know is an error, not a pass', () => {
+test('cloudflared_old: a host without cloudflared is not judged; output it does not know is a weekly warning, not a pass and not a 4-hourly check_error', () => {
   let s = scratch({ runs: { 'cloudflared --version': bad('not found') } });
   try { assert.equal(W.checkCloudflared(s.ctx())[0].ok, true); } finally { s.clean(); }
   s = scratch({ runs: { 'cloudflared --version': ok('something else\n') } });
-  try { assert.throws(() => W.checkCloudflared(s.ctx()), /does not know/); } finally { s.clean(); }
+  try {
+    const [r] = W.checkCloudflared(s.ctx());
+    assert.equal(r.ok, false); assert.equal(r.id, 'cloudflared_old'); assert.match(r.summary, /does not know: something else/);
+    assert.equal(r.repeatHours, 168, 'weekly');
+  } finally { s.clean(); }
 });
 
 test('cloudflared_old: a binary on disk newer than the tunnel process start, or a replaced one still running, asks for a restart', () => {
@@ -95,7 +99,28 @@ test('cloudflared_old: a binary on disk newer than the tunnel process start, or 
   try { assert.equal(W.checkCloudflared(s.ctx())[0].ok, true); } finally { s.clean(); }
 });
 
-test('host_node_eol: fires within 60 days of the end date and after it, not at 61 days; unknown majors are not judged', () => {
+test('cloudflared_old: Dev runs the stock cloudflared.service, which is judged when the warehouse-named unit is not running', () => {
+  const started = at(2026, 10, 1) / 1000;
+  const base = { 'cloudflared --version': ok(version('2026-09-01')), 'systemctl show warehouse-acme-tunnel.service': tunnel({ active: 'inactive', pid: 0 }), 'readlink': ok('/usr/bin/cloudflared\n') };
+  let s = scratch({ runs: { ...base, 'systemctl show cloudflared.service': tunnel({ started, pid: 777 }), 'stat -L -c %Y': ok(`${started + 3600}\n`) } });
+  try {
+    const [r] = W.checkCloudflared(s.ctx());
+    assert.equal(r.ok, false);
+    assert.match(r.summary, /cloudflared\.service started before the cloudflared on disk was installed: restart it/);
+    assert.ok(s.calls.some(c => c.startsWith('readlink ') && c.endsWith('/777/exe')));
+  } finally { s.clean(); }
+  // The named unit wins when it runs: the stock unit is not even asked.
+  s = scratch({ runs: { ...base, 'systemctl show warehouse-acme-tunnel.service': tunnel({ started }), 'stat -L -c %Y': ok(`${started - 3600}\n`) } });
+  try {
+    assert.equal(W.checkCloudflared(s.ctx())[0].ok, true);
+    assert.ok(!s.calls.some(c => c.includes('systemctl show cloudflared.service')));
+  } finally { s.clean(); }
+  // Neither runs: nothing to judge.
+  s = scratch({ runs: { ...base, 'systemctl show cloudflared.service': tunnel({ active: 'inactive', pid: 0 }) } });
+  try { assert.equal(W.checkCloudflared(s.ctx())[0].ok, true); } finally { s.clean(); }
+});
+
+test('host_node_eol: fires within 60 days of the end date and after it, not at 61 days; a major outside the table is a warning, never a quiet pass', () => {
   const end = Date.parse('2027-04-30T00:00:00Z');
   const judge = (nodeVersion, now) => { const s = scratch({ now, extra: { nodeVersion } }); try { return W.checkHostNode(s.ctx())[0]; } finally { s.clean(); } };
   let r = judge('v22.20.0', end - 61 * DAY);
@@ -108,7 +133,11 @@ test('host_node_eol: fires within 60 days of the end date and after it, not at 6
   assert.equal(judge('v24.1.0', end - 30 * DAY).ok, true, 'Node 24 ends a year later');
   assert.equal(judge('v24.1.0', Date.parse('2028-04-30T00:00:00Z') - 60 * DAY).ok, false);
   assert.equal(judge('v26.0.0', Date.parse('2029-04-30T00:00:00Z') - 60 * DAY).ok, false);
-  assert.equal(judge('v23.0.0', end).ok, true, 'a major with no recorded date is not judged');
+  r = judge('v25.1.0', at(2026, 10, 28));
+  assert.equal(r.ok, false, 'Node 25 ended 2026-06-01'); assert.match(r.summary, /Node\.js 25 .*odd-numbered release without long-term support/); assert.equal(r.repeatHours, 168);
+  assert.equal(judge('v23.0.0', end).ok, false, 'an odd major is never long-term support');
+  assert.match(judge('v20.0.0', end).summary, /older than every major this check knows/);
+  assert.match(judge('v28.0.0', end).summary, /no end date for it \(add it to NODE_END_OF_LIFE/, 'a major newer than the table asks for the table to be updated');
   assert.deepEqual(W.NODE_END_OF_LIFE, { 22: '2027-04-30', 24: '2028-04-30', 26: '2029-04-30' });
 });
 

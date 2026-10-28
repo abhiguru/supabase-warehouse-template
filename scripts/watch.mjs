@@ -311,7 +311,6 @@ export function defaultDeps(env = process.env) {
     usbEtc: env.WAREHOUSE_USB_BACKUP_ETC || '/etc',
     usbLibexec: env.WAREHOUSE_USB_BACKUP_LIBEXEC || '/usr/local/libexec',
     unitDir: env.WAREHOUSE_WATCH_UNIT_DIR || '/etc/systemd/system',
-    tunnelUnitDir: env.WAREHOUSE_TUNNEL_UNIT_DIR || '/etc/systemd/system',
     nodeVersion: process.version,
     dailyAt: env.WAREHOUSE_WATCH_DAILY_AT || DEFAULT_DAILY_AT,
     heartbeatAt: env.WAREHOUSE_WATCH_HEARTBEAT_AT || DEFAULT_HEARTBEAT_AT,
@@ -962,14 +961,23 @@ const isoDay = ms => new Date(ms).toISOString().slice(0, 10);
 // The tunnel's unit (scripts/tunnel.sh names it warehouse-<state directory name>-tunnel.service): when it runs, the process must be the
 // binary on disk. A package upgrade replaces the file and leaves the running process on the old one ("(deleted)" on its /proc exe link; the
 // file is also newer than the process start), and with --no-autoupdate nothing restarts it. Null when there is nothing to judge.
+// A host that did not use scripts/tunnel.sh (the Dev facility) runs the stock cloudflared.service instead; it is looked at when the
+// named unit is not running.
 function cloudflaredRestartDue(ctx) {
-  const unit = `warehouse-${ctx.state.split('/').filter(Boolean).pop()}-tunnel.service`;
-  const shown = ctx.run('systemctl', ['show', unit, '--timestamp=unix', '-p', 'ActiveState', '-p', 'ActiveEnterTimestamp', '-p', 'MainPID'], { timeoutMs: 10000 });
-  if (shown.status !== 0) return null;
-  const f = fieldsOf(shown.stdout);
-  const pid = Number(f.MainPID);
-  const started = Number(/^@(\d+)$/.exec(f.ActiveEnterTimestamp ?? '')?.[1]) * 1000;
-  if (f.ActiveState !== 'active' || !Number.isInteger(pid) || pid <= 0 || !Number.isFinite(started)) return null;
+  const units = [`warehouse-${ctx.state.split('/').filter(Boolean).pop()}-tunnel.service`, 'cloudflared.service'];
+  let unit;
+  let f;
+  let pid;
+  let started;
+  for (const candidate of units) {
+    const shown = ctx.run('systemctl', ['show', candidate, '--timestamp=unix', '-p', 'ActiveState', '-p', 'ActiveEnterTimestamp', '-p', 'MainPID'], { timeoutMs: 10000 });
+    if (shown.status !== 0) continue;
+    f = fieldsOf(shown.stdout);
+    pid = Number(f.MainPID);
+    started = Number(/^@(\d+)$/.exec(f.ActiveEnterTimestamp ?? '')?.[1]) * 1000;
+    if (f.ActiveState === 'active' && Number.isInteger(pid) && pid > 0 && Number.isFinite(started)) { unit = candidate; break; }
+  }
+  if (!unit) return null;
   const exe = ctx.run('readlink', [join(ctx.proc, String(pid), 'exe')], { timeoutMs: 5000 });
   if (exe.status === 0 && /\(deleted\)\s*$/.test(exe.stdout)) return `${unit} still runs the cloudflared that was replaced on disk`;
   const mtime = ctx.run('stat', ['-L', '-c', '%Y', ctx.cloudflared ?? '/usr/bin/cloudflared'], { timeoutMs: 5000 });
@@ -983,7 +991,12 @@ export function checkCloudflared(ctx) {
   if (version.status !== 0) return [result('cloudflared', 'cloudflared_old', true, 'cloudflared is not installed here')];   // another host runs the tunnel, or none
   const text = `${version.stdout}\n${version.stderr}`;
   const released = cloudflaredReleased(text);
-  if (released === null) throw new Error(`cloudflared --version said something this check does not know: ${clip(text.trim(), 120)}`);
+  // An unknown answer is a warning of its own (weekly, like the rest of this check), not a thrown error: that would be reported as
+  // check_error and repeat every 4 hours.
+  if (released === null) {
+    return [result('cloudflared', 'cloudflared_old', false, `cloudflared --version said something this check does not know: ${clip(text.trim(), 120)}`,
+      'Check the installed cloudflared by hand (cloudflared --version) and keep it within a year of the newest release; this check needs the "version YYYY.M.x" or "built YYYY-MM-DD" form.', { repeatHours: HOST_DRIFT_REPEAT_HOURS })];
+  }
   const problems = [];
   if (now >= addMonths(released, CLOUDFLARED_MAX_AGE_MONTHS)) problems.push(`this cloudflared was released on ${isoDay(released)}; Cloudflare supports only versions within a year of its newest, and the tunnel runs with --no-autoupdate`);
   const restart = cloudflaredRestartDue(ctx);
@@ -997,7 +1010,17 @@ export function checkHostNode(ctx) {
   const now = ctx.now();
   const major = Number(/^v?(\d+)\./.exec(ctx.nodeVersion ?? process.version)?.[1]);
   const end = NODE_END_OF_LIFE[major];
-  if (!end) return [result('host_node', 'host_node_eol', true, `Node.js ${major} has no end date recorded here`)];
+  if (!end) {
+    // Not in the table: an odd-numbered major never gets long-term support (it ends six months after its release, 25 on 2026-06-01), an
+    // older even one has ended, and a newer one means this table was not updated. None of these is a quiet pass.
+    const known = Object.keys(NODE_END_OF_LIFE).map(Number);
+    const why = !Number.isInteger(major) ? 'its version could not be read'
+      : major % 2 === 1 ? 'it is an odd-numbered release without long-term support'
+        : major < Math.min(...known) ? 'it is older than every major this check knows, so it has reached its end of life'
+          : 'this check has no end date for it (add it to NODE_END_OF_LIFE in scripts/watch.mjs)';
+    return [result('host_node', 'host_node_eol', false, `Node.js ${Number.isInteger(major) ? major : (ctx.nodeVersion ?? process.version)} on this host is not judged safe: ${why}`,
+      'Install an even-numbered Node.js major that is still supported and point the checker at it: sudo bash scripts/watch-timer.sh install --state <state> --node /absolute/path/to/node (docs/OPERATOR_INSTALL.md, "Monthly host maintenance"; docs/MAINTENANCE_CALENDAR.md).', { repeatHours: HOST_DRIFT_REPEAT_HOURS })];
+  }
   const endMs = Date.parse(`${end}T00:00:00Z`);
   const days = Math.ceil((endMs - now) / DAY);
   return [result('host_node', 'host_node_eol', days > NODE_WARN_DAYS,
