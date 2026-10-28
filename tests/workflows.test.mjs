@@ -4,6 +4,7 @@ import { readFileSync, readdirSync, mkdtempSync, mkdirSync, writeFileSync, rmSyn
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { spawnSync } from 'node:child_process';
+import { fileURLToPath } from 'node:url';
 
 test('workflow actions are referenced by commit, with the release in a comment', () => {
   const directory = new URL('../.github/workflows/', import.meta.url);
@@ -148,6 +149,38 @@ test('operator-upgrade installs the previous release, moves it to the commit wit
   const picker = readFileSync(new URL('../scripts/ci-previous-tag.sh', import.meta.url), 'utf8');
   assert.match(picker, /skip=true/);
   assert.match(picker, /kind=merge-base/);
+});
+
+test('the upgrade drill ties the 503 to the backup: ci-freeze-check.sh passes only with an "upgrading" answer between the Backup and Setup steps', () => {
+  const dir = mkdtempSync(join(tmpdir(), 'warehouse-freeze-check-'));
+  try {
+    const body = '{"code":"upgrading","message":"The facility\'s server is being updated. Try again in a few minutes."}';
+    const upgradeLog = ['1000 Upgrade of v1', '2000 ==> Close the API to phones (maintenance mode)', '3000 ==> Backup', '4000 backup done', '5000 ==> Verify the backup restores', '6000 ==> Setup (the same inputs as the installation)', '7000 ==> Done'].join('\n') + '\n';
+    writeFileSync(join(dir, 'upgrade.log'), upgradeLog);
+    const run = probes => {
+      writeFileSync(join(dir, 'probe.log'), probes.join('\n') + '\n');
+      return spawnSync('bash', [fileURLToPath(new URL('../scripts/ci-freeze-check.sh', import.meta.url)), join(dir, 'upgrade.log'), join(dir, 'probe.log')], { encoding: 'utf8' });
+    };
+    const during = run(['2500 200 {"x":1}', `4500 503 ${body}`, '6500 200 {"x":1}']);
+    assert.equal(during.status, 0, during.stderr);
+    assert.match(during.stdout, /1 time\(s\)/);
+    // A 503 only before the backup (closing) or after it (setup, health check) does not prove the backup was done with the API closed.
+    const outside = run([`2500 503 ${body}`, '4500 200 {"x":1}', `6500 503 ${body}`]);
+    assert.equal(outside.status, 1);
+    assert.match(outside.stderr, /the API was open while the backup was taken/);
+    // A 503 with another body (a gateway fault) is not the maintenance answer.
+    assert.equal(run(['4500 503 <html>bad gateway</html>']).status, 1);
+    // A log without the steps cannot be waved through.
+    writeFileSync(join(dir, 'upgrade.log'), '1000 nothing here\n');
+    const unbounded = run([`4500 503 ${body}`]);
+    assert.equal(unbounded.status, 1);
+    assert.match(unbounded.stderr, /cannot be proved/);
+    // The job runs the script on the timed output, and the probe lines carry a time.
+    const ci = readFileSync(new URL('../.github/workflows/ci.yml', import.meta.url), 'utf8');
+    assert.match(ci, /bash upgrade\.sh --ref "\$ref" 2>&1 \| while IFS= read -r line; do printf '%s %s\\n' "\$\(date \+%s%3N\)" "\$line"; done \| tee "\$RUNNER_TEMP\/upgrade-timed\.log"/);
+    assert.match(ci, /printf '%s %s %s\\n' "\$\(date \+%s%3N\)" "\$\(rpc\)"/);
+    assert.match(ci, /bash scripts\/ci-freeze-check\.sh "\$RUNNER_TEMP\/upgrade-timed\.log" "\$RUNNER_TEMP\/freeze-probe\.log"/);
+  } finally { rmSync(dir, { recursive: true, force: true }); }
 });
 
 test('the checks also run for the release branches, and a pull request into one may not change migrations', () => {

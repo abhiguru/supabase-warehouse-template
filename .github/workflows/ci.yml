@@ -722,13 +722,15 @@ jobs:
             kill "$session" 2>/dev/null || true
             wait "$session" 2>/dev/null || true
             : > "$RUNNER_TEMP/freeze-probe.log"
-            ( while :; do printf '%s %s\n' "$(rpc)" "$(head -c 200 "$RUNNER_TEMP/rpc-body" | tr '\n' ' ')" >> "$RUNNER_TEMP/freeze-probe.log"; sleep 0.25; done ) &
+            ( while :; do printf '%s %s %s\n' "$(date +%s%3N)" "$(rpc)" "$(head -c 200 "$RUNNER_TEMP/rpc-body" | tr '\n' ' ')" >> "$RUNNER_TEMP/freeze-probe.log"; sleep 0.25; done ) &
             probe=$!
             trap 'kill "$probe" 2>/dev/null || true' EXIT
           else
             echo "::notice title=Write freeze not exercised::The upgrade.sh of $(git rev-parse --short HEAD) does not close the API (a release from before maintenance mode); the drill checks it once the starting point has it."
           fi
-          bash upgrade.sh --ref "$ref"
+          # The output of upgrade.sh gets the time of each line (a pipe, not a redirect: the log of the run stays readable), so that the freeze
+          # can be tied to the backup step below.
+          bash upgrade.sh --ref "$ref" 2>&1 | while IFS= read -r line; do printf '%s %s\n' "$(date +%s%3N)" "$line"; done | tee "$RUNNER_TEMP/upgrade-timed.log"
           test "$(git rev-parse HEAD)" = "$ref"
           tail -n 1 "$WAREHOUSE_STATE_DIR/config/upgrades.log" | grep -q ' ok$'
           # A finished upgrade leaves no record of an interrupted one, and no marker: the API is open.
@@ -737,7 +739,9 @@ jobs:
           if [ "$freeze" = yes ]; then
             kill "$probe" 2>/dev/null || true
             sort "$RUNNER_TEMP/freeze-probe.log" | uniq -c | sort -rn | head -n 10
-            grep -q '^503 {"code":"upgrading","message":"The facility.s server is being updated. Try again in a few minutes."}' "$RUNNER_TEMP/freeze-probe.log"
+            grep -q '^[0-9]* 503 {"code":"upgrading","message":"The facility.s server is being updated. Try again in a few minutes."}' "$RUNNER_TEMP/freeze-probe.log"
+            # And during the backup itself: the upgrade.sh that runs has the write freeze, so the API is closed from before the backup.
+            bash scripts/ci-freeze-check.sh "$RUNNER_TEMP/upgrade-timed.log" "$RUNNER_TEMP/freeze-probe.log"
             test "$(rpc)" = 200
           fi
       - name: The upgraded installation is healthy and the same facility
