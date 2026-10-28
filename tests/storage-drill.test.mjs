@@ -30,7 +30,8 @@ case "$1" in
   pull) ;;
   image)
     case "$2" in
-      ls) cat "${scratch}/snapshot" ;;
+      # The listing is only the host's full list with -a (untagged and intermediate images included), and it can fail.
+      ls) [ "$FAKE_LS_FAILS" = 1 ] && exit 1; case "$all" in *-aq*) cat "${scratch}/snapshot" ;; esac ;;
       inspect) case "$all" in *"{{.Id}}"*) echo "$FAKE_NEXT_ID" ;; *) exit 1 ;; esac ;;
       rm) ;;
       prune) echo 'image prune must never be called' >&2; exit 99 ;;
@@ -108,4 +109,18 @@ test('the pulled next image: removed by id when the pull made it, left when its 
 test('built and pulled images that are both new are removed by id, one each', () => {
   const r = drill({ snapshot: [OTHER], env: NEXT_ENV });
   assert.deepEqual(r.removals.sort(), [`image rm ${BUILT}`, `image rm ${NEXT}`].sort());
+});
+
+test('when the image listing fails the drill stops before building anything, and removes nothing', () => {
+  const r = drill({ snapshot: [OTHER], env: { FAKE_LS_FAILS: '1' } });
+  assert.equal(r.status, 1);
+  assert.match(r.stderr, /Storage drill FAILED: cannot list the images of the host/);
+  assert.ok(!r.lines.some(l => /^(build|pull) /.test(l)), r.lines.join('\n'));
+  assert.deepEqual(r.removals, []);
+});
+
+test('the listing includes untagged and intermediate images (-a): an id that only a full listing shows is never removed', () => {
+  const r = drill({ snapshot: [BUILT], env: { STOP_AT: '1' } });   // the fake shows the snapshot only for a listing made with -a
+  assert.ok(r.lines.some(l => /^image ls -\w*a\w* /.test(l)), r.lines.join('\n'));
+  assert.deepEqual(r.removals, [], r.lines.join('\n'));
 });
