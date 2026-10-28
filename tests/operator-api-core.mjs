@@ -237,12 +237,12 @@ await document('generate-grn-pdf', { gr_no: 'A0901' });
 await document('generate-dispatch-pdf', { disp_no: 'I0901' });
 await document('generate-invoice-pdf', { inv_no: 20260929, fin_year: 2026 });
 await document('generate-customer-stock-pdf', { customer_id: a });
-good(await rpc('save_grn', adminToken, { p_gr_no: 'BAC01', p_date: '2026-04-01T12:00:00Z',
+good(await rpc('save_grn', adminToken, { p_gr_no: 'A0902', p_date: '2026-04-01T12:00:00Z',
   p_customer_id: a, p_customer_name: 'Backend Test Customer A', p_pricing_mode: 'MONTHLY',
   p_items: [{ item_id: item, item_name: 'Backend Test Potatoes', packaging: 'Bag', qty: 10, weight: 10, rack: 'RACE' }] }), 'concurrency receipt');
-const raceGrn = mustUuid((await api('/rest/v1/goodsreceived?gr_no=eq.BAC01&select=id', adminToken)).data[0].id);
+const raceGrn = mustUuid((await api('/rest/v1/goodsreceived?gr_no=eq.A0902&select=id', adminToken)).data[0].id);
 const raceStock = mustUuid((await api(`/rest/v1/goodsreceived_trl?gr_id=eq.${raceGrn}&select=id`, adminToken)).data[0].id);
-const raceArgs = [1, 2].map(n => ({ p_dispatch_data: { ...dispatchData, disp_no: `BAC0${n}` },
+const raceArgs = [1, 2].map(n => ({ p_dispatch_data: { ...dispatchData, disp_no: `I090${n + 2}` },
   p_dispatch_items: [{ gr_trl_id: raceStock, disp_qty: 7 }], p_generate_invoice: false,
   p_idempotency_key: `backend-test-race-${n}` }));
 const raceResults = await Promise.all(raceArgs.map(args => rpc('create_dispatch_with_stock_check', adminToken, args)));
