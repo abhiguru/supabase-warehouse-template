@@ -8,6 +8,8 @@
 //     change introduces an advisory the base did not have and no valid exception covers it. A tree the change does not
 //     touch is not audited: an advisory published after the last merge never blocks an unrelated pull request. A change
 //     that leaves a tree with a package.json and no package-lock.json fails (npm audit and the image build need the lock).
+//     --with-root adds the repository's own tree (the root package.json: devDependencies included, since they run in the
+//     release job) and is for release.yml, where the base is the previous release tag.
 //   node scripts/audit-compare.mjs --live [--exceptions FILE] [--report FILE]
 //     The weekly run (dependency-audit.yml): audits both trees as they are and reports every advisory with no valid
 //     exception, every expired exception and every exception that expires within 14 days; --report writes that as Markdown.
@@ -34,6 +36,7 @@ import { isMain } from './is-main.mjs';
 import { MAX_EXCEPTION_DAYS, utcToday } from './validate-image-report.mjs';
 
 export const TREES = ['docker/storage', 'docker/pdf-renderer'];
+export const ROOT_TREE = '.';
 export const LEDGER = 'docker/npm-audit-exceptions.json';
 export const SOON_DAYS = 14;
 const DAY = 24 * 60 * 60 * 1000;
@@ -65,7 +68,7 @@ export function validateExceptions(ledger, today = utcToday()) {
     for (const field of FIELDS) if (entry[field] === undefined) fail(`${where}: no ${field}`);
     if (typeof entry.id !== 'string' || !/^(?:GHSA(?:-[0-9a-z]{4}){3}|\d+)$/.test(entry.id)) fail(`${where}: id must be a GHSA id (GHSA-xxxx-xxxx-xxxx) or a numeric npm advisory id`);
     if (typeof entry.package !== 'string' || !/^(?:@[a-z0-9~-][a-z0-9._~-]*\/)?[a-z0-9~-][a-z0-9._~-]*$/i.test(entry.package)) fail(`${where}: package is not an npm package name`);
-    if (!TREES.includes(entry.manifest)) fail(`${where}: manifest must be one of ${TREES.join(', ')}`);
+    if (![...TREES, ROOT_TREE].includes(entry.manifest)) fail(`${where}: manifest must be one of ${[...TREES, ROOT_TREE].join(', ')}`);
     if (!nonEmptyString(entry.reason) || entry.reason.trim().length < 20) fail(`${where}: no reason (say why the advisory does not apply or cannot be fixed yet)`);
     if (typeof entry.owner !== 'string' || !/^[A-Za-z0-9](?:[A-Za-z0-9-]{0,38})$/.test(entry.owner)) fail(`${where}: no named owner`);
     const reviewed = day(entry.reviewed, `${where}: reviewed`);
@@ -127,10 +130,10 @@ const sleep = ms => new Promise(resolve => setTimeout(resolve, ms));
 
 // `npm audit --json` in DIR (which holds the two manifest files). An answer that is not an audit report (the registry
 // is unreachable or rate limits, the lock is unreadable) is tried again after a pause and then throws: never an empty pass.
-export async function runNpmAudit(dir, { spawn = spawnSync, delays = [5000, 15000] } = {}) {
+export async function runNpmAudit(dir, { spawn = spawnSync, delays = [5000, 15000], omitDev = true } = {}) {
   let last;
   for (let attempt = 0; attempt <= delays.length; attempt += 1) {
-    const run = spawn('npm', ['audit', '--json', '--omit=dev'], { cwd: dir, encoding: 'utf8', maxBuffer: 64 * 1024 * 1024, timeout: 180_000 });
+    const run = spawn('npm', ['audit', '--json', ...(omitDev ? ['--omit=dev'] : [])], { cwd: dir, encoding: 'utf8', maxBuffer: 64 * 1024 * 1024, timeout: 180_000 });
     if (run.error) last = new Error(`npm audit could not run in ${dir}: ${run.error.message}`);
     else {
       let audit;
@@ -157,7 +160,7 @@ function scratch(texts) {
 
 async function auditTexts(texts, manifest, deps) {
   const dir = scratch(texts);
-  try { return advisoriesOf(await (deps.audit ?? runNpmAudit)(dir, deps), manifest); } finally { rmSync(dir, { recursive: true, force: true }); }
+  try { return advisoriesOf(await (deps.audit ?? runNpmAudit)(dir, { ...deps, omitDev: manifest !== ROOT_TREE }), manifest); } finally { rmSync(dir, { recursive: true, force: true }); }
 }
 
 function loadEntries(path, today) {
@@ -168,7 +171,7 @@ function loadEntries(path, today) {
 const expiredNotice = ({ advisory, entry }) => `${describe(advisory)}: covered only by an exception that expired on ${entry.expires}. Renew it in ${LEDGER} (a new review date and an expiry at most ${MAX_EXCEPTION_DAYS} days later) or fix the advisory`;
 
 // The pull-request gate. Returns the exit code.
-export async function gate({ root, baseRef, ledger = join(root, LEDGER), today = utcToday(), out = console.log, err = console.error, env = process.env, ...deps }) {
+export async function gate({ root, baseRef, withRoot = false, ledger = join(root, LEDGER), today = utcToday(), out = console.log, err = console.error, env = process.env, ...deps }) {
   const annotate = (title, message, level = 'error') => { if (env.GITHUB_ACTIONS === 'true') out(`::${level} title=${title}::${message.replace(/%/g, '%25').replace(/\r?\n/g, ' ')}`); };
   let entries;
   try { entries = loadEntries(ledger, today); } catch (error) { err(`Dependency audit refused: ${error.message}`); annotate('Dependency audit exceptions invalid', error.message); return 1; }
@@ -180,9 +183,9 @@ export async function gate({ root, baseRef, ledger = join(root, LEDGER), today =
   }
   const problems = [];
   const problem = (text, title = 'This change adds a dependency advisory') => problems.push({ title, text });
-  for (const tree of TREES) {
+  for (const tree of withRoot ? [...TREES, ROOT_TREE] : TREES) {
     const head = Object.fromEntries(FILES.map(name => [name, existsSync(join(root, tree, name)) ? readFileSync(join(root, tree, name), 'utf8') : '']));
-    const base = Object.fromEntries(FILES.map(name => [name, git(root, ['show', `${baseRef}:${tree}/${name}`]) ?? '']));
+    const base = Object.fromEntries(FILES.map(name => [name, git(root, ['show', `${baseRef}:${tree === ROOT_TREE ? '' : `${tree}/`}${name}`]) ?? '']));
     if (FILES.every(name => head[name] === base[name])) {
       out(`${tree}: package.json and package-lock.json are the base's; nothing new can come from this change, no audit run.`);
       continue;
@@ -263,12 +266,13 @@ export async function main(argv = process.argv.slice(2), deps = {}) {
   while (rest.length) {
     const flag = rest.shift();
     if (flag === '--live') options.live = true;
+    else if (flag === '--with-root') options.withRoot = true;
     else if (['--base-ref', '--exceptions', '--report'].includes(flag) && rest.length) options[flag.slice(2)] = rest.shift();
-    else { console.error(`unknown or incomplete option ${flag}\nusage: audit-compare.mjs --base-ref SHA [--exceptions FILE] | --live [--exceptions FILE] [--report FILE]`); return 2; }
+    else { console.error(`unknown or incomplete option ${flag}\nusage: audit-compare.mjs --base-ref SHA [--with-root] [--exceptions FILE] | --live [--exceptions FILE] [--report FILE]`); return 2; }
   }
-  if (Boolean(options.live) === Boolean(options['base-ref'])) { console.error('usage: audit-compare.mjs --base-ref SHA [--exceptions FILE] | --live [--exceptions FILE] [--report FILE]'); return 2; }
+  if (Boolean(options.live) === Boolean(options['base-ref']) || (options.live && options.withRoot)) { console.error('usage: audit-compare.mjs --base-ref SHA [--with-root] [--exceptions FILE] | --live [--exceptions FILE] [--report FILE]'); return 2; }
   const common = { root, ...(options.exceptions && { ledger: options.exceptions }), ...deps };
-  return options.live ? live({ ...common, reportPath: options.report }) : gate({ ...common, baseRef: options['base-ref'] });
+  return options.live ? live({ ...common, reportPath: options.report }) : gate({ ...common, baseRef: options['base-ref'], withRoot: Boolean(options.withRoot) });
 }
 
 if (isMain(import.meta.url)) {

@@ -15,6 +15,7 @@ jobs:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           persist-credentials: false
+          fetch-depth: 0
       - name: Release readiness gate
         # Semantic version tags only (vMAJOR.MINOR.PATCH[-prerelease][+build]);
         # anything else is refused before the checks run.
@@ -28,7 +29,14 @@ jobs:
           cache: npm
       - run: npm ci
       - run: npm test
-      - run: npm audit --audit-level=high
+      - name: Dependency advisories this release adds (root, docker/storage, docker/pdf-renderer)
+        # The same compare-with-base gate as the pull-request check in ci.yml (owner decision of 2026-10-28), with the previous release
+        # tag as the base and the root package.json (devDependencies included) added: a tag is blocked by an advisory this release
+        # brings, never by one published since the last tag. An audit that cannot be read, or no previous tag to compare with, fails.
+        run: |
+          previous="$(git tag --merged HEAD --list 'v[0-9]*' --sort=-v:refname | grep -vxF "$GITHUB_REF_NAME" | head -n 1)"
+          [[ -n "$previous" ]] || { echo "::error title=No previous release tag::The dependency audit compares with the previous release tag, and none is reachable from this tag."; exit 1; }
+          node scripts/audit-compare.mjs --base-ref "$previous" --with-root
       - name: Chrome for Testing freshness of the PDF renderer (warning only)
         # Trivy cannot see the chrome-headless-shell binary of docker/pdf-renderer. A Chrome more than 14 days behind
         # Stable shows as a warning on this run and never blocks a tag, a security backport included: Chrome ships
