@@ -208,6 +208,8 @@ MSG
       cat >&2 <<MSG
 The database and the stored files ARE restored; only public/release.json and public/app-compat.json were not written (message above). Rerunning
 bash setup.sh writes them and finishes the restore; the rollback below is needed only if you want to undo the whole restore.
+Setup does not set the content type and cache control of the stored files again (the step after the services start): when setup has finished,
+run npm run storage:retag -- --if-missing (npm run storage:retag sets them for every file).
 MSG
     fi
     cat >&2 <<MSG

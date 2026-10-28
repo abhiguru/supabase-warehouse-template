@@ -294,6 +294,8 @@ test('a restore that fails only at the release files says the data is restored a
     assert.notEqual(result.status, 0);
     assert.match(result.stderr, /Restore failed during: release files\nThe database and the stored files ARE restored; only public\/release\.json and public\/app-compat\.json were not written \(message above\)\. Rerunning\nbash setup\.sh writes them and finishes the restore;/);
     assert.ok(result.stderr.indexOf('Rerunning') < result.stderr.indexOf('Rollback: bash stop.sh'), 'before the rollback text, which stays');
+    assert.match(result.stderr, /Setup does not set the content type and cache control of the stored files again[^]*npm run storage:retag -- --if-missing \(npm run storage:retag sets them for every file\)/);
+    assert.ok(result.stderr.indexOf('npm run storage:retag') < result.stderr.indexOf('Rollback: bash stop.sh'));
     // Any other phase does not say so.
     const other = restore(scratch, ['--yes', backup], { FAKE_CATALOG_FILE: join(backup, 'storage_objects.txt'), FAKE_FAIL_START: 'yes' }, root => writeFileSync(join(root, 'scripts/migrate.sh'), '#!/usr/bin/env bash\nexit 0\n', { mode: 0o700 }));
     assert.doesNotMatch(other.stderr, /ARE restored/);
