@@ -118,8 +118,8 @@ they go in the operator's secret store. Nothing here authorizes production deplo
     `npm run scan:images` and the release checklist fail until the owner reviews and renews them (CI does not run the scan). End-of-life
     dates behind it: Node 22 on the host 2027-04-30, Node 24 in the storage and PDF images 2028-04-30, Debian 12 for the
     functions image 2028-06-30. The rest of the end-of-life dates, with the forecast ones marked as such (Ubuntu 22.04 under CUPS
-    2027-04 to 05, Alpine 3.23 2027-11-01, Python 3.15 for the sensor bridge about 2031-10, Debian 13 and the PostgreSQL major move in
-    2029 H1, PostgreSQL 18 2030-11), are in [MAINTENANCE_CALENDAR.md](MAINTENANCE_CALENDAR.md), which lists every dated obligation
+    2027-04 to 05, Alpine 3.23 2027-11-01, Python 3.15 for the sensor bridge about 2031-10, the database's move off Debian 13, with the PostgreSQL
+    major move, in 2029 H1, PostgreSQL 18 2030-11), are in [MAINTENANCE_CALENDAR.md](MAINTENANCE_CALENDAR.md), which lists every dated obligation
     and where it is checked.
   - Mitigation, **unverified**: `.github/workflows/keep-alive.yml` commits a timestamp once a month to the orphan branch `keep-alive`
     and calls the documented endpoint that enables the weekly CI run and the weekly Chrome for Testing, dependency advisory and
