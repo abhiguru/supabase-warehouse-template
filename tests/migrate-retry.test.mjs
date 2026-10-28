@@ -30,7 +30,7 @@ n=$(wc -l < "${calls}")
 outcome=$(echo "$FAKE_PSQL_RESULTS" | cut -d, -f"$n")
 case "$outcome" in
   lock) echo 'psql:<stdin>:40: ERROR:  canceling statement due to lock timeout' >&2; exit 3 ;;
-  sqlstate) printf 'psql:<stdin>:40: ERROR:  55P03: la requete a ete annulee (verrou)\\nLOCATION:  ProcSleep, proc.c:1500\\n' >&2; exit 3 ;;
+  sqlstate) printf 'psql:<stdin>:40: ERREUR:  55P03: la requete a ete annulee (verrou)\\nEMPLACEMENT:  ProcSleep, proc.c:1500\\n' >&2; exit 3 ;;
   notice) printf 'psql:<stdin>:12: NOTICE:  00000: note about SQLSTATE 55P03 and a lock timeout\\nLOCATION:  exec_stmt_raise, pl_exec.c:3921\\npsql:<stdin>:41: ERROR:  42601: syntax error at or near "BOOM"\\nLOCATION:  scanner_yyerror, scan.l:1188\\n' >&2; exit 3 ;;
   stream) echo 'psql:<stdin>:12: NOTICE:  00000: streamed-notice' >&2; i=0; while [ ! -e "${calls}.release" ] && [ "$i" -lt 100 ]; do sleep 0.1; i=$((i+1)); done; [ -e "${calls}.release" ] || exit 9 ;;
   other) echo 'psql:<stdin>:41: ERROR:  syntax error at or near "BOOM"' >&2; exit 3 ;;
@@ -76,8 +76,8 @@ test('the lock timeout is recognised by its SQLSTATE, whatever the language of t
     assert.equal(r.status, 0, r.stderr);
     assert.equal(r.attempts, 3, 'both timeouts were retried');
     assert.match(r.args, /-v VERBOSITY=verbose/, 'psql is asked to print the SQLSTATE');
-    assert.match(r.stderr, /ERROR:  la requete a ete annulee \(verrou\)/, 'the database\'s message is shown');
-    assert.doesNotMatch(r.stderr, /55P03:|LOCATION:/, 'without the code and the source location');
+    assert.match(r.stderr, /ERREUR:  la requete a ete annulee \(verrou\)/, 'the database\'s message is shown, in its own language');
+    assert.doesNotMatch(r.stderr, /55P03:|LOCATION:|EMPLACEMENT:/, 'without the code and the source location, in any language');
     assert.match(r.stderr, /attempt 2 of 3/);
   } finally { w.cleanup(); }
 });

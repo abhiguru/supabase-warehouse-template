@@ -31,7 +31,8 @@ plan="$(node "$ROOT/scripts/migration-plan.mjs" ${plan_args[@]+"${plan_args[@]}"
 # LOCATION lines that verbose adds. WAREHOUSE_MIGRATE_RETRY_SECONDS (default 5) is the pause; the tests shorten it.
 pause="${WAREHOUSE_MIGRATE_RETRY_SECONDS:-5}"
 [[ "$pause" =~ ^[0-9]{1,3}$ ]] || { echo 'WAREHOUSE_MIGRATE_RETRY_SECONDS must be a whole number of seconds.' >&2; exit 1; }
-lock_timeout_re='(ERROR|FATAL):  (55P03: |.*canceling statement due to lock timeout)'
+# The severity word is the server's, in the language of its messages (ERREUR: in French), so any word is accepted before the SQLSTATE.
+lock_timeout_re='([^[:space:]:]+:  55P03: |(ERROR|FATAL):  .*canceling statement due to lock timeout)'
 errors="$(mktemp "${TMPDIR:-/tmp}/warehouse-migrate.XXXXXX")"
 trap 'rm -f "$errors"' EXIT
 attempt=1
@@ -40,7 +41,7 @@ while :; do
   # psql's messages are kept for the retry check AND shown as they arrive (without the code and the LOCATION lines), so that a NOTICE or an
   # error keeps its place among the "Applying:" lines of the plan on standard output. The reader of fd 3 is waited for before the check.
   : > "$errors"
-  exec 3> >(tee -a "$errors" | sed -u -E '/^LOCATION:/d; s/^(.*(ERROR|FATAL|WARNING|NOTICE|INFO|LOG|DEBUG):  )[0-9A-Z]{5}: /\1/' >&2)
+  exec 3> >(tee -a "$errors" | sed -u -E '/^[^[:space:]:]+:  [A-Za-z0-9_]+, [A-Za-z0-9_.]+:[0-9]+$/d; s/^((psql:[^ ]*: )?[^[:space:]:]+:  )[0-9A-Z]{5}: /\1/' >&2)
   reader=$!
   printf '%s\n' "$plan" |
     compose exec -T db psql -X -q -U supabase_admin -d postgres -v ON_ERROR_STOP=1 -v VERBOSITY=verbose 2>&3 || status=$?
