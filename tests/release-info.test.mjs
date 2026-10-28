@@ -196,3 +196,32 @@ test('the repository\'s own app-compat.json is valid, and setup.sh and restore.s
   assert.match(helper, /SELECT name FROM warehouse_migrations\.applied ORDER BY name COLLATE "C" DESC LIMIT 1/);
   assert.match(helper, /release-info\.mjs" write "\$schema_head"/);
 });
+
+test('release-info.mjs: a tag with a slash is written in a form the function accepts; a modified checkout says -dirty; a checkout git cannot read is "unknown" with a warning', () => {
+  const { root } = checkout();
+  try {
+    const git = (...args) => execFileSync('git', ['-C', root, '-c', 'user.name=t', '-c', 'user.email=t@example.test', ...args], { stdio: 'pipe' });
+    const quiet = () => { throw new Error('no warning expected'); };
+    assert.equal(releaseRecord({ root, schemaHead: 'a.sql', warn: quiet }).backendRelease, 'v9.9.9');
+    // A tag with a slash would be refused by parseRelease (and shown as "unknown" in the app).
+    git('tag', 'release/1.2', '-m', 'annotated');
+    git('tag', '-d', 'v9.9.9');
+    const slash = releaseRecord({ root, schemaHead: 'a.sql', warn: quiet }).backendRelease;
+    assert.equal(slash, 'release-1.2');
+    assert.equal(parseRelease(JSON.stringify({ backendRelease: slash, schemaHead: 'a.sql' })).backendRelease, 'release-1.2', 'the function accepts what the writer wrote');
+    // A change to a tracked file is not the tag it started from.
+    writeFileSync(join(root, 'app-compat.json'), JSON.stringify({ minimumClientVersion: '0.3.1' }));
+    assert.equal(releaseRecord({ root, schemaHead: 'a.sql', warn: quiet }).backendRelease, 'release-1.2-dirty');
+  } finally { rmSync(root, { recursive: true, force: true }); }
+  // A .git that git cannot use: "unknown", and the reason is said (a source archive, with no .git at all, stays quiet: the test above).
+  const broken = mkdtempSync(join(tmpdir(), 'release-info-broken-'));
+  try {
+    mkdirSync(join(broken, '.git'));
+    const warnings = [];
+    const record = releaseRecord({ root: broken, schemaHead: 'a.sql', warn: message => warnings.push(message) });
+    assert.equal(record.backendRelease, 'unknown');
+    assert.equal(record.backendCommit, 'unknown');
+    assert.equal(warnings.length, 1);
+    assert.match(warnings[0], /git could not read the checkout \(.+\).*safe\.directory/);
+  } finally { rmSync(broken, { recursive: true, force: true }); }
+});

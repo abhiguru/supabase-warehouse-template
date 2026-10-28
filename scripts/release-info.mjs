@@ -18,15 +18,30 @@ const ROOT = resolve(dirname(fileURLToPath(import.meta.url)), '..');
 const VERSION = /^\d+\.\d+\.\d+$/;
 
 function git(root, args) {
-  try { return execFileSync('git', ['-C', root, ...args], { encoding: 'utf8', stdio: ['ignore', 'pipe', 'ignore'] }).trim(); } catch { return ''; }
+  try { return { text: execFileSync('git', ['-C', root, ...args], { encoding: 'utf8', stdio: ['ignore', 'pipe', 'pipe'] }).trim(), error: '' }; } catch (error) {
+    return { text: '', error: String(error?.stderr || error?.message || error).trim().split('\n')[0] };
+  }
 }
 
-// A source archive has no .git: the release then says "unknown" rather than failing the setup.
-export function releaseRecord({ root = ROOT, schemaHead, now = new Date() }) {
+// The name goes into release.json and is read back by functions/_shared/release-info.ts, which accepts [A-Za-z0-9_.+-]{1,100} only: a tag
+// such as release/1.2 would otherwise be shown to the app as "unknown". Other characters become "-".
+export function releaseName(text) {
+  return text.replace(/[^A-Za-z0-9_.+-]/g, '-').slice(0, 100);
+}
+
+// A source archive has no .git: the release then says "unknown" rather than failing the setup. A checkout that git cannot read (another
+// owner: "dubious ownership"; a damaged .git) is "unknown" too, but not silently: `warn` says why.
+export function releaseRecord({ root = ROOT, schemaHead, now = new Date(), warn = message => console.error(message) }) {
   if (!schemaHead || !/^[A-Za-z0-9_.-]+$/.test(schemaHead)) throw new Error('The newest applied migration name is missing or not a file name.');
+  // --dirty: a checkout with local changes to tracked files is not the tag it started from.
+  const described = git(root, ['describe', '--tags', '--always', '--dirty']);
+  const commit = git(root, ['rev-parse', 'HEAD']);
+  if ((!described.text || !commit.text) && lstatSync(join(root, '.git'), { throwIfNoEntry: false })) {
+    warn(`Warning: git could not read the checkout (${described.error || commit.error || 'no answer'}), so release.json says "unknown" for the release. If the checkout belongs to another user, run: git config --global --add safe.directory ${root}`);
+  }
   return {
-    backendRelease: git(root, ['describe', '--tags', '--always']) || 'unknown',
-    backendCommit: git(root, ['rev-parse', 'HEAD']) || 'unknown',
+    backendRelease: releaseName(described.text) || 'unknown',
+    backendCommit: commit.text || 'unknown',
     schemaHead,
     writtenAt: now.toISOString(),
   };
