@@ -236,6 +236,9 @@ test('restore rebuilds a stale db image before moving any data, then initialises
   try {
     const result = restore(scratch, ['--yes', backup], { ...staleDbImage(scratch), FAKE_CATALOG_FILE: join(backup, 'storage_objects.txt') });
     assert.match(result.stdout, /db image does not match this checkout/);
+    // The rebuild goes through --from-release (a restore at a release tag pulls the release's images as setup does); the fixture checkout is
+    // at no tag, so build-images.sh says it builds here.
+    assert.match(result.stdout, /Not pulling release images: this checkout is not at a release tag/);
     const calls = result.calls.split('\n');
     const build = calls.findIndex(line => / build /.test(line) && /\bdb$/.test(line));
     const init = calls.findIndex(line => line.endsWith('up -d --wait --wait-timeout 180 db'));

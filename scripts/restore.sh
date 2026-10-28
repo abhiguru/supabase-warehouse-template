@@ -177,10 +177,10 @@ db_image_stale() {
   printf '%s\n' "$plan" | cut -f1 | grep -qx db
 }
 if db_image_stale; then
-  echo 'The db image does not match this checkout (the database version changed): rebuilding the images first (scripts/build-images.sh).'
-  bash "$ROOT/scripts/build-images.sh" || { echo 'Refusing: the db image could not be rebuilt, so the restore would start the new cluster on the old PostgreSQL. Nothing was moved. Run bash scripts/build-images.sh, then retry.' >&2; exit 1; }
+  echo 'The db image does not match this checkout (the database version changed): rebuilding the images first (scripts/build-images.sh --from-release: the images of the release this checkout is at are pulled, the rest built here).'
+  bash "$ROOT/scripts/build-images.sh" --from-release || { echo 'Refusing: the db image could not be rebuilt, so the restore would start the new cluster on the old PostgreSQL. Nothing was moved. Run bash scripts/build-images.sh --from-release, then retry.' >&2; exit 1; }
   if db_image_stale; then
-    echo 'Refusing: the db image still does not match this checkout after the rebuild. Nothing was moved. Run bash scripts/build-images.sh, then retry.' >&2
+    echo 'Refusing: the db image still does not match this checkout after the rebuild. Nothing was moved. Run bash scripts/build-images.sh --from-release, then retry.' >&2
     exit 1
   fi
 fi
