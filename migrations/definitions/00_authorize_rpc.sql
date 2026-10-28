@@ -19,9 +19,9 @@ BEGIN
     IF role_name NOT IN ('admin','supervisor') THEN RAISE EXCEPTION 'Administrator required' USING ERRCODE = '42501'; END IF;
     RETURN;
   END IF;
-  -- Central identity (migration 49), sensor settings (migration 74) and service accounts
-  -- (migration 78): administrators only.
-  IF rpc IN ('clear_user_central_identity','update_sensor_device','set_service_account') THEN
+  -- Central identity (migration 49), sensor settings (migration 74), service accounts
+  -- (migration 78) and the numbering rules (migration 127): administrators only.
+  IF rpc IN ('clear_user_central_identity','update_sensor_device','set_service_account','set_document_numbering') THEN
     IF role_name <> 'admin' THEN RAISE EXCEPTION 'Administrator required' USING ERRCODE = '42501'; END IF;
     RETURN;
   END IF;
@@ -30,6 +30,8 @@ BEGIN
   IF role_name = 'staff' AND rpc IN (
     'save_grn','update_grn','check_grn_exists','get_next_grn_number',
     'get_all_grn_items','get_grn_list','get_grn_details',
+    -- The next GRN, dispatch or invoice number under the facility's rule (migration 127); the rules are read by supervisors and above.
+    'suggest_document_number',
     -- The GRN edit form's version and locks (migration 121); customers stay refused by the final ELSE.
     'get_grn_edit_state','get_grn_item_dispatches',
     'get_grn_prefixes_with_stock','get_all_grn_activity',

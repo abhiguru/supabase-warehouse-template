@@ -82,8 +82,8 @@ for (const customer of [a, b]) {
 }
 const staffOrders = success(await rpc('get_orders_list', admin, { p_customer_id: a }), 'staff order queue');
 assert.ok(staffOrders.data.orders.length >= 1, 'staff queue includes A order after dispatch');
-const grn = (await api('/rest/v1/goodsreceived?gr_no=eq.BAA01&select=id', admin)).data[0].id;
-const dispatch = (await api('/rest/v1/dispatch?disp_no=eq.BAD01&select=id', admin)).data[0].id;
+const grn = (await api('/rest/v1/goodsreceived?gr_no=eq.A0901&select=id', admin)).data[0].id;
+const dispatch = (await api('/rest/v1/dispatch?disp_no=eq.I0901&select=id', admin)).data[0].id;
 
 for (const [kind, args] of [
   ['grn', { p_grn_id: grn, p_image_type: 'header' }],

@@ -390,6 +390,46 @@ From `create_dispatch_with_stock_check` (`dispatch_disp_no_key`, checked over al
 financial year; an invoice that keeps its own number is not refused). The invoice answers of the three-argument path also carry
 `function_version`. `save_grn` already refuses a duplicate GRN number by name and is unchanged. The answer has no `holder`.
 
+### Document numbering (migration 127, 2026-10-27)
+
+Each facility has one numbering rule per document type (`warehouse_security.document_numbering`, no direct grant: only these RPCs read or write it;
+every change is kept in `document_numbering_history`). A rule is `{scheme, prefix, width, start, first_letter, per_letter, check}`; `check` (boolean) says whether a number outside the rule is refused on save (below):
+
+| scheme | number | takes |
+|---|---|---|
+| `letters` | `A0001` ... `A1000`, `B0001` ... (GRN and dispatch) | `first_letter` (default `A`; `W` or `X` follows FAS: W, X, Y, Z, A, B ...), `width` (4, 1 to 7), `per_letter` (1000) |
+| `year` | `GRN/26-27/0001`, starting again on 1 April (GRN and dispatch). For an invoice: a whole number that starts again every financial year | `prefix` (up to 10 of `A-Z 0-9 / -`), `width` (4), `start` (1). An invoice takes `start` only |
+| `sequence` | `I0001`, or `1001` with no prefix. For an invoice: a whole number that keeps counting across years | `prefix`, `width`, `start` |
+| `free` | any text of up to 20 characters, typed by hand (GRN and dispatch) | nothing |
+
+Defaults, all with `check` true except where the migration found a number of the type that does not follow the rule it starts with (then that type starts with `check` false and the migration prints how many): GRN `letters` (from `W` where the facility held both W and X numbers when the migration ran, from `X` where it held X, Y or Z numbers), dispatch `sequence` with prefix `I`,
+invoice `year`. Numbers have at most 20 characters (`gr_no` and `disp_no` are `varchar(20)`), and at most 7 digits after the prefix; a sequence ends at 9999999.
+
+- `suggest_document_number(p_document_type text, p_date date DEFAULT NULL)`: `grn`, `dispatch` or `invoice`; staff and above. Answers
+  `{success:true, number, hint, scheme, reason}`. `hint` is the pattern for the placeholder (`A####`, `GRN/26-27/####` with the year of `p_date`, `I####`, `#`; null for `free`).
+  `number` is null with `reason` `TYPE_IT` (free text: the person types it) or `SERIES_FULL` (no number is left: all letters used, the digits no longer fit 20 characters,
+  9999999 reached, or for an invoice the ceiling of 99999999).
+  The order of the letters always starts after the longest run of unused letters, counted around the alphabet (so a facility whose books run W, X, Y, Z, A is offered A0258 after A0257 whether its rule says W, X or A,
+  and a stray letter far from the series, such as Q0001, does not take the suggestion over; with a series that runs W to A, one between B and K can, and so can one at L when the rule says W). Of two runs of the same length (the L case) the
+  one nearer `first_letter` wins; with no letter in use, or all 26, the order starts at `first_letter`. The suggestion is the same whether `check` is true or false. A suggestion reserves nothing: two phones are offered the same number and the second save is refused by
+  name (`GRN number already exists`, `NUMBER_TAKEN`). Under a `year` rule the number depends on `p_date`: ask again when the date crosses 1 April.
+- `get_document_numbering()`: administrators and supervisors. `{success:true, rules:[{document_type, scheme, prefix, width, start, first_letter, per_letter, check, fy_reset, hint, existing_documents, not_following, updated_at, updated_by}]}`
+  in the order grn, dispatch, invoice; `existing_documents` counts the live documents that keep their numbers when the rule changes; `not_following` counts the numbers (deleted documents included) that do not follow the rule (always 0 for an invoice).
+- `set_document_numbering(p_document_type text, p_rule jsonb)`: administrators (`Administrator required` for anyone else). A field left out takes its default; a field that does not
+  belong to the scheme, a wrong value or a rule that does not fit 20 characters is raised as SQLSTATE `22023` with a sentence that says what to change. `check` (true or false) is allowed in a `letters`, `year` or `sequence` rule of a GRN or dispatch; left out, it stays as stored
+  (a `free` rule has `check` true, and the rule after it starts with it true). It is refused for an invoice and for `free`. Switching `check` on where existing numbers do not follow the rule is allowed: they keep their numbers, and `not_following` says how many they are (show it in the confirm step). Answers
+  `{success:true, changed, document_type, rule, previous_rule, existing_documents, not_following, next_number, hint, reason}` (`rule` and `previous_rule` carry `check`); the same rule again changes and records nothing, and a change of `check` alone is a change and is recorded. Existing numbers never change.
+- `get_next_grn_number()`, `get_next_dispatch_number()` and `get_next_invoice_number(p_fin_year)` keep their signatures and return the suggestion's number. Where there is none they
+  raise: `Type the GRN number.` (`free`, SQLSTATE `WH409`), `All GRN numbers A0001-Z1000 are used` (`WH409`), `Dispatch number sequence exhausted at I9999999` (`22003`, as before),
+  `No invoice number is left in financial year N` (`WH409`, as before; `No invoice number is left` under a `sequence` rule, which counts across years).
+- `NUMBER_FORMAT`: with `check` true, `save_grn`, `create_dispatch_with_stock_check` and `update_dispatch_smart` (only when the number is changed; the stored number may be sent back) answer a number that does not
+  follow the rule with `{success:false, error_code:'WH409', reason:'NUMBER_FORMAT', number, document_type, pattern, error, message}` and write nothing. The message is
+  `This number does not follow this facility's numbering (<pattern>)`; for `free`, and for any rule whose `check` is false, a number of more than 20 characters is refused with `This number can have at most 20 characters` and `pattern` null; with `check` false nothing else is refused (the duplicate check stays).
+  The check comes before the duplicate check and is not made for an empty number (its own answer stays). A `letters` rule accepts any capital letter followed by at least `width` digits,
+  whatever its first letter; a `year` rule accepts its prefix, two consecutive years (`26-27`, not `26-28`) and the digits, whichever year the date is in. An invoice number is a whole number
+  from 1 to 99999999 whatever the rule (`WH422` as before); its rule decides the suggestion only. `update_grn` keeps `GRN_NUMBER_LOCKED`.
+- Lists keep sorting by `document_number_sort_key`: numbers of the earlier letter form first, then by the text before the trailing digits, then the digits as a number.
+
 ### Request codes and `get_submission_result` (owner decision D22: one rule for a lost answer)
 
 - **Request code.** `update_dispatch_smart` reads `p_dispatch_data->>'request_key'`; the three-argument `save_invoice` and
@@ -1018,6 +1058,7 @@ customer. Not found (or deleted): `{success:false, error:'GRN not found', messag
 duplicate check); equal or NULL is fine. `get_next_grn_number` takes the letter from the highest letter in use
 (`max(left(gr_no,1))` among `^[A-Z][0-9]{1,7}$`), not from the last-entered GRN; then as before: the highest number of that letter's
 series, `>= 1000` moves to the next letter (`Z` to `A`): with `0001`, or, when that letter's series exists already, its next number; no GRN: `A0001`.
+(Migration 127 replaced this generator: [Document numbering](#document-numbering-migration-127-2026-10-27). The default rule is the same up to Z; after Z the series is full.)
 
 ### GRN rates dropped by an edit (D10, D24)
 

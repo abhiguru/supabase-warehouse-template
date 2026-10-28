@@ -5,6 +5,7 @@ import { createConnection } from 'node:net';
 import { spawnSync } from 'node:child_process';
 import { createHash, createHmac, timingSafeEqual } from 'node:crypto';
 import { backupToolProblems, centralKeyFault, collationProblem, gatewayPortText, letterheadProblem, probe, projectPublishesPort, readEnv, root, supportedNode } from './doctor-common.mjs';
+import { numberingLine, numberingProblems } from './numbering.mjs';
 import { canonicalOrigin } from './configure.mjs';
 import { validateDbValues } from './db-roles.mjs';
 import { isFixtureAddress, isProviderPlaceholder } from './provider-placeholder.mjs';
@@ -261,7 +262,11 @@ export async function doctor({ hostPreflight = false, preflight = false, local =
   // The monitoring checker (scripts/watch.mjs) is run by a systemd timer that an operator installs with sudo
   // (scripts/watch-timer.sh); doctor warns when it is missing, silent, or has nowhere to post.
   const checker = checkerWarnings(state);
-  const note = [upgradeWarning, usb, ...checker].filter(Boolean).map(text => `\nWarning: ${text}`).join('') + lanNote;
+  // The numbering rules the facility's GRN, dispatch and invoice numbers follow (docs/OPERATOR_INSTALL.md, "Document numbers"); information only.
+  const inDb = args => probe('bash', [resolve(root, 'scripts/compose.sh'), 'exec', '-T', 'db', ...args]);
+  const numbering = numberingLine(inDb);
+  const numberingWarnings = numberingProblems(inDb).map(text => `\nWarning: ${text}`).join('');
+  const note = [upgradeWarning, usb, ...checker].filter(Boolean).map(text => `\nWarning: ${text}`).join('') + lanNote + numberingWarnings + (numbering ? `\n${numbering}` : '');
   if (local) return `Local operator services and gateway are healthy.${note}`;
   if (maintenance) throw new Error('Maintenance mode is on (config/maintenance): the API answers 503 "upgrading" to phones on purpose, so the external check cannot pass. Open it with: bash scripts/maintenance.sh off');
   const response = await fetch(`${origin}/functions/v1/get-public-config`, { signal: AbortSignal.timeout(15000), redirect: 'error' });

@@ -206,8 +206,57 @@ reload** in `docs/OPERATOR_INSTALL.md`; a new installation needs none of that. A
     backup it takes (by hand: `bash scripts/verify-restore.sh <the backup folder>`, then `node scripts/watch.mjs record-verified <its name>`).
     The restore for the rehearsal does not compare the backup with the new release's integrity report, so only the data and the migrations
     decide. This applies from the move after the one **to** this release, like the rest of the preflight.
+21. **Decide how your GRN, dispatch and invoice numbers are written, and check that the numbers you type follow the rule.**
+    Migration 127 gives each facility a numbering rule per document type, and **with the rule's check on, a typed number that does not follow
+    the rule is refused** when the document is saved ("This number does not follow this facility's numbering (A####)"). The rules start as
+    today's behaviour: GRN a capital letter and at least four digits (A0001 ... A1000, then B0001; `W` first when the facility holds both W and X
+    numbers and `X` first when it holds X, Y or Z numbers, which is FAS's order W, X, Y, Z, A, B), dispatch `I` and at least four digits (I0001),
+    invoices whole numbers that start again at 1 on every 1 April. **The check starts on where every number the facility holds follows the rule
+    it starts with, and off where one does not** (dispatch numbers such as G1234A or CLR0007, a GRN such as DG1): the update prints how many
+    numbers of that document type do not follow the rule, with up to five examples, and saves go through as before, a number that is taken is
+    still refused, the next number is still suggested from the rule, and `node scripts/doctor.mjs` warns "Dispatch numbers are not checked ..."
+    until you act. To refuse numbers outside a rule, give the rule and the check: `bash setup.sh --operator <your usual options>
+    --dispatch-numbering sequence,prefix=I,digits=4,start=1,check=on` (the numbers saved so far keep theirs; setup prints how many do not follow
+    the rule), or an administrator switches it in the app, from the app build that has the screen; `check=off` switches it off again. To change what is
+    written, choose a rule: `--grn-numbering free` (any text of up to 20 characters, no suggestion), `--grn-numbering year,prefix=GRN/`
+    (GRN/26-27/0001, starting again on 1 April), `--dispatch-numbering sequence,prefix=D,digits=4,start=1001`; `--invoice-numbering year|sequence`
+    chooses between starting again every financial year and counting on (invoices stay whole numbers). The full list is "Document numbers" in
+    `docs/OPERATOR_INSTALL.md`. A rerun without the options keeps the stored rule and its check; with them, setup prints "Next GRN: ...; N GRNs keep
+    their numbers". Numbers already issued never change, and a rule may be changed later. **fas-sync and other import tools:** the update sees only the numbers
+    that are in the database. A number that a tool will still push after the update counts too: a GRN that does not follow the letter rule
+    (a letter and digits, for example X1234A with a letter after the digits) is refused with `NUMBER_FORMAT` while the GRN check is on. So
+    either push the tool's backlog before the update, or give the update the GRN rule with the check off,
+    `bash setup.sh --operator <your usual options> --grn-numbering letters,first=X,check=off` (`first=W` where the facility holds both W and X numbers),
+    and switch the check on later by giving the same rule with `check=on`. GRN numbers of a letter and digits fit the letter rule whatever its
+    first letter, and the next GRN number follows the letters in use whatever the rule's first letter says, so
+    A0258 follows A0257 after W, X, Y and Z. (A note for fas-sync: its own copy of the letter order, `SERIES`, is used only when the suggestion
+    differs before and after a push, which does not happen with this backend; it should list W first.) Its dispatch numbers are saved while the dispatch check
+    is off; with the check on they must fit the dispatch rule, or the push of that dispatch is refused. The GRN and dispatch number columns now hold 20 characters instead of 8;
+    the pre-printed GRN and dispatch slips print the number in a field made for 8, so check a long number on paper once before you use one. A
+    phone on an older app build keeps working with the default rules and with any rule that suggests a number of 8 characters or fewer; `free` rules and
+    full series ("All GRN numbers A0001-Z1000 are used") need the new build, because the old one would fill in its own number.
+    **Downtime:** the number columns change type, so PostgreSQL rebuilds the indexes on them while the tables are locked. With 100,000 GRNs and
+    100,000 dispatches on a test database the whole update step (this migration and the definition files) took about 2 seconds (the seed reads every
+    GRN and dispatch number once more to count those that do not follow the rule); plan for seconds at the size of a warehouse, and run the update when
+    nobody is saving documents.
 
 ### Changed
+
+- **GRN, dispatch and invoice numbers follow a per-facility numbering rule (migration 127).** `warehouse_security.document_numbering` holds one
+  rule per document type (letters, financial year, sequence or free text; invoices: restart each financial year or keep counting) and
+  `document_numbering_history` records every change, never pruned. New RPCs: `suggest_document_number(p_document_type, p_date)` (the next number, its
+  pattern and, where there is none, the reason `TYPE_IT` or `SERIES_FULL`), `get_document_numbering()` (administrators and supervisors) and
+  `set_document_numbering(p_document_type, p_rule)` (administrators). `get_next_grn_number`, `get_next_dispatch_number` and `get_next_invoice_number`
+  keep their signatures and answer with the same suggestion (they raise the reason where there is no number). `save_grn`, the dispatch create and a
+  dispatch edit that changes the number (their bodies are definition files; `update_dispatch_smart` has one now) refuse a number outside the rule with `NUMBER_FORMAT` and the pattern; the letter rule accepts any letter and
+  at least `digits` digits, so FAS's series is saved whatever the first letter. The GRN suggestion no longer returns a taken number at a facility whose
+  series runs W, X, Y, Z, A, B (the earlier generator stopped at A1000), and it always starts the order of the letters after the longest run of unused letters,
+  so W0818-W1000 followed by X, Y, Z and A0257 gives A0258 under `first=W`, `X` and `A`, and one mistyped letter far from the series does not take the
+  suggestion over (in a series that runs W to A, a stray from B to K can, and one at L does under `first=W` only, where two runs of unused letters are equally long and the one nearer the first letter wins); `doctor` names GRN letters in use outside the main series (the one that holds the most numbers) and a highest letter that follows a letter that is not full. Each rule has a **check** (`check=on|off` in the setup option, `check` in
+  `set_document_numbering`): off, a number outside the rule is saved (a taken number is still refused) and the rule still suggests the next one; a
+  document type whose existing numbers do not follow the rule it starts with starts with the check off, and `doctor` warns until it is switched on. `setup.sh --operator --grn-numbering`,
+  `--dispatch-numbering` and `--invoice-numbering` choose the rules; `doctor` prints them. `goodsreceived.gr_no`, `invoice.gr_no` and
+  `dispatch.disp_no` hold 20 characters (`v_orders_list` is made again). See operator action 21.
 
 - **A fix to an RPC body or to `authorize_rpc` no longer needs a migration: those functions are definition files that setup applies again when they change.**
   `migrations/definitions/` holds the current text of `warehouse_security.authorize_rpc` and of the eleven RPCs that migrations 111 to 126 had patched

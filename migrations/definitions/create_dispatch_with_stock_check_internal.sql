@@ -46,6 +46,7 @@ DECLARE
     v_late_grn_day date;
     v_duplicate jsonb;
     v_detail text;
+    v_number_failure jsonb;
 BEGIN
     -- The document lock comes before the idempotency lookup, as in save_grn (migration 87):
     -- an overlapping retry waits here and then finds the first call's cached answer.
@@ -143,6 +144,12 @@ BEGIN
         GROUP BY (d->>'gr_trl_id')::uuid HAVING count(*) > 1
     ) THEN
         RAISE EXCEPTION 'The same lot appears twice in the dispatch lines' USING ERRCODE = 'WH409';
+    END IF;
+
+    -- Migration 127: the number follows this facility's numbering (warehouse_security.document_numbering).
+    v_number_failure := warehouse_security.document_number_failure('dispatch', p_dispatch_data->>'disp_no', warehouse_security.business_date((p_dispatch_data->>'disp_date')::timestamptz));
+    IF v_number_failure IS NOT NULL THEN
+        RETURN v_number_failure;
     END IF;
 
     -- A number another dispatch holds is refused by name, under the lock and before anything is written

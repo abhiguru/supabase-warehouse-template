@@ -152,7 +152,7 @@ Rules that keep `upgrade.sh` working for the installed base:
   removed or renamed file strands every facility that recorded it, an edited one is refused by its checksum, and a file inserted before the
   last one runs on a fresh install before files that an installed facility ran earlier, so two databases of one release differ. The CI job
   `migration-order` (`scripts/check-migration-order.mjs`, run locally with `node scripts/check-migration-order.mjs origin/main`) fails a
-  change that breaks it. Number a new file after the last one (`00000000000127_...` is next).
+  change that breaks it. Number a new file after the last one (`00000000000128_...` is next).
 - **A later squash is a snapshot, not a replacement.** The chain in `migrations/` stays as it is for the installed facilities. If the chain
   grows too long for a fresh install, a snapshot (a schema dump that the baseline verification proves equal to the chain) is kept outside
   `migrations/`, is used only when the ledger is empty, and records the names and checksums of the files it stands for; the first migration

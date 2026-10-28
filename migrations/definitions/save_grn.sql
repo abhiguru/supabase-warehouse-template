@@ -28,6 +28,7 @@ AS $function$
       v_rate_failure jsonb;
       v_detail text;
       v_duplicate jsonb;
+      v_number_failure jsonb;
 BEGIN
   PERFORM warehouse_security.authorize_rpc('save_grn',jsonb_build_object('p_customer_id',p_customer_id));
   -- Migration 90: rates typed on the GRN sheet are an administrator's or a supervisor's.
@@ -121,6 +122,12 @@ BEGIN
               'success', false,
               'message', 'Missing required parameters: gr_no, date, and customer_id are required'
           );
+      END IF;
+
+      -- Migration 127: the number follows this facility's numbering (warehouse_security.document_numbering).
+      v_number_failure := warehouse_security.document_number_failure('grn', p_gr_no, warehouse_security.business_date(p_date));
+      IF v_number_failure IS NOT NULL THEN
+          RETURN v_number_failure;
       END IF;
 
       IF EXISTS (SELECT 1 FROM goodsreceived WHERE gr_no = p_gr_no) THEN

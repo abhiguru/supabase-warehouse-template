@@ -690,6 +690,9 @@ SELECT pg_temp.rd_assert(:'number_changed'::jsonb->>'success'='false' AND :'numb
  AND (SELECT gr_no='DG1' FROM public.goodsreceived WHERE id=:'grn_1'::uuid),'a changed GRN number: GRN_NUMBER_LOCKED, the number stays: '||:'number_changed');
 SELECT pg_temp.rd_assert(:'number_same'::jsonb->>'success'='true' AND (SELECT note='number sent back' FROM public.goodsreceived WHERE id=:'grn_1'::uuid),
  'twin: the stored number sent back (or no number, as every other edit here) is saved: '||:'number_same');
+-- Migration 127: the suggestions of this section are the default rule's. tests/migrations.sh runs the older suites with free-text GRN and
+-- dispatch numbers; this one puts the GRN default back for this section, inside its own transaction (rolled back with it).
+SELECT warehouse_security.apply_document_numbering('grn', '{"scheme":"letters"}', NULL) \gset default_
 SELECT set_config('request.jwt.claims',:'admin_claims',true);
 SET LOCAL ROLE authenticated;
 SELECT pg_temp.rd_assert(public.get_next_grn_number()='A0001','with no series GRN the suggestion is A0001: '||public.get_next_grn_number());
@@ -704,6 +707,7 @@ SELECT public.get_next_grn_number() AS next_after_full_series \gset
 RESET ROLE;
 SELECT pg_temp.rd_assert(:'next_after_older_letter'='M0002','K0007 entered after M0001: the suggestion follows the highest letter M (M0002), not the last-entered K (K0008): '||:'next_after_older_letter');
 SELECT pg_temp.rd_assert(:'next_after_full_series'='N0001','with M1000 in use the series is full: the next letter N starts at N0001: '||:'next_after_full_series');
+SELECT warehouse_security.apply_document_numbering('grn', '{"scheme":"free"}', NULL) \gset free_
 
 -- ===========================================================================
 -- D10 and D24: a GRN-only rate dropped by an edit. DG8: customer A, potatoes 10 bags of weight 10 with the GRN-only rate band 0 to 10.

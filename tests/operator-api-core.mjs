@@ -102,17 +102,26 @@ assert.equal((await api(`/rest/v1/customers?id=eq.${b}&select=id`, tokenA)).data
 const deniedUpdate = await api(`/rest/v1/customers?id=eq.${b}`, tokenA, { name: 'Unauthorized edit' }, 'PATCH');
 assert.ok(!deniedUpdate.ok || (await api(`/rest/v1/customers?id=eq.${b}&select=name`, adminToken)).data[0].name === 'Backend Test Customer B', 'A cannot mutate B');
 
-const receipt = good(await rpc('save_grn', adminToken, { p_gr_no: 'BAA01', p_date: '2026-04-01T12:00:00Z',
+const receipt = good(await rpc('save_grn', adminToken, { p_gr_no: 'A0901', p_date: '2026-04-01T12:00:00Z',
   p_customer_id: a, p_customer_name: 'Backend Test Customer A', p_pricing_mode: 'MONTHLY',
   p_idempotency_key: 'backend-test-receipt-a',
   p_items: [{ item_id: item, item_name: 'Backend Test Potatoes', packaging: 'Bag', qty: 100, weight: 10, rack: 'TEST' }] }), 'receipt');
 assert.ok(receipt.success);
-const grn = mustUuid((await api('/rest/v1/goodsreceived?gr_no=eq.BAA01&select=id', adminToken)).data[0].id);
+// The facility's numbering rule (migration 127), the default one here: the next number follows A0901, and a number outside the rule is refused.
+const nextGrn = good(await rpc('suggest_document_number', adminToken, { p_document_type: 'grn' }), 'suggest the next GRN number');
+assert.equal(nextGrn.number, 'A0902');
+const wrongFormat = await rpc('save_grn', adminToken, { p_gr_no: 'ZZ-1', p_date: '2026-04-01T12:00:00Z',
+  p_customer_id: a, p_customer_name: 'Backend Test Customer A', p_pricing_mode: 'MONTHLY',
+  p_items: [{ item_id: item, item_name: 'Backend Test Potatoes', packaging: 'Bag', qty: 1, weight: 10, rack: 'TEST' }] });
+assert.equal(wrongFormat.data?.success, false);
+assert.equal(wrongFormat.data?.reason, 'NUMBER_FORMAT');
+assert.match(wrongFormat.data?.message, /numbering \(A####\)/);
+const grn = mustUuid((await api('/rest/v1/goodsreceived?gr_no=eq.A0901&select=id', adminToken)).data[0].id);
 const stock = mustUuid((await api(`/rest/v1/goodsreceived_trl?gr_id=eq.${grn}&select=id`, adminToken)).data[0].id);
 // Execution permissions must also apply when a staff operation is already in
 // the idempotency cache. A known key must never turn a customer call into success.
 for (const token of [tokenA, tokenB]) {
-  const cached = await rpc('save_grn', token, { p_gr_no: 'BAA01', p_date: '2026-04-01T12:00:00Z',
+  const cached = await rpc('save_grn', token, { p_gr_no: 'A0901', p_date: '2026-04-01T12:00:00Z',
     p_customer_id: a, p_customer_name: 'Backend Test Customer A', p_items: [],
     p_idempotency_key: 'backend-test-receipt-a' });
   assert.equal(cached.status, 403, 'customer cannot retrieve cached staff receipt RPC');
@@ -156,7 +165,7 @@ assert.equal(orderA.data.orders.find(row => row.id === cartA.data)?.quantity_sum
 const orderB = good(await rpc('get_orders_list', tokenB, { p_customer_id: b }), 'B orders');
 assert.ok(!orderB.data.orders.some(row => row.id === cartA.data), 'B cannot list A cart');
 
-const dispatchData = { disp_no: 'BAD01', disp_date: '2026-05-02T12:00:00Z', customer_id: a,
+const dispatchData = { disp_no: 'I0901', disp_date: '2026-05-02T12:00:00Z', customer_id: a,
   customer_name: 'Backend Test Customer A', supervisor_id: admin.user.id,
   supervisor_name: 'Core Demo Administrator' };
 const partial = { p_dispatch_data: dispatchData, p_dispatch_items: [{ gr_trl_id: stock, disp_qty: 20 }],
@@ -177,13 +186,13 @@ const oversell = await rpc('create_dispatch_with_stock_check', adminToken, { ...
 assert.ok(!oversell.ok || oversell.data?.success === false, 'oversell rejected');
 assert.equal((await api(`/rest/v1/goodsreceived_trl?id=eq.${stock}&select=stock`, adminToken)).data[0].stock, 80);
 good(await rpc('create_dispatch_with_stock_check', adminToken, { ...partial,
-  p_dispatch_data: { ...dispatchData, disp_no: 'BAD02' },
+  p_dispatch_data: { ...dispatchData, disp_no: 'I0902' },
   p_dispatch_items: [{ gr_trl_id: stock, disp_qty: 80 }], p_idempotency_key: 'backend-test-dispatch-final' }), 'final dispatch');
 assert.equal((await api(`/rest/v1/goodsreceived_trl?id=eq.${stock}&select=stock`, adminToken)).data[0].stock, 0);
 const preview = good(await rpc('generate_invoice_data_for_grn_with_pricing', adminToken,
   { p_gr_id: grn, p_duration_mode: 'legacy' }), 'invoice preview');
 assert.deepEqual(preview.totals, { subtotal: 950, tax: 48, total_tax: 48, grand_total: 998, total: 998, total_rows: 2 });
-const dispatchHeaders = await api('/rest/v1/dispatch?disp_no=in.(BAD01,BAD02)&select=id', adminToken);
+const dispatchHeaders = await api('/rest/v1/dispatch?disp_no=in.(I0901,I0902)&select=id', adminToken);
 assert.ok(dispatchHeaders.ok && dispatchHeaders.data.length === 2, 'two dispatch headers available for invoice');
 const dispatchLines = [];
 for (const header of dispatchHeaders.data) {
@@ -192,7 +201,7 @@ for (const header of dispatchHeaders.data) {
   dispatchLines.push(lines.data[0]);
 }
 const saved = good(await rpc('save_invoice', adminToken, { p_invoice_id: null, p_invoice_data: {
-  inv_no: 20260929, inv_fin_year: 2026, gr_id: grn, gr_no: 'BAA01', customer_id: a,
+  inv_no: 20260929, inv_fin_year: 2026, gr_id: grn, gr_no: 'A0901', customer_id: a,
   customer_name: 'Backend Test Customer A', inv_date: '2026-05-02T12:00:00Z',
   total: 998, tax_amount: 48, discount: 0, duration_mode: 'legacy',
 }, p_invoice_items: dispatchLines.map(line => ({ disp_trl_id: line.id, grn_item_id: line.gr_trl_id, duration: 1, charge: 5, tax: 5, labour_rate: 2 })) }), 'save invoice');
@@ -224,16 +233,16 @@ async function document(name, body) {
     assert.ok(!(await api(object, token)).ok, 'private PDF bucket denies direct reads');
   assert.equal((await api(`/functions/v1/${name}`, tokenB, body)).status, 404, 'B cannot generate A document');
 }
-await document('generate-grn-pdf', { gr_no: 'BAA01' });
-await document('generate-dispatch-pdf', { disp_no: 'BAD01' });
+await document('generate-grn-pdf', { gr_no: 'A0901' });
+await document('generate-dispatch-pdf', { disp_no: 'I0901' });
 await document('generate-invoice-pdf', { inv_no: 20260929, fin_year: 2026 });
 await document('generate-customer-stock-pdf', { customer_id: a });
-good(await rpc('save_grn', adminToken, { p_gr_no: 'BAC01', p_date: '2026-04-01T12:00:00Z',
+good(await rpc('save_grn', adminToken, { p_gr_no: 'A0902', p_date: '2026-04-01T12:00:00Z',
   p_customer_id: a, p_customer_name: 'Backend Test Customer A', p_pricing_mode: 'MONTHLY',
   p_items: [{ item_id: item, item_name: 'Backend Test Potatoes', packaging: 'Bag', qty: 10, weight: 10, rack: 'RACE' }] }), 'concurrency receipt');
-const raceGrn = mustUuid((await api('/rest/v1/goodsreceived?gr_no=eq.BAC01&select=id', adminToken)).data[0].id);
+const raceGrn = mustUuid((await api('/rest/v1/goodsreceived?gr_no=eq.A0902&select=id', adminToken)).data[0].id);
 const raceStock = mustUuid((await api(`/rest/v1/goodsreceived_trl?gr_id=eq.${raceGrn}&select=id`, adminToken)).data[0].id);
-const raceArgs = [1, 2].map(n => ({ p_dispatch_data: { ...dispatchData, disp_no: `BAC0${n}` },
+const raceArgs = [1, 2].map(n => ({ p_dispatch_data: { ...dispatchData, disp_no: `I090${n + 2}` },
   p_dispatch_items: [{ gr_trl_id: raceStock, disp_qty: 7 }], p_generate_invoice: false,
   p_idempotency_key: `backend-test-race-${n}` }));
 const raceResults = await Promise.all(raceArgs.map(args => rpc('create_dispatch_with_stock_check', adminToken, args)));
