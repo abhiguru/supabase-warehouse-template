@@ -283,6 +283,23 @@ test('restore refuses with the data untouched when the db image check itself fai
   } finally { rmSync(scratch, { recursive: true, force: true }); }
 });
 
+test('a restore that fails only at the release files says the data is restored and that setup.sh finishes it, before the rollback text', () => {
+  const { scratch, backup } = fixture('warehouse-restore-release-files-');
+  try {
+    const stubs = root => {
+      writeFileSync(join(root, 'scripts/migrate.sh'), '#!/usr/bin/env bash\nexit 0\n', { mode: 0o700 });
+      writeFileSync(join(root, 'scripts/release-info.sh'), '#!/usr/bin/env bash\necho "fake: release.json could not be written" >&2\nexit 1\n', { mode: 0o700 });
+    };
+    const result = restore(scratch, ['--yes', backup], { FAKE_CATALOG_FILE: join(backup, 'storage_objects.txt') }, stubs);
+    assert.notEqual(result.status, 0);
+    assert.match(result.stderr, /Restore failed during: release files\nThe database and the stored files ARE restored; only public\/release\.json and public\/app-compat\.json were not written \(message above\)\. Rerunning\nbash setup\.sh writes them and finishes the restore;/);
+    assert.ok(result.stderr.indexOf('Rerunning') < result.stderr.indexOf('Rollback: bash stop.sh'), 'before the rollback text, which stays');
+    // Any other phase does not say so.
+    const other = restore(scratch, ['--yes', backup], { FAKE_CATALOG_FILE: join(backup, 'storage_objects.txt'), FAKE_FAIL_START: 'yes' }, root => writeFileSync(join(root, 'scripts/migrate.sh'), '#!/usr/bin/env bash\nexit 0\n', { mode: 0o700 }));
+    assert.doesNotMatch(other.stderr, /ARE restored/);
+  } finally { rmSync(scratch, { recursive: true, force: true }); }
+});
+
 test('a restore whose services do not start names the unhealthy ones and shows their last log lines', () => {
   const { scratch, backup } = fixture('warehouse-restore-start-');
   try {

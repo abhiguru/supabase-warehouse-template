@@ -202,6 +202,14 @@ finish() {
   if ((status != 0)) && [[ "$phase" != done ]]; then
     cat >&2 <<MSG
 Restore failed during: $phase
+MSG
+    if [[ "$phase" == 'release files' ]]; then
+      cat >&2 <<MSG
+The database and the stored files ARE restored; only public/release.json and public/app-compat.json were not written (message above). Rerunning
+bash setup.sh writes them and finishes the restore; the rollback below is needed only if you want to undo the whole restore.
+MSG
+    fi
+    cat >&2 <<MSG
 The replaced data was kept for rollback:
   $old_db
   $old_storage
