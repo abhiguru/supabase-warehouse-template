@@ -40,9 +40,14 @@ fi
 # fails on them is not found here; an old backup is said so, with the date.
 stamp="${backup##*/warehouse-}"
 made="${stamp:0:4}-${stamp:4:2}-${stamp:6:2} ${stamp:9:2}:${stamp:11:2}:${stamp:13:2}"
-age=$(( $(date -u +%s) - $(date -u -d "$made" +%s 2>/dev/null || echo 0) ))
+# A name that matches the pattern but is no date (20269999T...) has no age: it is said so, and no warning about age is made.
+made_epoch="$(date -u -d "$made" +%s 2>/dev/null || true)"
+age=0
+age_known=yes
+if [[ "$made_epoch" =~ ^[0-9]+$ ]]; then age=$(( $(date -u +%s) - made_epoch )); else age_known=no; fi
 if ((age < 0)); then age=0; fi
-if ((age >= 172800)); then age_text="$((age / 86400)) days"; elif ((age >= 3600)); then age_text="$((age / 3600)) hours"; else age_text="$((age / 60)) minutes"; fi
+if [[ "$age_known" == no ]]; then age_text='of unknown age'
+elif ((age >= 172800)); then age_text="$((age / 86400)) days"; elif ((age >= 3600)); then age_text="$((age / 3600)) hours"; else age_text="$((age / 60)) minutes"; fi
 
 scratch="$(mktemp -d "${TMPDIR:-/tmp}/warehouse-rehearsal.XXXXXX")"
 container=''
@@ -55,8 +60,8 @@ cleanup() {
 }
 trap cleanup EXIT
 
-say "Rehearsal of the migrations of $TO_LABEL: restoring $(basename "$backup") into a disposable database (the facility itself is not touched). That backup was made $made UTC, $age_text ago."
-if ((age >= 172800)); then
+say "Rehearsal of the migrations of $TO_LABEL: restoring $(basename "$backup") into a disposable database (the facility itself is not touched). That backup was made $made UTC$([[ "$age_known" == yes ]] && echo ", $age_text ago" || echo " ($age_text: its name holds no valid date)")."
+if [[ "$age_known" == yes ]] && ((age >= 172800)); then
   printf '%s\n' "Warning: this backup is $age_text old. Rows entered after $made UTC are not on the copy, so a migration that fails on them is not found by this rehearsal (it would stop setup after the checkout). To rehearse on newer data, make a backup that is verified and recorded first: bash scripts/backup.sh, then bash scripts/verify-restore.sh <the new folder under backups/>, then node scripts/watch.mjs record-verified <its name> (the nightly pass does the same), and run this command again." >&2
 fi
 # The signature and the chain were proved when the backup went on the verified list, and it was compared with its integrity report then;

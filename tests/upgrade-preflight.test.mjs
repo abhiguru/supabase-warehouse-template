@@ -452,6 +452,16 @@ test('the rehearsal restores only (no integrity comparison) and says which backu
       assert.match(o.stdout, /That backup was made 2026-01-01 03:04:05 UTC, \d+ days ago\./);
       assert.match(o.stderr, /Warning: this backup is \d+ days old\. Rows entered after 2026-01-01 03:04:05 UTC are not on the copy[^]*node scripts\/watch\.mjs record-verified/);
     } finally { w2.cleanup(); }
+    // A name that has the pattern but no valid date (month 99) has no age: not "20000+ days", and no age warning.
+    const w3 = world();
+    try {
+      w3.backup('warehouse-20269999T030405Z', 1024, { dump: 1024 });
+      const bad = w3.run();
+      assert.equal(bad.status, 0, bad.stdout + bad.stderr);
+      assert.match(bad.stdout, /That backup was made 2026-99-99 03:04:05 UTC \(of unknown age: its name holds no valid date\)\./);
+      assert.doesNotMatch(bad.stdout + bad.stderr, /\d{4,} days/);
+      assert.doesNotMatch(bad.stderr, /Warning: this backup is/);
+    } finally { w3.cleanup(); }
   } finally { w.cleanup(); }
 });
 
