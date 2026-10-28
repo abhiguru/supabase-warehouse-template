@@ -1331,7 +1331,7 @@ test('fas-sync: the plan says to pause it, and a psql session from outside the s
     const dry = w.run(['--dry-run', 'v0.2.0']);
     assert.equal(dry.status, 0, dry.stderr);
     assert.match(dry.stdout, /The facility is closed for the backup, its verification and the migrations: before step 1 both gateways are put in maintenance mode/);
-    assert.match(dry.stdout, /Pause fas-sync now \(it writes straight to the database\): nothing may write meanwhile, or the way back would lose it\./);
+    assert.match(dry.stdout, /fas-sync \(it writes straight to the database\) has to be paused before the real run: nothing may write meanwhile, or the way back would lose it\. The real run checks for a psql session and refuses to start while one is open\./);
     assert.doesNotMatch(dry.stderr, /psql session/, 'none is open');
     // What is asked: sessions of psql (the way fas-sync reaches the database) other than the one asking, among client backends.
     const query = maintLog(w).find(line => line.startsWith('sessions-query'));
