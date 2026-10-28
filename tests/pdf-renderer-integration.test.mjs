@@ -46,18 +46,24 @@ exit 0
   return { ...r, lines, removals: lines.filter(l => /^(image rm|rmi)( |$)/.test(l)) };
 }
 
-test('integration.sh: the poppler image is built untagged after the listing, and removed by exact id without -f when the build made it', () => {
+test('integration.sh: the poppler image is built untagged after the listing, and tagged for this run and removed by that tag, without -f, when the build made it', () => {
   const r = run({ snapshot: [OTHER] });
   const build = r.lines.find(l => l.startsWith('build '));
   assert.match(build, /^build -q [^ ]+\/tests\/golden-pdf$/, 'untagged: no -t');
   assert.ok(r.lines.indexOf('image ls -aq --no-trunc') >= 0 && r.lines.indexOf('image ls -aq --no-trunc') < r.lines.indexOf(build), 'snapshot before the build');
-  assert.deepEqual(r.removals, [`image rm ${POPPLER}`], r.lines.join('\n'));
+  const tag = r.lines.find(l => l.startsWith('tag '));
+  assert.match(tag, new RegExp(`^tag ${POPPLER} pdf-golden-tools:it-\\d+$`), 'the new id gets this run\'s tag');
+  assert.deepEqual(r.removals, [`image rm ${tag.split(' ')[2]}`], 'only that tag is removed, never the id: another run on the host may share the image');
+  assert.ok(r.lines.indexOf(tag) > r.lines.indexOf(build), 'tagged after the build');
+  // A second run on the same host gets its own tag, so neither removes the other's name.
+  assert.notEqual(run({ snapshot: [OTHER] }).lines.find(l => l.startsWith('tag ')), tag);
 });
 
 test('integration.sh: an image id that was on the host before the build is never removed', () => {
   const r = run({ snapshot: [OTHER, POPPLER] });
   assert.ok(r.lines.some(l => l.startsWith('build -q ')), 'the build ran');
   assert.deepEqual(r.removals, [], r.lines.join('\n'));
+  assert.ok(!r.lines.some(l => l.startsWith('tag ')), 'an id that was there gets no tag of ours');
 });
 
 test('integration.sh: when the listing fails or the build prints no id, nothing is built on trust and nothing is removed', () => {
