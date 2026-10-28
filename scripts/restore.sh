@@ -17,7 +17,8 @@ set -euo pipefail
 umask 077
 ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 compose() { bash "$ROOT/scripts/compose.sh" "$@"; }
-usage() { echo 'Usage: npm run db:restore -- --yes PATH_TO_BACKUP [--restore-config] [--allow-unsigned]   (--allow-unsigned: only for when the backup key is lost)' >&2; exit 1; }
+# usage [0]: with 0 (an explicit --help) the text goes to standard output and the exit status is 0; otherwise it is an error.
+usage() { if [[ "${1:-}" == 0 ]]; then echo 'Usage: npm run db:restore -- --yes PATH_TO_BACKUP [--restore-config] [--allow-unsigned]   (--allow-unsigned: only for when the backup key is lost)'; exit 0; fi; echo 'Usage: npm run db:restore -- --yes PATH_TO_BACKUP [--restore-config] [--allow-unsigned]   (--allow-unsigned: only for when the backup key is lost)' >&2; exit 1; }
 
 confirm=false
 restore_config=false
@@ -32,7 +33,7 @@ while (($#)); do
     --restore-config) restore_config=true ;;
     --relocated) relocated=true ;;
     --allow-unsigned) allow_unsigned=true ;;
-    -h|--help) usage ;;
+    -h|--help) usage 0 ;;
     -*) echo "Unknown option: $1" >&2; usage ;;
     *) [[ -z "$backup" ]] || usage; backup="$1" ;;
   esac

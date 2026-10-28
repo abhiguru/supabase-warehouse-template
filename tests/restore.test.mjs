@@ -681,3 +681,18 @@ test('restore of a backup made before the Storage head was recorded passes the i
     assert.ok(existsSync(state));
   } finally { rmSync(scratch, { recursive: true, force: true }); }
 });
+
+test('an explicit --help prints the usage on standard output and exits 0; a missing argument is still an error on standard error', () => {
+  for (const script of ['restore.sh', 'restore-host.sh', 'verify-restore.sh']) {
+    const path = new URL(`../scripts/${script}`, import.meta.url).pathname;
+    for (const flag of ['--help', '-h']) {
+      const help = spawnSync('bash', [path, flag], { encoding: 'utf8' });
+      assert.equal(help.status, 0, `${script} ${flag}: ${help.stderr}`);
+      assert.match(help.stdout, /^Usage: npm run db:/, script);
+      assert.equal(help.stderr, '', script);
+    }
+    const none = spawnSync('bash', [path], { encoding: 'utf8', env: { ...process.env, WAREHOUSE_STATE_DIR: '' } });
+    assert.equal(none.status, 1, `${script} without arguments`);
+    assert.match(none.stderr, /Usage: npm run db:/, script);
+  }
+});

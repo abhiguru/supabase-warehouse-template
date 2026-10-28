@@ -45,7 +45,9 @@
 set -euo pipefail
 umask 077
 ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
-usage() { echo 'Usage: npm run db:restore-host -- --state-dir ABSOLUTE_NEW_STATE --backup-key KEYFILE --yes [--images DIR] BACKUP_DIR_OR_ARCHIVE   (--allow-unsigned instead of --backup-key: only for when the backup key is lost)' >&2; exit 1; }
+# usage [0]: with 0 (an explicit --help) the text goes to standard output and the exit status is 0; otherwise it is an error.
+usage_text='Usage: npm run db:restore-host -- --state-dir ABSOLUTE_NEW_STATE --backup-key KEYFILE --yes [--images DIR] BACKUP_DIR_OR_ARCHIVE   (--allow-unsigned instead of --backup-key: only for when the backup key is lost)'
+usage() { if [[ "${1:-}" == 0 ]]; then echo "$usage_text"; exit 0; fi; echo "$usage_text" >&2; exit 1; }
 die() { echo "$*" >&2; exit 1; }
 
 state='' confirm=false source='' keyfile='' allow_unsigned=false images=''
@@ -56,7 +58,7 @@ while (($#)); do
     --allow-unsigned) allow_unsigned=true; shift ;;
     --images) (($# > 1)) || usage; images="$2"; shift 2 ;;
     --yes) confirm=true; shift ;;
-    -h|--help) usage ;;
+    -h|--help) usage 0 ;;
     -*) echo "Unknown option: $1" >&2; usage ;;
     *) [[ -z "$source" ]] || usage; source="$1"; shift ;;
   esac

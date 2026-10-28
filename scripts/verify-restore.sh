@@ -33,8 +33,10 @@ umask 077
 ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 # Same image, by digest, as docker/postgres/Dockerfile builds the production database from.
 IMAGE="$(bash "$ROOT/scripts/db-image.sh")"
-usage() { echo 'Usage: npm run db:verify-restore -- [--allow-unsigned] [--no-storage-tree] [--keep] [--restore-only] PATH_TO_BACKUP   (--allow-unsigned: only for when the backup key is lost)
-       npm run db:verify-restore -- --rm CONTAINER   (removes a container that --keep left)' >&2; exit 1; }
+# usage [0]: with 0 (an explicit --help) the text goes to standard output and the exit status is 0; otherwise it is an error.
+usage_text='Usage: npm run db:verify-restore -- [--allow-unsigned] [--no-storage-tree] [--keep] [--restore-only] PATH_TO_BACKUP   (--allow-unsigned: only for when the backup key is lost)
+       npm run db:verify-restore -- --rm CONTAINER   (removes a container that --keep left)'
+usage() { if [[ "${1:-}" == 0 ]]; then echo "$usage_text"; exit 0; fi; echo "$usage_text" >&2; exit 1; }
 # --rm: remove a container that --keep left, with its data directory. Only a container of this script's name and label is touched.
 remove_kept() {
   local name="${1:-}" label dir
@@ -77,7 +79,7 @@ while (($#)); do
     --keep) keep=true ;;
     --restore-only) restore_only=true ;;
     --rm) (($# == 2)) || usage; remove_kept "$2" ;;
-    -h|--help) usage ;;
+    -h|--help) usage 0 ;;
     -*) echo "Unknown option: $1" >&2; usage ;;
     *) [[ -z "$backup" ]] || usage; backup="$1" ;;
   esac
