@@ -1718,7 +1718,7 @@ export async function runOnce(deps, { checks = CHECKS, heal = selfHeal } = {}) {
     for (const name of healed.ran) ran.add(name);
   }
   const heldHours = stuck ? Math.floor((now - data.busySince) / HOUR) : 0;
-  results.push(result('operator_lock', 'operator_lock_stuck', !stuck, `An operator command has held the lock for ${heldHours} h or more`, 'Look for a hung setup, backup or restore: node scripts/watch.mjs status'));
+  results.push(result('operator_lock', 'operator_lock_stuck', !stuck, `An operator command has held the lock for ${heldHours} h or more`, 'Look for a hung setup, backup or restore, or an upgrade.sh waiting at a terminal for Enter after the operator actions (it stops by itself after 30 minutes of no answer): node scripts/watch.mjs status'));
   ran.add('operator_lock');
   // Immediate, and listed among NEVER_MUTED: the backup goes on, but a long pass now holds the 5-minute checks off, and an
   // installation that cannot run sudo (an agent-driven update) would otherwise never be told.

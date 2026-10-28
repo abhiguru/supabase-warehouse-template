@@ -1056,6 +1056,15 @@ test('the operator actions are followed by a pause only at a terminal, in a real
     assert.deepEqual(readdirSync(join(stop.state, 'backups')), []);
     assert.deepEqual(readdirSync(tmp), [], 'the copy of the preflight is removed');
   } finally { stop.cleanup(); }
+  // ASSUME_YES=yes in the operator's environment is not --yes: only the option skips the pause.
+  const envYes = world({ at: 'v0.2.0' });
+  try {
+    const r = envYes.run(['v0.2.12'], { ...asTerminal(envYes), ASSUME_YES: 'yes' });
+    assert.notEqual(r.status, 0);
+    assert.ok(r.stdout.includes('Press Enter to continue, Ctrl-C to stop'), 'the pause is still made');
+    assert.match(r.stderr, /Refusing: no answer was read/);
+    assert.deepEqual(r.log, [], 'no backup');
+  } finally { envYes.cleanup(); }
   // --yes: no pause, though standard input is a terminal and says nothing. --dry-run: no pause either (nothing would change).
   const skip = world({ at: 'v0.2.0' });
   try {

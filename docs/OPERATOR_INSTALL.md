@@ -2093,7 +2093,7 @@ sudo bash scripts/backup-usb.sh setup --state "$WAREHOUSE_STATE_DIR"   # only if
 judges nothing meanwhile; its `operator_lock_stuck` alert fires after 2 hours, or after twice the time of the last backup plus the last verify when that is longer) and prints the operator actions of `CHANGELOG.md` between your
 release and the new one **twice**: first, before anything is changed, as part of the release's preflight (below), and again at the end. The first
 print is the dry run's: the real run prints it too, but then the backup follows. At a terminal the real run waits after the list when it has
-operator actions ("Press Enter to continue, Ctrl-C to stop"; the lock is held while it waits, and Ctrl-C releases it with nothing changed);
+operator actions, as the last step of the preflight (after the host, floor, room and rehearsal checks; "Press Enter to continue, Ctrl-C to stop"; the lock is held while it waits, and Ctrl-C releases it with nothing changed; with no answer for 30 minutes the upgrade stops by itself, also with nothing changed);
 `--yes` skips that pause, and a run without a terminal (cron, CI, `ssh host command`, `</dev/null`) never pauses, so an action that says
 "before" is done only if the dry run was read.
 
