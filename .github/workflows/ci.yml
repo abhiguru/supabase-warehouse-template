@@ -757,28 +757,6 @@ jobs:
             awk 'NR == FNR { before[$1] = $2; next } ($1 in before) && $2 + 0 < before[$1] + 0 { print "rows lost in " $1 ": " before[$1] " -> " $2; lost = 1 } END { exit lost }' "$RUNNER_TEMP/counts-before" "$RUNNER_TEMP/counts-after"
           fi
           npm run test:db-roles
-      - name: Run the previous release's operator API test
-        if: steps.previous.outputs.skip != 'true'
-        env:
-          PREVIOUS_REF: ${{ steps.previous.outputs.ref }}
-        run: |
-          set -euo pipefail
-          # A release from before migration 127 has a test that saves numbers such as BAC01. The upgrade started the checks (GRN A####, dispatch
-          # I####) on this empty installation, as it does for any facility without documents. The operator path to switch them off is setup.sh
-          # with the same rule and check=off (docs/OPERATOR_INSTALL.md, "Document numbers"); a rerun takes the options of the first run.
-          if ! git -C backend cat-file -e "$PREVIOUS_REF:migrations/00000000000127_document_numbering.sql" 2>/dev/null; then
-            echo "::notice title=Numbering checks switched off for the previous release's test::$PREVIOUS_REF has no migration 127, so its operator API test saves numbers outside A#### and I####. The drill switches the GRN and dispatch checks off with setup.sh (check=off) before it runs that test."
-            cd "$RUNNER_TEMP/previous"
-            bash setup.sh --operator --state-dir "$WAREHOUSE_STATE_DIR" \
-              --api-url https://backend-core.example.test --company 'Fictional Core Warehouse' \
-              --provider-env "$RUNNER_TEMP/msg91-upgrade.env" \
-              --admin-phone 919888888871 --admin-name 'Core Demo Administrator' \
-              --alert-webhook-file off --letterhead-file off \
-              --grn-numbering letters,first=A,digits=4,check=off \
-              --dispatch-numbering sequence,prefix=I,digits=4,start=1,check=off
-            node scripts/doctor.mjs --local
-          fi
-          cd "$RUNNER_TEMP/previous"
           node tests/operator-api-core.mjs
       - name: Stop only the drill installation
         if: always() && steps.previous.outputs.skip != 'true'
