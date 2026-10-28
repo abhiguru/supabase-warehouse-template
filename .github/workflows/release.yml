@@ -107,11 +107,11 @@ jobs:
         id: rehearsed
         # A final tag (vX.Y.Z) on the commit of the newest vX.Y.Z-rc.N whose release-images.json can be downloaded and fits this checkout
         # reuses those images (the next steps re-tag them); the step prints the pre-release's tag, and nothing for any other tag, which
-        # then builds and scans as before. The tags are fetched because the checkout of a tag has only that one.
+        # then builds and scans as before. The tags are fetched (--depth=1: only the commits the tags point at, not the history) because the checkout of a tag has only that one.
         env:
           GH_TOKEN: ${{ github.token }}
         run: |
-          git fetch --force --no-tags origin 'refs/tags/v*:refs/tags/v*'
+          git fetch --force --no-tags --depth=1 origin 'refs/tags/v*:refs/tags/v*'
           rc="$(bash scripts/publish-images.sh --rehearsed "$GITHUB_REF_NAME" "$RUNNER_TEMP/rehearsed-images.json")"
           echo "rc=$rc" >> "$GITHUB_OUTPUT"
       - name: Install Trivy 0.76.0

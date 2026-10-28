@@ -528,7 +528,7 @@ test('release.yml publishes the release images in a job of their own: build, sca
   // The build, the scan, Trivy and the push run only when no pre-release's images are reused; the re-tag only when they are.
   const reuse = step('Reuse the images of the pre-release at this commit, if there is one');
   assert.match(reuse, /\n        id: rehearsed\n/);
-  assert.match(reuse, /git fetch --force --no-tags origin 'refs\/tags\/v\*:refs\/tags\/v\*'\n/, 'the tags of the pre-releases are fetched: a tag checkout has only its own');
+  assert.match(reuse, /git fetch --force --no-tags --depth=1 origin 'refs\/tags\/v\*:refs\/tags\/v\*'\n/, 'the tags of the pre-releases are fetched, only the commits they point at (--depth=1): a tag checkout has only its own');
   assert.match(reuse, /rc="\$\(bash scripts\/publish-images\.sh --rehearsed "\$GITHUB_REF_NAME" "\$RUNNER_TEMP\/rehearsed-images\.json"\)"\n\s+echo "rc=\$rc" >> "\$GITHUB_OUTPUT"/);
   for (const name of ['Install Trivy 0.76.0', 'Build every image without the cache and scan it', 'Push the images that were scanned and write release-images.json']) {
     assert.match(step(name), /\n        if: steps\.rehearsed\.outputs\.rc == ''\n/, `${name} runs only when no pre-release's images are reused`);
