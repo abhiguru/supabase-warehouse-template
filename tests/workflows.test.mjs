@@ -620,3 +620,46 @@ test('migration ordering step: on a pull request a base that cannot be fetched i
   r = orderingStep({ event: 'schedule', fetchWorks: true, commitPresent: false });
   assert.equal(r.status, 0); assert.match(r.stdout, /::notice /);
 });
+
+// ---- the release job's base tag, run for real in a scratch repository ---------------------------------------------------------------
+
+function baseTagFor(tag, build) {
+  const dir = mkdtempSync(join(tmpdir(), 'warehouse-release-base-'));
+  try {
+    const git = (...args) => { const r = spawnSync('git', ['-C', dir, '-c', 'user.name=T', '-c', 'user.email=t@example.test', ...args], { encoding: 'utf8' }); assert.equal(r.status, 0, `git ${args.join(' ')}: ${r.stderr}`); return r.stdout; };
+    git('init', '-q', '-b', 'main');
+    let n = 0;
+    const commit = () => git('commit', '-q', '--allow-empty', '-m', `c${++n}`);
+    build({ git, commit });
+    mkdirSync(join(dir, '.bin'));
+    writeFileSync(join(dir, '.bin/node'), '#!/bin/sh\necho "$@"\n', { mode: 0o700 });
+    const r = spawnSync('bash', ['-e', '-c', stepScript('release.yml', 'Dependency advisories this release adds (root, docker/storage, docker/pdf-renderer)')],
+      { cwd: dir, encoding: 'utf8', env: { PATH: `${join(dir, '.bin')}:${process.env.PATH}`, GITHUB_REF_NAME: tag } });
+    return { status: r.status, base: /--base-ref (\S+)/.exec(r.stdout)?.[1], out: r.stdout + r.stderr };
+  } finally { rmSync(dir, { recursive: true, force: true }); }
+}
+
+test('release.yml audits against the newest FINAL tag of another version: a release candidate and its final both compare with the release before', () => {
+  const history = ({ git, commit }) => {
+    commit(); git('tag', 'v0.9.0');
+    commit(); git('tag', 'v1.0.0-rc.1');
+    commit(); git('tag', 'v1.0.0-rc.2');
+  };
+  assert.equal(baseTagFor('v1.0.0-rc.2', history).base, 'v0.9.0', 'rc.2 is not compared with rc.1');
+  assert.equal(baseTagFor('v1.0.0-rc.1', ctx => { history(ctx); }).base, 'v0.9.0');
+  assert.equal(baseTagFor('v1.0.0', ({ git, commit }) => { history({ git, commit }); git('tag', 'v1.0.0'); }).base, 'v0.9.0', 'the final on the commit of its last candidate is not compared with itself');
+  assert.equal(baseTagFor('v1.0.0+build.5', ({ git, commit }) => { history({ git, commit }); git('tag', 'v1.0.0+build.5'); }).base, 'v0.9.0', 'build metadata is not a version');
+  // A patch-only release on a release/<line> branch: the line's own tags, not the newer minor of main.
+  const line = tag => baseTagFor(tag, ({ git, commit }) => {
+    commit(); git('tag', 'v1.0.0'); git('branch', 'release/1.0');
+    commit(); git('tag', 'v1.1.0');
+    git('checkout', '-q', 'release/1.0');
+    commit(); git('tag', 'v1.0.1');
+    commit(); git('tag', 'v1.0.2-rc.1');
+    commit(); git('tag', 'v1.0.2');
+  });
+  assert.equal(line('v1.0.2').base, 'v1.0.1');
+  assert.equal(line('v1.0.2-rc.1').base, 'v1.0.1');
+  assert.equal(baseTagFor('v1.0.0', ({ commit, git }) => { commit(); git('tag', 'v1.0.0'); }).status, 1, 'no other final tag: an error');
+  assert.match(baseTagFor('v1.0.0-rc.1', ({ commit, git }) => { commit(); git('tag', 'v1.0.0-rc.1'); }).out, /No previous release tag/);
+});
