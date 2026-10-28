@@ -214,6 +214,15 @@ test('a migration forgets the recorded definitions in its own transaction; a pla
 // (the numbered files up to the floor are that function's history; the default is 126, the last migration before the extraction).
 const FLOOR_LINE = /^-- Migration history floor: (\d+)$/m;
 const DEFAULT_FLOOR = 126;
+// The floor of a file: its header line, else 126. A header must be well formed and name a migration number from the extraction (126) up to the
+// newest numbered file; a floor below 126 would re-open the history the extraction took over, and one above the newest hides every migration.
+function floorOf(file, sql, migrations) {
+  if (/^-- Migration history floor/m.test(sql) && !FLOOR_LINE.test(sql)) throw new Error(`${file}: the floor line must read "-- Migration history floor: <migration number>"`);
+  const floor = Number(FLOOR_LINE.exec(sql)?.[1] ?? DEFAULT_FLOOR);
+  const newest = Math.max(...Object.keys(migrations).map(name => Number(name.split('_')[0])));
+  if (!(floor >= DEFAULT_FLOOR && floor <= newest)) throw new Error(`${file}: the migration history floor ${floor} is outside ${DEFAULT_FLOOR} to ${newest} (the newest migration)`);
+  return floor;
+}
 // The spellings PostgreSQL treats as the same type, so that DROP/GRANT with `varchar` or `timestamptz` are found against a file that says
 // `character varying` (the ones format_type prints).
 const TYPE_ALIASES = [[/\bint4\b|\bint\b/g, 'integer'], [/\bint8\b/g, 'bigint'], [/\bint2\b/g, 'smallint'], [/\bvarchar\b/g, 'character varying'],
@@ -223,7 +232,7 @@ function definitionConflicts(migrations, definitions) {
   const found = [];
   const identities = Object.entries(definitions).map(([file, sql]) => {
     const identity = canonicalTypes(/\nREVOKE ALL ON FUNCTION (.+?) FROM /.exec(sql)[1]);
-    return { file, identity, floor: Number(FLOOR_LINE.exec(sql)?.[1] ?? DEFAULT_FLOOR), name: identity.slice(0, identity.indexOf('(')), bare: identity.slice(identity.indexOf('.') + 1, identity.indexOf('(')) };
+    return { file, identity, floor: floorOf(file, sql, migrations), name: identity.slice(0, identity.indexOf('(')), bare: identity.slice(identity.indexOf('.') + 1, identity.indexOf('(')) };
   });
   for (const [migration, text] of Object.entries(migrations)) {
     // Comments go, quoted identifiers lose their quotes (`"public"."save_grn"`), and types are spelled one way.
@@ -254,7 +263,7 @@ function resignWithoutRevoke(migrations, definitions) {
   const found = [];
   for (const [file, definition] of Object.entries(definitions)) {
     const bare = /\nREVOKE ALL ON FUNCTION (?:[a-z_]+\.)?([a-z_0-9]+)\(/.exec(definition)[1];
-    const floor = Number(FLOOR_LINE.exec(definition)?.[1] ?? DEFAULT_FLOOR);
+    const floor = floorOf(file, definition, migrations);
     for (const [migration, text] of Object.entries(migrations)) {
       if (!(Number(migration.split('_')[0]) > floor)) continue;
       const sql = text.replace(/\/\*[^]*?\*\//g, ' ').replace(/--.*$/gm, ' ').replace(/"([a-z_][a-z0-9_]*)"/gi, '$1').replace(/\s+/g, ' ');
@@ -340,4 +349,19 @@ test('a definition file with its own floor is checked from that migration on, so
   assert.equal(floored.length, 1, 'with floor 130 only the later one is');
   assert.match(floored[0], /^00000000000131_later\.sql alters it/);
   assert.equal(definitionConflicts({ '00000000000127_other.sql': 'ALTER FUNCTION public.save_grn(uuid) SET jit = off;' }, { 'save_grn.sql': file().replaceAll('new_rpc', 'save_grn') }).length, 1, 'another file keeps the default floor');
+});
+
+test('a definition file\'s history floor must lie between 126 and the newest migration, and the line must be well formed', () => {
+  const file = header => `${header}CREATE OR REPLACE FUNCTION public.new_rpc(p_a uuid) RETURNS void LANGUAGE sql AS $$ SELECT 1 $$;\nREVOKE ALL ON FUNCTION public.new_rpc(uuid) FROM PUBLIC;\n`;
+  const migrations = { '00000000000127_a.sql': 'SELECT 1;', '00000000000130_b.sql': 'SELECT 2;' };
+  const conflicts = header => definitionConflicts(migrations, { 'new_rpc.sql': file(header) });
+  assert.deepEqual(conflicts(''), []);
+  assert.deepEqual(conflicts('-- Migration history floor: 126\n'), []);
+  assert.deepEqual(conflicts('-- Migration history floor: 130\n'), []);
+  assert.throws(() => conflicts('-- Migration history floor: 125\n'), /floor 125 is outside 126 to 130/);
+  assert.throws(() => conflicts('-- Migration history floor: 0\n'), /outside/);
+  assert.throws(() => conflicts('-- Migration history floor: 131\n'), /floor 131 is outside 126 to 130/);
+  assert.throws(() => conflicts('-- Migration history floor: 00000000000999\n'), /outside/);
+  assert.throws(() => conflicts('-- Migration history floor 130\n'), /must read/);
+  assert.throws(() => resignWithoutRevoke(migrations, { 'new_rpc.sql': file('-- Migration history floor: 5\n') }), /outside/, 'the re-sign check reads the floor the same way');
 });
