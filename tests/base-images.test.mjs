@@ -205,6 +205,7 @@ function network({ library, hub = {}, requests = [] }) {
     if (answer === 'missing') return { ok: false, status: 404 };
     if (answer === 'timeout') throw new DOMException('The operation was aborted due to timeout', 'TimeoutError');
     if (answer === 'refused') throw new TypeError('fetch failed');
+    if (answer === 'bodytimeout') return { ok: true, status: 200, json: async () => { throw new DOMException('The operation was aborted due to timeout', 'TimeoutError'); } };
     if (answer === 'nodate') return { ok: true, status: 200, json: async () => ({ name: tag[2] }) };
     if (typeof answer === 'object') return { ok: false, status: answer.status };
     return { ok: true, status: 200, json: async () => ({ name: tag[2], tag_last_pushed: new Date(now - answer * DAY).toISOString() }) };
@@ -306,7 +307,6 @@ test('Docker Hub: a 5xx or a timeout once is retried and read; twice in a row it
     for (const [what, answer, why] of [
       ['a 403', { status: 403 }, /HTTP 403/], ['a 401', { status: 401 }, /HTTP 401/], ['a 410', { status: 410 }, /HTTP 410/],
       ['a redirect', { status: 301 }, /HTTP 301, redirected/], ['a 200 without a push date', 'nodate', /HTTP 200 without a push date/],
-      ['a network error', 'refused', /fetch failed/],
     ]) {
       const requests = [];
       const result = await check(root, { library, requests, hub: { [pin]: answer } });
@@ -316,6 +316,18 @@ test('Docker Hub: a 5xx or a timeout once is retried and read; twice in a row it
       assert.match(result.err, /not a rate limit/, what);
       assert.match(result.out, /age not checked \(Docker Hub answer not understood \(/, what);
       assert.equal(hubRequests(requests), 1, `${what}: not retried, and the next pin is not asked`);
+    }
+    // No connection, or a body that is not read in time: asked once more; one failure then an answer reads normally, two in a row is
+    // exit 2 that says "could not connect" and does not blame the endpoint.
+    for (const [what, bad] of [['a network error', 'refused'], ['a body read timeout', 'bodytimeout']]) {
+      const retried = await check(root, { library, hub: { [pin]: [bad, 2] } });
+      assert.equal(retried.code, EXIT.ok, `${what} once, then an answer`);
+      const requests = [];
+      const twice = await check(root, { library, requests, hub: { [pin]: bad } });
+      assert.equal(twice.code, EXIT.unreadable, `${what} twice`);
+      assert.match(twice.err, /Docker Hub could not be read for the age check: could not connect \(/, what);
+      assert.doesNotMatch(twice.err, /may have moved/, what);
+      assert.equal(hubRequests(requests), 2, `${what}: one retry, and the next pin is not asked`);
     }
     // A pin that is gone from the library is still reported as the failure it is, and the unreadable Docker Hub is still printed.
     const both = await check(root, { library: { ...library, node: 'Tags: 25.1.0-alpine3.23\n' }, hub: { [pin]: { status: 403 } } });

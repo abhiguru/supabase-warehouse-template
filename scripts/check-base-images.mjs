@@ -136,6 +136,7 @@ async function getText(url, { fetchImpl, delays }) {
 // Docker Hub, one request (a 5xx or a timeout is asked once more after a pause):
 //   { status: 'ok', pushed: ms } | { status: 'missing' }                         the tag is there, or Docker Hub says it is not
 //   { status: 'rate-limited' } | { status: 'busy', why }                         neutral: 429; 5xx or timeout twice in a row
+//   { status: 'unreadable', why, connect: true }                                 no connection, or the body not read, twice in a row
 //   { status: 'unreadable', why }                                                anything else: another 4xx, a redirect (the
 //                                                                                API moved), another fetch error, a 200 with no date
 // Only the first two groups may end the age check quietly (exit 3); an answer this script does not understand must fail the run.
@@ -146,7 +147,12 @@ async function hubTag(name, tag, { fetchImpl, delays }) {
     try {
       response = await fetchImpl(HUB_URL(name, tag), { signal: AbortSignal.timeout(30_000), redirect: 'manual' });
     } catch (error) {
-      if (error?.name !== 'TimeoutError' && error?.name !== 'AbortError') return { status: 'unreadable', why: error.message };
+      if (error?.name !== 'TimeoutError' && error?.name !== 'AbortError') {
+        // A connection error (refused, reset, DNS) is not a sign that the API moved: ask once more before giving up.
+        if (last) return { status: 'unreadable', why: `could not connect (${error.message})`, connect: true };
+        await sleep(delays[0] ?? 0);
+        continue;
+      }
       if (last) return { status: 'busy', why: 'timed out' };
       await sleep(delays[0] ?? 0);
       continue;
@@ -164,7 +170,15 @@ async function hubTag(name, tag, { fetchImpl, delays }) {
       const body = await response.json();
       const pushed = Date.parse(body.tag_last_pushed ?? body.last_updated);
       return Number.isNaN(pushed) ? { status: 'unreadable', why: 'HTTP 200 without a push date' } : { status: 'ok', pushed };
-    } catch (error) { return { status: 'unreadable', why: error.message }; }
+    } catch (error) {
+      // The body did not arrive in time: the same as no connection (ask once more), not an answer that was not understood.
+      if (error?.name === 'TimeoutError' || error?.name === 'AbortError') {
+        if (last) return { status: 'unreadable', why: `could not connect (the answer was not read in time: ${error.message})`, connect: true };
+        await sleep(delays[0] ?? 0);
+        continue;
+      }
+      return { status: 'unreadable', why: error.message };
+    }
   }
 }
 
@@ -206,7 +220,8 @@ export async function main(argv = process.argv.slice(2), deps = {}) {
     if (hub.status === 'busy') { hubTrouble = `did not answer (${hub.why}), retry later`; skip(); continue; }
     if (hub.status === 'unreadable') {
       hubTrouble = `answer not understood (${hub.why})`; hubBroken = true;
-      err(`Docker Hub could not be read for the age check: ${hub.why}. This is not a rate limit: the endpoint (https://hub.docker.com/v2/repositories/library/<name>/tags/<tag>) may have moved, or Docker Hub may now refuse this client; the age of the pins is not being checked.`);
+      if (hub.connect) err(`Docker Hub could not be read for the age check: ${hub.why}, twice. This is not a rate limit; the age of the pins is not being checked. Check the network of the runner and run the check again.`);
+      else err(`Docker Hub could not be read for the age check: ${hub.why}. This is not a rate limit: the endpoint (https://hub.docker.com/v2/repositories/library/<name>/tags/<tag>) may have moved, or Docker Hub may now refuse this client; the age of the pins is not being checked.`);
       skip(); continue;
     }
     if (hub.status === 'missing') { warned += 1; out(`WARN ${label}: ${library.what} is listed, but Docker Hub has no tag ${pin.tag}. The digest pin still builds; check whether the tag was withdrawn.`); continue; }
