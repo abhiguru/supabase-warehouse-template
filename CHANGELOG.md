@@ -738,6 +738,11 @@ The app needs no change (it never reads the refresh token's lifetime; the one an
 
 ### Fixed
 
+- **Setup waits for the Docker daemon before refusing.** Right after a cold start of the host or of a WSL distro (or a Linux reboot),
+  `setup.sh` and `doctor` stopped with "Missing or unavailable prerequisite: docker" because the daemon was not answering yet. When the
+  docker CLI is there, `doctor` now retries the daemon check every 2 s for up to 60 s, prints one line while it waits, and then refuses
+  with "Docker did not answer within 60 s; check `systemctl status docker`". A missing CLI or Compose plugin is still refused at once.
+  The manual wait loop is gone from the Windows host section of `docs/OPERATOR_INSTALL.md`. A Linux operator need not act.
 - **Optional letterhead image on the document PDFs.** `setup.sh --operator --letterhead-file ABSOLUTE|off` (also `scripts/configure.mjs`)
   adds a JPEG or PNG banner (at most 2 MiB, checked by its first bytes) at the top of the GRN, dispatch, invoice and customer stock
   PDFs; report PDFs and QR images are unchanged and plain PDFs stay the default. The image is copied to `public/letterhead.jpg` or

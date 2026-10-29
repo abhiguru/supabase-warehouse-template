@@ -356,6 +356,8 @@ it; only `functions` can.
   `scripts/require-node.sh`, before the first Node call (Node 22.18+ is required). The doctor refuses other
   architectures and a missing or unusable `npm`, `openssl`, `flock`, `docker` or Docker Compose, an unreachable Docker
   daemon and a Compose plugin that does not accept `up --wait-timeout`. Install the named tool and run `setup.sh` again.
+  `Docker did not answer within 60 s` (or `permission denied`): the daemon is down, or this user cannot reach it; run
+  `systemctl status docker` and check that `docker ps` works without sudo (docker group).
 - **`This Docker Compose plugin does not accept up --wait-timeout`**: the
   Compose plugin is too old for the flag the scripts use. Install a current
   plugin from Docker's repository (any build listed under the host
