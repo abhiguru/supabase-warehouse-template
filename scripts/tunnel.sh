@@ -94,7 +94,7 @@ cmd_adopt() {
 # create and delete every tunnel and DNS record of the account, so it lives only in
 # a private temporary directory and is shredded on every exit path.
 cmd_create() {
-  local name="" state dest host port tunnel uuid creds cfg cert out dir_default home_cert
+  local name="" state dest host port tunnel uuid creds cfg cert out dir_default home_cert cleanup_hint=''
   while (($#)); do
     case "$1" in
       --name) (($# > 1)) || usage; name="$2"; shift 2 ;;
@@ -110,6 +110,7 @@ cmd_create() {
   command -v cloudflared >/dev/null || die 'cloudflared is not installed; see docs/OPERATOR_INSTALL.md, "Cloudflare Tunnel ingress".'
   host="$(origin_host "$state")"
   port="$(sed -n 's/^GATEWAY_HTTP_PORT=//p' "$state/config/compose.env" | tail -n 1)"
+  [[ -n "$port" ]] || port="$(sed -n 's/^KONG_HTTP_PORT=//p' "$state/config/compose.env" | tail -n 1)"
   port="${port:-18000}"
   [[ "$port" =~ ^[0-9]{1,5}$ ]] || die "GATEWAY_HTTP_PORT in compose.env is not a port number: $port"
   home_cert="$HOME/.cloudflared/cert.pem"
@@ -141,12 +142,17 @@ cmd_create() {
 
   creds="$dir_default/$name.json"
   out="$(cloudflared tunnel --origincert "$cert" create --credentials-file "$creds" "$name" 2>&1)" || die "tunnel create failed: $out"
-  uuid="$(printf '%s\n' "$out" | grep -Eo '[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}' | head -n 1)"
-  [[ -n "$uuid" && -f "$creds" ]] || die "Could not read the new tunnel's id or credentials from: $out"
+  [[ -f "$creds" ]] || die "tunnel create wrote no credentials file; output: $out"
+  uuid="$(node -e 'console.log(JSON.parse(require("fs").readFileSync(process.argv[1], "utf8")).TunnelID || "")' "$creds")" || uuid=''
+  [[ "$uuid" =~ ^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$ ]] || die "Could not read the new tunnel's id from its credentials file; output: $out"
   tunnel="$uuid"
 
-  cloudflared tunnel --origincert "$cert" route dns "$tunnel" "$host" || die "The DNS route for $host could not be created (a record may already exist there; it was not overwritten).
+  out="$(cloudflared tunnel --origincert "$cert" route dns "$tunnel" "$host" 2>&1)" || die "The DNS route for $host could not be created (a record may already exist there; it was not overwritten): $out
 The tunnel $name ($tunnel) exists and is unused: delete it in the Cloudflare dashboard (Zero Trust, Networks, Tunnels), fix or remove the existing $host record, then run create again."
+  # If the domain picked at login does not contain the hostname, cloudflared exits 0 but creates <host>.<picked-zone>.
+  [[ "$out" == *"Added CNAME $host "* ]] || die "The DNS record was not created for $host; cloudflared said: $out
+Delete tunnel $name ($tunnel) and the record it created in the Cloudflare dashboard (Zero Trust, Networks, Tunnels; DNS), then run create again and pick the domain that contains $host."
+  cleanup_hint="Delete tunnel $name ($tunnel) and the $host record in the Cloudflare dashboard (Zero Trust, Networks, Tunnels; DNS), then run create again."
 
   cfg="$dir_default/config.yml"
   awk -v t="$tunnel" -v c="$creds" '/^tunnel:/ { print "tunnel: " t; next } /^credentials-file:/ { print "credentials-file: " c; next } { print }' \
@@ -154,10 +160,10 @@ The tunnel $name ($tunnel) exists and is unused: delete it in the Cloudflare das
     | sed "s#<confirmed-hostname>#$host#g; s#http://127.0.0.1:18000#http://127.0.0.1:$port#" > "$cfg"
   chmod 0600 "$cfg"
   ! grep -v '^[[:space:]]*#' "$cfg" | grep -q '<' || die 'The generated config still has a placeholder; see deploy/cloudflared-config.example.yml.'
-  cloudflared --config "$cfg" tunnel ingress validate || die 'The generated tunnel config did not validate.'
+  cloudflared --config "$cfg" tunnel ingress validate || die "The generated tunnel config did not validate. $cleanup_hint"
 
   # Adopt in a subshell: it has its own exit trap and must not clear ours.
-  ( cmd_adopt --config "$cfg" ) || die 'Adopting the credential failed.'
+  ( cmd_adopt --config "$cfg" ) || die "Adopting the credential failed. $cleanup_hint"
 
   echo
   echo "Tunnel $name ($tunnel) routes $host to this installation; the account certificate is being shredded."
@@ -167,11 +173,13 @@ The tunnel $name ($tunnel) exists and is unused: delete it in the Cloudflare das
 }
 tunnel_create_cleanup() {
   local f
-  for f in "${TUNNEL_CREATE_HOME_CERT:-}" "${TUNNEL_CREATE_TMP:-}"/*; do
+  [[ -n "${TUNNEL_CREATE_TMP:-}" && -d "$TUNNEL_CREATE_TMP" ]] || return 0
+  # cloudflared writes the credentials file read-only (0400): -f lets shred overwrite it.
+  for f in "${TUNNEL_CREATE_HOME_CERT:-}" "$TUNNEL_CREATE_TMP"/*; do
     [[ -n "$f" && -f "$f" ]] || continue
-    shred -u -- "$f" 2>/dev/null || rm -f -- "$f"
+    shred -fu -- "$f" 2>/dev/null || rm -f -- "$f"
   done
-  [[ -z "${TUNNEL_CREATE_TMP:-}" ]] || rm -rf -- "$TUNNEL_CREATE_TMP"
+  rm -rf -- "$TUNNEL_CREATE_TMP"
 }
 
 cmd_install_service() {

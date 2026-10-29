@@ -904,11 +904,11 @@ sudo bash scripts/tunnel.sh install-service --state "$WAREHOUSE_STATE_DIR"
 bash scripts/tunnel.sh status
 ```
 
-`create` prints a login link: open it on any machine, sign in to Cloudflare and pick the domain; the command waits until you have.
+`create` prints a login link: open it on any machine, sign in to Cloudflare and pick the domain that contains the hostname (a different domain would make Cloudflare create `<hostname>.<that domain>`, and `create` stops when it sees that); the command waits until you have.
 It takes the hostname from this installation's `--api-url` (no hostname argument), refuses a tunnel name that already exists in
 the account (it never reuses or deletes another tunnel), creates a new tunnel, routes the hostname to it **without**
 `--overwrite-dns` (on a conflict it stops, names the new tunnel so you can delete it in the Cloudflare dashboard, and leaves the
-existing record alone), writes the config from the example with the gateway port from `compose.env`, validates it and adopts it.
+existing record alone; after a later failure it tells you to delete the tunnel and the record in the dashboard), writes the config from the example with the gateway port from `compose.env`, validates it and adopts it.
 The account certificate `cert.pem` is moved into a private temporary directory at once and shredded, with the credential copy and
 config in that directory, when the command ends, on success or failure. It refuses if `~/.cloudflared/cert.pem` already exists
 (shred it first) or if the installation already holds a tunnel credential. The sections below are the manual sequence
