@@ -208,6 +208,8 @@ const components = [
         ['docs/OPERATOR_INSTALL.md', 'the upgrade note and the old port name'],
         ['tests/compose-networks.test.mjs', 'a comment on why `dns_search` was once needed'],
         ['tests/configure.test.mjs', 'tests the old port name'],
+        ['scripts/tunnel.sh', 'create reads KONG_HTTP_PORT as the fallback of GATEWAY_HTTP_PORT, as doctor-common.mjs does'],
+        ['tests/tunnel.test.mjs', 'tests that create fallback'],
         ['tests/gateway-config.test.mjs', 'asserts that Kong is gone'],
         [SELF, 'this test'],
       ]),

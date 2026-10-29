@@ -171,3 +171,206 @@ test('status reports a state without a tunnel credential', () => {
     assert.match(result.stdout, /is not installed/);
   } finally { clean(f); }
 });
+
+// ---- create: the guided login, tunnel, DNS route and adoption (fake cloudflared, never the real one) ----
+const NEW_ID = '11111111-2222-4333-8444-555555555555';
+function createFixture(prefix) {
+  const f = fixture(prefix);
+  const home = join(f.scratch, 'home'); mkdirSync(home);
+  const tmp = join(f.scratch, 'tmp'); mkdirSync(tmp);
+  writeFileSync(join(f.scratch, 'bin/cloudflared'), `#!/bin/sh
+# Fake connector: records every call, never talks to Cloudflare.
+echo "cloudflared $*" >> "$FAKE_LOG"
+case "$1" in
+  --config) [ "$FAKE_VALIDATE_FAIL" = yes ] && exit 1; echo "OK"; exit 0 ;;
+esac
+[ "$1" = tunnel ] || exit 2
+shift
+case "$1" in
+  login)
+    [ "$FAKE_LOGIN_FAIL" = yes ] && exit 1
+    mkdir -p "$HOME/.cloudflared"; echo "-----BEGIN CERTIFICATE-----" > "$HOME/.cloudflared/cert.pem"
+    [ "$FAKE_LOGIN_WRITE_FAIL" = yes ] && exit 1
+    [ "$FAKE_LOGIN_RM_TMP" = yes ] && rm -rf "$TMPDIR"/warehouse-tunnel-create.*
+    exit 0 ;;
+esac
+[ "$1" = --origincert ] || exit 2
+cert="$2"; shift 2
+[ -f "$cert" ] || { echo "no cert at $cert" >&2; exit 2; }
+echo "cert-exists $cert" >> "$FAKE_LOG"
+echo "tmpdir-mode $(stat -c %a "$(dirname "$cert")")" >> "$FAKE_LOG"
+[ -e "$HOME/.cloudflared/cert.pem" ] && echo "home-cert-present" >> "$FAKE_LOG"
+case "$1" in
+  list) echo "\${FAKE_LIST_JSON:-[]}" ;;
+  create)
+    [ "$FAKE_CREATE_FAIL" = yes ] && { echo "create refused" >&2; exit 1; }
+    # create --credentials-file FILE NAME
+    printf '{"AccountTag":"acct","TunnelSecret":"c2VjcmV0","TunnelID":"${NEW_ID}"}' > "$3"
+    chmod 0400 "$3"   # as the real cloudflared does
+    if [ "$FAKE_CREATE_QUIET" = yes ]; then echo "done"; else echo "Created tunnel $4 with id ${NEW_ID}"; fi ;;
+  route)
+    [ "$FAKE_ROUTE_FAIL" = yes ] && { echo "record already exists" >&2; exit 1; }
+    echo "Added CNAME \${FAKE_ROUTE_HOST:-$4} which will route to this tunnel" ;;
+esac
+`, { mode: 0o755 });
+  writeFileSync(join(f.scratch, 'bin/shred'), '#!/bin/sh\necho "shred $*" >> "$FAKE_LOG"\nexec /usr/bin/shred "$@"\n', { mode: 0o755 });
+  const runCreate = (args = [], extra = {}) => f.run(['create', ...args], { HOME: home, TMPDIR: tmp, ...extra });
+  const callLines = () => f.calls().split('\n').filter(line => line.startsWith('cloudflared '));
+  return { ...f, home, tmp, runCreate, callLines };
+}
+const leftovers = c => ({ cert: existsSync(join(c.home, '.cloudflared/cert.pem')), tmp: readdirSync(c.tmp) });
+
+test('create logs in, creates the tunnel and route, adopts it, and leaves no certificate or temp files', () => {
+  const c = createFixture('warehouse-tunnel-create-');
+  try {
+    writeFileSync(join(c.state, 'config/compose.env'), 'GATEWAY_HTTP_PORT=18123\n', { mode: 0o600 });
+    const result = c.runCreate();
+    assert.equal(result.status, 0, result.stderr + result.stdout);
+    const calls = c.callLines().filter(line => !line.startsWith('cloudflared cert-exists'));
+    assert.deepEqual(calls.map(line => line.replace(/ \/\S+/g, ' P')), [
+      'cloudflared tunnel login',
+      'cloudflared tunnel --origincert P list --output json',
+      'cloudflared tunnel --origincert P create --credentials-file P warehouse-acme',
+      `cloudflared tunnel --origincert P route dns ${NEW_ID} ${HOST}`,
+      'cloudflared --config P tunnel ingress validate',
+    ]);
+    assert.ok(!c.calls().includes('--overwrite-dns'), 'never overwrites a DNS record');
+    const dest = join(c.state, 'config/tunnel');
+    assert.deepEqual(readdirSync(dest).sort(), ['config.yml', 'credentials.json']);
+    const written = readFileSync(join(dest, 'config.yml'), 'utf8');
+    assert.match(written, new RegExp(`^tunnel: ${NEW_ID}$`, 'm'));
+    assert.match(written, new RegExp(`^credentials-file: ${dest}/credentials\\.json$`, 'm'));
+    assert.match(written, new RegExp(`hostname: ${HOST.replace(/\./g, '\\.')}`));
+    assert.match(written, /service: http:\/\/127\.0\.0\.1:18123$/m);
+    assert.match(written, new RegExp(`httpHostHeader: ${HOST.replace(/\./g, '\\.')}`));
+    assert.doesNotMatch(written, /origincert/);
+    assert.match(readFileSync(join(dest, 'credentials.json'), 'utf8'), new RegExp(NEW_ID));
+    assert.match(result.stdout, /install-service --state/);
+    assert.deepEqual(leftovers(c), { cert: false, tmp: [] });
+    // the cert was in a private (0700) directory while it was used, and no copy stayed in the home folder
+    assert.ok(c.calls().match(/cert-exists (\S+)\/cert\.pem/));
+    assert.match(c.calls(), /tmpdir-mode 700/); assert.doesNotMatch(c.calls(), /tmpdir-mode (?!700)/);
+    assert.doesNotMatch(c.calls(), /home-cert-present/);
+    // shredded, including the read-only (0400) credentials file cloudflared writes
+    assert.match(c.calls(), /shred -fu -- \S+\/cert\.pem/);
+    assert.match(c.calls(), new RegExp(`shred -fu -- \\S+/warehouse-acme\\.json`));
+    assert.match(c.calls(), /shred -fu -- \S+\/config\.yml/);
+    // already adopted now: refuse, nothing more is called
+    const before = c.callLines().length;
+    const again = c.runCreate();
+    assert.equal(again.status, 1); assert.match(again.stderr, /already has a tunnel credential.*status/s);
+    assert.equal(c.callLines().length, before);
+  } finally { clean(c); }
+});
+
+test('create refuses a name already taken in the account and creates nothing', () => {
+  const c = createFixture('warehouse-tunnel-create-taken-');
+  try {
+    const result = c.runCreate([], { FAKE_LIST_JSON: JSON.stringify([{ id: 'x', name: 'warehouse-acme' }]) });
+    assert.equal(result.status, 1);
+    assert.match(result.stderr, /already exists in this account/);
+    const calls = c.calls();
+    assert.doesNotMatch(calls, / create /); assert.doesNotMatch(calls, /route dns/);
+    assert.equal(existsSync(join(c.state, 'config/tunnel')), false);
+    assert.deepEqual(leftovers(c), { cert: false, tmp: [] });
+    const other = c.runCreate(['--name', 'warehouse-other'], { FAKE_LIST_JSON: JSON.stringify([{ id: 'x', name: 'warehouse-acme' }]) });
+    assert.equal(other.status, 0, other.stderr);
+    assert.match(c.calls(), /create --credentials-file \S+warehouse-other\.json warehouse-other/);
+  } finally { clean(c); }
+});
+
+test('create stops on a DNS conflict, says how to delete the tunnel, and shreds the certificate', () => {
+  const c = createFixture('warehouse-tunnel-create-dns-');
+  try {
+    const result = c.runCreate([], { FAKE_ROUTE_FAIL: 'yes' });
+    assert.equal(result.status, 1);
+    assert.match(result.stderr, /not overwritten/);
+    assert.match(result.stderr, new RegExp(`${NEW_ID}.*dashboard`, 's'));
+    assert.doesNotMatch(c.calls(), /--overwrite-dns/);
+    assert.doesNotMatch(c.calls(), /ingress validate/);
+    assert.equal(existsSync(join(c.state, 'config/tunnel')), false);
+    assert.deepEqual(leftovers(c), { cert: false, tmp: [] });
+  } finally { clean(c); }
+});
+
+test('create removes the certificate and temp files when any later step fails', () => {
+  for (const failure of [{ FAKE_CREATE_FAIL: 'yes' }, { FAKE_VALIDATE_FAIL: 'yes' }, { FAKE_LOGIN_FAIL: 'yes' }]) {
+    const c = createFixture('warehouse-tunnel-create-fail-');
+    try {
+      const result = c.runCreate([], failure);
+      assert.equal(result.status, 1, JSON.stringify(failure));
+      assert.equal(existsSync(join(c.state, 'config/tunnel')), false, JSON.stringify(failure));
+      assert.deepEqual(leftovers(c), { cert: false, tmp: [] }, JSON.stringify(failure));
+    } finally { clean(c); }
+  }
+});
+
+test('create refuses root, an existing account certificate, and a bad name', () => {
+  const c = createFixture('warehouse-tunnel-create-refuse-');
+  try {
+    assert.match(c.asRoot(['create'], { HOME: c.home }).stderr, /not as root/);
+    assert.match(c.runCreate(['--name', 'bad name']).stderr, /Not a usable tunnel name/);
+    mkdirSync(join(c.home, '.cloudflared'));
+    writeFileSync(join(c.home, '.cloudflared/cert.pem'), 'old');
+    const result = c.runCreate();
+    assert.equal(result.status, 1); assert.match(result.stderr, /already exists/);
+    assert.equal(readFileSync(join(c.home, '.cloudflared/cert.pem'), 'utf8'), 'old', 'a certificate that was there before is not touched');
+    assert.equal(c.callLines().length, 0);
+  } finally { clean(c); }
+});
+
+test('create stops when the picked domain does not contain the hostname (exit 0, wrong record)', () => {
+  const c = createFixture('warehouse-tunnel-create-zone-');
+  try {
+    const result = c.runCreate([], { FAKE_ROUTE_HOST: `${HOST}.other-zone.test` });
+    assert.equal(result.status, 1);
+    assert.match(result.stderr, /record was not created for warehouse\.example\.test/);
+    assert.match(result.stderr, new RegExp(`Delete tunnel warehouse-acme \\(${NEW_ID}\\)`));
+    assert.match(result.stderr, /domain that contains/);
+    assert.doesNotMatch(c.calls(), /ingress validate/);
+    assert.equal(existsSync(join(c.state, 'config/tunnel')), false);
+    assert.deepEqual(leftovers(c), { cert: false, tmp: [] });
+  } finally { clean(c); }
+});
+
+test('create reads the tunnel id from the credentials file and tells how to clean up after a later failure', () => {
+  const c = createFixture('warehouse-tunnel-create-late-');
+  try {
+    const result = c.runCreate([], { FAKE_CREATE_QUIET: 'yes', FAKE_VALIDATE_FAIL: 'yes' });
+    assert.equal(result.status, 1);
+    assert.match(c.calls(), new RegExp(`route dns ${NEW_ID} `));
+    assert.match(result.stderr, new RegExp(`Delete tunnel warehouse-acme \\(${NEW_ID}\\) and the warehouse\\.example\\.test record in the Cloudflare dashboard`));
+  } finally { clean(c); }
+});
+
+test('create uses KONG_HTTP_PORT when GATEWAY_HTTP_PORT is absent, and GATEWAY_HTTP_PORT first', () => {
+  for (const [env, port] of [['KONG_HTTP_PORT=18456\n', 18456], ['KONG_HTTP_PORT=18456\nGATEWAY_HTTP_PORT=18457\n', 18457]]) {
+    const c = createFixture('warehouse-tunnel-create-port-');
+    try {
+      writeFileSync(join(c.state, 'config/compose.env'), env, { mode: 0o600 });
+      assert.equal(c.runCreate().status, 0);
+      assert.match(readFileSync(join(c.state, 'config/tunnel/config.yml'), 'utf8'), new RegExp(`service: http://127\\.0\\.0\\.1:${port}$`, 'm'));
+    } finally { clean(c); }
+  }
+});
+
+test('create removes a certificate that login wrote before it failed', () => {
+  const c = createFixture('warehouse-tunnel-create-loginfail-');
+  try {
+    const result = c.runCreate([], { FAKE_LOGIN_WRITE_FAIL: 'yes' });
+    assert.equal(result.status, 1);
+    assert.equal(existsSync(join(c.home, '.cloudflared/cert.pem')), false, 'the account certificate does not survive');
+    assert.deepEqual(leftovers(c).tmp, []);
+  } finally { clean(c); }
+});
+
+test('create still shreds the home certificate when its temp directory vanished during login', () => {
+  const c = createFixture('warehouse-tunnel-create-tmpgone-');
+  try {
+    const result = c.runCreate([], { FAKE_LOGIN_RM_TMP: 'yes' });
+    assert.equal(result.status, 1);
+    assert.equal(existsSync(join(c.home, '.cloudflared/cert.pem')), false, 'the account certificate does not survive');
+    assert.match(c.calls(), /shred -fu -- \S+\/\.cloudflared\/cert\.pem/);
+    assert.equal(existsSync(join(c.state, 'config/tunnel')), false);
+  } finally { clean(c); }
+});

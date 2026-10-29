@@ -7,6 +7,14 @@ a file in that tag; the baseline `migrations/00000000000000_baseline.sql` is the
 
 ## Unreleased
 
+### Added
+
+- `bash scripts/tunnel.sh create [--name NAME]`: one guided step for a locally managed tunnel. It runs `cloudflared tunnel login`
+  (a link to open on any machine), refuses a tunnel name that already exists, creates the tunnel, routes the installation's hostname
+  to it without `--overwrite-dns`, writes and validates the config and adopts the credential into the state. The account
+  certificate is held in a private temporary directory and shredded on every exit path. `adopt` and `install-service` are unchanged;
+  the manual sequence and the dashboard route stay in `docs/OPERATOR_INSTALL.md`.
+
 ### Operator actions
 
 An installation on this release's predecessor (PostgreSQL 15 image, migrations 000 to 110) first goes through the **Baseline
