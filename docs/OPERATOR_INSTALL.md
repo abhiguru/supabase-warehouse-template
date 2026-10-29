@@ -934,6 +934,12 @@ confirm the hostname's DNS record points to `<tunnel-uuid>.cfargotunnel.com`.
 For a dashboard-managed tunnel the hostname and origin live in the dashboard
 and the YAML is not used.
 
+**A tunnel makes the installation public, so cap the SMS first.** Every accepted code request on a public address is a real,
+billed SMS, test installations included. Set `otp_daily_provider_attempt_cap`
+([Authentication and OTP limits](#authentication-and-otp-limits); it is off until you create it) before `install-service` below starts
+the connector, and never give a test
+installation a real provider key ([Test installations](#private-inputs)). Stop the tunnel when a test ends.
+
 **Keep the tunnel credential in the state, so backups carry it.** Copy it into
 the installation's state directory (`config/tunnel/`, mode 0700/0600) and make
 the connector a system service that reads that copy and survives reboots:
@@ -956,18 +962,12 @@ and it refuses a config that does not route this installation's hostname.
 ran `sudo`, then enables and restarts it. From then on every backup, and every
 USB copy, includes the credential, and
 [restoring onto a new host](#recover-a-lost-host-from-the-usb-drive) brings the
-public address back without a Cloudflare login. Keep `cert.pem` in your private
-directory only. Once the service runs from the state copy you may delete the
-old private copies of the config and credentials JSON, **and the account `cert.pem`**: `cloudflared tunnel login` wrote it to
+public address back without a Cloudflare login. Once the service runs from the state copy you may delete the
+old private copies of the config and credentials JSON, and you must delete **the account `cert.pem`**: `cloudflared tunnel login` wrote it to
 `~/.cloudflared/cert.pem` as well as, or instead of, your private directory, and it can create and delete any tunnel and DNS
 record of the whole Cloudflare account. Delete every copy as soon as the tunnel and its DNS route exist
 (`shred -u ~/.cloudflared/cert.pem`, and the copy in your private directory), and check that none is left in the home folder,
 in `/srv` or in `/root`.
-
-**A tunnel makes the installation public, so cap the SMS first.** Every accepted code request on a public address is a real,
-billed SMS, test installations included. Before the tunnel serves the first request, set `otp_daily_provider_attempt_cap`
-([Authentication and OTP limits](#authentication-and-otp-limits); it is off until you create it), and never give a test
-installation a real provider key ([Test installations](#private-inputs)). Stop the tunnel when a test ends.
 
 To keep the credential out of backups instead, skip `adopt` and write the unit
 by hand (a unit that runs as the installation user, not root (`User=` and `Group=`), with `ExecStart=/usr/bin/cloudflared --no-autoupdate --config <private config.yml> tunnel run`, or for a dashboard tunnel `ExecStart=/usr/bin/cloudflared --no-autoupdate tunnel run --token-file <private token file>`; never put `--token` on the command line; `sudo systemctl daemon-reload && sudo systemctl enable --now <unit>`); a
@@ -1180,9 +1180,9 @@ bash scripts/compose.sh ps
 bash stop.sh
 ```
 
-`bash health-check.sh` runs the same checks as the five-minute checker (`node scripts/watch.mjs health`: the services, the database,
+`bash health-check.sh` runs the checker's local checks (`node scripts/watch.mjs health`: the services, the database,
 the gateway's public configuration and a `get_public_config` probe through it, and the PDF renderer) and, when one fails, prints the
-logs of the gateway, functions and REST services. It does not test the public hostname; the external doctor does.
+logs of the gateway, functions and REST services. The public hostname is tested by the checker's `api_public` check and the external doctor.
 
 `compose ps` shows every service `Up (healthy)` except `rest`, which defines no healthcheck and appears as plain `Up`; the
 doctor, not the status column, is the health verdict. `stop.sh` leaves the file `config/stopped-by-operator`, so the stack stays
@@ -1192,7 +1192,9 @@ tunnel service separately through its systemd unit. Do not run `down -v`, a broa
 **Taking an installation out of service.** `stop.sh` stops the stack but not the tunnel service, which keeps the public address
 answering with errors, and not the timers. To retire the installation, in this order: `bash stop.sh`;
 `sudo systemctl disable --now warehouse-<state name>-tunnel.service` (the public address then answers with a Cloudflare error,
-1033, until the tunnel is deleted); `sudo bash scripts/watch-timer.sh uninstall` (the checker, daily and boot units); then, only
+1033, until the tunnel is deleted); `sudo bash scripts/watch-timer.sh uninstall --state "$WAREHOUSE_STATE_DIR"` (the checker, daily and boot units; `sudo` drops the
+environment, so name the state); `sudo bash scripts/backup-usb.sh uninstall` if a USB drive was set up (it removes the rule, units,
+helper and configuration and leaves the drives untouched); then, only
 once you have a copy of the data you need, delete the tunnel and its DNS record in Cloudflare, which also revokes every copy of
 its credential, including those in backups. Deleting the state directory is a separate step that destroys the data.
 
@@ -1534,7 +1536,8 @@ Do the same after a `db:restore-host --allow-unsigned` that was run without the 
 
 A backup on the same disk as `data/` is lost with it, which is why `db:backup` warns. The USB script copies the newest verified
 backup to a **USB drive formatted exFAT**, which the operator attaches; exFAT is readable by a Linux host and by
-Windows, so a restore does not depend on the operating system; a [Windows host](#windows-host-ubuntu-in-wsl2) has no tested USB path yet. The drive is never partitioned or
+Windows, so the drive can be read on either; the restore itself runs on Linux or in Ubuntu under WSL2. A
+[Windows host](#windows-host-ubuntu-in-wsl2) has no tested USB path yet. The drive is never partitioned or
 formatted, and other files on it are left alone. The copy goes under `warehouse-backups/<state name>/` as one self-contained
 **encrypted** archive, `warehouse-<utc>.tar.enc` (a tar of the whole backup folder, with file modes, modification times and the
 stored files' content types kept inside, and the photos written out in full: the drive has no hard links), with a
@@ -1562,8 +1565,8 @@ byte. The exFAT volume serial alone does not enrol a drive (it is 32 bits and ca
 that imitates it receives nothing.
 
 1. **Confirm the backup key copy** ([Backup key](#backup-key): `bash scripts/backup-key-escrow.sh show`); setup with `--enroll`
-   and `enroll` refuse until you have. Then set it up once, as the installation user with `sudo`, with the drive attached (on VMware
-   connect it to the VM under Removable Devices first). Find the partition with `lsblk -o NAME,TRAN,FSTYPE,LABEL,MOUNTPOINTS`; it
+   and `enroll` refuse until you have. Then set it up once, as the installation user with `sudo`, with the drive attached (a Windows host has no
+   tested way yet: [Backups off the host](#backups-off-the-host-windows)). Find the partition with `lsblk -o NAME,TRAN,FSTYPE,LABEL,MOUNTPOINTS`; it
    must show `usb` and `exfat`:
 
    ```bash
@@ -1847,8 +1850,7 @@ one rerun with both sets of options does.
    the restore. A checkout older than the release that wrote the backup format `warehouse-backup-v6` refuses such a backup at
    once ("backup format 'warehouse-backup-v6' is no longer supported; take a new backup with this version"), before it
    reaches the `source_commit` hint: check out this release or a later one.
-2. **Attach the drive and choose the backup.** On VMware connect it under
-   Removable Devices. The desktop usually mounts it under `/media/$USER/`;
+2. **Attach the drive and choose the backup.** The desktop usually mounts it under `/media/$USER/`;
    otherwise `udisksctl mount -b /dev/sdX1` (find it with
    `lsblk -o NAME,TRAN,FSTYPE,LABEL,MOUNTPOINTS`: `usb`, `exfat`).
 
@@ -3038,7 +3040,7 @@ Verified, except where marked. If Docker Desktop is installed on this Windows ho
 
 1. [PS-admin] `wsl --install --no-distribution`, then restart Windows (only if WSL is not installed yet).
 2. [PS-admin] `wsl --install Ubuntu-24.04 --no-launch`
-3. [PS] Create the operator user as `root`. Do not call it `operator`: Ubuntu already has a group of that name. This guide
+3. [PS] (written form not run as typed) Create the operator user as `root`. Do not call it `operator`: Ubuntu already has a group of that name. This guide
    uses `warehouse`.
 
    ```powershell
@@ -3048,7 +3050,7 @@ Verified, except where marked. If Docker Desktop is installed on this Windows ho
 
    The verified install used passwordless `sudo`; setting a password as above (`sudo` then asks for it during `setup.sh` and
    `watch-timer.sh`) is not verified yet.
-4. [PS] Turn on systemd and make `warehouse` the default user:
+4. [PS] (written form not run as typed) Turn on systemd and make `warehouse` the default user:
 
    ```powershell
    wsl -d Ubuntu-24.04 -u root -- bash -c "printf '[boot]\nsystemd=true\n\n[user]\ndefault=warehouse\n' > /etc/wsl.conf"
@@ -3123,7 +3125,7 @@ $c = Get-Credential -UserName "$env:COMPUTERNAME\<windows-user>" -Message 'Windo
 $a = New-ScheduledTaskAction -Execute 'C:\Windows\System32\wsl.exe' -Argument '-d Ubuntu-24.04 --exec /usr/bin/sleep infinity'
 $t = @((New-ScheduledTaskTrigger -AtStartup), (New-ScheduledTaskTrigger -Once -At (Get-Date) -RepetitionInterval (New-TimeSpan -Minutes 2)))
 $s = New-ScheduledTaskSettingsSet -ExecutionTimeLimit ([TimeSpan]::Zero) -MultipleInstances IgnoreNew -StartWhenAvailable -AllowStartIfOnBatteries -DontStopIfGoingOnBatteries -RestartCount 999 -RestartInterval (New-TimeSpan -Minutes 1)
-Register-ScheduledTask -TaskName 'Warehouse WSL' -Action $a -Trigger $t -Settings $s -User $c.UserName -Password $c.GetNetworkCredential().Password -RunLevel Highest
+Register-ScheduledTask -TaskName 'Warehouse WSL' -Action $a -Trigger $t -Settings $s -User $c.UserName -Password $c.GetNetworkCredential().Password
 ```
 
 Do not type the password into the command line (`-Password (Read-Host ...)` shows it on screen).
@@ -3175,17 +3177,17 @@ restart in step 4 of this list, not `sudo reboot` (not verified yet).
 
 ### Backups off the host (Windows)
 
-The distro's virtual disk holds the only copy of the data until a backup is copied off the host, so copy one off the host
-regularly. There is no tested USB path on this route (not verified yet): the USB backup drive in [USB backup drive](#usb-backup-drive)
-needs the drive visible inside the distro. It would need `usbipd-win` on Windows (`usbipd list`, `usbipd bind --busid <id>`,
-`usbipd attach --wsl --busid <id>`), exFAT support in the distro's kernel, the udev rule to fire, and the drive attached again
-after every restart of the distro or the host, because it detaches whenever the distro stops. Printing over USB has the same
-limits ([PRINTING.md](PRINTING.md)).
+**A Windows host cannot yet meet the off-host backup requirement, and that blocks go-live for a real facility.** The USB drive
+is the off-host copy ([PRODUCTION_DEPENDENCIES.md](PRODUCTION_DEPENDENCIES.md)), and `backup-usb.sh` writes only to an enrolled
+USB drive that the distro can see. There is no tested USB path on this route (not verified yet): the drive would have to be passed
+into the distro with `usbipd-win` on Windows (`usbipd list`, `usbipd bind --busid <id>`, `usbipd attach --wsl --busid <id>`),
+the distro's kernel would need exFAT support, udev behaves differently from a Linux host, and the drive detaches whenever the
+distro stops, so it must be attached again after every restart of the distro or the host. Printing over USB has the same limits
+([PRINTING.md](PRINTING.md)). Copying files to a Windows drive through `/mnt/<drive>` loses the extended attributes and ownership that
+a restore needs from the stored photos, so it is not a substitute.
 
-Copying an archive to a Windows drive through `/mnt/<drive>` drops the extended attributes and ownership that a restore needs
-from the stored photos; copy the encrypted `.tar.enc` archive made by `backup-usb.sh` as a file, together with its `.sha256`
-and `.hmac` files, and keep the [backup key](#backup-key) elsewhere. Verified: `db:backup` and `db:verify-restore` inside the
-distro, on its own virtual disk, work as on Linux.
+Until a USB path is tested, the distro's virtual disk holds the only copy of the data. Verified: `db:backup` and
+`db:verify-restore` inside the distro, on its own virtual disk, work as on Linux.
 
 ### Acceptance
 
@@ -3196,7 +3198,9 @@ Before the facility goes live, on this host, with nobody signed in to Windows:
    (run inside the distro) both pass.
 2. Run `wsl --shutdown` from a PowerShell, then do not touch anything. The task starts the distro again, the stack comes back, and
    both doctor modes pass (do this on a host that serves no live facility).
-3. Run the planned-work order above once end to end, including `Disable-ScheduledTask` and `Enable-ScheduledTask`.
+3. Run the planned-work order above once end to end, including `Disable-ScheduledTask` and `Enable-ScheduledTask` (before go-live, on
+   this host only). If any step does not behave as written, stop and report it; do not go live.
 4. Check the keep-alive task after it is registered: it shows Running, with the two triggers.
-
-Printing and a USB backup drive are not verified on this route; if the facility needs either, check it after the same restart.
+5. A USB backup drive, enrolled and copying a verified backup, and still working after the same restart, is required for a real facility.
+   It is currently not possible on Windows ([Backups off the host](#backups-off-the-host-windows)), so a Windows host does not yet pass
+   acceptance. Printing, where the facility uses it, is not verified on this route either.
