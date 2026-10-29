@@ -158,6 +158,26 @@ commit afterwards: a failed rehearsal never leaves a published `vX.Y.Z` that has
       Failed: fix on `main` and start again with `-rc.N+1`; do not move a tag.
 - [ ] Record in the release pull request or the release note: the previous tag, the candidate, the tag, the date and the result.
 
+## Windows (WSL2) acceptance, per release
+
+A manual check on a Windows 10 22H2 host, following the WSL2 section of
+[OPERATOR_INSTALL.md](OPERATOR_INSTALL.md#windows-host-ubuntu-in-wsl2) from the top. There is no CI runner for Windows. For each box,
+record the result and the evidence named (command output or a timed log) in the release pull request.
+
+- [ ] Fresh install from the guide on a host with no earlier installation; record the guide's commit and the WSL version
+      (`wsl --version`).
+- [ ] `node scripts/doctor.mjs --local` passes; record its last line.
+- [ ] `bash scripts/tunnel.sh create` and the public check: `get-public-config` answers 200 on the public address; record the
+      status code and the time.
+- [ ] The keep-alive task read back (`Get-ScheduledTask 'Warehouse WSL' | Get-ScheduledTaskInfo` and its settings): Running, both
+      triggers, `IgnoreNew`, battery switches off.
+- [ ] Recovery after a reboot with nobody signed in, and after `wsl --shutdown`; record seconds until the first 200 for each.
+- [ ] The planned-work order of the guide end to end, including `Disable-ScheduledTask`, `Enable-ScheduledTask` and both doctor
+      modes at the end; record any step that did not behave as written.
+- [ ] USB: `usbipd attach`, enrol, and one automatic run; record the run's journal summary and that the copy was verified.
+- [ ] Known gaps noted in the release note, if still open: no automatic USB re-attach after a restart, and the false `disk_low`
+      alert for the WSL kernel-tools mount.
+
 ## Release note
 
 Publish by hand. The `publish-images` job has already made the release as a **draft** that holds `release-images.json`; give it its

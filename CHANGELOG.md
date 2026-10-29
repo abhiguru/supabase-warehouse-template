@@ -15,6 +15,14 @@ a file in that tag; the baseline `migrations/00000000000000_baseline.sql` is the
   certificate is held in a private temporary directory and shredded on every exit path. `adopt` and `install-service` are unchanged;
   the manual sequence and the dashboard route stay in `docs/OPERATOR_INSTALL.md`.
 
+### Documentation
+
+- `docs/OPERATOR_INSTALL.md`, Windows (WSL2) section: the results of a second round on Windows 10 22H2 (what is verified and what is
+  not), the keep-alive task registered before `tunnel.sh create`, a wait for systemd after a cold start, the planned-work and
+  `wsl --update` notes, the USB drive through `usbipd-win` (works, but the attach does not survive a restart), and a known false
+  `disk_low` alert. Setting `otp_daily_provider_attempt_cap` is now a required go-live step for an installation reachable from the
+  internet. `docs/RELEASE_CHECKLIST.md` has a manual Windows acceptance section.
+
 ### Operator actions
 
 An installation on this release's predecessor (PostgreSQL 15 image, migrations 000 to 110) first goes through the **Baseline
