@@ -256,6 +256,9 @@ reload** in `docs/OPERATOR_INSTALL.md`; a new installation needs none of that. A
     GRN and dispatch number once more to count those that do not follow the rule); plan for seconds at the size of a warehouse, and run the update when
     nobody is saving documents.
 
+22. **Set `otp_daily_provider_attempt_cap`** on every installation reachable from the internet (`docs/OPERATOR_INSTALL.md`,
+    "Authentication and OTP limits").
+
 ### Changed
 
 - **Windows hosts: the operator guide describes Ubuntu 24.04 in WSL2 and no longer a Linux virtual machine.** The new section

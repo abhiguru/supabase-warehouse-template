@@ -33,6 +33,7 @@ bash setup.sh --operator \
   --letterhead-file /secure/letterhead.png   # or: --letterhead-file off (plain PDFs)
 export WAREHOUSE_STATE_DIR=/srv/warehouse/acme
 node scripts/doctor.mjs --local      # every service healthy on the loopback gateway
+# set the SMS ceiling first (required for a public install): docs/OPERATOR_INSTALL.md#authentication-and-otp-limits
 # start the cloudflared connector for your hostname (deploy/cloudflared-config.example.yml)
 node scripts/doctor.mjs              # the same instance answers through the public origin
 ```

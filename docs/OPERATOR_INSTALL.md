@@ -526,6 +526,8 @@ hour after its first request), or raise `otp_source_hourly_sends` or
   -- as supabase_admin: set, or change, the ceiling
   INSERT INTO warehouse_security.auth_config(key,value) VALUES ('otp_daily_provider_attempt_cap','2000')
     ON CONFLICT(key) DO UPDATE SET value=excluded.value;
+  -- read the ceiling back
+  SELECT value FROM warehouse_security.auth_config WHERE key='otp_daily_provider_attempt_cap';
   -- requests made in the last 24 hours
   SELECT COALESCE(sum(attempts),0) FROM warehouse_security.otp_provider_attempts WHERE created_at>now()-interval '24 hours';
   -- remove the ceiling
@@ -736,8 +738,8 @@ requests: wait and ask again):
 1. **Use mobile data.** Switch the phone from the facility Wi-Fi to mobile data and ask again. On the day SMS stops, everybody on the Wi-Fi
    retries, and the Wi-Fi's one address reaches its per-address limit (30 requests an hour) and keeps it for up to an hour. List the Wi-Fi's
    address beforehand ([The facility's own Wi-Fi address](#the-facilitys-own-wi-fi-address)) and this is rarer.
-2. **Check the warehouse switches.** `otp_global_hourly_cap` must not be `0` (the no-send switch) and, if you set
-   `otp_daily_provider_attempt_cap`, it must not be used up (requests the provider refused count against it, and are never given back):
+2. **Check the warehouse switches.** `otp_global_hourly_cap` must not be `0` (the no-send switch) and `otp_daily_provider_attempt_cap` (required on a public installation)
+   must not be used up (requests the provider refused count against it, and are never given back):
 
    ```bash
    bash scripts/compose.sh exec -T db psql -X -U supabase_admin -d postgres -c "SELECT key, value FROM warehouse_security.auth_config WHERE key IN ('otp_global_hourly_cap','otp_daily_provider_attempt_cap')"
@@ -3018,15 +3020,15 @@ the documentation of the tool and has not been run. Where a step is not verified
 first. Shell tags: **[PS-admin]** is an elevated PowerShell on Windows, **[PS]** an ordinary PowerShell, **[Ubuntu]** a shell
 inside the distro.
 
-What was verified, on Windows 10 22H2 with WSL 3.0.1 and 3.0.3 and Ubuntu 24.04: a fresh install that follows this text from
+What was verified, on Windows 10 22H2 with WSL 3.0.1 (and 3.0.3 as offered by the update) and Ubuntu 24.04: a fresh install that follows this text from
 the top (with passwordless `sudo`), the power settings, the install (`setup.sh`, `doctor --local`, the gateway test), a backup
 with `db:verify-restore`, the monitoring and boot units, a Cloudflare tunnel created with `tunnel.sh create`, adopted and
 installed as a service (the external doctor, run on the host, healthy), a reboot with nobody signed in, recovery after
 `wsl --shutdown`, `wsl --terminate` and a host reboot, disabling and enabling the keep-alive task for planned work, a WSL update
 (with the task disabled), and a USB backup drive passed into the distro with `usbipd-win` (enrolled, and one automatic run
 copied and verified). What was **not** verified: `sudo` asking for a password, Windows 11, the Home edition, mirrored
-networking, that the `.wslconfig` memory limit takes effect, recovery after a WSL update with the task enabled, a real Windows
-Update reboot, a graceful stop when Windows shuts down, an automatic re-attach of the USB drive, a physical re-plug of the
+networking, that the `.wslconfig` memory limit takes effect, recovery after a WSL update with the task enabled, the version after
+`wsl --update`, a real Windows Update reboot, a graceful stop when Windows shuts down, an automatic re-attach of the USB drive, a physical re-plug of the
 drive, a USB run that also takes a fresh backup, and printing.
 
 ### Prerequisites
@@ -3116,7 +3118,7 @@ or run `wsl --set-default Ubuntu-24.04` (not verified yet).
 
 ### Continue with the Linux steps inside Ubuntu
 
-Verified. Open a shell inside the distro as `warehouse` and follow the Linux guide from [Host time zone](#host-time-zone) and
+Verified. Open a shell inside the distro as `warehouse` and follow the Linux guide from [Host time zone](#host-time-zone) (after the wait for systemd below) and
 the [Ubuntu 24.04 sequence](#ubuntu-2404-sequence) unchanged, then [Private inputs](#private-inputs) and [Setup](#setup), then
 register the keep-alive task of the [next section](#keep-the-distro-running-and-start-it-at-boot), then the
 [Cloudflare Tunnel ingress](#cloudflare-tunnel-ingress) (`bash scripts/tunnel.sh create` does the login, tunnel, DNS route and
@@ -3137,13 +3139,16 @@ Differences:
   done; echo "systemd: $s"
   ```
 
+  If it does not print `running` or `degraded`, do not continue: check `systemctl --failed` and that `/etc/wsl.conf` has
+  `systemd=true`.
+
 - Register the keep-alive task **before** `bash scripts/tunnel.sh create`. The command waits for a login in a browser, which can
   outlast the 15 seconds after which WSL stops an idle distro, and a `wsl` started detached from an SSH session does not survive
   that session (verified). With the task registered, the distro stays up during the login.
 
 - Clone the repository and keep the state directory on the Ubuntu filesystem (the home folder or `/srv`), never under `/mnt/c`
   or another Windows drive: NTFS has no Unix modes, `flock` or extended attributes, and the scripts refuse or misbehave there.
-- Keep a `wsl` session open for as long as setup runs (about 6 minutes the first time, about 7 after `wsl --terminate`). When the
+- Keep a `wsl` session open for as long as setup runs (about 6 to 7 minutes the first time, about 7 after `wsl --terminate`). When the
   last session ends, WSL stops the distro after about 15 seconds and kills the build. Until the keep-alive task below exists, keep
   a terminal window open.
 - Right after the distro has just started, Docker may not answer for a moment. `setup.sh` waits for the Docker daemon for up to
@@ -3187,7 +3192,7 @@ Do not type the password into the command line (`-Password (Read-Host ...)` show
   `Set-ScheduledTask -TaskName 'Warehouse WSL' -User $c.UserName -Password $c.GetNetworkCredential().Password` with a new
   `$c` from `Get-Credential`. `Register-ScheduledTask` fails on an existing name unless you add `-Force`.
 - Recovery times measured with the verified task (single samples per run, plus or minus 20 seconds): the public address answered
-  again about 40 seconds to 2 minutes after `wsl --shutdown`, about 85 seconds after `wsl --terminate`, and about 75 to 90
+  again about 40 seconds to 2 minutes after `wsl --shutdown`, about 85 seconds after `wsl --terminate`, and about 70 to 90
   seconds after a host reboot with nobody signed in.
 
 Nothing stops the stack cleanly when Windows shuts down or restarts for an update (not verified yet): the processes are killed
@@ -3227,8 +3232,8 @@ keep-alive that is already running, so the distro stays up until the next `wsl -
 While the work is going on, the public address answers 530 when the tunnel or the distro is down, and 502 when the tunnel is up
 but the stack is stopped (for example after `stop.sh`); both are normal.
 
-`wsl --update` was verified with the task disabled only (3.0.1 to 3.0.3, about 3 minutes over SSH): it stops the distro, which
-then stays down while the task is disabled. Recovery after an update with the task enabled is not verified. The package work of
+`wsl --update` was run once with the task disabled (it offered 3.0.1 to 3.0.3 and took about 3 minutes; its exit code and the
+version afterwards were not read back): it stopped the distro, which then stayed down while the task is disabled. Recovery after an update with the task enabled is not verified. The package work of
 [Monthly host maintenance](#monthly-host-maintenance) is done inside Ubuntu as written; a restart of the host is the Windows
 restart in step 4 of this list, not `sudo reboot` (not verified yet).
 
@@ -3250,13 +3255,14 @@ Install usbipd-win once: download the signed MSI from its GitHub releases and ru
 
 - [PS-admin] `usbipd list`, to find the drive's bus id.
 - [PS-admin] `usbipd bind --busid <id>`, once; the bind persists.
-- [PS] `usbipd attach --wsl --busid <id>`, every time the drive has to reach the distro. Inside the distro, `lsblk` shows the
+- [PS] `usbipd attach --wsl --busid <id>`, every time the drive has to reach the distro (run from an elevated PowerShell in the test;
+  the usbipd-win documentation says an ordinary one is enough). Inside the distro, `lsblk` shows the
   drive as `usb` and `exfat`, and USB backup continues as written in [USB backup drive](#usb-backup-drive).
 
 The usbipd-win documentation says the bus id changes when the stick moves to another port; that was not tested here.
 
 **The attach does not survive a restart.** After a host reboot the drive was listed as Shared, not Attached (verified); the
-drive is also detached whenever the distro stops, for example by `wsl --shutdown` or a WSL update. Every plug-in on Windows needs
+drive is also expected to detach whenever the distro stops (`wsl --shutdown`, a WSL update; not read back in the test). Every plug-in on Windows needs
 a `usbipd attach` as well, so "plug the drive in and wait" does not apply there. There is no automatic re-attach: none is built
 or tested, so do not rely on one. Until one exists and is verified, a Windows host meets the off-host requirement only if the
 operator attaches the drive after every restart. If nobody does, the `usb_backup` alert and `npm run doctor` warn once the last
