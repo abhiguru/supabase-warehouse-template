@@ -1,6 +1,6 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { supportedNode } from '../scripts/doctor-common.mjs';
+import { supportedNode, waitForDocker, DOCKER_WAIT_MS } from '../scripts/doctor-common.mjs';
 import { canonicalOrigin } from '../scripts/configure.mjs';
 
 test('operator configuration requires canonical HTTPS origins and supported Node', () => {
@@ -623,4 +623,35 @@ test('the full doctor checks app-compat.json before the health check, so its own
   const source = readFileSync(new URL('../scripts/doctor.mjs', import.meta.url), 'utf8');
   const check = source.indexOf('  checkAppCompatFile(state);');
   assert.ok(check > 0 && check < source.indexOf('await runHealth('), 'checkAppCompatFile(state) runs before runHealth');
+});
+
+// Right after a cold start the Docker daemon does not answer yet: setup waits for it (up to 60 s, 2 s apart) before refusing.
+test('waitForDocker: a daemon that answers on the 3rd try passes, after two pauses and one line', () => {
+  let calls = 0; const pauses = []; const said = [];
+  assert.equal(waitForDocker(() => ({ ok: ++calls === 3, output: '' }), ms => pauses.push(ms), line => said.push(line)), true);
+  assert.equal(calls, 3);
+  assert.deepEqual(pauses, [2000, 2000]);
+  assert.equal(said.length, 1);
+});
+
+test('waitForDocker: a daemon that never answers is given up after 60 s of pauses', () => {
+  let calls = 0; let paused = 0;
+  assert.equal(waitForDocker(() => { calls++; return { ok: false, output: '' }; }, ms => { paused += ms; }, () => {}), false);
+  assert.equal(paused, DOCKER_WAIT_MS);
+  assert.equal(calls, 31);
+});
+
+test('waitForDocker: a daemon that answers at once is neither waited for nor announced', () => {
+  const said = [];
+  assert.equal(waitForDocker(() => ({ ok: true, output: '' }), () => assert.fail('paused'), line => said.push(line)), true);
+  assert.deepEqual(said, []);
+});
+
+test('doctor refuses at once, without waiting, when the docker CLI is missing', () => {
+  const started = Date.now();
+  const run = doctorWithCompose(WAIT, { docker: 'exit 127' });
+  assert.equal(run.status, 1);
+  assert.match(run.stderr, /Missing or unavailable prerequisite: docker Compose\./);
+  assert.doesNotMatch(run.stderr, /Waiting for the Docker daemon/);
+  assert.ok(Date.now() - started < 20000, 'it waited');
 });

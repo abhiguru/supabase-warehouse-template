@@ -4,7 +4,7 @@ import { join, resolve, sep } from 'node:path';
 import { createConnection } from 'node:net';
 import { spawnSync } from 'node:child_process';
 import { createHash, createHmac, timingSafeEqual } from 'node:crypto';
-import { backupToolProblems, centralKeyFault, collationProblem, gatewayPortText, letterheadProblem, probe, projectPublishesPort, readEnv, root, supportedNode } from './doctor-common.mjs';
+import { backupToolProblems, centralKeyFault, collationProblem, gatewayPortText, letterheadProblem, probe, projectPublishesPort, readEnv, root, supportedNode, waitForDocker } from './doctor-common.mjs';
 import { numberingLine, numberingProblems } from './numbering.mjs';
 import { canonicalOrigin } from './configure.mjs';
 import { validateDbValues } from './db-roles.mjs';
@@ -199,9 +199,11 @@ export function databaseCollationProblem() {
 export async function doctor({ hostPreflight = false, preflight = false, local = false } = {}) {
   if (process.platform !== 'linux' || process.arch !== 'x64') throw new Error('Linux x86-64 required.');
   if (!supportedNode()) throw new Error('Node.js 22.18+ required.');
-  for (const [command, args] of [['npm', ['--version']], ['openssl', ['version']], ['flock', ['--version']], ['docker', ['compose', 'version']], ['docker', ['info', '--format', '{{.ServerVersion}}']]]) {
+  for (const [command, args] of [['npm', ['--version']], ['openssl', ['version']], ['flock', ['--version']], ['docker', ['compose', 'version']]]) {
     if (!probe(command, args).ok) throw new Error(`Missing or unavailable prerequisite: ${command}${args[0] === 'compose' ? ' Compose' : ''}.`);
   }
+  // The docker CLI is there; its daemon may still be starting after a cold start, so it is waited for (up to 60 s) before refusing.
+  if (!waitForDocker()) throw new Error('Missing or unavailable prerequisite: docker. Docker did not answer within 60 s; check `systemctl status docker`.');
   // Backups keep the stored files as a tree with their extended attributes (content type, cache control): rsync copies it, and
   // a backup archive from a USB drive is unpacked with GNU tar --xattrs (scripts/backup.sh, restore.sh, restore-host.sh).
   // Setup and restore-host (--host-preflight) refuse a host without them. Every other run only warns: a host that pulled this

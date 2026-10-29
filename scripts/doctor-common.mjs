@@ -30,6 +30,22 @@ export function collationProblem(run, pause = sleepMs) {
   if (recorded === '' || recorded === actual) return null;
   return `collation version changed; REINDEX required before use — see docs/OPERATOR_INSTALL.md 'Collation changes' (recorded ${recorded}, now ${actual || 'unknown'}).`;
 }
+// The Docker daemon is not answering for a moment after a cold start of the host or of a WSL distro (and on Linux right after a
+// reboot), so `docker info` is retried every 2 s for up to 60 s before the daemon counts as missing. Returns true when it answered.
+// Only the daemon probe waits: a missing docker CLI is refused at once by the caller. `run` is probe and `pause` the wait between
+// tries, both replaceable for a test; `say` prints the one line shown while waiting.
+export const DOCKER_WAIT_MS = 60000;
+export const DOCKER_WAIT_STEP_MS = 2000;
+export function waitForDocker(run = probe, pause = sleepMs, say = line => console.error(line)) {
+  const args = ['info', '--format', '{{.ServerVersion}}'];
+  if (run('docker', args).ok) return true;
+  say(`Waiting for the Docker daemon to answer (up to ${DOCKER_WAIT_MS / 1000} s)...`);
+  for (let waited = 0; waited < DOCKER_WAIT_MS; waited += DOCKER_WAIT_STEP_MS) {
+    pause(DOCKER_WAIT_STEP_MS);
+    if (run('docker', args).ok) return true;
+  }
+  return false;
+}
 // What backups and restores need besides Docker: rsync built with extended-attribute support (scripts/backup.sh and
 // scripts/restore.sh copy the stored files with `rsync -X`, which carries each file's content type and cache control) and GNU
 // tar with --xattrs (db:restore-host unpacks a backup archive with it). One message per missing tool, each with the command
