@@ -448,7 +448,8 @@ jobs:
       - name: Content types set again from the catalog (real storage image)
         run: |
           stored="$WAREHOUSE_STATE_DIR/data/storage"
-          pdf="$(cd "$stored" && grep -m1 -- '\.pdf/' <<<"$(find . -type f)" || true)"
+          # Only a runner-owned PDF: one the storage container wrote after the restore is owned by root and keeps its attribute.
+          pdf="$(cd "$stored" && grep -m1 -- '\.pdf/' <<<"$(find . -type f -user "$(id -u)")" || true)"
           test -n "$pdf"
           test "$(getfattr -n user.supabase.content-type --only-values "$stored/$pdf")" = application/pdf
           # What a restore from an older backup or USB copy leaves: no content type on any file.
