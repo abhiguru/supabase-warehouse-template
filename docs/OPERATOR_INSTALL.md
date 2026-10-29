@@ -882,7 +882,7 @@ own address and every phone would share one rate-limit budget.
 Reference file with placeholders:
 [deploy/cloudflared-config.example.yml](../deploy/cloudflared-config.example.yml).
 `scripts/tunnel.sh install-service` writes the systemd unit itself; it needs
-`tunnel.sh adopt` first (it stops with an error if the state holds no credential).
+`tunnel.sh create` or `tunnel.sh adopt` first (it stops with an error if the state holds no credential).
 
 Install `cloudflared` from [Cloudflare's package repository](https://developers.cloudflare.com/tunnel/features/locally-managed-tunnels/create-local-tunnel/#1-download-and-install-cloudflared):
 
@@ -893,6 +893,26 @@ printf 'deb [signed-by=/usr/share/keyrings/cloudflare-main.gpg] https://pkg.clou
 sudo apt-get update && sudo apt-get install -y cloudflared
 cloudflared --version
 ```
+
+**The guided way: `tunnel.sh create`.** After `cloudflared` is installed and `setup.sh` has run, one command does the login, the
+tunnel, the DNS route and the adoption into the state:
+
+```bash
+export WAREHOUSE_STATE_DIR=/srv/warehouse/acme
+bash scripts/tunnel.sh create            # or: --name NAME (default: warehouse-<state name>)
+sudo bash scripts/tunnel.sh install-service --state "$WAREHOUSE_STATE_DIR"
+bash scripts/tunnel.sh status
+```
+
+`create` prints a login link: open it on any machine, sign in to Cloudflare and pick the domain; the command waits until you have.
+It takes the hostname from this installation's `--api-url` (no hostname argument), refuses a tunnel name that already exists in
+the account (it never reuses or deletes another tunnel), creates a new tunnel, routes the hostname to it **without**
+`--overwrite-dns` (on a conflict it stops, names the new tunnel so you can delete it in the Cloudflare dashboard, and leaves the
+existing record alone), writes the config from the example with the gateway port from `compose.env`, validates it and adopts it.
+The account certificate `cert.pem` is moved into a private temporary directory at once and shredded, with the credential copy and
+config in that directory, when the command ends, on success or failure. It refuses if `~/.cloudflared/cert.pem` already exists
+(shred it first) or if the installation already holds a tunnel credential. The sections below are the manual sequence
+and the dashboard route, for when `create` does not fit.
 
 Decide the hostname and the tunnel before routing anything:
 
@@ -940,7 +960,8 @@ billed SMS, test installations included. Set `otp_daily_provider_attempt_cap`
 the connector, and never give a test
 installation a real provider key ([Test installations](#private-inputs)). Stop the tunnel when a test ends.
 
-**Keep the tunnel credential in the state, so backups carry it.** Copy it into
+**Keep the tunnel credential in the state, so backups carry it.** (`tunnel.sh create` already did this; the rest of this
+paragraph is for a tunnel made by hand or in the dashboard.) Copy it into
 the installation's state directory (`config/tunnel/`, mode 0700/0600) and make
 the connector a system service that reads that copy and survives reboots:
 
@@ -3085,7 +3106,8 @@ or run `wsl --set-default Ubuntu-24.04` (not verified yet).
 
 Verified. Open a shell inside the distro as `warehouse` and follow the Linux guide from [Host time zone](#host-time-zone) and
 the [Ubuntu 24.04 sequence](#ubuntu-2404-sequence) unchanged, then [Private inputs](#private-inputs) and [Setup](#setup), the
-[Cloudflare Tunnel ingress](#cloudflare-tunnel-ingress) and `sudo bash scripts/watch-timer.sh install --state "$WAREHOUSE_STATE_DIR"`.
+[Cloudflare Tunnel ingress](#cloudflare-tunnel-ingress) (`bash scripts/tunnel.sh create` does the login, tunnel, DNS route and
+adoption in one step; the link it prints can be opened in a browser on Windows) and `sudo bash scripts/watch-timer.sh install --state "$WAREHOUSE_STATE_DIR"`.
 Differences:
 
 - Clone the repository and keep the state directory on the Ubuntu filesystem (the home folder or `/srv`), never under `/mnt/c`
