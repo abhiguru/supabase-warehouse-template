@@ -3148,7 +3148,7 @@ Differences:
 
 - Clone the repository and keep the state directory on the Ubuntu filesystem (the home folder or `/srv`), never under `/mnt/c`
   or another Windows drive: NTFS has no Unix modes, `flock` or extended attributes, and the scripts refuse or misbehave there.
-- Keep a `wsl` session open for as long as setup runs (about 6 to 7 minutes the first time, about 7 after `wsl --terminate`). When the
+- Keep a `wsl` session open for as long as setup runs (about 6 to 7 minutes the first time). When the
   last session ends, WSL stops the distro after about 15 seconds and kills the build. Until the keep-alive task below exists, keep
   a terminal window open.
 - Right after the distro has just started, Docker may not answer for a moment. `setup.sh` waits for the Docker daemon for up to
