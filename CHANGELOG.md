@@ -15,6 +15,14 @@ a file in that tag; the baseline `migrations/00000000000000_baseline.sql` is the
   certificate is held in a private temporary directory and shredded on every exit path. `adopt` and `install-service` are unchanged;
   the manual sequence and the dashboard route stay in `docs/OPERATOR_INSTALL.md`.
 
+### Documentation
+
+- `docs/OPERATOR_INSTALL.md`, Windows (WSL2) section: the results of a second round on Windows 10 22H2 (what is verified and what is
+  not), the keep-alive task registered before `tunnel.sh create`, a wait for systemd after a cold start, the planned-work and
+  `wsl --update` notes, the USB drive through `usbipd-win` (works, but the attach does not survive a restart), and a known false
+  `disk_low` alert. Setting `otp_daily_provider_attempt_cap` is now a required go-live step for an installation reachable from the
+  internet. `docs/RELEASE_CHECKLIST.md` has a manual Windows acceptance section.
+
 ### Operator actions
 
 An installation on this release's predecessor (PostgreSQL 15 image, migrations 000 to 110) first goes through the **Baseline
@@ -247,6 +255,9 @@ reload** in `docs/OPERATOR_INSTALL.md`; a new installation needs none of that. A
     100,000 dispatches on a test database the whole update step (this migration and the definition files) took about 2 seconds (the seed reads every
     GRN and dispatch number once more to count those that do not follow the rule); plan for seconds at the size of a warehouse, and run the update when
     nobody is saving documents.
+
+22. **Set `otp_daily_provider_attempt_cap`** on every installation reachable from the internet (`docs/OPERATOR_INSTALL.md`,
+    "Authentication and OTP limits").
 
 ### Changed
 

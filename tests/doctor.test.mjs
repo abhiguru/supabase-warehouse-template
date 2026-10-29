@@ -627,6 +627,9 @@ test('the full doctor checks app-compat.json before the health check, so its own
 
 // Right after a cold start the Docker daemon does not answer yet: setup waits for it (up to a 60 s deadline, 2 s apart) before refusing.
 const DOWN = { ok: false, output: '', error: 'Cannot connect to the Docker daemon' };
+// A fake pause that fails the test when waitForDocker keeps pausing past its deadline, instead of looping for ever.
+const GUARD_PAUSES = 100;
+const guardedPause = advance => { let pauses = 0; return ms => { if (++pauses > GUARD_PAUSES) assert.fail(`waitForDocker paused more than ${GUARD_PAUSES} times: the deadline is never reached`); advance(ms); }; };
 test('waitForDocker: a daemon that answers on the 3rd try passes, after two pauses and one line', () => {
   let calls = 0; const pauses = []; const said = [];
   assert.equal(waitForDocker(() => (++calls === 3 ? { ok: true, output: '' } : DOWN), ms => pauses.push(ms), line => said.push(line)), null);
@@ -637,7 +640,7 @@ test('waitForDocker: a daemon that answers on the 3rd try passes, after two paus
 
 test('waitForDocker: a daemon that never answers is given up at the deadline, with the hint', () => {
   let clock = 0; let calls = 0;
-  const message = waitForDocker(() => { calls++; return DOWN; }, ms => { clock += ms; }, () => {}, () => clock);
+  const message = waitForDocker(() => { calls++; return DOWN; }, guardedPause(ms => { clock += ms; }), () => {}, () => clock);
   assert.equal(clock, DOCKER_WAIT_MS);
   assert.equal(calls, 31);
   assert.match(message, /Missing or unavailable prerequisite: docker\. Docker did not answer within 60 s; check `systemctl status docker`.*docker ps.*without sudo/);
@@ -645,7 +648,7 @@ test('waitForDocker: a daemon that never answers is given up at the deadline, wi
 
 test('waitForDocker: probes that hang for their whole timeout still end at the deadline, each capped at the time left', () => {
   let clock = 0; const timeouts = [];
-  const message = waitForDocker((c, a, timeout) => { timeouts.push(timeout); clock += timeout; return DOWN; }, ms => { clock += ms; }, () => {}, () => clock);
+  const message = waitForDocker((c, a, timeout) => { timeouts.push(timeout); clock += timeout; return DOWN; }, guardedPause(ms => { clock += ms; }), () => {}, () => clock);
   assert.match(message, /did not answer within 60 s/);
   assert.ok(clock <= DOCKER_WAIT_MS, `took ${clock} ms`);
   assert.ok(timeouts.every(t => t >= 1 && t <= 15000));
