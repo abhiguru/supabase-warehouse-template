@@ -16,8 +16,9 @@ because they use the same source checkout. The core database/document backup
 does not yet include that optional volume.
 
 The intended pilot transports are Linux direct USB through CUPS, and a private
-Windows USB printer queue shared to the Linux VM through Samba. Windows transport
-requires implementation and physical verification before it is supported.
+Windows USB printer queue shared to the Linux host through Samba. A Windows host
+runs the backend in [Ubuntu under WSL2](OPERATOR_INSTALL.md#windows-host-ubuntu-in-wsl2), where printing is not verified.
+Windows transport requires implementation and physical verification before it is supported.
 
 Before enabling printing, complete queue configuration, operator document
 branding and bounded form alignment, authorized submission, durable job identity

@@ -242,6 +242,15 @@ reload** in `docs/OPERATOR_INSTALL.md`; a new installation needs none of that. A
 
 ### Changed
 
+- **Windows hosts: the operator guide describes Ubuntu 24.04 in WSL2 and no longer a Linux virtual machine.** The new section
+  [Windows host (Ubuntu in WSL2)](docs/OPERATOR_INSTALL.md#windows-host-ubuntu-in-wsl2) replaces "Windows host with Linux VM": prerequisites,
+  Docker Engine inside Ubuntu, a keep-alive scheduled task that starts the distro at boot and after `wsl --shutdown`, the tunnel as the only
+  ingress (no LAN fallback on WSL2's NAT), planned work, where the data lives and an acceptance list, with each step marked verified or not
+  yet verified. A Windows host does not yet pass acceptance for a real facility: there is no tested USB backup path. A Linux operator need not act. The Linux guide gains: the tunnel service in the steps for taking an installation out of
+  service, a pointer from the tunnel section to the SMS cap (`otp_daily_provider_attempt_cap`) and the test-installation rule, `health-check.sh`
+  in "Ordinary operation", a note to decide the hostname before the first setup (`--api-url` cannot change later) with a link to the DNS
+  negative-cache note, and the instruction to delete the account `cert.pem` (which `cloudflared tunnel login` always writes to
+  `~/.cloudflared/`) once the tunnel exists. No script, workflow or migration changed.
 - **GRN, dispatch and invoice numbers follow a per-facility numbering rule (migration 127).** `warehouse_security.document_numbering` holds one
   rule per document type (letters, financial year, sequence or free text; invoices: restart each financial year or keep counting) and
   `document_numbering_history` records every change, never pruned. New RPCs: `suggest_document_number(p_document_type, p_date)` (the next number, its

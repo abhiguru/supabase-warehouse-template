@@ -540,14 +540,14 @@ Turn the fallback off with `bash scripts/lan.sh off`; the phones keep working ov
   Follow [Restoring a pre-baseline backup](OPERATOR_INSTALL.md#restoring-a-pre-baseline-backup) and the
   [Baseline reload](OPERATOR_INSTALL.md#baseline-reload).
 - **Nothing happens when the USB drive is attached**: check that it is
-  enrolled and visible to the host: `bash scripts/backup-usb.sh status` (on
-  VMware the drive must be connected to the VM, not the Windows host), then
+  enrolled and visible to the host: `bash scripts/backup-usb.sh status` (on a
+  Windows host the drive must be attached to the Ubuntu distro, which has no tested way yet:
+  [OPERATOR_INSTALL.md](OPERATOR_INSTALL.md#backups-off-the-host-windows)), then
   `journalctl -u 'warehouse-usb-backup@*' -n 50`. Only exFAT partitions on USB
   drives whose UUID is enrolled start a run; reformatting a drive changes its
   UUID, so enroll it again.
 - **Setup succeeded but no backup was copied**: setup does not start a run for
-  a drive that is already attached. Unplug the drive (on VMware: Removable
-  Devices, Disconnect) and attach it again, then follow the run with
+  a drive that is already attached. Unplug the drive and attach it again, then follow the run with
   `journalctl -f -u 'warehouse-usb-backup@*'`.
 - **`backup-usb.sh`: `Could not unmount …`**: a file manager window or terminal
   is using the drive; close it and run

@@ -24,7 +24,7 @@ Sections: [host prerequisites](#host-prerequisites),
 [rerun and upgrade](#rerun-and-upgrade),
 [baseline reload](#baseline-reload) (for a database built before PostgreSQL 17; the reload builds the current major, 18),
 [major PostgreSQL upgrade](#major-postgresql-upgrade) (17 to 18),
-[Windows host with Linux VM](#windows-host-with-linux-vm).
+[Windows host (Ubuntu in WSL2)](#windows-host-ubuntu-in-wsl2).
 
 ## Host prerequisites
 
@@ -222,6 +222,12 @@ A real facility gives its own Slack webhook, see [Setup](#setup).
 created locally and must complete a real SMS login before receiving a session.
 
 ## Setup
+
+**Decide the public hostname before the first run.** `--api-url` becomes the installation's identity: a later run with another
+`--api-url` stops with "Existing canonical origin differs; refusing to replace instance identity", and this guide has no rename
+procedure. A real hostname also needs real provider values (see the test-installation rule below). Do not look the name up on
+the LAN resolver before it is routed: a cached "does not exist" answer can keep it unresolvable for half an hour
+([TROUBLESHOOTING.md](TROUBLESHOOTING.md#tunnel-and-public-address)).
 
 ```bash
 export WAREHOUSE_STATE_DIR=/srv/warehouse/acme
@@ -890,14 +896,19 @@ cloudflared --version
 
 Decide the hostname and the tunnel before routing anything:
 
-1. Use the complete API hostname (for example `warehouse-api.example.com`), the same value as `--api-url`. Check its DNS
-   and confirm nothing else serves it.
+1. Use the complete API hostname (for example `warehouse-api.example.com`), the same value as `--api-url`, which was fixed at the
+   first [setup](#setup). Check its DNS and confirm nothing else serves it with `dig +short A <hostname> @1.1.1.1` only: a lookup
+   through the LAN resolver before the route exists can cache "does not exist" for about half an hour
+   ([TROUBLESHOOTING.md](TROUBLESHOOTING.md#tunnel-and-public-address)), and flushing the host's resolver does not clear a
+   router's cache. Test a new name with `@1.1.1.1` or `curl --resolve`.
 2. Use a tunnel dedicated to this host: [Cloudflare sends requests to any replica of a shared tunnel](https://developers.cloudflare.com/tunnel/configuration/#replicas-and-high-availability),
    so an occupied tunnel does not isolate this installation.
 3. Choose [dashboard-managed](https://developers.cloudflare.com/cloudflare-one/networks/connectors/cloudflare-tunnel/get-started/create-remote-tunnel/)
    (create the tunnel and a public hostname route to `http://127.0.0.1:18000` in the dashboard, store the connector token in
    a mode-0600 file) or [locally managed](https://developers.cloudflare.com/tunnel/features/locally-managed-tunnels/create-local-tunnel/)
-   (`cloudflared tunnel login` writes `cert.pem`; create a new named tunnel with its own JSON credentials; route only the
+   (`cloudflared tunnel login` writes `cert.pem`, always to `~/.cloudflared/cert.pem`, whatever `--origincert` says; on a host
+   without a browser it prints a URL: open it on another machine and leave the command running until it reports success;
+   create a new named tunnel with its own JSON credentials; route only the
    confirmed hostname). For a locally managed tunnel, after moving `cert.pem` into a mode-0700 private directory:
 
    ```bash
@@ -923,6 +934,12 @@ confirm the hostname's DNS record points to `<tunnel-uuid>.cfargotunnel.com`.
 For a dashboard-managed tunnel the hostname and origin live in the dashboard
 and the YAML is not used.
 
+**A tunnel makes the installation public, so cap the SMS first.** Every accepted code request on a public address is a real,
+billed SMS, test installations included. Set `otp_daily_provider_attempt_cap`
+([Authentication and OTP limits](#authentication-and-otp-limits); it is off until you create it) before `install-service` below starts
+the connector, and never give a test
+installation a real provider key ([Test installations](#private-inputs)). Stop the tunnel when a test ends.
+
 **Keep the tunnel credential in the state, so backups carry it.** Copy it into
 the installation's state directory (`config/tunnel/`, mode 0700/0600) and make
 the connector a system service that reads that copy and survives reboots:
@@ -945,9 +962,12 @@ and it refuses a config that does not route this installation's hostname.
 ran `sudo`, then enables and restarts it. From then on every backup, and every
 USB copy, includes the credential, and
 [restoring onto a new host](#recover-a-lost-host-from-the-usb-drive) brings the
-public address back without a Cloudflare login. Keep `cert.pem` in your private
-directory only. Once the service runs from the state copy you may delete the
-old private copies of the config and credentials JSON.
+public address back without a Cloudflare login. Once the service runs from the state copy you may delete the
+old private copies of the config and credentials JSON, and you must delete **the account `cert.pem`**: `cloudflared tunnel login` wrote it to
+`~/.cloudflared/cert.pem` as well as, or instead of, your private directory, and it can create and delete any tunnel and DNS
+record of the whole Cloudflare account. Delete every copy as soon as the tunnel and its DNS route exist
+(`shred -u ~/.cloudflared/cert.pem`, and the copy in your private directory), and check that none is left in the home folder,
+in `/srv` or in `/root`.
 
 To keep the credential out of backups instead, skip `adopt` and write the unit
 by hand (a unit that runs as the installation user, not root (`User=` and `Group=`), with `ExecStart=/usr/bin/cloudflared --no-autoupdate --config <private config.yml> tunnel run`, or for a dashboard tunnel `ExecStart=/usr/bin/cloudflared --no-autoupdate tunnel run --token-file <private token file>`; never put `--token` on the command line; `sudo systemctl daemon-reload && sudo systemctl enable --now <unit>`); a
@@ -1160,10 +1180,23 @@ bash scripts/compose.sh ps
 bash stop.sh
 ```
 
+`bash health-check.sh` runs the checker's local checks (`node scripts/watch.mjs health`: the services, the database,
+the gateway's public configuration and a `get_public_config` probe through it, and the PDF renderer) and, when one fails, prints the
+logs of the gateway, functions and REST services. The public hostname is tested by the checker's `api_public` check and the external doctor.
+
 `compose ps` shows every service `Up (healthy)` except `rest`, which defines no healthcheck and appears as plain `Up`; the
 doctor, not the status column, is the health verdict. `stop.sh` leaves the file `config/stopped-by-operator`, so the stack stays
 down through a reboot and the monitoring checker does not start it again until `start.sh` removes the file. Start and stop the
 tunnel service separately through its systemd unit. Do not run `down -v`, a broad Docker prune, or delete state as a restart procedure.
+
+**Taking an installation out of service.** `stop.sh` stops the stack but not the tunnel service, which keeps the public address
+answering with errors, and not the timers. To retire the installation, in this order: `bash stop.sh`;
+`sudo systemctl disable --now warehouse-<state name>-tunnel.service` (the public address then answers with a Cloudflare error,
+1033, until the tunnel is deleted); `sudo bash scripts/watch-timer.sh uninstall --state "$WAREHOUSE_STATE_DIR"` (the checker, daily and boot units; `sudo` drops the
+environment, so name the state); `sudo bash scripts/backup-usb.sh uninstall` if a USB drive was set up (it removes the rule, units,
+helper and configuration and leaves the drives untouched); then, only
+once you have a copy of the data you need, delete the tunnel and its DNS record in Cloudflare, which also revokes every copy of
+its credential, including those in backups. Deleting the state directory is a separate step that destroys the data.
 
 To look at the data, open a SQL prompt inside the database container:
 
@@ -1502,8 +1535,9 @@ Do the same after a `db:restore-host --allow-unsigned` that was run without the 
 ### USB backup drive
 
 A backup on the same disk as `data/` is lost with it, which is why `db:backup` warns. The USB script copies the newest verified
-backup to a **USB drive formatted exFAT**, which the operator attaches; exFAT is readable by a Linux host and by the Linux
-VM of a [Windows host](#windows-host-with-linux-vm), so a restore works on either. The drive is never partitioned or
+backup to a **USB drive formatted exFAT**, which the operator attaches; exFAT is readable by a Linux host and by
+Windows, so the drive can be read on either; the restore itself runs on Linux or in Ubuntu under WSL2. A
+[Windows host](#windows-host-ubuntu-in-wsl2) has no tested USB path yet. The drive is never partitioned or
 formatted, and other files on it are left alone. The copy goes under `warehouse-backups/<state name>/` as one self-contained
 **encrypted** archive, `warehouse-<utc>.tar.enc` (a tar of the whole backup folder, with file modes, modification times and the
 stored files' content types kept inside, and the photos written out in full: the drive has no hard links), with a
@@ -1531,8 +1565,8 @@ byte. The exFAT volume serial alone does not enrol a drive (it is 32 bits and ca
 that imitates it receives nothing.
 
 1. **Confirm the backup key copy** ([Backup key](#backup-key): `bash scripts/backup-key-escrow.sh show`); setup with `--enroll`
-   and `enroll` refuse until you have. Then set it up once, as the installation user with `sudo`, with the drive attached (on VMware
-   connect it to the VM under Removable Devices first). Find the partition with `lsblk -o NAME,TRAN,FSTYPE,LABEL,MOUNTPOINTS`; it
+   and `enroll` refuse until you have. Then set it up once, as the installation user with `sudo`, with the drive attached (a Windows host has no
+   tested way yet: [Backups off the host](#backups-off-the-host-windows)). Find the partition with `lsblk -o NAME,TRAN,FSTYPE,LABEL,MOUNTPOINTS`; it
    must show `usb` and `exfat`:
 
    ```bash
@@ -1816,8 +1850,7 @@ one rerun with both sets of options does.
    the restore. A checkout older than the release that wrote the backup format `warehouse-backup-v6` refuses such a backup at
    once ("backup format 'warehouse-backup-v6' is no longer supported; take a new backup with this version"), before it
    reaches the `source_commit` hint: check out this release or a later one.
-2. **Attach the drive and choose the backup.** On VMware connect it under
-   Removable Devices. The desktop usually mounts it under `/media/$USER/`;
+2. **Attach the drive and choose the backup.** The desktop usually mounts it under `/media/$USER/`;
    otherwise `udisksctl mount -b /dev/sdX1` (find it with
    `lsblk -o NAME,TRAN,FSTYPE,LABEL,MOUNTPOINTS`: `usb`, `exfat`).
 
@@ -2943,21 +2976,231 @@ facility, planned for the first half of 2029, with the PostgreSQL major ([MAINTE
 then the glibc guard line moves only with a Debian update of the same glibc series, after reading the glibc changelog for collation
 changes.
 
-## Windows host with Linux VM
+## Windows host (Ubuntu in WSL2)
 
-Install the same Linux stack inside an x86-64 VM and keep its state on a durable
-VM disk. For a Hyper-V host, configure automatic start and a graceful stop from
-an elevated PowerShell session, substituting the actual VM name:
+A Windows host runs the same Linux stack inside Ubuntu 24.04 under WSL2, with Docker Engine installed inside Ubuntu. A
+virtual machine product (VMware Workstation or similar) with Linux inside Windows is not a supported route. Docker Desktop
+and running the scripts from Git Bash or PowerShell are not supported either: `setup.sh` already stops at its first checks
+there, because the scripts need Linux file modes, `flock`, `rsync`, systemd and `sudo`.
+
+After the Windows-specific steps below, every command is the Linux one in this guide, typed inside Ubuntu. Marks used in this
+section: **Verified** means the step was run on a real Windows host and worked; **Not verified yet** means it is written from
+the documentation of the tool and has not been run. Where a step is not verified, check it on a host that serves no live facility
+first. Shell tags: **[PS-admin]** is an elevated PowerShell on Windows, **[PS]** an ordinary PowerShell, **[Ubuntu]** a shell
+inside the distro.
+
+What was verified, on Windows 10 22H2 with WSL 3.0.1 and Ubuntu 24.04: the install (`setup.sh`, `doctor --local`, the gateway
+test), a backup with `db:verify-restore`, the monitoring and boot units, a Cloudflare tunnel created from the command line,
+adopted and installed as a service (the external doctor, run on the host, healthy), a reboot with nobody signed in, and recovery
+after `wsl --shutdown`, `wsl --terminate` and a host reboot. What was **not** verified: Windows 11, the Home edition,
+mirrored networking, the power settings and `.wslconfig` below, a graceful stop when Windows shuts down, disabling and enabling
+the keep-alive task for planned work, a WSL update, a real Windows Update reboot, a USB backup drive, printing, and a complete
+fresh install that follows this text from the top.
+
+### Prerequisites
+
+- Windows 11 Pro or Enterprise, x64, is recommended (not verified yet). Windows 10 22H2 is the version this route was verified
+  on; it is out of Microsoft's support, so a new install should use Windows 11. The Home edition is not verified.
+- Hardware virtualisation on in the firmware. When Windows is itself a virtual machine, nested virtualisation (VT-x/EPT or the
+  equivalent) must be switched on for that machine: WSL2 does not start without it. Check from PowerShell:
+
+  ```powershell
+  Get-CimInstance Win32_Processor | Select-Object VirtualizationFirmwareEnabled, SecondLevelAddressTranslationExtensions
+  ```
+
+- Sizes it was verified with: 4 virtual CPUs, 16 GB of RAM and 60 GB free on `C:`. These are what was used, not proven minimums.
+  By default the distro may use half of the host's RAM and all its CPUs, and its disk is a virtual disk file that grows on
+  `C:` (about 13 GB used after an install and a backup). Size `C:` with the rule in [Disk space](#disk-space).
+- Power settings (not verified yet): no sleep and no hibernation on AC power. [PS-admin]
+
+  ```powershell
+  powercfg /change standby-timeout-ac 0
+  powercfg /hibernate off
+  ```
+
+- Optionally (not verified yet) limit the memory the distro takes: create `%UserProfile%\.wslconfig` with
+
+  ```ini
+  [wsl2]
+  memory=8GB
+  ```
+
+  and apply it with `wsl --shutdown`, which stops the distro abruptly: do that only on a host with no live facility, or follow
+  [Planned work and updates](#planned-work-and-updates).
+- One Windows account owns the distro and the keep-alive task, and it needs a password (the task stores it). Nobody has to be
+  signed in after the setup.
+
+**Where the data lives.** The distro, with the whole installation, is one virtual disk file (`ext4.vhdx`) under that Windows
+account's profile. Never run `wsl --unregister` for this distro, never delete that Windows account or its profile, and do not
+reinstall Windows without a copy of a backup from outside the host ([Backups off the host](#backups-off-the-host-windows)).
+
+### WSL and Ubuntu 24.04 with systemd
+
+Verified, except where marked. If Docker Desktop is installed on this Windows host, read [Docker Desktop](#docker-desktop-if-it-is-installed) first.
+
+1. [PS-admin] `wsl --install --no-distribution`, then restart Windows (only if WSL is not installed yet).
+2. [PS-admin] `wsl --install Ubuntu-24.04 --no-launch`
+3. [PS] (written form not run as typed) Create the operator user as `root`. Do not call it `operator`: Ubuntu already has a group of that name. This guide
+   uses `warehouse`.
+
+   ```powershell
+   wsl -d Ubuntu-24.04 -u root -- bash -c "adduser --disabled-password --gecos '' warehouse && usermod -aG sudo warehouse"
+   wsl -d Ubuntu-24.04 -u root -- passwd warehouse
+   ```
+
+   The verified install used passwordless `sudo`; setting a password as above (`sudo` then asks for it during `setup.sh` and
+   `watch-timer.sh`) is not verified yet.
+4. [PS] (written form not run as typed) Turn on systemd and make `warehouse` the default user:
+
+   ```powershell
+   wsl -d Ubuntu-24.04 -u root -- bash -c "printf '[boot]\nsystemd=true\n\n[user]\ndefault=warehouse\n' > /etc/wsl.conf"
+   wsl --shutdown
+   wsl -d Ubuntu-24.04
+   ```
+
+5. [Ubuntu] `systemctl is-system-running` may print `degraded` because `systemd-binfmt` fails in WSL; that is expected. A
+   message "Failed to start the systemd user session" at the first start, and `logger: /dev/log` errors, are harmless too.
+
+Notes for typing commands into the distro from Windows:
+
+- `wsl` starts in the Windows working directory, so a `git clone` typed without `cd ~` lands on the Windows disk. Open a shell
+  with `wsl -d Ubuntu-24.04 --cd ~`, or `cd ~` first.
+- `wsl -l -v` prints UTF-16: captured into a file or a pipe it contains null bytes.
+- A command run as `wsl -d Ubuntu-24.04 -- bash -c "node ..."` is not a login shell and does not read `~/.profile`, where the
+  Node `PATH` is set, so it finds no `node`. Use `bash -lc '...'`, in the keep-alive task and in scripts too.
+- A multi-line step such as the `printf ... | sudo tee` lines of this guide is mangled by nested quoting (for example `ssh`
+  into Windows, then `wsl`): the file is silently not written. Work in a shell inside the distro, or put the steps in a script.
+- Prove that the distro itself restarted with `ps -o lstart= -p 1`; `uptime -s` does not change after `wsl --terminate`.
+
+### Docker Desktop (if it is installed)
+
+Docker Engine runs inside Ubuntu, as on a Linux host; do not use Docker Desktop for this installation. If Docker Desktop is
+installed on the host, quit it and turn off "Start Docker Desktop when you sign in" (verified: its start-up entry in the
+registry stays, so check that it does not start again after a sign-in), and do not turn on its WSL integration for this distro.
+The engine in the distro has its own daemon and images; a `docker` typed in Windows talks to Docker Desktop, not to the distro.
+With Docker Desktop installed the default distro can be `docker-desktop`: name the distro in every command (`wsl -d Ubuntu-24.04`),
+or run `wsl --set-default Ubuntu-24.04` (not verified yet).
+
+### Continue with the Linux steps inside Ubuntu
+
+Verified. Open a shell inside the distro as `warehouse` and follow the Linux guide from [Host time zone](#host-time-zone) and
+the [Ubuntu 24.04 sequence](#ubuntu-2404-sequence) unchanged, then [Private inputs](#private-inputs) and [Setup](#setup), the
+[Cloudflare Tunnel ingress](#cloudflare-tunnel-ingress) and `sudo bash scripts/watch-timer.sh install --state "$WAREHOUSE_STATE_DIR"`.
+Differences:
+
+- Clone the repository and keep the state directory on the Ubuntu filesystem (the home folder or `/srv`), never under `/mnt/c`
+  or another Windows drive: NTFS has no Unix modes, `flock` or extended attributes, and the scripts refuse or misbehave there.
+- Keep a `wsl` session open for as long as setup runs (about 6 minutes the first time). When the last session ends, WSL stops
+  the distro after about 15 seconds and kills the build. Until the keep-alive task below exists, keep a terminal window open.
+- Wait for Docker before the first `setup.sh` after the distro has just started; right after a cold start setup failed with
+  "Missing or unavailable prerequisite: docker". The wait is not verified yet:
+
+  ```bash
+  for i in $(seq 60); do systemctl is-active --quiet docker && break; sleep 2; done
+  systemctl is-active --quiet docker || echo "Docker is not running: check 'systemctl status docker' before setup"
+  ```
+
+- Decide the public hostname before the first setup ([Setup](#setup)).
+- A shell started later needs the Node `PATH` and the state directory again: `export WAREHOUSE_STATE_DIR=...` in `~/.profile`, and
+  `bash -lc` when a command is started from Windows.
+
+### Keep the distro running and start it at boot
+
+WSL stops a distro about 15 seconds after its last session ends, and a host that restarts has no session at all. One scheduled
+task of the Windows account that owns the distro must hold a session open, start at boot without anyone signing in, and start
+again by itself after `wsl --shutdown` or `wsl --terminate`. A task that only has a boot trigger and a restart count is not
+enough: the restart count acts on a task that failed to launch, not on a `wsl.exe` that was killed (verified: the public address
+stayed down for nearly 10 minutes after `wsl --shutdown`). The verified form is a boot trigger plus a trigger that repeats every
+2 minutes without end, with new instances ignored while one is running.
+
+[PS-admin], in a console on the host (run `Get-Credential` at the console; it may not prompt over a remote session). The task
+must run as the Windows account that owns the distro: `SYSTEM` cannot see it. The settings were read back from a working task
+(State Running; RunLevel Highest; MultipleInstances IgnoreNew; StartWhenAvailable; RestartCount 999 at 1 minute; no time limit; the boot trigger
+and the 2-minute repeating trigger enabled). The registration lines below are written from that read-back and have not been run
+as typed, and the two battery switches were not in the read-back, so check the task after you register it
+(`Get-ScheduledTask 'Warehouse WSL' | Get-ScheduledTaskInfo` and `Get-ScheduledTask 'Warehouse WSL' | Select -ExpandProperty Settings`):
 
 ```powershell
-Set-VM -Name WarehouseVM -AutomaticStartAction Start -AutomaticStopAction ShutDown
+$c = Get-Credential -UserName "$env:COMPUTERNAME\<windows-user>" -Message 'Windows account that owns the distro'
+$a = New-ScheduledTaskAction -Execute 'C:\Windows\System32\wsl.exe' -Argument '-d Ubuntu-24.04 --exec /usr/bin/sleep infinity'
+$t = @((New-ScheduledTaskTrigger -AtStartup), (New-ScheduledTaskTrigger -Once -At (Get-Date) -RepetitionInterval (New-TimeSpan -Minutes 2)))
+$s = New-ScheduledTaskSettingsSet -ExecutionTimeLimit ([TimeSpan]::Zero) -MultipleInstances IgnoreNew -StartWhenAvailable -AllowStartIfOnBatteries -DontStopIfGoingOnBatteries -RestartCount 999 -RestartInterval (New-TimeSpan -Minutes 1)
+Register-ScheduledTask -TaskName 'Warehouse WSL' -Action $a -Trigger $t -Settings $s -User $c.UserName -Password $c.GetNetworkCredential().Password -RunLevel Highest
 ```
 
-Expose only the tunnel connector from the VM. Reboot the Windows host without
-logging in, then verify that the VM, Docker services, the tunnel service and
-both doctor modes recover. A Windows USB printer queue shared to CUPS through
-Samba is a separate physical acceptance path; check it after the same
-unattended reboot. The start and stop settings are documented by
-[Microsoft's Set-VM reference](https://learn.microsoft.com/en-us/powershell/module/hyper-v/set-vm).
-For VMware or another hypervisor use its own startup/shutdown procedure; a
-successful guest reboot does not prove host autostart or USB reattachment.
+Do not type the password into the command line (`-Password (Read-Host ...)` shows it on screen).
+
+- The task shows **Running** all the time, and the 2-minute repeat ends with `LastTaskResult` 2147946720 (0x800710E0) because it
+  finds the first instance still running. That is expected and not a fault.
+- After the Windows account's password changes, update the task, or it stops starting (not verified yet):
+  `Set-ScheduledTask -TaskName 'Warehouse WSL' -User $c.UserName -Password $c.GetNetworkCredential().Password` with a new
+  `$c` from `Get-Credential`. `Register-ScheduledTask` fails on an existing name unless you add `-Force`.
+- Recovery times measured with the verified task (single measurements, plus or minus 20 seconds): the public address answered
+  again about 104 seconds after `wsl --shutdown`, 85 seconds after `wsl --terminate`, and 82 to 89 seconds after a host reboot
+  with nobody signed in.
+
+Nothing stops the stack cleanly when Windows shuts down or restarts for an update (not verified yet): the processes are killed
+and PostgreSQL recovers its log on the next start. For a planned shutdown follow the next section.
+
+### Ingress and the LAN
+
+The Cloudflare tunnel, running inside Ubuntu, is the only way in. The gateway listens on `127.0.0.1` inside the distro, and
+nothing is published to the Windows network.
+
+- Do not add a Windows `netsh interface portproxy` rule, or a firewall rule, to reach the gateway from the LAN. Every request
+  then reaches the gateway from the container bridge address, and the gateway trusts `CF-Connecting-IP` from private
+  addresses ([Cloudflare Tunnel ingress](#cloudflare-tunnel-ingress)): a device on the LAN can choose its own rate-limit bucket and
+  per-source sign-in limits, and all other clients share one.
+- The [LAN fallback](#lan-fallback-plain-http-on-the-warehouse-network) is not available on a WSL2 host with the default NAT
+  networking: `lan.sh` binds an address of the distro's private network, which phones cannot reach. Windows 11 mirrored
+  networking (`networkingMode=mirrored` in `.wslconfig`) is not verified. A facility on this route has no fallback if the
+  internet or Cloudflare is down.
+- The external doctor runs inside the distro, on the install host ([External doctor](#external-doctor)).
+
+### Planned work and updates
+
+`wsl --shutdown`, `wsl --terminate`, a WSL update, and a restart of Windows all kill PostgreSQL and the containers abruptly;
+the database recovers on the next start, but do not do them on a live facility without this order. The order is the intended
+procedure; disabling and enabling the task were not run, and a WSL update was not tested (only `wsl --shutdown` and
+`wsl --terminate` were).
+
+1. [Ubuntu] `export WAREHOUSE_STATE_DIR=...`, then `bash stop.sh`.
+2. [Ubuntu] Silence the checker for the window: `node scripts/watch.mjs mute <minutes>`.
+3. [PS-admin] `Disable-ScheduledTask 'Warehouse WSL'`, so the distro is not started again in the middle of the work.
+4. Do the work: update WSL (`wsl --update`), Windows, `wsl --shutdown`, restart.
+5. [PS-admin] `Enable-ScheduledTask 'Warehouse WSL'`, then `Start-ScheduledTask 'Warehouse WSL'`.
+6. [Ubuntu] `bash start.sh`, then `node scripts/watch.mjs unmute` and the doctor in both modes.
+
+A task left disabled keeps the facility down after the next restart of Windows. The package work of
+[Monthly host maintenance](#monthly-host-maintenance) is done inside Ubuntu as written; a restart of the host is the Windows
+restart in step 4 of this list, not `sudo reboot` (not verified yet).
+
+### Backups off the host (Windows)
+
+**A Windows host cannot yet meet the off-host backup requirement, and that blocks go-live for a real facility.** The USB drive
+is the off-host copy ([PRODUCTION_DEPENDENCIES.md](PRODUCTION_DEPENDENCIES.md)), and `backup-usb.sh` writes only to an enrolled
+USB drive that the distro can see. There is no tested USB path on this route (not verified yet): the drive would have to be passed
+into the distro with `usbipd-win` on Windows (`usbipd list`, `usbipd bind --busid <id>`, `usbipd attach --wsl --busid <id>`),
+the distro's kernel would need exFAT support, the udev rule would have to fire inside the distro, and the drive detaches whenever the
+distro stops, so it must be attached again after every restart of the distro or the host. Printing over USB has the same limits
+([PRINTING.md](PRINTING.md)). Copying files to a Windows drive through `/mnt/<drive>` loses the extended attributes and ownership that
+a restore needs from the stored photos, so it is not a substitute.
+
+Until a USB path is tested, the distro's virtual disk holds the only copy of the data. Verified: `db:backup` and
+`db:verify-restore` inside the distro, on its own virtual disk, work as on Linux.
+
+### Acceptance
+
+Before the facility goes live, on this host, with nobody signed in to Windows:
+
+1. Restart Windows. The public address answers `get-public-config` again within a few minutes without anyone signing in, the
+   `<project>-stack.service` and tunnel units are active, and `node scripts/doctor.mjs --local` and `node scripts/doctor.mjs`
+   (run inside the distro) both pass.
+2. Run `wsl --shutdown` from a PowerShell, then do not touch anything. The task starts the distro again, the stack comes back, and
+   both doctor modes pass (do this on a host that serves no live facility).
+3. Run the planned-work order above once end to end, including `Disable-ScheduledTask` and `Enable-ScheduledTask` (before go-live, on
+   this host only). If any step does not behave as written, stop and report it; do not go live.
+4. Check the keep-alive task after it is registered: it shows Running, with the two triggers.
+5. A USB backup drive, enrolled and copying a verified backup, and still working after the same restart, is required for a real facility.
+   It is currently not possible on Windows ([Backups off the host](#backups-off-the-host-windows)), so a Windows host does not yet pass
+   acceptance. Printing, where the facility uses it, is not verified on this route either.

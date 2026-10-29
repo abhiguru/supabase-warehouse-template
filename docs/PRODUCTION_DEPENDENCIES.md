@@ -5,8 +5,8 @@ they go in the operator's secret store. Nothing here authorizes production deplo
 
 ## Needs the operator or the owner
 
-- **Unattended host.** Physical-host startup and shutdown of the VM (on Windows) and a host reboot without a login,
-  checked with both doctor modes ([OPERATOR_INSTALL.md](OPERATOR_INSTALL.md#windows-host-with-linux-vm)).
+- **Unattended host.** Start-up of the distro on a Windows host (the keep-alive task) and a host reboot without a login,
+  checked with both doctor modes ([OPERATOR_INSTALL.md](OPERATOR_INSTALL.md#windows-host-ubuntu-in-wsl2)).
 - **Off-host backups.** Key custody, RTO/RPO and the drill. **Decided (owner, 2026-10-25): the USB drive is the only off-host copy;
   an unattended off-site copy is not required.** The drive holds one self-contained archive per backup, **encrypted by default**
   (readable only if the operator types `--no-encrypt`), and keeps the newest three; the recovery point is the last time the drive
