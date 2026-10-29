@@ -110,9 +110,10 @@ cmd_create() {
   command -v cloudflared >/dev/null || die 'cloudflared is not installed; see docs/OPERATOR_INSTALL.md, "Cloudflare Tunnel ingress".'
   host="$(origin_host "$state")"
   port="$(sed -n 's/^GATEWAY_HTTP_PORT=//p' "$state/config/compose.env" | tail -n 1)"
+  # Compatibility shim: drop with doctor-common.mjs:71 (gatewayPortText).
   [[ -n "$port" ]] || port="$(sed -n 's/^KONG_HTTP_PORT=//p' "$state/config/compose.env" | tail -n 1)"
   port="${port:-18000}"
-  [[ "$port" =~ ^[0-9]{1,5}$ ]] || die "GATEWAY_HTTP_PORT in compose.env is not a port number: $port"
+  [[ "$port" =~ ^[0-9]{1,5}$ ]] || die "The gateway port in compose.env is not a port number: $port"
   home_cert="$HOME/.cloudflared/cert.pem"
   [[ ! -e "$home_cert" && ! -L "$home_cert" ]] || die "$home_cert already exists: it is an account certificate that can create and delete every tunnel and DNS record. Shred it (shred -u $home_cert) and run create again."
 
@@ -173,13 +174,19 @@ Delete tunnel $name ($tunnel) and the record it created in the Cloudflare dashbo
 }
 tunnel_create_cleanup() {
   local f
-  [[ -n "${TUNNEL_CREATE_TMP:-}" && -d "$TUNNEL_CREATE_TMP" ]] || return 0
+  [[ -n "${TUNNEL_CREATE_TMP:-}" ]] || return 0
   # cloudflared writes the credentials file read-only (0400): -f lets shred overwrite it.
-  for f in "${TUNNEL_CREATE_HOME_CERT:-}" "$TUNNEL_CREATE_TMP"/*; do
-    [[ -n "$f" && -f "$f" ]] || continue
-    shred -fu -- "$f" 2>/dev/null || rm -f -- "$f"
+  # The account certificate in the home folder goes first, whatever became of the temp dir.
+  for f in "${TUNNEL_CREATE_HOME_CERT:-}"; do
+    [[ -n "$f" && -f "$f" ]] && { shred -fu -- "$f" 2>/dev/null || rm -f -- "$f"; }
   done
-  rm -rf -- "$TUNNEL_CREATE_TMP"
+  if [[ -d "$TUNNEL_CREATE_TMP" ]]; then
+    for f in "$TUNNEL_CREATE_TMP"/*; do
+      [[ -f "$f" ]] || continue
+      shred -fu -- "$f" 2>/dev/null || rm -f -- "$f"
+    done
+    rm -rf -- "$TUNNEL_CREATE_TMP"
+  fi
 }
 
 cmd_install_service() {

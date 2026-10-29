@@ -191,6 +191,7 @@ case "$1" in
     [ "$FAKE_LOGIN_FAIL" = yes ] && exit 1
     mkdir -p "$HOME/.cloudflared"; echo "-----BEGIN CERTIFICATE-----" > "$HOME/.cloudflared/cert.pem"
     [ "$FAKE_LOGIN_WRITE_FAIL" = yes ] && exit 1
+    [ "$FAKE_LOGIN_RM_TMP" = yes ] && rm -rf "$TMPDIR"/warehouse-tunnel-create.*
     exit 0 ;;
 esac
 [ "$1" = --origincert ] || exit 2
@@ -360,5 +361,16 @@ test('create removes a certificate that login wrote before it failed', () => {
     assert.equal(result.status, 1);
     assert.equal(existsSync(join(c.home, '.cloudflared/cert.pem')), false, 'the account certificate does not survive');
     assert.deepEqual(leftovers(c).tmp, []);
+  } finally { clean(c); }
+});
+
+test('create still shreds the home certificate when its temp directory vanished during login', () => {
+  const c = createFixture('warehouse-tunnel-create-tmpgone-');
+  try {
+    const result = c.runCreate([], { FAKE_LOGIN_RM_TMP: 'yes' });
+    assert.equal(result.status, 1);
+    assert.equal(existsSync(join(c.home, '.cloudflared/cert.pem')), false, 'the account certificate does not survive');
+    assert.match(c.calls(), /shred -fu -- \S+\/\.cloudflared\/cert\.pem/);
+    assert.equal(existsSync(join(c.state, 'config/tunnel')), false);
   } finally { clean(c); }
 });
