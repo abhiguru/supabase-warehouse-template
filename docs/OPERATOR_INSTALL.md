@@ -3092,14 +3092,8 @@ Differences:
   or another Windows drive: NTFS has no Unix modes, `flock` or extended attributes, and the scripts refuse or misbehave there.
 - Keep a `wsl` session open for as long as setup runs (about 6 minutes the first time). When the last session ends, WSL stops
   the distro after about 15 seconds and kills the build. Until the keep-alive task below exists, keep a terminal window open.
-- Wait for Docker before the first `setup.sh` after the distro has just started; right after a cold start setup failed with
-  "Missing or unavailable prerequisite: docker". The wait is not verified yet:
-
-  ```bash
-  for i in $(seq 60); do systemctl is-active --quiet docker && break; sleep 2; done
-  systemctl is-active --quiet docker || echo "Docker is not running: check 'systemctl status docker' before setup"
-  ```
-
+- Right after the distro has just started, Docker may not answer for a moment. `setup.sh` waits for the Docker daemon for up to
+  60 s before it refuses; if it still stops with "Docker did not answer within 60 s", check `systemctl status docker`.
 - Decide the public hostname before the first setup ([Setup](#setup)).
 - A shell started later needs the Node `PATH` and the state directory again: `export WAREHOUSE_STATE_DIR=...` in `~/.profile`, and
   `bash -lc` when a command is started from Windows.

@@ -1,6 +1,6 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { supportedNode } from '../scripts/doctor-common.mjs';
+import { supportedNode, waitForDocker, DOCKER_WAIT_MS } from '../scripts/doctor-common.mjs';
 import { canonicalOrigin } from '../scripts/configure.mjs';
 
 test('operator configuration requires canonical HTTPS origins and supported Node', () => {
@@ -623,4 +623,59 @@ test('the full doctor checks app-compat.json before the health check, so its own
   const source = readFileSync(new URL('../scripts/doctor.mjs', import.meta.url), 'utf8');
   const check = source.indexOf('  checkAppCompatFile(state);');
   assert.ok(check > 0 && check < source.indexOf('await runHealth('), 'checkAppCompatFile(state) runs before runHealth');
+});
+
+// Right after a cold start the Docker daemon does not answer yet: setup waits for it (up to a 60 s deadline, 2 s apart) before refusing.
+const DOWN = { ok: false, output: '', error: 'Cannot connect to the Docker daemon' };
+test('waitForDocker: a daemon that answers on the 3rd try passes, after two pauses and one line', () => {
+  let calls = 0; const pauses = []; const said = [];
+  assert.equal(waitForDocker(() => (++calls === 3 ? { ok: true, output: '' } : DOWN), ms => pauses.push(ms), line => said.push(line)), null);
+  assert.equal(calls, 3);
+  assert.deepEqual(pauses, [2000, 2000]);
+  assert.equal(said.length, 1);
+});
+
+test('waitForDocker: a daemon that never answers is given up at the deadline, with the hint', () => {
+  let clock = 0; let calls = 0;
+  const message = waitForDocker(() => { calls++; return DOWN; }, ms => { clock += ms; }, () => {}, () => clock);
+  assert.equal(clock, DOCKER_WAIT_MS);
+  assert.equal(calls, 31);
+  assert.match(message, /Missing or unavailable prerequisite: docker\. Docker did not answer within 60 s; check `systemctl status docker`.*docker ps.*without sudo/);
+});
+
+test('waitForDocker: probes that hang for their whole timeout still end at the deadline, each capped at the time left', () => {
+  let clock = 0; const timeouts = [];
+  const message = waitForDocker((c, a, timeout) => { timeouts.push(timeout); clock += timeout; return DOWN; }, ms => { clock += ms; }, () => {}, () => clock);
+  assert.match(message, /did not answer within 60 s/);
+  assert.ok(clock <= DOCKER_WAIT_MS, `took ${clock} ms`);
+  assert.ok(timeouts.every(t => t >= 1 && t <= 15000));
+  assert.ok(timeouts.length <= 5, `${timeouts.length} probes`);
+});
+
+test('waitForDocker: permission denied (not in the docker group) is refused at once with the group hint, without waiting', () => {
+  let calls = 0;
+  const message = waitForDocker(() => { calls++; return { ok: false, output: '', error: 'permission denied while trying to connect to the Docker daemon socket' }; }, () => assert.fail('paused'), () => assert.fail('announced'));
+  assert.equal(calls, 1);
+  assert.match(message, /permission denied\).*docker ps.*without sudo \(docker group/);
+});
+
+test('waitForDocker: a daemon that answers at once is neither waited for nor announced', () => {
+  assert.equal(waitForDocker(() => ({ ok: true, output: '' }), () => assert.fail('paused'), () => assert.fail('announced')), null);
+});
+
+test('doctor() throws what waitForDocker returns, after the prerequisite loop', () => {
+  const source = readFileSync(new URL('../scripts/doctor.mjs', import.meta.url), 'utf8');
+  const loop = source.indexOf("['docker', ['compose', 'version']]");
+  const wait = source.indexOf('const dockerProblem = waitForDocker();');
+  assert.ok(loop > 0 && wait > loop, 'the daemon wait must come after the CLI and Compose probes');
+  assert.ok(source.indexOf('if (dockerProblem) throw new Error(dockerProblem);') > wait);
+});
+
+test('doctor refuses at once, without waiting, when the docker CLI is missing', () => {
+  const started = Date.now();
+  const run = doctorWithCompose(WAIT, { docker: 'exit 127' });
+  assert.equal(run.status, 1);
+  assert.match(run.stderr, /Missing or unavailable prerequisite: docker Compose\./);
+  assert.doesNotMatch(run.stderr, /Waiting for the Docker daemon/);
+  assert.ok(Date.now() - started < 20000, 'it waited');
 });
