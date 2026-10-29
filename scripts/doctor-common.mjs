@@ -7,7 +7,7 @@ import { LETTERHEAD_MAX_BYTES, LETTERHEAD_NAME_PATTERN, letterheadKind } from '.
 
 export function probe(command, args = [], timeoutMs = 15000) {
   const result = spawnSync(command, args, { encoding: 'utf8', timeout: timeoutMs, stdio: ['ignore', 'pipe', 'pipe'] });
-  return { ok: result.status === 0, output: result.status === 0 ? result.stdout : '' };
+  return { ok: result.status === 0, output: result.status === 0 ? result.stdout : '', error: result.status === 0 ? '' : String(result.stderr || '') };
 }
 // The postgres database's recorded collation version (pg_database.datcollversion) against what the database image's C library
 // reports now (pg_database_collation_actual_version). They differ after the base image's glibc moved (docker/postgres/Dockerfile,
@@ -31,20 +31,27 @@ export function collationProblem(run, pause = sleepMs) {
   return `collation version changed; REINDEX required before use — see docs/OPERATOR_INSTALL.md 'Collation changes' (recorded ${recorded}, now ${actual || 'unknown'}).`;
 }
 // The Docker daemon is not answering for a moment after a cold start of the host or of a WSL distro (and on Linux right after a
-// reboot), so `docker info` is retried every 2 s for up to 60 s before the daemon counts as missing. Returns true when it answered.
-// Only the daemon probe waits: a missing docker CLI is refused at once by the caller. `run` is probe and `pause` the wait between
-// tries, both replaceable for a test; `say` prints the one line shown while waiting.
+// reboot), so `docker info` is retried, 2 s apart, until a 60 s wall-clock deadline before the daemon counts as missing. The
+// deadline is a clock, not a count of tries, because one probe can itself take its whole timeout (each is capped at the time left).
+// Returns null when the daemon answered, else the refusal message. A "permission denied" answer is the user missing from the docker
+// group, which waiting does not cure: it is refused at once. Only the daemon probe waits: a missing docker CLI is refused at once
+// by the caller. `run` is probe, `pause` and `now` the sleep and the clock, `say` prints the one line shown while waiting; all
+// replaceable for a test.
 export const DOCKER_WAIT_MS = 60000;
 export const DOCKER_WAIT_STEP_MS = 2000;
-export function waitForDocker(run = probe, pause = sleepMs, say = line => console.error(line)) {
+const DOCKER_HINT = 'check `systemctl status docker`, and that `docker ps` works without sudo (docker group, see docs/OPERATOR_INSTALL.md)';
+export function waitForDocker(run = probe, pause = sleepMs, say = line => console.error(line), now = Date.now) {
   const args = ['info', '--format', '{{.ServerVersion}}'];
-  if (run('docker', args).ok) return true;
-  say(`Waiting for the Docker daemon to answer (up to ${DOCKER_WAIT_MS / 1000} s)...`);
-  for (let waited = 0; waited < DOCKER_WAIT_MS; waited += DOCKER_WAIT_STEP_MS) {
-    pause(DOCKER_WAIT_STEP_MS);
-    if (run('docker', args).ok) return true;
+  const deadline = now() + DOCKER_WAIT_MS;
+  let announced = false;
+  for (;;) {
+    const answer = run('docker', args, Math.max(1, Math.min(15000, deadline - now())));
+    if (answer.ok) return null;
+    if (/permission denied/i.test(answer.error || '')) return `Missing or unavailable prerequisite: docker. This user is not allowed to use the Docker daemon (permission denied); ${DOCKER_HINT}.`;
+    if (now() >= deadline) return `Missing or unavailable prerequisite: docker. Docker did not answer within ${DOCKER_WAIT_MS / 1000} s; ${DOCKER_HINT}.`;
+    if (!announced) { say(`Waiting for the Docker daemon to answer (up to ${DOCKER_WAIT_MS / 1000} s)...`); announced = true; }
+    pause(Math.max(0, Math.min(DOCKER_WAIT_STEP_MS, deadline - now())));
   }
-  return false;
 }
 // What backups and restores need besides Docker: rsync built with extended-attribute support (scripts/backup.sh and
 // scripts/restore.sh copy the stored files with `rsync -X`, which carries each file's content type and cache control) and GNU
