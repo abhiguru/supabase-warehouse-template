@@ -246,7 +246,7 @@ reload** in `docs/OPERATOR_INSTALL.md`; a new installation needs none of that. A
   [Windows host (Ubuntu in WSL2)](docs/OPERATOR_INSTALL.md#windows-host-ubuntu-in-wsl2) replaces "Windows host with Linux VM": prerequisites,
   Docker Engine inside Ubuntu, a keep-alive scheduled task that starts the distro at boot and after `wsl --shutdown`, the tunnel as the only
   ingress (no LAN fallback on WSL2's NAT), planned work, where the data lives and an acceptance list, with each step marked verified or not
-  yet verified. A Linux operator need not act. The Linux guide gains: the tunnel service in the steps for taking an installation out of
+  yet verified. A Windows host does not yet pass acceptance for a real facility: there is no tested USB backup path. A Linux operator need not act. The Linux guide gains: the tunnel service in the steps for taking an installation out of
   service, a pointer from the tunnel section to the SMS cap (`otp_daily_provider_attempt_cap`) and the test-installation rule, `health-check.sh`
   in "Ordinary operation", a note to decide the hostname before the first setup (`--api-url` cannot change later) with a link to the DNS
   negative-cache note, and the instruction to delete the account `cert.pem` (which `cloudflared tunnel login` always writes to

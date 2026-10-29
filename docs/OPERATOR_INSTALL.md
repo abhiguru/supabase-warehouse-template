@@ -3115,7 +3115,7 @@ stayed down for nearly 10 minutes after `wsl --shutdown`). The verified form is 
 
 [PS-admin], in a console on the host (run `Get-Credential` at the console; it may not prompt over a remote session). The task
 must run as the Windows account that owns the distro: `SYSTEM` cannot see it. The settings were read back from a working task
-(State Running; MultipleInstances IgnoreNew; StartWhenAvailable; RestartCount 999 at 1 minute; no time limit; the boot trigger
+(State Running; RunLevel Highest; MultipleInstances IgnoreNew; StartWhenAvailable; RestartCount 999 at 1 minute; no time limit; the boot trigger
 and the 2-minute repeating trigger enabled). The registration lines below are written from that read-back and have not been run
 as typed, and the two battery switches were not in the read-back, so check the task after you register it
 (`Get-ScheduledTask 'Warehouse WSL' | Get-ScheduledTaskInfo` and `Get-ScheduledTask 'Warehouse WSL' | Select -ExpandProperty Settings`):
@@ -3125,7 +3125,7 @@ $c = Get-Credential -UserName "$env:COMPUTERNAME\<windows-user>" -Message 'Windo
 $a = New-ScheduledTaskAction -Execute 'C:\Windows\System32\wsl.exe' -Argument '-d Ubuntu-24.04 --exec /usr/bin/sleep infinity'
 $t = @((New-ScheduledTaskTrigger -AtStartup), (New-ScheduledTaskTrigger -Once -At (Get-Date) -RepetitionInterval (New-TimeSpan -Minutes 2)))
 $s = New-ScheduledTaskSettingsSet -ExecutionTimeLimit ([TimeSpan]::Zero) -MultipleInstances IgnoreNew -StartWhenAvailable -AllowStartIfOnBatteries -DontStopIfGoingOnBatteries -RestartCount 999 -RestartInterval (New-TimeSpan -Minutes 1)
-Register-ScheduledTask -TaskName 'Warehouse WSL' -Action $a -Trigger $t -Settings $s -User $c.UserName -Password $c.GetNetworkCredential().Password
+Register-ScheduledTask -TaskName 'Warehouse WSL' -Action $a -Trigger $t -Settings $s -User $c.UserName -Password $c.GetNetworkCredential().Password -RunLevel Highest
 ```
 
 Do not type the password into the command line (`-Password (Read-Host ...)` shows it on screen).
@@ -3181,7 +3181,7 @@ restart in step 4 of this list, not `sudo reboot` (not verified yet).
 is the off-host copy ([PRODUCTION_DEPENDENCIES.md](PRODUCTION_DEPENDENCIES.md)), and `backup-usb.sh` writes only to an enrolled
 USB drive that the distro can see. There is no tested USB path on this route (not verified yet): the drive would have to be passed
 into the distro with `usbipd-win` on Windows (`usbipd list`, `usbipd bind --busid <id>`, `usbipd attach --wsl --busid <id>`),
-the distro's kernel would need exFAT support, udev behaves differently from a Linux host, and the drive detaches whenever the
+the distro's kernel would need exFAT support, the udev rule would have to fire inside the distro, and the drive detaches whenever the
 distro stops, so it must be attached again after every restart of the distro or the host. Printing over USB has the same limits
 ([PRINTING.md](PRINTING.md)). Copying files to a Windows drive through `/mnt/<drive>` loses the extended attributes and ownership that
 a restore needs from the stored photos, so it is not a substitute.
