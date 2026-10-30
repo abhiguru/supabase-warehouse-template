@@ -153,7 +153,8 @@ image `<project>-sensor-bridge` built from `docker/sensor-bridge/`). It is on
 the `default` network only: it calls the gateway at
 `http://gateway:8000/functions/v1/ingest-sensor-readings` and cannot reach the
 database. It needs the hubs' LAN addresses to be
-reachable from the host. `setup.sh` and `start.sh` start the core services
+reachable from the host (on a Windows host, see
+[Sensors (Windows)](OPERATOR_INSTALL.md#sensors-windows)). `setup.sh` and `start.sh` start the core services
 only; once a bridge container exists they replace it when its image or
 configuration changed, and `stop.sh` stops it with everything else.
 

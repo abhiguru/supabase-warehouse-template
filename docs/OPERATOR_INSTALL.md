@@ -2481,7 +2481,7 @@ installed as a service (the external doctor, run on the host, healthy), a reboot
 copied and verified). What was **not** verified: `sudo` asking for a password, Windows 11, the Home edition, mirrored
 networking, that the `.wslconfig` memory limit takes effect, recovery after a WSL update with the task enabled, the version after
 `wsl --update`, a real Windows Update reboot, a graceful stop when Windows shuts down, an automatic re-attach of the USB drive (the Warehouse USB task), registering either task with `scripts/windows/register-tasks.ps1` (the keep-alive task was verified from the pasted block it replaces, and the script is written to register the same task), a physical re-plug of the
-drive, a USB run that also takes a fresh backup, and printing.
+drive, a USB run that also takes a fresh backup, printing, and the sensor bridge ([Sensors (Windows)](#sensors-windows)).
 
 ### Prerequisites
 
@@ -2708,6 +2708,19 @@ but the stack is stopped (for example after `stop.sh`); both are normal.
 version afterwards were not read back): it stopped the distro, which then stayed down while the task is disabled. Recovery after an update with the task enabled is not verified. The package work of
 [Monthly host maintenance](#monthly-host-maintenance) is done inside Ubuntu as written; a restart of the host is the Windows
 restart in step 4 of this list, not `sudo reboot` (not verified yet).
+
+### Sensors (Windows)
+
+The optional sensor bridge ([SENSORS.md](SENSORS.md#run-it-as-a-profile-of-the-installation)) runs inside the distro like the
+rest of the stack. The hub addresses in `SENSOR_BRIDGE_HUBS` must be reachable from inside the distro; under WSL's default NAT
+networking outgoing connections to the LAN normally work, and mirrored networking is not verified (as in
+[Ingress and the LAN](#ingress-and-the-lan)). Before you start the bridge, set `SENSOR_BRIDGE_HUBS`, `TAPO_USERNAME` and
+`TAPO_PASSWORD` as in step 2 of that section (the ingest key is not needed for this check), then run:
+
+[Ubuntu] `bash scripts/compose.sh --profile sensors run --rm sensor-bridge --once --dump`
+
+The check passes when it prints the sensors of each hub with no `"error"` entry and exits 0; an unreachable hub is printed as
+`{"host": ..., "error": ...}` and the command exits 1. Not verified yet on Windows.
 
 ### Backups off the host (Windows)
 
