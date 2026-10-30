@@ -7,6 +7,12 @@ the facility's Tapo hubs on the local network and posts what it sees to the
 (`sensor_latest`; there is no live push). The `sensors` capability in the public manifest is off by
 default; the app shows the Sensors screen only where it is on.
 
+**Sensors are optional.** An installation with no sensors skips this whole document: nothing here is needed, the install is
+complete without it, and the app simply does not show the Sensors screen. **If you do provide sensor details** (hub
+addresses, the Tapo login, an ingest key), the install is not finished until you have verified in the database that
+readings arrive: step 6 of [Run it as a profile of the installation](#run-it-as-a-profile-of-the-installation) is a
+must-pass check, not a suggestion.
+
 Built and tested without hardware so far: the bridge's unit tests, the image
 check (`npm run test:sensors`), the function's handler tests and the database
 tests (`tests/sensor_ingest.sql`). A run against real hubs, the heartbeat
@@ -74,8 +80,7 @@ recorded separately before anyone is told the screen works.
   Duplicates appear only when the bridge re-sends a batch whose answer it did
   not get (a timeout or a lost 200); a bridge that runs normally reports
   `duplicates=0`.
-- **Retention.** `sensor_readings` older than 90 days (3 months; migration 75,
-  400 days before it) are removed by the database retention job (key
+- **Retention.** `sensor_readings` older than 90 days (3 months) are removed by the database retention job (key
   `sensor_readings`, `npm run retention:preview`, deleted at the next
   `retention:apply`).
 
@@ -88,7 +93,7 @@ and no `apikey` header is needed). Body at most 256 KiB and 500 readings:
 ```json
 {
   "bridge": { "id": "sensor-bridge", "version": "1.0.0" },
-  "hub": { "id": "<hub device id>", "host": "192.168.1.74", "online": true, "firmware": "1.2.3" },
+  "hub": { "id": "<hub device id>", "host": "192.0.2.74", "online": true, "firmware": "1.2.3" },
   "readings": [
     { "external_id": "<40 hex>", "name": "TH2", "model": "T310", "kind": "change",
       "temperature": 3.4, "humidity": 61, "measured_at": "2026-10-13T08:15:30Z",
@@ -133,7 +138,29 @@ The script is read from standard input (`-f` would look for it inside the
 database container). `label` names the bridge (1 to 64 letters, digits,
 spaces, dots, underscores or hyphens) and is required. It prints the key
 **once**, as the only line of output. Put it straight into `SENSOR_INGEST_KEY` (below);
-do not paste it into a chat, a ticket or a shared document. To revoke a key
+do not paste it into a chat, a ticket or a shared document. To mint a key and put it into `compose.env` without it ever
+being shown, run this instead of the command above (it needs the line `SENSOR_INGEST_KEY=` in the file, which setup
+writes; it writes nothing unless the output is a 64-character hex key, and the file stays mode 0600):
+
+```bash
+ENV_FILE="$WAREHOUSE_STATE_DIR/config/compose.env"
+if grep -q '^SENSOR_INGEST_KEY=' "$ENV_FILE"; then
+  KEY=$(bash scripts/compose.sh exec -T db psql -X -qAt -v ON_ERROR_STOP=1 -U supabase_admin -d postgres \
+    -v label=main-bridge < scripts/sensor-ingest-key.sql)
+  if [[ "$KEY" =~ ^[0-9a-f]{64}$ ]]; then
+    sed -i "s/^SENSOR_INGEST_KEY=.*/SENSOR_INGEST_KEY=$KEY/" "$ENV_FILE" && chmod 600 "$ENV_FILE" && echo "key written"
+  else
+    echo "no key written: check the output of the mint command" >&2
+  fi
+  unset KEY
+else
+  echo "no key minted: $ENV_FILE has no SENSOR_INGEST_KEY= line" >&2
+fi
+```
+
+If the line already held a key, that key stays valid: revoke it by its label (below).
+
+To revoke a key
 (the bridge then gets 401 and pauses), and to see which keys exist:
 
 ```bash
@@ -154,34 +181,33 @@ image `<project>-sensor-bridge` built from `docker/sensor-bridge/`). It is on
 the `default` network only: it calls the gateway at
 `http://gateway:8000/functions/v1/ingest-sensor-readings` and cannot reach the
 database. It needs the hubs' LAN addresses to be
-reachable from the host. `setup.sh` and `start.sh` start the core services
+reachable from the host (on a Windows host, see
+[Sensors (Windows)](OPERATOR_INSTALL.md#sensors-windows)). `setup.sh` and `start.sh` start the core services
 only; once a bridge container exists they replace it when its image or
 configuration changed, and `stop.sh` stops it with everything else.
 
-1. **Upgrade** to a backend with migration 74 (the normal
-   [Rerun and upgrade](OPERATOR_INSTALL.md#rerun-and-upgrade)).
-2. **Mint a key** (above).
-3. **Configure.** Set these lines in `$WAREHOUSE_STATE_DIR/config/compose.env`
-   (an installation made after this release already has them, empty; an older
-   one adds them). Keep the file mode 0600.
+1. **Mint a key** (above; the second form writes it into `compose.env` for you, which makes the `SENSOR_INGEST_KEY` line of step 2 done). Also give each hub a DHCP reservation ([Keep the hub addresses fixed](#keep-the-hub-addresses-fixed)).
+2. **Configure.** Set these lines in `$WAREHOUSE_STATE_DIR/config/compose.env`
+   (setup writes them empty). Keep the file mode 0600.
 
    | Variable | Value |
    | --- | --- |
-   | `SENSOR_BRIDGE_HUBS` | hub addresses, comma-separated: `192.168.1.74,192.168.1.79` |
+   | `SENSOR_BRIDGE_HUBS` | hub addresses, comma-separated: `192.0.2.74,192.0.2.79` |
    | `TAPO_USERNAME`, `TAPO_PASSWORD` | the Tapo account the hubs were set up with |
-   | `SENSOR_INGEST_KEY` | the key from step 2 |
+   | `SENSOR_INGEST_KEY` | the key from step 1 |
    | `SENSOR_BRIDGE_ID` | optional name shown in `sensor_hubs.bridge_id` (default `sensor-bridge`) |
    | `SENSOR_BRIDGE_POLL_SECONDS`, `_POST_SECONDS`, `_HEARTBEAT_SECONDS`, `_MAX_BATCH`, `_LOG_LEVEL` | optional: 300, 60, 300, 200, INFO (poll and heartbeat 300: sampled every 5 minutes) |
+   | `SENSOR_BRIDGE_SCAN`, `SENSOR_BRIDGE_RELOCATE_SECONDS` | optional: where to look for a hub that moved to another address (private CIDR networks of /22 or smaller, or `off`; default the /24 of each hub address) and how often at most (600 seconds); see "Keep the hub addresses fixed" below |
    | `SENSOR_BRIDGE_REBOOT_CRON` | optional five-field cron in UTC for a hub reboot, e.g. `30 21 * * 6` (Saturday 21:30 UTC, Sunday 03:00 IST); empty = never |
 
    Compose reads this file with variable substitution: a password that
    contains `$`, a quote, or a space followed by `#` goes in single quotes
    (`TAPO_PASSWORD='p$ss#word'`), which Compose takes literally.
-4. **Look before posting.** `--dump` connects to every hub and prints what it
+3. **Look before posting.** `--dump` connects to every hub and prints what it
    reports (ids, values, battery, report interval; no secret), storing and
    sending nothing (`--once --dump` is the same as `--dump`); `--once` polls
    and posts once, and a second `--once` straight after it posts nothing,
-   because the change detector already holds every value:
+   because the change detector already holds every value. **Exit code:** `--check-config` reads no hub: it exits 0 when the settings are valid and 78 when one is wrong. `--dump` and `--once` exit 1 when at least one hub failed (`{"host": ..., "error": ...}` in the `--dump` output; `event=hub_error`, and `hubs_ok=` below the total, in the `--once` log), even though the hubs that answered were still read and, with `--once`, posted. `--once` also exits 1 when its post was not fully delivered (`event=post_failed`). They exit 0 only when every hub in `SENSOR_BRIDGE_HUBS` answered (and, for `--once`, everything was delivered). So exit 1 with `hubs_ok=2/3` and no `post_failed` means one hub is unreachable (see [Troubleshooting](TROUBLESHOOTING.md#sensors-show-no-data)), not that the others are broken:
 
    ```bash
    bash scripts/compose.sh --profile sensors run --rm sensor-bridge --check-config
@@ -190,9 +216,9 @@ configuration changed, and `stop.sh` stops it with everything else.
    bash scripts/compose.sh --profile sensors run --rm sensor-bridge --once   # again at once: event=once ... posts=0 (nothing changed)
    ```
 
-5. **Start it:** `bash scripts/compose.sh --profile sensors up -d --wait sensor-bridge`.
+4. **Start it:** `bash scripts/compose.sh --profile sensors up -d --wait sensor-bridge`.
    The first start builds the image (network needed).
-6. **Turn the capability on**, so the app shows the screen, and restart the
+5. **Turn the capability on**, so the app shows the screen, and restart the
    function runtime (the manifest is mounted as a file; a running container
    keeps the old one):
 
@@ -201,9 +227,73 @@ configuration changed, and `stop.sh` stops it with everything else.
    bash scripts/compose.sh restart functions
    ```
 
-7. **Take a backup:** `npm run db:backup`. `db:restore` refuses a backup whose
+   Check that the capability is on: the public configuration on the local gateway must show `capabilities.sensors` as `true`
+   (`featureFlags.sensor_monitoring` in the same answer is an unrelated flag and stays `false`):
+
+   ```bash
+   curl -fsS http://127.0.0.1:18000/functions/v1/get-public-config | grep -o '"sensors":[a-z]*'
+   ```
+
+   No output means the request failed or the manifest has no `sensors` capability: run the doctor. The line must read `"sensors":true`. (If it shows `false`, the `functions` restart was missed or the command did not run on
+   this installation.)
+
+   **The sensor Slack webhook (required when Slack alerts are on).** If Slack alerts are enabled for the facility and sensors are on, a separate Slack webhook for sensor alerts is required: create a second incoming webhook (for the channel the people who watch the cold rooms follow) and give it to setup with `--sensor-webhook-file`. Rerun setup with your usual inputs plus the new option, for example:
+
+   ```bash
+   bash setup.sh --operator --state-dir "$WAREHOUSE_STATE_DIR" --admin-phone 91XXXXXXXXXX --admin-name 'Warehouse Administrator' \
+     --alert-webhook-file /secure/warehouse-slack-webhook.txt \
+     --sensor-webhook-file /secure/warehouse-sensor-slack-webhook.txt
+   ```
+
+   The file is private (mode 0600, outside the checkout, one line) and must hold a different URL from the facility webhook. Without it the
+   sensor alerts go to the facility channel, the doctor warns, and `set-capability.mjs sensors on` and the end of `setup.sh` print a notice ([MONITORING.md](MONITORING.md#alert-delivery)). Test it with
+   `node scripts/watch.mjs test-message sensors` (prints the HTTP status Slack answered; the message must arrive in the sensor channel).
+6. **Verify that readings arrive (required).** Only if you configured sensors: the install is not done until this
+   passes. The first `--once` of step 3 already posted every sensor's current values, so right after `up` the bridge has
+   nothing new to send until its next poll: **a quiet first 5 minutes is normal, and a new row per sensor appears about 5
+   minutes after `up`.** Wait about 10 minutes, then run the doctor (the quick check) and the SQL below (the proof).
+
+   The sensor webhook: `node scripts/watch.mjs test-message sensors` must print `Slack answered HTTP 200.` and the message must appear in the sensor channel. With Slack alerts on and no sensor webhook stored the doctor warns.
+
+   The doctor: `node scripts/doctor.mjs --local`. While the capability is on it warns, for example
+   `Sensors: hub 192.0.2.10 offline for 5 days; newest reading 5 days ago (limit 16 minutes)`, when
+   no hub has reported, a hub is offline (the warning says for how long) or silent (online, but the bridge has not posted for it),
+   or no reading is newer than the limit. The limit is three times the larger of `SENSOR_BRIDGE_HEARTBEAT_SECONDS` and
+   `SENSOR_BRIDGE_POLL_SECONDS` plus `SENSOR_BRIDGE_POST_SECONDS`: 16 minutes with the defaults (300, 300, 60). When
+   `SENSOR_BRIDGE_HUBS` is set in `compose.env` it also warns that no `sensor-bridge` container exists (an existing container that
+   is stopped or unhealthy is reported by the health check). It is a warning only and never stops a setup or upgrade. The 5-minute
+   checker judges the same things and sends the alert `sensors_stale` to Slack (after two failing runs in a row, not in the first
+   16 minutes after a start), so a bridge that polls dead addresses is noticed without anyone running the doctor. The cause
+   is usually a hub whose address changed ([Troubleshooting](TROUBLESHOOTING.md#sensors-show-no-data)).
+
+   The SQL, which must pass:
+
+   ```bash
+   bash scripts/compose.sh exec -T db psql -X -q -v ON_ERROR_STOP=1 -U supabase_admin -d postgres <<'SQL'
+   -- 1. every hub, and when the bridge last reported for it
+   SELECT hub_id, host, online, last_seen_at, now() - last_seen_at AS age FROM sensor_hubs ORDER BY host;
+   -- 2. every sensor, and the rows stored for it in the last 15 minutes (online state is in sensor_status, not sensor_devices)
+   SELECT s.device_name, s.connectivity_status, s.stale, s.health_status, s.temperature, s.humidity, s.last_seen_at,
+          (SELECT count(*) FROM sensor_readings r
+            WHERE r.device_id = s.device_id AND r.recorded_at > now() - interval '15 minutes') AS readings_15m
+     FROM sensor_status s ORDER BY s.device_name;
+   -- 3. the key is in use
+   SELECT label, last_used_at, revoked_at FROM warehouse_security.sensor_ingest_keys ORDER BY created_at;
+   SQL
+   ```
+
+   Expected, about 10 minutes after `up`: query 1 has one row per address in `SENSOR_BRIDGE_HUBS`, `online` true and `age` under about 6 minutes; query 2 has a row for each sensor that reports, with `connectivity_status` `ONLINE`, `stale` false, `health_status` `healthy` and `readings_15m` of 1 or more (a new row about every 5 minutes); query 3 shows your key's `last_used_at` within the last few minutes and `revoked_at` empty. If a configured hub has no row or `online` false, or a sensor that reports still has `readings_15m` 0 after 15 minutes, do not go on: read the bridge log (`bash scripts/compose.sh --profile sensors logs --tail 50 sensor-bridge`) and [Troubleshooting](TROUBLESHOOTING.md#sensors-show-no-data).
+
+   What the rows can show besides that:
+   - **A sensor with no row, or an old one.** The bridge stores nothing for a sensor its hub reports as offline (flat battery, out of range; the log says `event=sensor_offline`). A sensor that has never reported has no row in query 2; one that reported before keeps its row, with `connectivity_status` `STALE`, `stale` true, `health_status` `offline`, an old `last_seen_at` and `readings_15m` 0. So query 2 can have fewer good rows than sensors installed: check those sensors at the hub. The sensors of a hub that is offline show `OFFLINE`, and those of a hub that was never reached have no row.
+   - **A hub row whose `hub_id` is an IP address** (for example `192.0.2.10`, `online` false) is an address the bridge never reached: the address stands in for the id. If that address is still in `SENSOR_BRIDGE_HUBS`, it is a fault: fix the address or the Tapo login. If the hub was later found at another address (claimed, see [Keep the hub addresses fixed](#keep-the-hub-addresses-fixed)), the row is a harmless leftover. Either way the row is never removed by itself: delete it as in Troubleshooting, "The doctor keeps warning about a hub that is gone". `--forget-hub` does not remove it.
+
+   Read the online state from `sensor_status`: `connectivity_status` is `ONLINE`, `STALE` (no report within the sensor's staleness limit, 30 minutes by default), `OFFLINE` (its hub is offline) or `UNKNOWN` (never seen). The column of the same name in `sensor_devices` is not maintained and stays `UNKNOWN`.
+7. **Take a backup:** `npm run db:backup` (the sensor webhook URL is a secret and is not in a backup: after `db:restore-host`, give it to setup again with `--sensor-webhook-file`). The backup stops the services for about half a minute; a bridge that is
+   running logs one or two `post_failed` meanwhile (the gateway is down), keeps the reading in its queue and delivers it by itself
+   afterwards: harmless. (Take the backup before step 4 if you prefer a log without it.) `db:restore` refuses a backup whose
    `instance.json` or `compose.env` differs from the state, so a backup taken
-   before steps 3 and 6 can be restored only with `db:restore-host` (or with
+   before steps 2 and 5 can be restored only with `db:restore-host` (or with
    `--restore-config`, which brings back the old configuration).
 
 To turn sensors off: `node scripts/set-capability.mjs sensors off`, restart
@@ -213,8 +303,7 @@ revoke the key, and take a backup. Stored readings stay.
 ## Run it as its own Compose project
 
 The same image runs on any Docker host on the hubs' network, posting to the
-installation's public address through the tunnel. This is how the first
-facility runs it before the profile is used there. Run only one bridge per hub:
+installation's public address through the tunnel. Run only one bridge per hub:
 two bridges would each send their own observation times.
 
 1. **Mint a key** on the installation the bridge posts to (as in
@@ -252,6 +341,14 @@ two bridges would each send their own observation times.
    `docker compose down` keeps it, `down -v` deletes it with anything not yet
    delivered. `docker/sensor-bridge/README.md` describes every setting.
 
+   Verify ingest as in step 6 above, with the SQL run on the installation's host: the same must-pass check applies to a
+   separate bridge.
+
+   The doctor judges this bridge by the data alone: keep `SENSOR_BRIDGE_HUBS` empty in the installation's `compose.env` (the
+   container is checked only for the profile way above, where a missing one would otherwise be a false alarm). The doctor reads
+   the limit from `compose.env`: copy a raised `SENSOR_BRIDGE_HEARTBEAT_SECONDS`, `_POLL_SECONDS` or `_POST_SECONDS` there too, or
+   accept the 16 minute limit.
+
 ## What is in a backup
 
 `compose.env`, and so every backup, holds `TAPO_PASSWORD` and
@@ -262,9 +359,51 @@ when a host was lost are lost; a restored host's bridge starts with an empty
 queue and sends every sensor's current values once. `db:restore-host` keeps the
 volume when one is left (it holds no database state).
 
+## Keep the hub addresses fixed
+
+The H200 has no setting for a fixed address, so after a power cut or a router reboot a hub can come back on a new DHCP address. Give
+each hub a **DHCP reservation on the router, by the hub's MAC address**, and choose an address outside the router's DHCP pool. Find
+the MAC in the router's client list, or after a ping with `ip neigh show <address>`. Some Tapo firmware has been reported to ignore
+a reservation after an update, so a reservation is the first line of defence, not a guarantee.
+
+If an address changes anyway, the bridge finds the hub again by itself, with no operator action: while a hub is offline it sweeps
+`SENSOR_BRIDGE_SCAN` (by default the /24 of each address in `SENSOR_BRIDGE_HUBS`) at most every `SENSOR_BRIDGE_RELOCATE_SECONDS`,
+with plain TCP connects to port 443 and a login with the Tapo account, so it works in Docker and under WSL2. The hub is recognised by
+its own id, not its address. The log shows `event=hub_moved hub=<id> old=<address> new=<address>`, the hub's row in `sensor_hubs`
+follows to the new address and queued readings are kept; the move is stored, so a restart of the bridge keeps it. The sweep runs in
+the background: the other hubs and the delivery carry on while it runs. A missed reservation therefore costs minutes, not days: after
+a router reboot expect readings back in about 15 to 25 minutes with the default 300 second poll (three failed polls, then a sweep,
+then a reconnect), and one `sensors_stale` alert before it recovers.
+
+A hub that was never reached (so its id is not known) is **claimed**, with a warning `event=hub_moved ... claimed=true`, only if the
+device is a Tapo H100 or H200 hub, logs in with the account, reports at least one temperature or humidity sensor, and no other
+entry follows it. A hub of another facility on the same Tapo account would also qualify, so on an account shared between sites
+give every hub an entry in `SENSOR_BRIDGE_HUBS` that has been reached once, or set `SENSOR_BRIDGE_SCAN` to your own network.
+The claimed hub's earlier row, named by the address that never answered, stays until you remove it (TROUBLESHOOTING.md). To undo a
+wrong claim, stop the bridge and run (the entry is the address as written in `SENSOR_BRIDGE_HUBS`; for the stack, with the sensors
+profile, otherwise in the bridge's own folder):
+
+```bash
+bash scripts/compose.sh --profile sensors run --rm sensor-bridge --forget-hub 192.0.2.10
+bash scripts/compose.sh --profile sensors up -d sensor-bridge
+```
+
+It deletes the entry's stored hub id (`hub_id:<address>`) and stored move (`host_of:<id>`) in the state volume and nothing else;
+the entry then starts again as never reached. Fix the configuration first, or the entry may claim the same hub again.
+
+**What the sweep sends.** The sweep makes a plain TCP connect to port 443 of every address in `SENSOR_BRIDGE_SCAN` (at most 1024
+addresses) and, at each address that answers, tries the hub login with the Tapo account. That login sends the account e-mail
+address, inside TLS that does not check the certificate, to every such host on the scanned networks (a router, a camera, a
+printer) while a hub is being searched for; the password itself is never sent: the sweep refuses python-kasa's "less secure" login, which
+would send an MD5 hash of it, and uses only the challenge login (a device that plays along with the challenge receives a salted
+hash response, not the password). An address that refuses the login is skipped for the next six
+sweeps so that another account's device is not locked out. To limit this, set `SENSOR_BRIDGE_SCAN` to the smallest network that holds
+the hubs, for example the hubs' own /28, or to `off`. Details: `docker/sensor-bridge/README.md`.
+
 ## Troubleshooting
 
-See [TROUBLESHOOTING.md](TROUBLESHOOTING.md#sensors-show-no-data).
+See [TROUBLESHOOTING.md](TROUBLESHOOTING.md#sensors-show-no-data). The Slack alert `sensors_stale` (docs/MONITORING.md) and the
+warning of `node scripts/doctor.mjs --local` have the same causes; the doctor names each fault and the command to read the bridge log.
 
 ## Licence
 

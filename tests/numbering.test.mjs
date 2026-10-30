@@ -127,10 +127,10 @@ test('doctor says nothing about the numbers when the database does not answer or
   for (const output of ['', 'not json', '[]', 'null', '{"off": 5}']) assert.deepEqual(numberingProblems(() => ({ ok: true, output })), [], output);
 });
 
-test('doctor prints the numbering warnings after the other warnings, beside the rules line', () => {
+test('doctor prints the numbering warnings after the other warnings, before the sensor warnings and the rules line', () => {
   const doctor = read('scripts/doctor.mjs');
   assert.match(doctor, /const numberingWarnings = numberingProblems\(inDb\)\.map\(text => `\\nWarning: \$\{text\}`\)\.join\(''\);/);
-  assert.match(doctor, /\+ lanNote \+ numberingWarnings \+ \(numbering \? `\\n\$\{numbering\}` : ''\);/);
+  assert.match(doctor, /\+ lanNote \+ numberingWarnings \+ sensorWarnings \+ \(numbering \? `\\n\$\{numbering\}` : ''\);/);
 });
 
 test('setup.sh checks the given rules before it changes anything, and stores only the ones that were given', () => {

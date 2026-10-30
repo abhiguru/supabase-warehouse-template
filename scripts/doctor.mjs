@@ -1,4 +1,4 @@
-import { accessSync, constants, existsSync, lstatSync, statfsSync, realpathSync, readFileSync } from 'node:fs';
+import { accessSync, constants, existsSync, lstatSync, statSync, statfsSync, realpathSync, readFileSync } from 'node:fs';
 import { userInfo } from 'node:os';
 import { join, resolve, sep } from 'node:path';
 import { createConnection } from 'node:net';
@@ -12,8 +12,10 @@ import { isFixtureAddress, isProviderPlaceholder } from './provider-placeholder.
 import { isMain } from './is-main.mjs';
 import { usbBackupWarning } from './usb-backup-status.mjs';
 import { interruptedUpgradeWarning } from './upgrade-record.mjs';
-import { storedWebhook } from './alert-webhook.mjs';
-import { defaultDeps, legacyDailyAdvice, maintenanceMarked, runHealth, statePath, stoppedByOperator } from './watch.mjs';
+import { storedSensorWebhook, storedWebhook } from './alert-webhook.mjs';
+import { defaultDeps, legacyDailyAdvice, loadState, maintenanceMarked, runHealth, statePath, stoppedByOperator } from './watch.mjs';
+import { ADAPTERS, TARGET_IDS } from './notify.mjs';
+import { sensorReport } from './sensors-check.mjs';
 import { lanChecks } from './lan.mjs';
 import { lanAddressLine, lanSettings } from './lan-common.mjs';
 
@@ -32,17 +34,51 @@ export const timerUnit = state => `${timerBase(state)}.timer`;
 export const dailyTimerUnit = state => `${timerBase(state).replace(/-watch$/, '-daily')}.timer`;
 const unitDir = () => process.env.WAREHOUSE_WATCH_UNIT_DIR || '/etc/systemd/system';
 export const stoppedWarning = `The stack was stopped by the operator (config/stopped-by-operator, written by stop.sh): the boot unit and self-healing leave it down, also after a reboot. Run start.sh to bring it back.`;
+export const NO_SENSOR_WEBHOOK_WARNING = 'Sensors are on and Slack alerts are on, but no separate sensor webhook is set: sensor alerts go to the facility channel. Set one with setup.sh --sensor-webhook-file ... (docs/MONITORING.md).';
+export const SAME_SENSOR_WEBHOOK_WARNING = 'The sensor webhook is the same URL as the facility webhook: it must be a separate Slack webhook, or sensor alerts are not separated. Create a second incoming webhook and set it with setup.sh --sensor-webhook-file ... (docs/MONITORING.md).';
 export const NO_WEBHOOK_WARNING = 'No Slack webhook: alerts are recorded on this host but not delivered, so nobody is told when a backup fails or the database stops. That is acceptable only for a test install. For a real facility, rerun setup.sh --operator with your usual inputs, leaving out --alert-webhook-file off (it then asks for the URL on a terminal), or pass --alert-webhook-file <a private file holding the URL> (docs/MONITORING.md, "Alert delivery").';
+
+export const INVALID_SENSOR_WEBHOOK_WARNING = 'Sensors are on and Slack alerts are on, but the sensor webhook file (config/sensor-webhook-url) is not a valid Slack webhook: sensor alerts go to the facility channel. Set a valid one with setup.sh --sensor-webhook-file ... (docs/MONITORING.md).';
+const SENSOR_POST_FAILURE_WINDOW_MS = 24 * 60 * 60 * 1000;
+const sensorWebhookFileExists = state => Boolean(lstatSync(join(state, 'config/sensor-webhook-url'), { throwIfNoEntry: false })?.isFile());
+// The checker's record of its latest failed delivery to the sensor channel ({ at, message }), or null. Read through the
+// checker's own loader, so a state file from before the delivery layer (lastSensorPostError) is understood too.
+function sensorPostFailure(state) {
+  try {
+    const failed = loadState(state, 0, undefined, () => {}).delivery[TARGET_IDS.sensors]?.lastError;
+    return failed && Number.isFinite(failed.at) && typeof failed.message === 'string' ? failed : null;
+  } catch { return null; }
+}
+
+// The sensors capability in the state's manifest (false when it cannot be read).
+function sensorsOn(state) {
+  try { return JSON.parse(readFileSync(join(state, 'public/instance.json'), 'utf8'))?.capabilities?.sensors === true; } catch { return false; }
+}
 
 // Warnings about the checker: its timer is not active, it has not run in the last 15 minutes (the mtime of its
 // state file; the daily backup is a separate unit, so a backup in progress does not explain a silent checker), the daily
 // backup timer is not active (or the checker unit is the old one that still makes the backup inside its own run), no Slack
 // webhook is stored, the operator stopped the stack (stop.sh) and has not started it again. `timerActive(unit)` and `now` are
 // injectable for tests.
+// The owner of <state>/config (the state owner), as names where the system can resolve them, else the numeric ids.
+// Falls back to the current user when the folder cannot be read.
+export function stateOwner(state) {
+  let uid, gid;
+  try { ({ uid, gid } = statSync(join(state, 'config'))); } catch { const me = userInfo(); uid = me.uid; gid = me.gid; }
+  const name = (cmd, args) => { const r = spawnSync(cmd, args, { encoding: 'utf8' }); return r.status === 0 && r.stdout.trim() ? r.stdout.trim() : null; };
+  return {
+    user: name('id', ['-un', String(uid)]) ?? String(uid),
+    group: name('getent', ['group', String(gid)])?.split(':')[0] ?? String(gid),
+  };
+}
+
 export function checkerWarnings(state, {
   now = Date.now(),
   timerActive = unit => spawnSync('systemctl', ['is-active', '--quiet', unit], { timeout: 10000 }).status === 0,
   serviceText = unit => { try { return readFileSync(join(unitDir(), unit.replace(/\.timer$/, '.service')), 'utf8'); } catch { return null; } },
+  // setup.sh prints the same advice, with the exact command, at its end (alert-webhook.mjs sensor-notice), so its doctor run leaves it out.
+  skipSensorWebhookAdvice = false,
+  canWrite = path => { try { accessSync(path, constants.W_OK); return true; } catch (error) { return error?.code === 'ENOENT'; } },
 } = {}) {
   const out = [];
   const unit = timerUnit(state);
@@ -66,7 +102,27 @@ export function checkerWarnings(state, {
   } else if (checkerActive && !timerActive(dailyTimerUnit(state))) {
     out.push(`The daily backup timer ${dailyTimerUnit(state)} is not installed or not active, so no backup, verification or retention runs for this facility. Install it with: sudo bash scripts/watch-timer.sh install --state ${state} (docs/MONITORING.md).`);
   }
-  if (!storedWebhook(state)) out.push(NO_WEBHOOK_WARNING);
+  const facilityWebhook = storedWebhook(state);
+  if (!facilityWebhook) out.push(NO_WEBHOOK_WARNING);
+  else if (sensorsOn(state)) {
+    const sensorWebhook = storedSensorWebhook(state);
+    if (!sensorWebhook) {
+      if (sensorWebhookFileExists(state)) out.push(INVALID_SENSOR_WEBHOOK_WARNING);
+      else if (!skipSensorWebhookAdvice) out.push(NO_SENSOR_WEBHOOK_WARNING);
+    }
+    else {
+      if (sensorWebhook === facilityWebhook) out.push(SAME_SENSOR_WEBHOOK_WARNING);
+      // The checker clears the sensor target's lastError on its next successful delivery to it, so a recent one means the latest post failed.
+      const failed = sensorPostFailure(state);
+      if (failed && now - failed.at < SENSOR_POST_FAILURE_WINDOW_MS) out.push(`The last post to the sensor ${ADAPTERS.slack.label} webhook failed ${Math.max(0, Math.round((now - failed.at) / 60000))} minutes ago (${failed.message}): sensor alerts may not be reaching the channel. Test it with node scripts/watch.mjs test-message sensors (docs/MONITORING.md).`);
+    }
+  }
+  // The alert record (logs/alerts.jsonl) is written by the checker and the daily pass as the operator user; a root-owned copy
+  // (made by a sudo run of watch.mjs) would make every write fail quietly.
+  const owner = stateOwner(state);
+  for (const path of [join(state, 'logs'), join(state, 'logs/alerts.jsonl')]) {
+    if (!canWrite(path)) out.push(`${path} is not writable by this user (probably created by a run with sudo): the alert record cannot be written. Fix it with: sudo chown -R ${owner.user}:${owner.group} ${join(state, 'logs')}`);
+  }
   return out;
 }
 
@@ -264,12 +320,16 @@ export async function doctor({ hostPreflight = false, preflight = false, local =
   const usb = usbBackupWarning(state);
   // The monitoring checker (scripts/watch.mjs) is run by a systemd timer that an operator installs with sudo
   // (scripts/watch-timer.sh); doctor warns when it is missing, silent, or has nowhere to post.
-  const checker = checkerWarnings(state);
+  const checker = checkerWarnings(state, { skipSensorWebhookAdvice: process.env.WAREHOUSE_SETUP_SENSOR_NOTICE === 'yes' });
   // The numbering rules the facility's GRN, dispatch and invoice numbers follow (docs/OPERATOR_INSTALL.md, "Document numbers"); information only.
   const inDb = args => probe('bash', [resolve(root, 'scripts/compose.sh'), 'exec', '-T', 'db', ...args]);
   const numbering = numberingLine(inDb);
   const numberingWarnings = numberingProblems(inDb).map(text => `\nWarning: ${text}`).join('');
-  const note = [upgradeWarning, usb, ...checker].filter(Boolean).map(text => `\nWarning: ${text}`).join('') + lanNote + numberingWarnings + (numbering ? `\n${numbering}` : '');
+  // Sensors are optional. When the capability is on, readings must reach the database; every fault is a warning (scripts/sensors-check.mjs).
+  const sensorWarnings = manifest?.capabilities?.sensors === true
+    ? sensorReport({ env, db: inDb, compose: args => probe('bash', [resolve(root, 'scripts/compose.sh'), ...args]) }).map(text => `\nWarning: ${text}`).join('')
+    : '';
+  const note = [upgradeWarning, usb, ...checker].filter(Boolean).map(text => `\nWarning: ${text}`).join('') + lanNote + numberingWarnings + sensorWarnings + (numbering ? `\n${numbering}` : '');
   if (local) return `Local operator services and gateway are healthy.${note}`;
   if (maintenance) throw new Error('Maintenance mode is on (config/maintenance): the API answers 503 "upgrading" to phones on purpose, so the external check cannot pass. Open it with: bash scripts/maintenance.sh off');
   const response = await fetch(`${origin}/functions/v1/get-public-config`, { signal: AbortSignal.timeout(15000), redirect: 'error' });

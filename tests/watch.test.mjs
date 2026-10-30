@@ -11,6 +11,7 @@ import { join } from 'node:path';
 import { createHash, createHmac } from 'node:crypto';
 import { repo } from './backup-test-helpers.mjs';
 import * as W from '../scripts/watch.mjs';
+import { ADAPTERS } from '../scripts/notify.mjs';
 
 const HOUR = 3600 * 1000;
 const WEBHOOK = 'https://hooks.slack.com/services/T0AAAA/B0BBBB/abcDEF123456';
@@ -126,6 +127,16 @@ test('disk: / under 20% free fails; other ext4/xfs/btrfs mounts under 10%; bind 
   } finally { clean(h); }
 });
 
+test('disk: read-only mounts are not checked, and do not hide a read-write mount of the same device', () => {
+  const h = harness();
+  try {
+    writeFileSync(join(h.proc, 'mounts'), '/dev/sda1 / ext4 rw 0 0\n/dev/sdb /usr/src/hdrs ext4 ro,relatime 0 0\n/dev/sdc /mnt/a ext4 ro,relatime 0 0\n/dev/sdc /mnt/b ext4 rw,relatime 0 0\n/dev/sdd /mnt/c ext4 rw,errors=remount-ro 0 0\n/dev/sde /mnt/d ext4\n');
+    h.statfsTable = { '/': { bavail: 50, blocks: 100 }, '/usr/src/hdrs': { bavail: 0, blocks: 100 }, '/mnt/a': { bavail: 0, blocks: 100 }, '/mnt/b': { bavail: 5, blocks: 100 }, '/mnt/c': { bavail: 50, blocks: 100 }, '/mnt/d': { bavail: 5, blocks: 100 } };
+    const r = W.checkDisks(h.ctx());
+    assert.deepEqual(r.map(x => [x.id, x.ok]), [['disk_root_low', true], ['disk_low:/mnt/b', false], ['disk_low:/mnt/c', true], ['disk_low:/mnt/d', false]]);
+  } finally { clean(h); }
+});
+
 // ---------------------------------------------------------------- database
 test('database: pg_isready, connections > 80, transaction > 300 s, cache < 90%, dead tuples > 100000', () => {
   const h = harness();
@@ -179,6 +190,208 @@ test('containers: more than 3 restarts in an hour fails; the history ages out', 
     assert.equal(run().ok, false);
     h.advance(61 * 60000);
     assert.equal(run().ok, true, 'older than an hour');
+  } finally { clean(h); }
+});
+
+// Sets the StartedAt (an ISO string) and optionally the RestartCount of named services in what `docker inspect` answers.
+const withStarts = (h, starts, counts = {}) => {
+  const base = h.fakeRun;
+  h.fakeRun = (command, args) => {
+    const r = base(command, args);
+    if (command === 'docker' && args[0] === 'inspect') {
+      return ok(r.stdout.split('\n').map(line => {
+        const p = line.split('|');
+        if (starts[p[1]] !== undefined) p[6] = starts[p[1]];
+        if (counts[p[1]] !== undefined) p[4] = String(counts[p[1]]);
+        return p.join('|');
+      }).join('\n'));
+    }
+    return r;
+  };
+};
+const iso = ms => new Date(ms).toISOString();
+
+test('containers: a whole-stack restart (every container, StartedAt close together) is not counted; one container or a subset still is', () => {
+  const h = harness();
+  try {
+    const data = W.freshState(h.clock.t);
+    const run = () => { const ctx = W.makeContext(h.deps, data); W.checkContainerRestarts(ctx); return data.containers.rest.events.length; };
+    assert.equal(run(), 0, 'first run: baseline only');
+    for (let i = 1; i <= 4; i++) {
+      h.advance(5 * 60000);
+      withStarts(h, Object.fromEntries(SERVICES.map((s, k) => [s, iso(h.clock.t - 60000 + k * 10000)])));
+      assert.equal(run(), 0, `host restart ${i}: no event`);
+      assert.equal(find(W.checkContainerRestarts(W.makeContext(h.deps, data)), 'container_restarts:rest').ok, true);
+    }
+    h.advance(5 * 60000); withStarts(h, { rest: iso(h.clock.t - 1000) });
+    assert.equal(run(), 1, 'one container restarting counts');
+    h.advance(5 * 60000); withStarts(h, { rest: iso(h.clock.t - 1000), gateway: iso(h.clock.t - 1000), db: iso(h.clock.t - 1000) });
+    assert.equal(run(), 2, 'a subset restarting counts');
+  } finally { clean(h); }
+});
+
+test('containers: StartedAt values far apart are not one whole-stack restart; a crash-looping container still counts through its RestartCount', () => {
+  const h = harness();
+  try {
+    const data = W.freshState(h.clock.t);
+    const run = () => { const ctx = W.makeContext(h.deps, data); W.checkContainerRestarts(ctx); return data.containers.rest.events.length; };
+    run();
+    h.advance(5 * 60000);
+    withStarts(h, Object.fromEntries(SERVICES.map((s, k) => [s, iso(h.clock.t - 60000 + k * 1000)])));
+    assert.equal(run(), 0, 'a restart of the whole stack is not counted (the old code counted one event per container)');
+    h.advance(10 * 60000);
+    withStarts(h, Object.fromEntries(SERVICES.map((s, k) => [s, iso(h.clock.t - (k === 0 ? 3600000 : 60000))])));
+    assert.equal(run(), 1, 'one hour apart: every container counts');
+    h.advance(10 * 60000);
+    withStarts(h, Object.fromEntries(SERVICES.map(s => [s, iso(h.clock.t - 30000)])), { rest: 2 });
+    assert.equal(run(), 3, 'whole-stack restart: the start is not counted, the 2 counter increments are');
+  } finally { clean(h); }
+});
+
+test('services: starting is tolerated for 4 minutes after StartedAt; later, unhealthy, exited and a bad StartedAt fail', () => {
+  const judged = (state, startedAgoMs) => {
+    const h = harness();
+    try {
+      h.stateOf = { storage: state };
+      withStarts(h, { storage: typeof startedAgoMs === 'string' ? startedAgoMs : iso(h.clock.t - startedAgoMs) });
+      const ctx = h.ctx();
+      ctx.startingGrace = true;
+      return find(W.checkServices(ctx), 'service_down:storage');
+    } finally { clean(h); }
+  };
+  assert.equal(judged('running|starting', 10000).ok, true, '10 s after the start');
+  const late = judged('running|starting', 4 * 60000 + 1000);
+  assert.equal(late.ok, false, 'after the grace period');
+  assert.match(late.detail, /Still starting more than 4 minutes/);
+  assert.equal(judged('running|starting', 3.5 * 60000).ok, true, 'a start of 3.5 minutes ago is still inside the grace period');
+  assert.equal(judged('running|starting', -30000).ok, true, 'a little clock skew (StartedAt 30 s ahead) is tolerated');
+  assert.equal(judged('running|starting', -5 * 60000).ok, false, 'a StartedAt 5 minutes in the future (the clock moved back) gets no grace');
+  assert.equal(judged('running|unhealthy', 10000).ok, false, 'unhealthy fails inside the grace period');
+  assert.equal(judged('exited|', 10000).ok, false, 'exited fails');
+  assert.equal(judged('running|starting', 'garbage').ok, false, 'unreadable StartedAt: no grace');
+});
+
+test('services: the grace is only the 5-minute checker\'s: runHealth and a context without it still count "starting" as failing', async () => {
+  const h = harness();
+  try {
+    healthy(h);
+    h.stateOf = { storage: 'running|starting' };
+    withStarts(h, { storage: iso(h.clock.t - 10000) });
+    assert.equal(find(W.checkServices(h.ctx()), 'service_down:storage').ok, false, 'a plain context has no grace');
+    const report = await W.runHealth(h.deps, { waitMs: 0 });
+    assert.equal(report.ok, false);
+    assert.ok(report.lines.some(line => !line.ok && /Service storage is running starting/.test(line.text)), JSON.stringify(report.lines));
+    const gate = find(W.checkServices(W.makeContext(h.deps, W.freshState(h.clock.t))), 'service_down:storage');
+    assert.equal(gate.ok, false, 'the daily gate builds a plain context');
+  } finally { clean(h); }
+});
+
+test('services: a container that restarted in the last hour gets no grace', () => {
+  const h = harness();
+  try {
+    const data = W.freshState(h.clock.t);
+    W.checkContainerRestarts(W.makeContext(h.deps, data));   // baseline
+    h.advance(5 * 60000);
+    h.stateOf = { storage: 'running|starting' };
+    withStarts(h, { storage: iso(h.clock.t - 10000) }, { storage: 1 });   // its own counter went up: a restart event
+    const ctx = W.makeContext(h.deps, data);
+    ctx.startingGrace = true;
+    const r = find(W.checkServices(ctx), 'service_down:storage');
+    assert.equal(r.ok, false);
+    assert.match(r.detail, /restarted in the last hour/);
+    // The same start without a restart event is inside the grace period.
+    const fresh = W.makeContext(h.deps, W.freshState(h.clock.t));
+    fresh.startingGrace = true;
+    assert.equal(find(W.checkServices(fresh), 'service_down:storage').ok, true);
+  } finally { clean(h); }
+});
+
+test('containers: an exited container and a container seen for the first time do not block the detection of a whole-stack restart', () => {
+  const h = harness();
+  try {
+    const data = W.freshState(h.clock.t);
+    const run = () => { W.checkContainerRestarts(W.makeContext(h.deps, data)); return data.containers.rest.events.length; };
+    h.stateOf = { 'pdf-renderer': 'exited|' };
+    h.services = SERVICES.filter(s => s !== 'functions');
+    run();
+    h.advance(5 * 60000);
+    h.services = [...SERVICES];   // functions appears for the first time
+    withStarts(h, Object.fromEntries(SERVICES.filter(s => s !== 'pdf-renderer').map((s, k) => [s, iso(h.clock.t - 60000 + k * 1000)])));
+    assert.equal(run(), 0, 'the exited container keeps its old StartedAt and the new one has no history: still a whole-stack restart');
+    assert.equal(data.stackRestarts.length, 1);
+  } finally { clean(h); }
+});
+
+test('containers: a restart split over two runs (a container starting later than the rest) is one stack restart, not a restart of that container', () => {
+  const h = harness();
+  try {
+    const data = W.freshState(h.clock.t);
+    const run = () => W.checkContainerRestarts(W.makeContext(h.deps, data));
+    h.stateOf = { 'pdf-renderer': 'exited|' };
+    run();
+    h.advance(5 * 60000);
+    withStarts(h, Object.fromEntries(SERVICES.filter(s => s !== 'pdf-renderer').map((s, k) => [s, iso(h.clock.t - 60000 + k * 1000)])));
+    run();
+    assert.equal(data.stackRestarts.length, 1);
+    h.advance(5 * 60000);
+    h.stateOf = {};
+    withStarts(h, { 'pdf-renderer': iso(h.clock.t - 3 * 60000) });   // 2 minutes after the others, found by the next run
+    run();
+    assert.equal(data.containers['pdf-renderer'].events.length, 0, 'part of the recorded stack restart');
+    h.advance(30 * 60000);
+    withStarts(h, { 'pdf-renderer': iso(h.clock.t - 1000) });
+    run();
+    assert.equal(data.containers['pdf-renderer'].events.length, 1, 'a later start of that container alone counts');
+  } finally { clean(h); }
+});
+
+test('containers: wholeStackRestart on a StartedAt that is not a date, a counter-incremented container outside the span, and a stack that is mostly exited', () => {
+  const stored = { a: { startedAt: '2026-01-01T00:00:00Z', restartCount: 0 }, b: { startedAt: '2026-01-01T00:00:00Z', restartCount: 0 }, c: { startedAt: '2026-01-01T00:00:00Z', restartCount: 0 } };
+  const run = (service, startedAt, restartCount = 0, status = 'running') => ({ service, status, startedAt, restartCount });
+  const t = '2026-01-02T00:00:00Z';
+  const good = [run('a', t), run('b', '2026-01-02T00:01:00Z')];
+  assert.equal(W.isWholeStackRestart(good, stored), true, 'control');
+  assert.equal(W.isWholeStackRestart([run('a', 'garbage'), run('b', 'also garbage')], stored), false, 'NaN times are never a restart');
+  assert.equal(W.isWholeStackRestart([run('a', t), run('b', 'garbage')], stored), false);
+  // c restarted by its own counter, long after the others: it is left out of the span, so the other two still make the restart.
+  assert.equal(W.isWholeStackRestart([...good, run('c', '2026-01-03T00:00:00Z', 1)], stored), true);
+  assert.equal(W.isWholeStackRestart([run('a', t), run('b', '2026-01-03T00:00:00Z'), run('c', '2026-01-04T00:00:00Z', 1)], stored), false, 'the others are a day apart');
+  // Of 4 expected services only 2 run: most of the stack is down, not restarted.
+  const expected = ['a', 'b', 'x', 'y'];
+  assert.equal(W.isWholeStackRestart([...good, run('x', t, 0, 'exited'), run('y', t, 0, 'exited')], stored, expected), false);
+  assert.equal(W.isWholeStackRestart([...good, run('x', t, 0, 'running'), run('y', t, 0, 'exited')], stored, expected), true);
+});
+
+test('containers: stack_restarts fires above 3 whole-stack restarts in an hour and not at 3; the history ages out', () => {
+  const h = harness();
+  try {
+    const data = W.freshState(h.clock.t);
+    const run = () => find(W.checkStackRestarts(W.makeContext(h.deps, data)), 'stack_restarts');
+    assert.equal(run().ok, true);
+    const restart = () => { h.advance(5 * 60000); withStarts(h, Object.fromEntries(SERVICES.map((s, k) => [s, iso(h.clock.t - 60000 + k * 1000)]))); return run(); };
+    for (let i = 1; i <= 3; i++) assert.equal(restart().ok, true, `${i} restarts`);
+    const r = restart();
+    assert.equal(r.ok, false, '4 restarts in 20 minutes');
+    assert.match(r.summary, /restarted 4 times in the last hour \(limit 3\)/);
+    assert.equal(find(W.checkContainerRestarts(W.makeContext(h.deps, data)), 'container_restarts:rest').ok, true, 'no per-container alert');
+    h.advance(61 * 60000);
+    assert.equal(run().ok, true, 'older than an hour');
+  } finally { clean(h); }
+});
+
+test('state: a state file from before stackRestarts loads with an empty list; a wrong type is reset', () => {
+  const h = harness();
+  try {
+    const old = W.freshState(T0 - HOUR);
+    delete old.stackRestarts;
+    writeFileSync(join(h.state, 'config/watch-state.json'), JSON.stringify(old));
+    assert.deepEqual(W.loadState(h.state, T0, h.deps.readText, () => {}).stackRestarts, []);
+    writeFileSync(join(h.state, 'config/watch-state.json'), JSON.stringify({ ...old, stackRestarts: [T0 - 1000] }));
+    assert.deepEqual(W.loadState(h.state, T0, h.deps.readText, () => {}).stackRestarts, [T0 - 1000]);
+    const logs = [];
+    writeFileSync(join(h.state, 'config/watch-state.json'), JSON.stringify({ ...old, stackRestarts: 'x' }));
+    assert.deepEqual(W.loadState(h.state, T0, h.deps.readText, m => logs.push(m)).stackRestarts, []);
+    assert.ok(logs.some(m => /stackRestarts/.test(m)));
   } finally { clean(h); }
 });
 
@@ -1068,7 +1281,7 @@ test('the state records failingRuns, firingSince and lastSent per alert', async 
     const a = h.state_().alerts.thing_bad;
     assert.deepEqual([a.failingRuns, a.firingSince, a.lastSent], [2, h.clock.t, h.clock.t]);
     const s = h.state_();
-    for (const key of ['lastRunAt', 'lastHeartbeat', 'lastDailyRun', 'cpu', 'firstRun']) assert.ok(key in s, key);
+    for (const key of ['lastRunAt', 'delivery', 'lastDailyRun', 'cpu', 'firstRun']) assert.ok(key in s, key);
     assert.ok(!('muteUntil' in s) && !('mutes' in s), 'mutes have their own file');
   } finally { clean(h); }
 });
@@ -1254,10 +1467,10 @@ test('no webhook: checks run and the state records alerts, nothing is posted, an
     h.advance(5 * 60000); await W.runOnce(h.deps, { checks, ...NO_JOBS });
     assert.equal(h.posts.filter(p => /FIRING/.test(p.text)).length, 0);
     assert.ok(h.state_().alerts.thing_bad.firingSince);
-    assert.equal(h.state_().lastHeartbeat, null);
+    assert.equal(h.state_().delivery['facility-slack'], undefined, 'no heartbeat without a channel');
     const out = [];
     assert.equal(await W.main(['test-message'], h.deps, t => out.push(t)), 1);
-    assert.match(out[0], /No Slack webhook/);
+    assert.match(out[0], /No alert channel is configured/);
     writeFileSync(join(h.state, 'config/slack-webhook-url'), `${WEBHOOK}\n`, { mode: 0o600 });
     h.advance(5 * 60000); await W.runOnce(h.deps, { checks, ...NO_JOBS });
     assert.equal(h.posts.filter(p => /FIRING/.test(p.text)).length, 1);
@@ -1511,7 +1724,8 @@ test('state validation: valid JSON with wrong types resets each bad field and sa
     const log = [];
     const data = W.loadState(h.state, h.clock.t, h.deps.readText, m => log.push(m));
     assert.equal(data.firstRun, h.clock.t);
-    assert.deepEqual([data.lastHeartbeat, data.cpu, data.busySince, data.dailyRunning], [null, null, null, null]);
+    assert.deepEqual([data.cpu, data.busySince, data.dailyRunning], [null, null, null]);
+    assert.deepEqual(data.delivery, {}, 'a bad lastHeartbeat is dropped, not migrated');
     assert.deepEqual(data.lastDailyRun, {});
     assert.deepEqual(Object.keys(data.containers), ['db']);
     assert.equal(data.alerts.a_bad.failingRuns, 0); assert.equal(data.alerts.a_bad.summary, ''); assert.equal(data.alerts.a_bad.firingSince, null);
@@ -1538,7 +1752,7 @@ test('Slack answers 500 then 200: nothing is marked sent after the 500, the erro
     h.advance(5 * 60000); h.postStatuses = [500];   // the alert post of this run fails
     await W.runOnce(h.deps, { checks, ...NO_JOBS });
     assert.equal(h.state_().alerts.thing_bad.lastSent, null, 'a 500 is not delivery');
-    assert.match(h.state_().lastPostError.message, /Slack answered HTTP 500/);
+    assert.match(h.state_().delivery['facility-slack'].lastError.message, /Slack answered HTTP 500/);
     const out = [];
     await W.main(['status'], h.deps, t => out.push(t));
     assert.match(out[0], /Last Slack post failed at .*HTTP 500/);
@@ -1547,7 +1761,7 @@ test('Slack answers 500 then 200: nothing is marked sent after the 500, the erro
     await W.runOnce(h.deps, { checks, ...NO_JOBS });
     assert.equal(h.posts.filter(p => /^\[FIRING\]/.test(p.text)).length, 1);
     assert.equal(h.state_().alerts.thing_bad.lastSent, h.clock.t);
-    assert.equal(h.state_().lastPostError, null);
+    assert.equal(h.state_().delivery['facility-slack'].lastError, null);
   } finally { clean(h); }
 });
 
@@ -1564,7 +1778,7 @@ test('the state is saved before the message is posted (and undone when the post 
     const alert = seen.find(x => /^\[FIRING\]/.test(x.text));
     assert.equal(alert.saved.alerts.thing_bad.lastSent, h.clock.t, 'lastSent was already on disk when Slack was called');
     const beat = seen.find(x => /^Monitoring is alive/.test(x.text));
-    assert.ok(beat.saved.lastHeartbeat !== null);
+    assert.ok(beat.saved.delivery['facility-slack'].lastHeartbeat !== null);
   } finally { clean(h); }
 });
 
@@ -2960,10 +3174,104 @@ test('test-message posts the test text; status lists alerts, the time zone and m
     assert.equal(await W.main(['mute', '15', 'not an id'], h.deps, t => out.push(t)), 1);
     out.length = 0;
     await W.main(['status'], h.deps, t => out.push(t));
-    assert.match(out[0], /Firing: a_bad/); assert.match(out[0], /Slack webhook: configured/);
+    assert.match(out[0], /Firing: a_bad/); assert.match(out[0], /Alert channel: Slack configured/);
     assert.match(out[0], /Time zone: \S+ \(daily jobs start at 02:30/);
     assert.match(out[0], /Muted until .*: disk_low:\/mnt\/my disk/);
     assert.ok(!out[0].includes('abcDEF123456'));
+  } finally { clean(h); }
+});
+
+// ---------------------------------------------------------------- sensor webhook
+const SENSOR_WEBHOOK = 'https://hooks.slack.com/services/T0AAAA/B0SENS/sensorSENSOR789';
+const withSensorHook = h => writeFileSync(join(h.state, 'config/sensor-webhook-url'), `${SENSOR_WEBHOOK}\n`, { mode: 0o600 });
+const immediate = (id, summary = `${id} is bad`, detail = '') => ({ id, ok: false, summary, detail, immediate: true });
+const alertPosts = h => h.posts.filter(p => !p.text.startsWith('Monitoring is alive'));
+
+test('sensor alerts are posted to the sensor webhook and every other alert to the facility webhook', async () => {
+  const h = harness();
+  try {
+    withSensorHook(h);
+    assert.equal(W.isSensorAlert('sensors_stale'), true);
+    for (const id of ['service_down:sensor-bridge', 'container_restarts:sensor-bridge', 'container_oom:sensor-bridge', 'container_memory:sensor-bridge', 'check_error:sensors_stale']) assert.equal(W.isSensorAlert(id), true, id);
+    for (const id of ['service_down:db', 'container_restarts:db', 'sensors_stale_x', 'service_down:sensor-bridge-2']) assert.equal(W.isSensorAlert(id), false, id);
+    await W.runOnce(h.deps, { checks: stub(immediate('sensors_stale'), immediate('service_down:sensor-bridge'), immediate('service_down:db')), ...NO_JOBS });
+    const to = url => alertPosts(h).filter(p => p.url === url);
+    assert.equal(alertPosts(h).length, 2);
+    assert.match(to(SENSOR_WEBHOOK)[0].text, /^\[FIRING\]/);
+    assert.ok(to(SENSOR_WEBHOOK)[0].text.includes('sensors_stale is bad') && to(SENSOR_WEBHOOK)[0].text.includes('service_down:sensor-bridge is bad'));
+    assert.ok(!to(SENSOR_WEBHOOK)[0].text.includes('service_down:db'));
+    assert.ok(to(WEBHOOK)[0].text.includes('service_down:db is bad') && !to(WEBHOOK)[0].text.includes('sensor'));
+    // Repeat and clear follow the same routing.
+    h.advance(4 * HOUR + 5 * 60000);
+    await W.runOnce(h.deps, { checks: stub(immediate('sensors_stale'), immediate('service_down:db')), ...NO_JOBS });
+    const after = alertPosts(h).slice(2);
+    assert.ok(after.some(p => p.url === SENSOR_WEBHOOK && /^\[STILL FIRING\]/.test(p.text) && p.text.includes('sensors_stale')));
+    assert.ok(after.some(p => p.url === WEBHOOK && /^\[STILL FIRING\]/.test(p.text) && p.text.includes('service_down:db')));
+    const ok2 = id => ({ id, ok: true, summary: id, detail: '' });
+    h.advance(5 * 60000);
+    await W.runOnce(h.deps, { checks: stub(ok2('sensors_stale'), ok2('service_down:sensor-bridge'), ok2('service_down:db')), ...NO_JOBS });
+    const cleared = alertPosts(h).filter(p => p.text.startsWith('[CLEARED]'));
+    assert.equal(cleared.length, 2);
+    assert.ok(cleared.find(p => p.url === SENSOR_WEBHOOK).text.includes('sensors_stale') && !cleared.find(p => p.url === SENSOR_WEBHOOK).text.includes('service_down:db'));
+    assert.ok(cleared.find(p => p.url === WEBHOOK).text.includes('service_down:db'));
+    assert.deepEqual(h.state_().alerts, {});
+  } finally { clean(h); }
+});
+
+test('without a sensor webhook the sensor alerts go to the facility webhook, as before', async () => {
+  const h = harness();
+  try {
+    await W.runOnce(h.deps, { checks: stub(immediate('sensors_stale'), immediate('service_down:db')), ...NO_JOBS });
+    assert.equal(alertPosts(h).length, 1);
+    assert.equal(alertPosts(h)[0].url, WEBHOOK);
+    assert.ok(alertPosts(h)[0].text.includes('sensors_stale is bad') && alertPosts(h)[0].text.includes('service_down:db is bad'));
+  } finally { clean(h); }
+});
+
+test('a failed sensor post is retried and does not stop the facility post; the daily heartbeat goes to both webhooks', async () => {
+  const h = harness();
+  try {
+    withSensorHook(h);
+    h.postStatuses = [200, 500];   // facility ok, sensor refused
+    await W.runOnce(h.deps, { checks: stub(immediate('sensors_stale'), immediate('service_down:db')), ...NO_JOBS });
+    assert.equal(alertPosts(h).length, 1);
+    assert.equal(alertPosts(h)[0].url, WEBHOOK);
+    assert.ok(h.state_().alerts.sensors_stale.lastSent === null, 'the refused post is not marked as sent');
+    h.advance(5 * 60000);
+    await W.runOnce(h.deps, { checks: stub(immediate('sensors_stale'), immediate('service_down:db')), ...NO_JOBS });
+    assert.equal(alertPosts(h).filter(p => p.url === SENSOR_WEBHOOK).length, 1);
+    const beats = h.posts.filter(p => p.text.startsWith('Monitoring is alive'));
+    assert.deepEqual(beats.map(p => p.url).sort(), [SENSOR_WEBHOOK, WEBHOOK].sort(), 'one heartbeat per webhook, once');
+  } finally { clean(h); }
+});
+
+test('redaction covers both webhook URLs', () => {
+  const text = `failed ${WEBHOOK} and ${SENSOR_WEBHOOK}`;
+  const out = W.redact(text, {}, [WEBHOOK, SENSOR_WEBHOOK]);
+  assert.ok(!out.includes('abcDEF123456') && !out.includes('sensorSENSOR789'));
+  assert.equal(W.redact(`x ${SENSOR_WEBHOOK}`, {}, WEBHOOK).includes('sensorSENSOR789'), false, 'the generic Slack pattern still covers an unlisted URL');
+  assert.ok(!ADAPTERS.slack.render(W.formatAlerts({ start: [{ id: 'sensors_stale', summary: `bad ${SENSOR_WEBHOOK}`, detail: `at ${WEBHOOK}` }], repeat: [], clear: [] }, 'Acme', {}, [WEBHOOK, SENSOR_WEBHOOK])).includes('hooks.slack.com'));
+});
+
+test('test-message sensors posts to the sensor webhook only; status says whether one is stored', async () => {
+  const h = harness();
+  try {
+    const out = [];
+    assert.equal(await W.main(['test-message', 'sensors'], h.deps, t => out.push(t)), 1);
+    assert.match(out[0], /No sensor alert channel is configured/);
+    assert.equal(h.posts.length, 0);
+    withSensorHook(h);
+    out.length = 0;
+    assert.equal(await W.main(['test-message', 'sensors'], h.deps, t => out.push(t)), 0);
+    assert.equal(h.posts.length, 1);
+    assert.equal(h.posts[0].url, SENSOR_WEBHOOK);
+    assert.match(h.posts[0].text, /^Test message from the Acme Cold \(warehouse-test\) warehouse server \(sensor alerts\)/);
+    assert.ok(!out.join('\n').includes('sensorSENSOR789'));
+    assert.equal(await W.main(['test-message'], h.deps, t => out.push(t)), 0);
+    assert.equal(h.posts[1].url, WEBHOOK, 'plain test-message still goes to the facility webhook');
+    out.length = 0;
+    await W.main(['status'], h.deps, t => out.push(t));
+    assert.match(out[0], /Sensor alert channel: Slack configured/);
   } finally { clean(h); }
 });
 
@@ -3758,4 +4066,472 @@ test('watch-timer.sh hint prints the install command when a unit carries another
       assert.equal(f.run(['hint']).stdout, '', `${name} restored: silent`);
     }
   } finally { rmSync(f.scratch, { recursive: true, force: true }); }
+});
+
+// ---------------------------------------------------------------- sensors_stale
+test('sensors_stale: capability off -> nothing to judge; fresh data passes; stale data fails; two runs fire; a passing run clears; shared SQL', async () => {
+  const h = harness();
+  try {
+    const sensors = on => writeFileSync(join(h.state, 'public/instance.json'), JSON.stringify({ schemaVersion: 1, instanceId: 'iid-1', companyName: 'Acme Cold', canonicalOrigin: 'https://acme.example.test', capabilities: { sensors: on } }));
+    const answer = json => { h.runs['-c SELECT json_build_object'] = ok(`${JSON.stringify(json)}\n`); };
+    const fresh = { hubs: [{ hub_id: '192.0.2.10', host: '192.0.2.10', online: true, age_s: 40, change_age_s: 40 }], newest_age_s: 60 };
+    const dead = { hubs: [{ hub_id: '192.0.2.10', host: '192.0.2.10', online: false, age_s: 30, change_age_s: 5 * 86400 }], newest_age_s: 7200 };
+    sensors(false); answer(dead);
+    assert.deepEqual(W.checkSensors(h.ctx()), [], 'capability off: no result (a standing alert clears)');
+    assert.ok(!h.calls.some(c => c.includes('json_build_object')), 'and the database is not asked');
+    sensors(true); answer(fresh);
+    let r = W.checkSensors(h.ctx());
+    assert.equal(r.length, 1); assert.equal(r[0].id, 'sensors_stale'); assert.equal(r[0].ok, true);
+    answer(dead);
+    r = W.checkSensors(h.ctx())[0];
+    assert.equal(r.ok, false);
+    assert.equal(r.summary, 'Sensors: hub 192.0.2.10 offline for 5 days');
+    assert.match(r.detail, /docs\/SENSORS\.md, Troubleshooting/);
+    assert.match(r.detail, /docs\/TROUBLESHOOTING\.md#sensors-show-no-data/);
+    answer({ hubs: fresh.hubs, newest_age_s: 7200 });
+    assert.equal(W.checkSensors(h.ctx())[0].summary, 'Sensors: newest reading 2 hours ago (readings limit 16 minutes)');
+    answer(dead);
+    const { SENSORS_SQL } = await import('../scripts/sensors-check.mjs');
+    assert.ok(h.calls.at(-1).includes(SENSORS_SQL), 'the exact SQL text of the doctor');
+    assert.match(h.calls.at(-1), /statement_timeout=10000/);
+    // two failing runs in a row alert, a passing run clears
+    const data = h.ctx().data;
+    const step = async () => { const { results, ran } = await W.runChecks(Object.assign(h.ctx(), { data }), W.CHECKS.filter(([n]) => n === 'sensors_stale')); return W.evaluate(data, results, ran, h.clock.t); };
+    let out = await step(); assert.equal(out.start.length, 0, 'one failing run is not an alert');
+    h.advance(5 * 60 * 1000);
+    out = await step(); assert.deepEqual(out.start.map(a => a.id), ['sensors_stale']);
+    data.alerts.sensors_stale.lastSent = h.clock.t;
+    answer(fresh); h.advance(5 * 60 * 1000);
+    out = await step(); assert.deepEqual(out.clear.map(a => a.id), ['sensors_stale']);
+    assert.ok(W.CHECKS.some(([name, fn]) => name === 'sensors_stale' && fn === W.checkSensors));
+  } finally { clean(h); }
+});
+
+test('sensors_stale: database down -> null (postgres_down speaks); an unreadable answer is one finding, no crash', () => {
+  const h = harness();
+  try {
+    writeFileSync(join(h.state, 'public/instance.json'), JSON.stringify({ capabilities: { sensors: true } }));
+    h.runs.pg_isready = bad();
+    assert.equal(W.checkSensors(h.ctx()), null);
+    h.runs.pg_isready = ok(); h.runs['-c SELECT json_build_object'] = bad('connection refused');
+    const r = W.checkSensors(h.ctx());
+    assert.equal(r.length, 1); assert.equal(r[0].ok, false);
+    assert.match(r[0].summary, /the sensor tables could not be read from the database/);
+    h.runs['-c SELECT json_build_object'] = ok('not json\n');
+    assert.equal(W.checkSensors(h.ctx())[0].ok, false);
+  } finally { clean(h); }
+});
+
+test('sensors_stale: restart grace -> readings are not judged while the db or bridge container is younger than the limit; a missing bridge container still is', () => {
+  const h = harness();
+  try {
+    writeFileSync(join(h.state, 'public/instance.json'), JSON.stringify({ capabilities: { sensors: true } }));
+    h.runs['-c SELECT json_build_object'] = ok(`${JSON.stringify({ hubs: [], newest_age_s: null })}\n`);
+    const started = Date.parse('2026-10-18T00:00:00Z');   // the fake containers' StartedAt
+    h.clock.t = started + 5 * 60 * 1000;
+    assert.equal(W.checkSensors(h.ctx()), null, 'settling with nothing to tell: not judged, a standing alert is left as it is');
+    assert.ok(!h.calls.some(c => c.includes('json_build_object')), 'no database question while settling');
+    h.clock.t = started + 17 * 60 * 1000;
+    let r = W.checkSensors(h.ctx())[0];
+    assert.equal(r.ok, false); assert.match(r.summary, /no hub has ever reported/);
+    // SENSOR_BRIDGE_HUBS set and no container: told even while settling
+    writeFileSync(join(h.state, 'config/compose.env'), 'SENSOR_BRIDGE_HUBS=192.0.2.10\nPOSTGRES_PASSWORD=supersecretpassword123\n', { mode: 0o600 });
+    h.runs['--profile sensors ps -a --format json sensor-bridge'] = ok('');
+    h.clock.t = started + 5 * 60 * 1000;
+    r = W.checkSensors(h.ctx())[0];
+    assert.equal(r.ok, false); assert.match(r.summary, /no sensor-bridge container exists/);
+  } finally { clean(h); }
+});
+
+// The inspect answer with another StartedAt for one service (the fake containers all start at 2026-10-18T00:00:00Z).
+function startedAtOf(h, service, stamp) {
+  const base = h.fakeRun;
+  h.fakeRun = (c, a) => {
+    const r = base(c, a);
+    if (!(c === 'docker' && a[0] === 'inspect')) return r;
+    return ok(r.stdout.split('\n').map(line => (line.split('|')[1] === service ? line.replace('2026-10-18T00:00:00Z', stamp) : line)).join('\n'));
+  };
+}
+
+test('sensors_stale: a standing alert survives a restart (settling returns null, so evaluate leaves it as it is); a settled db with a 5 minute old bridge is settling too', async () => {
+  const h = harness();
+  try {
+    writeFileSync(join(h.state, 'public/instance.json'), JSON.stringify({ capabilities: { sensors: true } }));
+    h.services = [...SERVICES, 'sensor-bridge']; h.stateOf = { 'sensor-bridge': 'running|' };
+    h.runs['-c SELECT json_build_object'] = ok(`${JSON.stringify({ hubs: [], newest_age_s: null })}\n`);
+    startedAtOf(h, 'db', '2026-10-10T00:00:00Z');                 // the db is old, only the bridge is new
+    h.clock.t = Date.parse('2026-10-18T00:05:00Z');
+    assert.equal(W.checkSensors(h.ctx()), null, 'bridge 5 minutes old: settling');
+    assert.ok(!h.calls.some(c => c.includes('json_build_object')));
+    const data = h.ctx().data;
+    data.alerts.sensors_stale = { failingRuns: 2, firingSince: h.clock.t - 600000, lastSent: h.clock.t - 600000, clearPending: false, check: 'sensors_stale', summary: 'Sensors: x', detail: '' };
+    const { results, ran } = await W.runChecks(Object.assign(h.ctx(), { data }), W.CHECKS.filter(([n]) => n === 'sensors_stale'));
+    const out = W.evaluate(data, results, ran, h.clock.t);
+    assert.equal(out.clear.length, 0, 'the standing alert is not cleared');
+    assert.ok(data.alerts.sensors_stale, 'and is kept');
+  } finally { clean(h); }
+});
+
+test('sensors_stale: no grace for a bridge container that restarted in the last hour; none for a start time far in the future', () => {
+  const h = harness();
+  try {
+    writeFileSync(join(h.state, 'public/instance.json'), JSON.stringify({ capabilities: { sensors: true } }));
+    h.services = [...SERVICES, 'sensor-bridge']; h.stateOf = { 'sensor-bridge': 'running|' };
+    h.runs['-c SELECT json_build_object'] = ok(`${JSON.stringify({ hubs: [], newest_age_s: null })}\n`);
+    startedAtOf(h, 'db', '2026-10-10T00:00:00Z');
+    h.clock.t = Date.parse('2026-10-18T00:05:00Z');
+    // history says the bridge started at another time: this run sees a restart of that container alone
+    const data = h.ctx().data;
+    data.containers['sensor-bridge'] = { id: 'old', restartCount: 0, startedAt: '2026-10-17T00:00:00Z', events: [], oomKill: null, lastOom: null, oomStart: null, lastOomEvent: null };
+    const r = W.checkSensors(Object.assign(h.ctx(), { data }));
+    assert.ok(Array.isArray(r) && r[0].ok === false, 'a restarting bridge is judged at once');
+    assert.match(r[0].summary, /no hub has ever reported/);
+    assert.ok(h.calls.some(c => c.includes('json_build_object')));
+    // the clock moved back: StartedAt more than a minute ahead of now is no start-up
+    const h2 = harness();
+    try {
+      writeFileSync(join(h2.state, 'public/instance.json'), JSON.stringify({ capabilities: { sensors: true } }));
+      h2.runs['-c SELECT json_build_object'] = ok(`${JSON.stringify({ hubs: [], newest_age_s: null })}\n`);
+      h2.clock.t = Date.parse('2026-10-17T00:00:00Z');
+      const r2 = W.checkSensors(h2.ctx());
+      assert.ok(Array.isArray(r2) && r2[0].ok === false, 'a future StartedAt gives no grace');
+    } finally { clean(h2); }
+  } finally { clean(h); }
+});
+
+// Where a failed post is recorded, the heartbeat for each webhook, and where a repeat and a clear go.
+test('a facility failure and a sensor failure are kept apart; each is cleared only by a post to its own webhook', async () => {
+  const h = harness();
+  try {
+    withSensorHook(h);
+    h.seed({ delivery: { 'facility-slack': { lastError: null, lastHeartbeat: T0 - 60000 }, 'sensors-slack': { lastError: null, lastHeartbeat: T0 - 60000 } } });   // no heartbeat is due: only the alert posts count
+    const checks = stub(immediate('sensors_stale'), immediate('service_down:db'));
+    // Facility refused (500), sensor accepted: the facility error is kept, there is no sensor error.
+    h.postStatuses = [500, 200];
+    await W.runOnce(h.deps, { checks, ...NO_JOBS });
+    assert.match(h.state_().delivery['facility-slack'].lastError.message, /HTTP 500/);
+    assert.equal(h.state_().delivery['sensors-slack'].lastError, null);
+    // Facility retry accepted, then the sensor repeat refused: the facility error is cleared, the sensor error is set.
+    h.advance(4 * HOUR + 5 * 60000);
+    h.postStatuses = [200, 500];
+    await W.runOnce(h.deps, { checks, ...NO_JOBS });
+    assert.equal(h.state_().delivery['facility-slack'].lastError, null);
+    assert.match(h.state_().delivery['sensors-slack'].lastError.message, /HTTP 500/);
+    // A run that posts to the facility webhook only (the sensor alert is muted) leaves the sensor error alone.
+    writeFileSync(join(h.state, 'config/watch-mutes.json'), JSON.stringify({ all: null, ids: { sensors_stale: h.clock.t + 10 * HOUR } }));
+    h.advance(5 * 60000);
+    await W.runOnce(h.deps, { checks: stub(immediate('sensors_stale'), immediate('service_down:db'), immediate('thing_bad')), ...NO_JOBS });
+    assert.ok(alertPosts(h).some(p => p.url === WEBHOOK && p.text.includes('thing_bad')), 'a facility post succeeded');
+    assert.match(h.state_().delivery['sensors-slack'].lastError.message, /HTTP 500/, 'a facility success does not clear the sensor error');
+    // The next successful sensor post clears it.
+    rmSync(join(h.state, 'config/watch-mutes.json'));
+    h.advance(5 * 60000);
+    await W.runOnce(h.deps, { checks: stub(immediate('sensors_stale'), immediate('service_down:db'), immediate('thing_bad')), ...NO_JOBS });
+    assert.equal(h.state_().delivery['sensors-slack'].lastError, null);
+  } finally { clean(h); }
+});
+
+test('status shows both post errors; old state files (lastPostError, lastSensorPostError, lastHeartbeat, lastSensorHeartbeat) are migrated into delivery, and malformed values are dropped', async () => {
+  const h = harness();
+  try {
+    withSensorHook(h);
+    h.seed({ lastPostError: { at: T0, message: 'facility broke' }, lastSensorPostError: { at: T0, message: 'sensor broke' }, lastHeartbeat: T0 - 2000, lastSensorHeartbeat: T0 - 1000 });
+    const loaded = W.loadState(h.state, T0, h.deps.readText, () => {});
+    assert.deepEqual(loaded.delivery, {
+      'facility-slack': { lastError: { at: T0, message: 'facility broke' }, lastHeartbeat: T0 - 2000 },
+      'sensors-slack': { lastError: { at: T0, message: 'sensor broke' }, lastHeartbeat: T0 - 1000 },
+    });
+    for (const old of ['lastPostError', 'lastSensorPostError', 'lastHeartbeat', 'lastSensorHeartbeat']) assert.ok(!(old in loaded), `${old} is not kept`);
+    // A state file with none of the old keys (and none of the new) loads with an empty delivery.
+    const bare = W.freshState(T0); delete bare.delivery;
+    assert.deepEqual(W.normalizeState(bare, T0).delivery, {}, 'an old state file stays compatible');
+    // The new record wins over an old key; malformed values are reset and said so.
+    const log = [];
+    const mixed = W.normalizeState({ ...W.freshState(T0), lastSensorPostError: 'x', lastSensorHeartbeat: 'y', lastPostError: { at: 1, message: 'old' },
+      delivery: { 'facility-slack': { lastError: { at: 2, message: 'new' }, lastHeartbeat: null }, 'other-1': { lastError: 7 } }, alerts: { a: { via: 'moon' } } }, T0, m => log.push(m));
+    assert.deepEqual(mixed.delivery, { 'facility-slack': { lastError: { at: 2, message: 'new' }, lastHeartbeat: null }, 'other-1': { lastError: null, lastHeartbeat: null } });
+    assert.ok(log.some(m => m.includes('lastSensorPostError')) && log.some(m => m.includes('other-1')));
+    assert.equal(mixed.alerts.a.via, undefined);
+    assert.equal(W.normalizeState({ ...W.freshState(T0), alerts: { a: { via: 'sensor' } } }, T0).alerts.a.via, 'sensors', 'the old via value maps to the audience');
+    assert.equal(W.normalizeState({ ...W.freshState(T0), alerts: { a: { via: 'sensors' } } }, T0).alerts.a.via, 'sensors');
+    const out = [];
+    await W.main(['status'], h.deps, t => out.push(t));
+    assert.match(out[0], /Last Slack post failed at .*: facility broke/);
+    assert.match(out[0], /Last sensor Slack post failed at .*: sensor broke/);
+    assert.ok(!out[0].includes('abcDEF123456') && !out[0].includes('sensorSENSOR789'));
+    // The next run rewrites the state in the new shape.
+    await W.runOnce(h.deps, { checks: HEALTHY, ...NO_JOBS });
+    const saved = h.state_();
+    assert.ok(saved.delivery['facility-slack'] && saved.delivery['sensors-slack']);
+    // For one release the old keys are still written, mirrored from delivery (an old-code pass or a rollback keeps them).
+    assert.deepEqual(saved.lastPostError, saved.delivery['facility-slack'].lastError);
+    assert.equal(saved.lastHeartbeat, saved.delivery['facility-slack'].lastHeartbeat);
+  } finally { clean(h); }
+});
+
+test('the daily heartbeat is posted to both webhooks, each tracked on its own: a failing one does not block the other', async () => {
+  const h = harness();
+  try {
+    withSensorHook(h);
+    h.postStatuses = [500];   // the facility heartbeat is refused
+    await W.runOnce(h.deps, { checks: HEALTHY, ...NO_JOBS });
+    const beats = () => h.posts.filter(p => p.text.startsWith('Monitoring is alive'));
+    assert.deepEqual(beats().map(p => p.url), [SENSOR_WEBHOOK], 'the sensor heartbeat went out although the facility one failed');
+    assert.match(beats()[0].text, /^Monitoring is alive \(sensor alerts\)/);
+    assert.equal(h.state_().delivery['facility-slack'].lastHeartbeat, null, 'the failed facility heartbeat is retried');
+    assert.equal(h.state_().delivery['sensors-slack'].lastHeartbeat, h.clock.t);
+    h.advance(5 * 60000);
+    await W.runOnce(h.deps, { checks: HEALTHY, ...NO_JOBS });
+    assert.deepEqual(beats().map(p => p.url), [SENSOR_WEBHOOK, WEBHOOK], 'only the facility one is retried');
+    // Reverse: the sensor heartbeat is refused.
+    h.advance(24 * HOUR);
+    h.postStatuses = [200, 500];
+    await W.runOnce(h.deps, { checks: HEALTHY, ...NO_JOBS });
+    assert.equal(beats().length, 3);
+    assert.match(h.state_().delivery['sensors-slack'].lastError.message, /HTTP 500/);
+    assert.equal(h.state_().delivery['facility-slack'].lastError, null);
+    assert.equal(h.state_().delivery['facility-slack'].lastHeartbeat, h.clock.t);
+  } finally { clean(h); }
+});
+
+test('an alert keeps the channel its start went to: repeat and clear follow it when the routing changes meanwhile', async () => {
+  const h = harness();
+  try {
+    // Started with no sensor webhook: on the facility webhook.
+    await W.runOnce(h.deps, { checks: stub(immediate('sensors_stale')), ...NO_JOBS });
+    assert.equal(h.state_().alerts.sensors_stale.via, 'facility');
+    assert.equal(alertPosts(h)[0].url, WEBHOOK);
+    // A sensor webhook is added while it fires: the repeat and the clear stay on the facility webhook.
+    withSensorHook(h);
+    h.advance(4 * HOUR + 5 * 60000);
+    await W.runOnce(h.deps, { checks: stub(immediate('sensors_stale')), ...NO_JOBS });
+    assert.equal(alertPosts(h)[1].url, WEBHOOK);
+    assert.match(alertPosts(h)[1].text, /^\[STILL FIRING\]/);
+    h.advance(5 * 60000);
+    await W.runOnce(h.deps, { checks: stub({ id: 'sensors_stale', ok: true, summary: 'ok', detail: '' }), ...NO_JOBS });
+    const clear = alertPosts(h).find(p => p.text.startsWith('[CLEARED]'));
+    assert.equal(clear.url, WEBHOOK);
+    // A new one starts on the sensor webhook, and the sensor webhook is then removed: the clear goes to the facility webhook.
+    h.advance(5 * 60000);
+    await W.runOnce(h.deps, { checks: stub(immediate('sensors_stale')), ...NO_JOBS });
+    assert.equal(h.state_().alerts.sensors_stale.via, 'sensor', 'the file keeps the old value for one release');
+    assert.equal(alertPosts(h).at(-1).url, SENSOR_WEBHOOK);
+    rmSync(join(h.state, 'config/sensor-webhook-url'));
+    h.advance(5 * 60000);
+    await W.runOnce(h.deps, { checks: stub({ id: 'sensors_stale', ok: true, summary: 'ok', detail: '' }), ...NO_JOBS });
+    assert.equal(alertPosts(h).at(-1).url, WEBHOOK, 'the webhook it started on is gone: the one that exists is used');
+    assert.match(alertPosts(h).at(-1).text, /^\[CLEARED\]/);
+    // A failed post does not record the channel.
+    h.advance(5 * 60000);
+    h.postStatuses = [500];
+    await W.runOnce(h.deps, { checks: stub(immediate('sensors_stale')), ...NO_JOBS });
+    assert.equal(h.state_().alerts.sensors_stale.via, undefined);
+  } finally { clean(h); }
+});
+
+// ---------------------------------------------------------------- delivery layer (scripts/notify.mjs)
+const logLines = h => {
+  try { return readFileSync(join(h.state, 'logs/alerts.jsonl'), 'utf8').trim().split('\n').filter(Boolean).map(l => JSON.parse(l)); } catch { return []; }
+};
+
+test('the Slack text of FIRING, STILL FIRING, CLEARED and the heartbeat is exactly what it always was', async () => {
+  const h = harness();
+  try {
+    const checks = stub(immediate('thing_bad', 'thing_bad is bad', 'look at it'));
+    await W.runOnce(h.deps, { checks, ...NO_JOBS });
+    const name = 'Acme Cold (warehouse-test)';
+    assert.equal(h.posts[0].text, `[FIRING] ${name}\n- thing_bad is bad: look at it`);
+    assert.equal(h.posts[1].text, `Monitoring is alive - ${name}\n1 alert(s) firing.`);
+    h.advance(4 * HOUR + 5 * 60000);
+    await W.runOnce(h.deps, { checks, ...NO_JOBS });
+    assert.equal(h.posts.at(-1).text, `[STILL FIRING] ${name}\n- thing_bad is bad: look at it`);
+    h.advance(5 * 60000);
+    await W.runOnce(h.deps, { checks: stub({ id: 'thing_bad', ok: true, summary: 'fine', detail: '' }), ...NO_JOBS });
+    assert.equal(h.posts.at(-1).text, `[CLEARED] ${name}\n- thing_bad is bad`);
+    // Two sections in one message are separated by an empty line, as before.
+    await W.runOnce(h.deps, { checks: stub(immediate('a_bad'), immediate('b_bad')), ...NO_JOBS });
+    h.advance(5 * 60000);
+    await W.runOnce(h.deps, { checks: stub(immediate('a_bad'), { id: 'b_bad', ok: true, summary: 'ok', detail: '' }, immediate('c_bad')), ...NO_JOBS });
+    assert.equal(h.posts.at(-1).text, `[FIRING] ${name}\n- c_bad is bad\n\n[CLEARED] ${name}\n- b_bad is bad`);
+  } finally { clean(h); }
+});
+
+test('every delivery attempt is recorded in logs/alerts.jsonl (mode 0600), with the result per target and no URL; a refused post is recorded as failed', async () => {
+  const h = harness();
+  try {
+    withSensorHook(h);
+    h.seed({ delivery: { 'facility-slack': { lastError: null, lastHeartbeat: T0 - 60000 }, 'sensors-slack': { lastError: null, lastHeartbeat: T0 - 60000 } } });
+    h.postStatuses = [200, 500];
+    await W.runOnce(h.deps, { checks: stub(immediate('sensors_stale'), immediate('service_down:db')), ...NO_JOBS });
+    const lines = logLines(h);
+    assert.equal(lines.length, 2);
+    assert.deepEqual(lines.map(l => [l.audience, l.kind, l.results.map(r => [r.target, r.ok, r.status])]),
+      [['facility', 'alerts', [['facility-slack', true, 200]]], ['sensors', 'alerts', [['sensors-slack', false, 500]]]]);
+    assert.deepEqual(lines[0].alerts, [{ id: 'service_down:db', change: 'FIRING', summary: 'service_down:db is bad' }]);
+    assert.equal(lines[1].results[0].error, 'Slack answered HTTP 500');
+    assert.equal(lines[0].t, new Date(h.clock.t).toISOString());
+    assert.equal(statSync(join(h.state, 'logs/alerts.jsonl')).mode & 0o777, 0o600);
+    const raw = readFileSync(join(h.state, 'logs/alerts.jsonl'), 'utf8');
+    assert.ok(!raw.includes('hooks.slack.com') && !raw.includes('abcDEF123456') && !raw.includes('sensorSENSOR789'));
+  } finally { clean(h); }
+});
+
+test('heartbeats, test messages and the cannot-save warning are recorded too; the record exists after a run with no channel', async () => {
+  const h = harness({ webhook: false });
+  try {
+    await W.runOnce(h.deps, { checks: HEALTHY, ...NO_JOBS });
+    assert.equal(existsSync(join(h.state, 'logs/alerts.jsonl')), true, 'created by the first run');
+    assert.deepEqual(logLines(h), [], 'nothing was attempted');
+    writeFileSync(join(h.state, 'config/slack-webhook-url'), `${WEBHOOK}\n`, { mode: 0o600 });
+    h.advance(5 * 60000);
+    await W.runOnce(h.deps, { checks: HEALTHY, ...NO_JOBS });
+    assert.deepEqual(logLines(h).map(l => l.kind), ['heartbeat']);
+    assert.equal(await W.main(['test-message'], h.deps, () => {}), 0);
+    assert.deepEqual(logLines(h).map(l => l.kind), ['heartbeat', 'test']);
+    assert.deepEqual(logLines(h)[1].results, [{ target: 'facility-slack', ok: true, status: 200 }]);
+  } finally { clean(h); }
+});
+
+test('a failing alert record never breaks delivery or the run: the post goes out, the state is saved, one warning is given', async () => {
+  const h = harness();
+  try {
+    writeFileSync(join(h.state, 'logs'), 'a file where the directory should be');
+    const warnings = [];
+    h.deps.log = m => warnings.push(m);
+    const checks = stub(immediate('thing_bad'));
+    await W.runOnce(h.deps, { checks, ...NO_JOBS });
+    assert.equal(h.posts.filter(p => /^\[FIRING\]/.test(p.text)).length, 1);
+    assert.equal(h.state_().alerts.thing_bad.lastSent, h.clock.t);
+    assert.equal(warnings.filter(m => /alert record/.test(m)).length, 1, 'warned once although the alert post and the heartbeat both tried to write it');
+    h.advance(24 * HOUR);
+    await W.runOnce(h.deps, { checks, ...NO_JOBS });
+    assert.equal(warnings.filter(m => /alert record/.test(m)).length, 2, 'one warning per run (each run is its own process), not one per post');
+  } finally { clean(h); }
+});
+
+test('history prints the record readably, honours --days, and refuses a bad argument', async () => {
+  const h = harness();
+  try {
+    const out = [];
+    assert.equal(await W.main(['history'], h.deps, t => out.push(t)), 0);
+    assert.match(out[0], /^No alert deliveries are recorded for the last 30 days\./);
+    await W.runOnce(h.deps, { checks: stub(immediate('thing_bad')), ...NO_JOBS });
+    out.length = 0;
+    assert.equal(await W.main(['history'], h.deps, t => out.push(t)), 0);
+    const lines = out[0].split('\n');
+    assert.equal(lines.length, 2);
+    assert.match(lines[0], new RegExp(`^${new Date(h.clock.t).toISOString()}  facility  alerts  FIRING thing_bad \\(thing_bad is bad\\)  ->  facility-slack delivered \\(HTTP 200\\)$`));
+    assert.match(lines[1], /facility {2}heartbeat {2}-> {2}facility-slack delivered/);
+    h.advance(3 * 24 * HOUR);
+    out.length = 0;
+    await W.main(['history', '--days', '2'], h.deps, t => out.push(t));
+    assert.match(out[0], /^No alert deliveries are recorded for the last 2 days\./);
+    out.length = 0;
+    await W.main(['history', '--days', '5'], h.deps, t => out.push(t));
+    assert.equal(out[0].split('\n').length, 2);
+    for (const args of [['--days'], ['--days', '0'], ['--days', 'x'], ['5']]) {
+      out.length = 0;
+      assert.equal(await W.main(['history', ...args], h.deps, t => out.push(t)), 1, args.join(' '));
+      assert.match(out[0], /history takes only --days N/);
+    }
+    assert.ok(!out.join('\n').includes('abcDEF123456'));
+  } finally { clean(h); }
+});
+
+test('status lists each channel by label and never its address; a failing target is named by audience', async () => {
+  const h = harness();
+  try {
+    const out = [];
+    await W.main(['status'], h.deps, t => out.push(t));
+    assert.match(out[0], /^Installation: .*\nAlert channel: Slack configured\nSensor alert channel: none \(sensor alerts go to the facility channel\)/);
+    assert.match(out[0], /Last heartbeat: never/);
+    withSensorHook(h);
+    h.seed({ delivery: { 'sensors-slack': { lastError: { at: T0, message: 'Slack answered HTTP 404' }, lastHeartbeat: T0 - 1000 }, 'gone-1': { lastError: { at: T0, message: 'x' }, lastHeartbeat: null } } });
+    out.length = 0;
+    await W.main(['status'], h.deps, t => out.push(t));
+    assert.match(out[0], /Sensor alert channel: Slack configured/);
+    assert.match(out[0], /Last sensor Slack post failed at .*: Slack answered HTTP 404/);
+    assert.ok(!out[0].includes('gone-1'), 'a record of an unknown target is not shown');
+    assert.ok(!/Last heartbeat \(/.test(out[0]), 'the status has only the one heartbeat line it always had');
+    assert.ok(!out[0].includes('hooks.slack.com'));
+  } finally { clean(h); }
+});
+
+test('test-message goes through the adapter and reports the HTTP answer; a failed post exits 1 without printing the address', async () => {
+  const h = harness();
+  try {
+    const out = [];
+    h.postStatuses = [404];
+    assert.equal(await W.main(['test-message'], h.deps, t => out.push(t)), 1);
+    assert.equal(out[0], 'Slack answered HTTP 404.');
+    h.postFails = true;
+    out.length = 0;
+    const errors = [];
+    assert.equal(await W.main(['test-message'], h.deps, t => out.push(t), t => errors.push(t)), 1);
+    assert.deepEqual(out, [], 'a network error is not on the normal output');
+    assert.deepEqual(errors, ['Watch: could not reach Slack'], 'standard error, as before the delivery layer');
+    assert.deepEqual(logLines(h).map(l => [l.kind, l.results[0].ok]), [['test', false], ['test', false]]);
+  } finally { clean(h); }
+});
+
+test('history: only a missing record means nothing recorded; an unreadable one is said and exits 1', async () => {
+  const h = harness();
+  try {
+    const out = [];
+    const errors = [];
+    mkdirSync(join(h.state, 'logs/alerts.jsonl'), { recursive: true });   // a directory where the file should be: EISDIR, not ENOENT
+    assert.equal(await W.main(['history'], h.deps, t => out.push(t), t => errors.push(t)), 1);
+    assert.deepEqual(out, []);
+    assert.equal(errors.length, 1);
+    assert.match(errors[0], /^cannot read .*logs\/alerts\.jsonl \(EISDIR\)$/);
+  } finally { clean(h); }
+});
+
+test('a state that cannot be saved is not sent to the sensor channel when that is the only channel (configure refuses that setup)', async () => {
+  const h = harness({ webhook: false });
+  try {
+    withSensorHook(h);
+    h.fsApi = { openSync: fs.openSync, writeSync: fs.writeSync, fsyncSync: fs.fsyncSync, closeSync: fs.closeSync, unlinkSync: fs.unlinkSync, renameSync: () => { throw new Error('read-only file system'); } };
+    h.clock.t = new Date(2026, 9, 19, 10, 0).getTime();
+    await assert.rejects(W.runOnce(h.deps, { checks: [], ...NO_JOBS }), /read-only file system/);
+    assert.equal(h.posts.length, 0, 'facility alerts never go to the sensor channel');
+  } finally { clean(h); }
+});
+
+test('the state file also carries the pre-delivery-layer keys, mirrored from delivery, in the shapes the old loader accepts', async () => {
+  const h = harness();
+  try {
+    withSensorHook(h);
+    h.seed({ delivery: { 'facility-slack': { lastError: { at: T0, message: 'facility broke' }, lastHeartbeat: T0 - 2000 }, 'sensors-slack': { lastError: null, lastHeartbeat: T0 - 1000 } } });
+    await W.runOnce(h.deps, { checks: stub(immediate('sensors_stale')), ...NO_JOBS });
+    const file = h.state_();
+    assert.deepEqual(file.lastPostError, { at: T0, message: 'facility broke' });
+    assert.equal(file.lastHeartbeat, T0 - 2000);
+    assert.equal(file.lastSensorHeartbeat, T0 - 1000);
+    assert.ok(!('lastSensorPostError' in file), 'the old loader rejects a null here, so it is not written');
+    assert.equal(file.alerts.sensors_stale.via, 'sensor', 'the old loader only knows facility and sensor');
+  } finally { clean(h); }
+  // What the old loader accepts: lastPostError null or {at,message}; lastHeartbeat a number or null; the sensor keys only when set.
+  const mirrored = W.withOldKeys({ delivery: { 'facility-slack': { lastError: null, lastHeartbeat: 5 }, 'sensors-slack': { lastError: { at: 7, message: 'sensor broke' }, lastHeartbeat: 6 } }, alerts: { a: { via: 'sensors' }, b: { via: 'facility' }, c: {} } });
+  assert.deepEqual([mirrored.lastPostError, mirrored.lastHeartbeat, mirrored.lastSensorPostError, mirrored.lastSensorHeartbeat], [null, 5, { at: 7, message: 'sensor broke' }, 6]);
+  assert.deepEqual([mirrored.alerts.a.via, mirrored.alerts.b.via, mirrored.alerts.c.via], ['sensor', 'facility', undefined]);
+  // An old-code pass drops `delivery` and keeps the old keys: loading what is left gives the same records and routing.
+  const { delivery, ...oldShape } = { ...W.freshState(T0), ...mirrored };
+  const back = W.normalizeState(oldShape, T0);
+  assert.deepEqual(back.delivery, { 'facility-slack': { lastError: null, lastHeartbeat: 5 }, 'sensors-slack': { lastError: { at: 7, message: 'sensor broke' }, lastHeartbeat: 6 } });
+  assert.equal(back.alerts.a.via, 'sensors');
+  const none = W.withOldKeys({ delivery: {}, alerts: {} });
+  assert.ok(!('lastSensorPostError' in none) && !('lastSensorHeartbeat' in none));
+  assert.deepEqual([none.lastPostError, none.lastHeartbeat], [null, null]);
+});
+
+test('a malformed field of a delivery entry is reset on its own and an old key still fills it', () => {
+  const log = [];
+  const loaded = W.normalizeState({ ...W.freshState(T0), lastHeartbeat: T0 - 5, lastPostError: { at: 9, message: 'old error' },
+    delivery: { 'facility-slack': { lastError: 'broken', lastHeartbeat: 'broken' } } }, T0, m => log.push(m));
+  assert.deepEqual(loaded.delivery['facility-slack'], { lastError: { at: 9, message: 'old error' }, lastHeartbeat: T0 - 5 });
+  assert.ok(log.some(m => m.includes('facility-slack')));
+  // A well-formed field of the same entry is kept and wins over the old key.
+  const half = W.normalizeState({ ...W.freshState(T0), lastHeartbeat: T0 - 5, delivery: { 'facility-slack': { lastError: 'broken', lastHeartbeat: T0 - 1 } } }, T0, () => {});
+  assert.deepEqual(half.delivery['facility-slack'], { lastError: null, lastHeartbeat: T0 - 1 });
 });

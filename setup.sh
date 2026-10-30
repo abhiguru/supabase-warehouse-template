@@ -22,7 +22,7 @@ LETTERHEAD_ARG=''
 CONFIG_ARGS=()
 while (($#)); do
   case "$1" in
-    --state-dir|--api-url|--app-url|--company|--provider-env|--admin-phone|--admin-name|--central-issuer|--central-jwks-url|--central-jwks-file|--central-local-code|--alert-webhook-file|--letterhead-file|--gateway-port)
+    --state-dir|--api-url|--app-url|--company|--provider-env|--admin-phone|--admin-name|--central-issuer|--central-jwks-url|--central-jwks-file|--central-local-code|--alert-webhook-file|--sensor-webhook-file|--letterhead-file|--gateway-port)
       if (($# < 2)); then echo "Missing value for $1" >&2; exit 1; fi
       case "$1" in
         --state-dir) STATE="$2"; CONFIG_ARGS+=("$1" "$2") ;;
@@ -184,7 +184,10 @@ bash "$ROOT/scripts/build-images.sh" --replace-optional || echo 'Warning: a runn
 # every run (a few seconds; --no-deps leaves the other services alone) so that the code on disk is the code that runs. Doing it
 # here, not in upgrade.sh, means the release being moved to decides how, and a hand-made upgrade gets it too.
 bash "$ROOT/scripts/compose.sh" up -d --force-recreate --no-deps --wait --wait-timeout 180 functions
+# The sensor-webhook advice is printed once, at the end (sensor-notice), not also by this run.
+export WAREHOUSE_SETUP_SENSOR_NOTICE=yes
 node "$ROOT/scripts/doctor.mjs" --local
+unset WAREHOUSE_SETUP_SENSOR_NOTICE
 # The monitoring checker (scripts/watch.mjs: checks every 5 minutes, Slack alerts) and the daily backup and retention run
 # from systemd timers (two: the checker's and the daily one). Installing a unit needs root, which setup never uses: like the
 # tunnel service and the USB backup, the operator runs the printed command. They also run without a Slack webhook
@@ -192,4 +195,6 @@ node "$ROOT/scripts/doctor.mjs" --local
 echo
 # hint prints the install command when the timer is missing and "refresh" when it runs another checkout.
 WAREHOUSE_STATE_DIR="$STATE" bash "$ROOT/scripts/watch-timer.sh" hint || true
+# A notice (not an error) when sensors are on and Slack alerts are on but no separate sensor webhook is stored.
+node "$ROOT/scripts/alert-webhook.mjs" sensor-notice --state-dir "$STATE" || true
 echo 'Operator services are healthy on the local gateway. Configure the Cloudflare Tunnel connector and its DNS route (deploy/cloudflared-config.example.yml; scripts/tunnel.sh install-service writes the service), then run node scripts/doctor.mjs for external verification.'

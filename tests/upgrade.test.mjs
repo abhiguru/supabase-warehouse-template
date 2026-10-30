@@ -300,6 +300,10 @@ test('refusals change nothing: no backup, no checkout, no log line, no record', 
     writeFileSync(join(w.state, 'config/slack-webhook-url'), 'not a webhook url\n', { mode: 0o600 });
     refused(['v0.2.0'], /does not hold a Slack incoming-webhook URL[^]*alert-webhook-file/);
     rmSync(join(w.state, 'config/slack-webhook-url'));
+    // No facility webhook but a sensor webhook file: setup would pass '--alert-webhook-file off' and configure would refuse it after the checkout.
+    writeFileSync(join(w.state, 'config/sensor-webhook-url'), 'https://hooks.slack.com/services/T0000000/B0000000/fictionalsensor\n', { mode: 0o600 });
+    refused(['v0.2.0'], /sensor webhook file[^]*-- --sensor-webhook-file off[^]*-- --alert-webhook-file \/absolute\/path/);
+    rmSync(join(w.state, 'config/sensor-webhook-url'));
     // Another operator command holds the lock.
     const holder = spawn('flock', [join(w.state, 'config/operator.lock'), 'sleep', '30'], { stdio: 'ignore', detached: true });
     try {
@@ -410,6 +414,11 @@ test('a stored Slack webhook is left to setup; options after -- go to setup and 
     const off = w.run(['v0.2.0', '--', '--alert-webhook-file', 'off']);
     assert.equal(off.status, 0, off.stderr);
     assert.equal(own.status, 0, own.stderr);
+    // A stored sensor webhook without a facility one: an explicit '--sensor-webhook-file off' is accepted (the refusal is tested with the other refusals).
+    rmSync(join(w.state, 'config/slack-webhook-url'));
+    writeFileSync(join(w.state, 'config/sensor-webhook-url'), 'https://hooks.slack.com/services/T0000000/B0000000/fictionalsensor\n', { mode: 0o600 });
+    const sensorOff = w.run(['v0.2.0', '--', '--sensor-webhook-file', 'off']);
+    assert.equal(sensorOff.status, 0, sensorOff.stderr);
   } finally { w.cleanup(); }
 });
 

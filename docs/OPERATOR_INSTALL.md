@@ -22,8 +22,8 @@ Sections: [host prerequisites](#host-prerequisites),
 [rotate signing keys](#rotate-signing-keys),
 [backup and restore](#backup-and-restore),
 [rerun and upgrade](#rerun-and-upgrade),
-[baseline reload](#baseline-reload) (for a database built before PostgreSQL 17; the reload builds the current major, 18),
-[major PostgreSQL upgrade](#major-postgresql-upgrade) (17 to 18),
+[baseline reload](#baseline-reload) (what the refusals that name it mean),
+[major PostgreSQL upgrade](#major-postgresql-upgrade) (a new PostgreSQL major is a manual move),
 [Windows host (Ubuntu in WSL2)](#windows-host-ubuntu-in-wsl2).
 
 ## Host prerequisites
@@ -163,6 +163,7 @@ The operator scripts use only Node's built-in modules; `npm ci` is needed only t
 | MSG91 provider file | `--provider-env` | Mode-0600 file with five keys; see **MSG91 provider file** below. Required on a first install. |
 | First administrator | `--admin-phone`, `--admin-name` (both required) | `91` and ten digits, and a display name; see **First administrator** below. |
 | Slack webhook file | `--alert-webhook-file` | Private file with the facility's incoming-webhook URL. `off` only for a non-production install; without the option a terminal is asked and no terminal means setup refuses. See [Setup](#setup). |
+| Sensor Slack webhook file | `--sensor-webhook-file` | Private file with a second, separate incoming-webhook URL for sensor alerts. Required when Slack alerts are on and sensors are on; `off` removes it; leave it out to keep what is stored. See [Setup](#setup). |
 | Central sign-in (members only) | `--central-issuer` with `--central-jwks-url` or `--central-jwks-file` | The issuer and the public key set (an address or a file) that the association gives you; see [Central sign-in](#central-sign-in). Leave out for SMS sign-in only. |
 | PDF letterhead | `--letterhead-file` | A JPEG or PNG banner (at most 2 MiB) that the GRN, dispatch, invoice and customer stock PDFs print at the top, or `off` for plain PDFs. On a first install setup asks for it on a terminal (Enter means plain PDFs) and, with no terminal and without the option, refuses; a rerun without the option asks nothing and keeps what is there. See [Letterhead image](#letterhead-image-optional). |
 
@@ -193,14 +194,14 @@ MSG91_SENDER_ID=replace-with-owned-sender-id
 
 `MSG91_TEMPLATE_ID` is the MSG91 **Flow ID** (24 lowercase hex characters), not the DLT template ID. `MSG91_PE_ID` is
 numeric and `MSG91_SENDER_ID` is six uppercase alphanumerics; the installer validates all three. The Flow's variable must
-be named exactly `OTP`. Do not copy a complete legacy `.env` into this file: `SMS_PRODUCTION_MODE` and any other key are
+be named exactly `OTP`. Do not copy a complete `.env` into this file: `SMS_PRODUCTION_MODE` and any other key are
 rejected. The OTP worker accepts a request only after MSG91 confirms it, but an accepted API response does not prove
 handset delivery, so test with an owned phone. Real credentials are mandatory: there is no fixed-OTP or local delivery
 mode. Keep the file out of shell history and version control, and include it in your encrypted off-host backups.
 
-**Notes from an older (pre-template) deployment do not apply.** This backend stores the sign-in codes itself, as an HMAC
+**What setup keeps for you.** This backend stores the sign-in codes itself, as an HMAC
 (the `otp_verifications` table, checked by `operator_verify_otp`), and setup writes the `public.sms_config` row from the
-provider file: do not create either by hand, and do not carry over a `.env` or SQL from the old system. `rotate-keys.sh` takes
+provider file: do not create either by hand. `rotate-keys.sh` takes
 only `--yes` and rotates the signing keys ([Rotate signing keys](#rotate-signing-keys)); it does not set up SMS.
 
 **Test installations (CI, review fixtures).** An installation that is not a real facility never gets a real MSG91 key,
@@ -252,8 +253,11 @@ storage, bootstraps the administrator, starts every service with `--wait` and ru
 on `127.0.0.1:18000` only; the database, CUPS and the sensor bridge are never published.
 
 Optional services are Compose profiles that setup does not start: `printing`, `pooler`, `sensors` and `lan` (the [LAN fallback](#lan-fallback-plain-http-on-the-warehouse-network), switched with `bash scripts/lan.sh on|off|status`; once it is on, setup and start bring it up too, apart from the services they wait for, so that a fault of the fallback is a warning and never stops them). The pooler is off by default and is switched with `bash scripts/pooler.sh on|off|status`, not with `--profile` (see [Pooler (optional)](#pooler-optional)); `sensors` is the Tapo sensor
-bridge; set up as in [SENSORS.md](SENSORS.md#run-it-as-a-profile-of-the-installation), then
-`node scripts/set-capability.mjs sensors on` and a new `db:backup`).
+bridge. **Sensors are optional:** without sensors skip all of this; the install is complete without it. If you do have sensor
+details (hub addresses, the Tapo login), set it up as in [SENSORS.md](SENSORS.md#run-it-as-a-profile-of-the-installation), then
+`node scripts/set-capability.mjs sensors on` and a new `db:backup`. The install is then **not done until ingest is verified in the
+database** ([SENSORS.md, step 6](SENSORS.md#run-it-as-a-profile-of-the-installation): the SQL there must show a row per hub and per sensor with readings). When Slack alerts are on, a separate sensor Slack webhook is also required: `--sensor-webhook-file`, see below. The doctor warning is
+only the quick check.
 
 **Monitoring is not a Compose profile.** One small program, the checker (`scripts/watch.mjs`), runs from a systemd
 timer every 5 minutes, tells the facility's Slack channel when something is wrong, and once a day makes and verifies a
@@ -269,11 +273,21 @@ Run it after every install, after a move of the checkout, and after `db:restore-
 is missing, and `npm run doctor` warns when the timer is not active or the checker has not run in 15 minutes. The timer is
 installed even with `--alert-webhook-file off`: the checks and the daily backup still run, only the Slack posts are off.
 
-Alerts go to the facility's own Slack channel, so setup needs its incoming-webhook URL (the owner creates it in
-Slack: Apps, Incoming Webhooks). Give `--alert-webhook-file /absolute/path` (a private file, mode 0600, one line), or
+Alerts go to the facility's own Slack channel (through the checker's delivery layer, which also keeps a local record of every delivery in `logs/alerts.jsonl`, read with `node scripts/watch.mjs history`; [MONITORING.md](MONITORING.md#alert-delivery)), so setup needs its incoming-webhook URL (the owner creates a Slack app at api.slack.com/apps and adds an incoming webhook to it; not a legacy webhook or a Workflow Builder one). Give `--alert-webhook-file /absolute/path` (a private file, mode 0600, one line), or
 let setup ask for it on a terminal; without a terminal and without the option setup refuses.
 `--alert-webhook-file off` is for a non-production install. The prompt, the test message, the stored file, the daily
 "Monitoring is alive" message and muting before a planned stop are in [MONITORING.md](MONITORING.md).
+
+If Slack alerts are enabled for the facility and sensors are on, a separate Slack webhook for sensor alerts is required: create a second incoming webhook (for the channel the people who watch the cold rooms follow) and give it to setup with `--sensor-webhook-file`. The option is `--sensor-webhook-file /absolute/path` (a private file, mode 0600, one line; `off` removes the
+stored one; leaving it out keeps it), for example, when you set sensors up on an installation that already has Slack alerts:
+
+```bash
+bash setup.sh --operator --state-dir "$WAREHOUSE_STATE_DIR" --admin-phone 91XXXXXXXXXX --admin-name 'Warehouse Administrator' \
+  --alert-webhook-file /secure/warehouse-slack-webhook.txt \
+  --sensor-webhook-file /secure/warehouse-sensor-slack-webhook.txt     # or: --sensor-webhook-file off (removes it)
+```
+
+Sensor alerts then go to that webhook and everything else stays on the facility webhook ([MONITORING.md](MONITORING.md#alert-delivery)).
 
 The PDF letterhead is asked the same way: give `--letterhead-file /absolute/path` (a JPEG or PNG of at most 2 MiB) or
 `--letterhead-file off` for plain PDFs, or let setup ask on a terminal (the path, or Enter for plain PDFs). Without a
@@ -326,7 +340,7 @@ bash setup.sh --operator --state-dir "$WAREHOUSE_STATE_DIR" --admin-phone 91XXXX
 
 GRN, dispatch and invoice numbers follow a rule of the facility, and **with the rule's check on, a typed number that does not follow the rule is refused when the document is
 saved** ("This number does not follow this facility's numbering (A####)"). Choose the rules at install, or later; an administrator can also change
-them in the app (Document numbers, under Warehouse tools, from the app build that has the screen). Each rerun without the options keeps what is stored.
+them in the app (Document numbers, under Warehouse tools). Each rerun without the options keeps what is stored.
 
 | Option | A rule is written as | Example numbers |
 |---|---|---|
@@ -340,12 +354,10 @@ them in the app (Document numbers, under Warehouse tools, from the app build tha
 bash setup.sh --operator <your usual options> --grn-numbering 'year,prefix=GRN/' --dispatch-numbering 'sequence,prefix=I' --invoice-numbering year
 ```
 
-- **The defaults are what the facility did before:** GRN `letters` (first letter `W` when the facility holds both W and X numbers, `X` when it holds X, Y or Z numbers: FAS's order is W, X, Y, Z, A, B),
-  dispatch `sequence,prefix=I`, invoice `year`. `node scripts/doctor.mjs` prints the rules in force ("Document numbers: GRN A#### (letters), ...").
+- **The defaults:** GRN `letters` starting at A (A0001 ... A1000, B0001 ...), dispatch `sequence,prefix=I` (I0001, I0002 ...), invoice `year`, and every check on. `node scripts/doctor.mjs` prints the rules in force ("Document numbers: GRN A#### (letters), ...").
 - **The check.** Each GRN and dispatch rule has a check: on, a number outside the rule is refused; off, it is saved (a number that is taken is still refused, as is one over 20 characters)
-  and the rule still suggests the next number. The update starts a document type with the check **off** when one of the numbers it holds does not follow the rule it starts with (dispatch
-  numbers such as G1234A or CLR0007 beside I0001, a GRN such as DG1) and prints how many, with up to five examples; every other type starts with it on. `doctor` warns "Dispatch numbers are not checked:
-  N existing numbers do not follow I####" until you switch it on. Switch it on by giving the rule you want with `check=on`, for example
+  and the rule still suggests the next number. A document type whose check is off (see fas-sync below) makes `doctor` warn "Dispatch numbers are not checked:
+  N existing numbers do not follow I####" while numbers that do not follow the rule exist. Switch it on by giving the rule you want with `check=on`, for example
   `--dispatch-numbering sequence,prefix=I,digits=4,start=1,check=on` (the warning prints the exact option for the stored rule); numbers that do not follow it keep their numbers, and setup says
   how many they are. `check=off` switches it off. Giving a rule without `check` leaves the check as it is stored; `free` rules and invoices have no check to switch (an invoice number is always a whole number).
 - **Limits.** A number has at most 20 characters and at most 7 digits after its prefix; the prefix is up to 10 capital letters, digits, `/` and `-`. Setup refuses an unknown scheme,
@@ -359,16 +371,14 @@ bash setup.sh --operator <your usual options> --grn-numbering 'year,prefix=GRN/'
 - **A stray letter.** The GRN suggestion follows the letters in use; a mistyped GRN number such as Q0001 for A0001 can leave a letter beside the series that takes the suggestion over when it is between B and K (in a series that runs W to A; a stray at L does it only when
   the rule's first letter is W, because two runs of unused letters are then equally long). `doctor` lists "GRN letters in use outside the main series W–A: ..." (the main series is the run that holds the most numbers) so that the number
   can be corrected, and warns when the highest letter follows a letter in use that is not full (B0001 beside A0500), which is the one stray that steers the suggestion without standing apart.
-- **fas-sync and other import tools.** The update starts the check only from the numbers already in the database. A number the tool will still push after the update counts too: a GRN such as X1234A (a letter, digits and a letter after them)
-  does not follow the letter rule and the push is refused while the GRN check is on. Push the backlog before the update, or give the update the rule with the check off,
-  `--grn-numbering letters,first=X,check=off` (`first=W` where the facility holds both W and X numbers), and switch the check on later with the same rule and `check=on`.
+- **fas-sync and other import tools.** A number the tool pushes that does not follow the rule is refused while the check is on: a GRN such as X1234A (a letter, digits and a letter after them) does not follow the letter rule.
+  Before the first import, give setup `--grn-numbering letters,first=X,check=off` (`first=W` where the books hold both W and X numbers) and `--dispatch-numbering sequence,prefix=I,check=off`,
+  and switch the checks on later with the same rule and `check=on`.
   It pushes FAS's GRN numbers (a capital letter and digits) and dispatch numbers as they are. At a facility whose GRN rule is `letters` those of a capital letter and digits are saved whatever the first letter. FAS's dispatch numbers (G1234,
-  H0012A, CLR0007) do not follow `sequence,prefix=I`: while the dispatch check is off (the update starts it off at a facility that holds such numbers) they are saved; with the check on, or with a GRN rule that does not match, the push of that document is
+  H0012A, CLR0007) do not follow `sequence,prefix=I`: while the dispatch check is off they are saved; with the check on, or with a GRN rule that does not match, the push of that document is
   refused with the sentence above. Do not use `free` to let them through: a `free` rule suggests no number, and fas-sync reads the suggestion (`get_next_grn_number`, `get_next_dispatch_number`) before and after every push. The suggestion is
   the rule's whether the check is on or off.
-- **Slips and old app builds.** Numbers of up to 20 characters are possible; the pre-printed GRN and dispatch slips print the number in a field made for 8, so check a long number on paper once before you use one. An app build
-  from before this change fills in its own number where no number is suggested (`free`, a full series) and limits the dispatch number to 8 characters: use a rule that suggests numbers of 8 characters or fewer until every phone
-  has the new build.
+- **Slips.** Numbers of up to 20 characters are possible; the pre-printed GRN and dispatch slips print the number in a field made for 8, so check a long number on paper once before you use one.
 
 ## Several facilities on one host
 
@@ -388,8 +398,7 @@ bash setup.sh --operator --state-dir /srv/warehouse/second \
 ```
 
 - Setup test-binds `127.0.0.1:<port>` first and refuses a port that is in use. The port is saved as `GATEWAY_HTTP_PORT` in
-  the state's `config/compose.env`; `doctor` and the smoke scripts read it from there. (A state made while the gateway was
-  Kong has the line as `KONG_HTTP_PORT`: it is still read, and every run of `setup.sh` renames it to `GATEWAY_HTTP_PORT`, keeping the port.)
+  the state's `config/compose.env`; `doctor` and the smoke scripts read it from there.
 - A rerun without `--gateway-port` keeps the saved port. A rerun with another port replaces only that line, and only while
   the installation's containers are stopped (`bash stop.sh`, then setup again).
 - Each tunnel's ingress must point at its own port: change the `service:` line of that facility's `cloudflared`
@@ -580,11 +589,9 @@ default 7776000, never below the idle time and at most 1095 days; a value that
 is not a whole number means the default). So someone who opens the app at least
 once a month is asked for an SMS code about every three months, and a lapse of
 the SMS service (MSG91 balance, DLT header, KYC) does not sign the staff out
-within a week, as it did before migration 126, when a session ended 7 days
-after sign-in whatever the use. Someone who does not use the app for the idle
+within a week. Someone who does not use the app for the idle
 time signs in again with a code. Only an active, approved profile is extended;
-any other active profile keeps the fixed 7 days of a new session. Sessions made
-before migration 126 become sliding at their next renewal. Change a value as
+any other active profile keeps the fixed 7 days of a new session. Change a value as
 `supabase_admin` (`UPDATE warehouse_security.auth_config SET value='1209600'
 WHERE key='session_idle_seconds'`); it applies at the next renewal, and a
 session already past a lowered absolute limit is ended then (the app signs the
@@ -598,12 +605,11 @@ generation, means two devices hold tokens of one session: the session is ended
 for both and the user signs in again. The database log then carries
 `Refresh token reuse: session ... revoked`. The database remembers each replaced
 token for as long as the session can last (until 90 days after sign-in at the
-longest, `session_max_seconds`; before migration 126 a session ended within 7
-days and the record with it), so a stolen token that was replaced is still
+longest, `session_max_seconds`), so a stolen token that was replaced is still
 recognised when the real holder presents it weeks later, as long as the session
 lives. The price is a few small rows per renewal, which go with the session.
 
-**A lost or stolen phone.** A session now lasts weeks, so do not wait for it to
+**A lost or stolen phone.** A session lasts weeks, so do not wait for it to
 end: switch the person off. An administrator (a supervisor can do it for anyone
 who is not an administrator) opens Settings → Users → edit → Account Status and
 switches the user off. That deletes every session of the person at once
@@ -711,10 +717,9 @@ refuses with a message, and makes no code, when standard output is not a termina
 purpose).
 
 Learn it before the day it is needed: the `functions` container must be running the code of this checkout. `setup.sh` recreates it on
-every run (since the release that moved this step into setup; after an upgrade with `upgrade.sh` it has been done), and an installation
-whose last setup was by an older release needs the command by hand (`bash scripts/compose.sh up -d --force-recreate functions`,
-[Rerun and upgrade](#rerun-and-upgrade)); an old `operator-otp` shows the app "SMS delivery unavailable" and never its code screen when
-the provider refuses, and the break-glass code cannot be typed.
+every run, and so does an upgrade with `upgrade.sh`. If you changed the checkout without running either, recreate it by hand
+(`bash scripts/compose.sh up -d --force-recreate functions`, [Rerun and upgrade](#rerun-and-upgrade)); a stale `operator-otp` shows the app
+"SMS delivery unavailable" and never its code screen when the provider refuses, and the break-glass code cannot be typed.
 
 Give the code to that administrator in person or by a call you trust. On their phone: open the app, enter their number, ask for a code (the
 app shows its code screen even while the SMS provider refuses the request, as long as the break-glass code is open), and type the break-glass
@@ -832,7 +837,7 @@ bash setup.sh --operator \
   facility; the price is that whoever controls the central service, or a number's SMS there, can open any person profile
   with that number here. It is refused unless central sign-in is configured. A rerun without the flag keeps the stored
   value; `--central-issuer off` clears it with the rest. It is stored as `CENTRAL_LOCAL_CODE` in `config/compose.env` and
-  as the `auth_config` key `central_local_code`. A service account (a machine, migration 78) is never opened by the
+  as the `auth_config` key `central_local_code`. A service account (a machine) is never opened by the
   central sign-in whatever this says.
 - Check: `curl -s https://<your origin>/functions/v1/get-public-config` shows
   `"centralLogin":{"issuer":"…","localCode":false}` when it is on (`localCode` is `true` with `--central-local-code on`)
@@ -1028,9 +1033,8 @@ zone, by someone who never touches the warehouse server, is enough.
 An internet outage stops the public path (the Cloudflare Tunnel) and, with it, the app on every phone, although the server and the
 phones are on the same Wi-Fi. The LAN fallback gives the phones a second address for the same server: the server's own address on the
 warehouse network, over **plain http**. The app is built to try the public address first and to use the LAN address only after the
-public one has failed, and to return to the public address by itself when the internet is back. Owner decision of 2026-10-26: no
-certificate, no DNS record and no router setting are involved, and this reverses the earlier rule that the app never uses cleartext, for
-this one case.
+public one has failed, and to return to the public address by itself when the internet is back. No
+certificate, no DNS record and no router setting are involved; this is the one case in which the app uses cleartext.
 
 **The app that uses it ships separately and is not released yet.** Until a version of the app that has it is installed on the phones,
 turning the fallback on only opens the listener: nothing uses it, and the exposure below is not yet incurred, only the listener is there.
@@ -1047,7 +1051,7 @@ turning the fallback on only opens the listener: nothing uses it, and the exposu
   is not signed in cannot sign in during an outage, with one exception: **an administrator can sign in over the LAN fallback with a
   break-glass code** ([Break-glass administrator sign-in](#break-glass-administrator-sign-in)). It does not publish anything to the
   internet, and the tunnel and the public gateway are unchanged (the public gateway has no LAN listener at all).
-- **The exposure you accept** (owner decision of 2026-10-26). While a phone uses this path, its access token (one hour) and any
+- **The exposure you accept.** While a phone uses this path, its access token (one hour) and any
   refresh token it exchanges cross the Wi-Fi **unencrypted**, and so do the photos and documents it sends and receives. Anybody who has
   the Wi-Fi password, or is on the network, can read them. That has these consequences:
   - **A token that is read works from anywhere, not only on the LAN**, including from the attacker's own mobile data during your outage,
@@ -1282,7 +1286,7 @@ file installed with `sudo`, such as the USB backup helper or a systemd unit, was
 
 ## Retention
 
-Retention is the owner-approved clean-up of expired sign-in records and generated PDFs (owner decision of 2026-10-19). With
+Retention is the clean-up of expired sign-in records and generated PDFs. With
 the timers installed (see "Monitoring is not a Compose profile" in the installation section above), the daily pass (`watch.mjs daily`, run by the `<project>-daily` timer) runs `scripts/retention.sh apply`
 once a day, after the day's backup attempt and after it has pruned the local backups (it does not wait for the backup or its verify
 to succeed: a backup that is refused for lack of space or fails its verify is when old backups must still go; it is skipped only
@@ -1358,8 +1362,7 @@ photos or with how many are new, but it does grow with the number of files: the 
 every stored file on both sides (twice, the second time as a check that nothing is left to copy), which takes seconds for tens of
 thousands of files, not minutes. `db:backup` prints how long the services were stopped, how long the backup took, and how many files were new
 (`metadata.txt` records `stop_seconds=`, `duration_seconds=`, `storage_files=`, `storage_bytes=`, `storage_new_bytes=` and
-`link_base=`, the backup the files were linked from). The first backup, and the first after an upgrade from a release that
-wrote `warehouse-backup-v5`, is a full copy. The backup it links from is the newest one whose daily verify passed within the last
+`link_base=`, the backup the files were linked from). The first backup is a full copy. The backup it links from is the newest one whose daily verify passed within the last
 two days; when there is none (nights whose verify fails, so that the last verified backup is older), the newest backup that passes
 its signature check, verified or not, so that failing verifies do not make every night copy the same new photos again. Every
 shared file is compared with the signed manifest of that backup, so a backup that was not verified is safe to link from.
@@ -1370,7 +1373,7 @@ that holds its folder, and refuses when the disk could not hold it and still kee
 - **Linking from an earlier backup** (the normal night): twice the stored files that are new since that backup (the files that
   pass 1 would copy, counting 4 KiB for each folder of the tree, which cannot be hard-linked), plus the database dump, plus 256 MiB
   for the rest.
-- **With no backup to link from** (the first v6 backup, or every earlier one is unusable): the whole photo tree **once** plus 10%
+- **With no backup to link from** (the first backup, or every earlier one is unusable): the whole photo tree **once** plus 10%
   of it, plus the database dump, plus 256 MiB. The copy of a tree that is made twice in a row costs the tree only once, because the
   second pass links to the first; the 10% covers the folders and what is uploaded meanwhile.
 - The database dump is counted as 1.5 times the dump of the backup it links from (at least 96 MiB); with no such backup, 1.5 times
@@ -1387,11 +1390,9 @@ keeps running and no partial backup is left. Slack `backup_failed` shows the sam
 [TROUBLESHOOTING.md](TROUBLESHOOTING.md#backup-usb-drive-and-restore), "backup refused: not enough free space". A backup that goes ahead
 records the numbers it was judged by in `metadata.txt` (`preflight_need_mb=`, without the reserve, and `preflight_avail_mb=`).
 
-**The week after the update to this backup format needs the most room.** The first v6 backup has nothing to link from, and the
-older `warehouse-backup-v5` backups are never a base. If the disk was sized for the v5 scheme (seven whole-photo tarballs), it can
-have less free than the photo tree plus the 2 GiB reserve, and then every night is refused until you free the room: a refused night
-makes no new backup, so nothing ages out by itself. Delete the oldest `warehouse-backup-v5` backups by hand (each holds a whole `storage.tar.gz`, so each frees about the size of the photo
-volume). The USB script copies only the newest verified backup and prunes the drive to the newest three archives, so it does not keep
+**A backup with no usable earlier backup to link from needs the most room.** It copies everything. If the disk has
+less free than the photo tree plus the 2 GiB reserve, every night is refused until you free the room: a refused night
+makes no new backup, so nothing ages out by itself. Free the room (delete backups you no longer need from `$WAREHOUSE_STATE_DIR/backups`, or add disk). The USB script copies only the newest verified backup and prunes the drive to the newest three archives, so it does not keep
 an old backup for you; to keep one, write its archive into a folder of its own on the drive, outside this installation's folder (for
 example `warehouse-backups/kept/`: a run never looks into sub-folders, and a signed archive left in `warehouse-backups/<state name>/`
 is pruned at the next good run), with the `backup_archive_write` commands under "Manual fallback" in
@@ -1413,7 +1414,7 @@ The directory contains:
 | `storage/` | The object storage as it was at the moment of the dump: the same folders and files, with their modes, modification times and **extended attributes** (the Storage service keeps each file's content type and cache control there; without them a restored photo or PDF is served as `application/octet-stream`). Files unchanged since the previous backup are hard links to its copy: never change a file in here, in any backup. |
 | `storage.manifest` | The SHA-256 of every file in `storage/` (`<hash>  <path>`, in byte order). It is listed in `SHA256SUMS`, so the signature covers every file of the tree through it. |
 | `storage_objects.txt` | The `storage.objects` catalog as `<bucket>/<name>/<version>`, byte-ordered. |
-| `integrity.txt` | Output of `scripts/backup-integrity.sql`: migration fingerprint, row counts, representative grants. From migration 48 on it also counts the three history tables (invoice discounts, zero charges, item prices) and records that the internal `invoice` columns are closed to the app role; from migration 95 on it also counts payments, order lines and order revisions. A backup taken earlier has no such lines and is still compared line for line. |
+| `integrity.txt` | Output of `scripts/backup-integrity.sql`: migration fingerprint, row counts, representative grants. It also counts the three history tables (invoice discounts, zero charges, item prices), payments, order lines and order revisions, and records that the internal `invoice` columns are closed to the app role. |
 | `roles.txt` | Cluster role names, so runtime-created roles can be recreated before ownership replays. |
 | `compose.env`, `instance.json` | Private configuration and public manifest at backup time. |
 | `central-jwks.json` | Only when the installation reads the central sign-in keys from a file (`--central-jwks-file`): a copy of `public/central-jwks.json`, public keys only. `db:restore-host` puts it back. |
@@ -1448,10 +1449,10 @@ secret. `db:restore-host` loads nothing from a folder whose signature does not c
 (`--backup-key`), and never with `--allow-unsigned`. `scripts/backup-usb.sh` copies the folder whole, as it is, to
 `warehouse-backups/<state name>/images/` on the [USB drive](#usb-backup-drive), next to the archives, where `db:restore-host`
 looks for it: once, and again only when the folder's signed list changes (after an upgrade that built or pulled an image). Add no file of your own to the
-folder. An installation that was built before images were saved has no folder yet; write it once, and the next copy to the drive takes it:
+folder. If the folder is missing (for example after you removed it), write it again, and the next copy to the drive takes it:
 
 ```bash
-bash scripts/build-images.sh --save     # once, on an installation built before images were saved
+bash scripts/build-images.sh --save
 ```
 
 The images are not encrypted on the drive and are not inside the archives: they are made from this repository's recipes (or are the
@@ -1471,11 +1472,7 @@ ACLs, and compares the integrity report and the restored object catalog with
 the backup. Run it against every retained backup; it never touches the installed
 instance.
 
-Formats v6 (the stored files as a tree, written by this release) and v5 (a `storage.tar.gz`, written by earlier releases) are
-accepted: the verifier, `db:restore` and `db:restore-host` refuse any other with "Refusing: backup format
-'warehouse-backup-vN' is no longer supported; take a new backup with this version (only warehouse-backup-v5 and -v6 are
-accepted)". The label must also agree with the signed file list (a v6 backup lists `storage.manifest` and has a `storage/`
-tree, a v5 backup lists `storage.tar.gz`); a backup where they disagree is refused after its signature has been checked.
+Backups of format v6 (written now) and the older v5 are accepted; the verifier, `db:restore` and `db:restore-host` refuse any other format, and a backup whose label disagrees with its signed file list.
 `db:verify-restore --no-storage-tree` leaves the hashing of the tree out and checks the rest (signature, list, manifest,
 database): it is for a copy of a backup that does not hold the tree.
 A backup whose signature is missing is refused unless you add `--allow-unsigned`,
@@ -1577,7 +1574,7 @@ in**: everything recorded after it is lost with the host.
 
 The drive also carries the installation's **saved images** (`$WAREHOUSE_STATE_DIR/images`, about 2.5 GiB) in a folder `images` beside
 the archives, once and not once per archive, so it needs that much room more ([Backup and restore](#backup-and-restore)), and as much again free while a changed set is written beside the old one (about 5 GiB at each image change; the old set is deleted only after the new one has been read back). The copy is the last step of a run, after the archive is on the drive and the drive is pruned: when the images do not fit, the archive copy still counts as successful, the run says "saved images NOT copied" and `npm run doctor` shows it. The enrolment
-output says how much the images add now. A drive enrolled before this release needs no new enrolment or setup run: the run copies the
+output says how much the images add now. The run copies the
 folder as soon as it exists (`bash scripts/build-images.sh --save` writes it on an installation that has none).
 
 The operator's only job is to **attach the drive**. `scripts/backup-usb.sh` installs a udev rule and a systemd unit once;
@@ -1619,13 +1616,11 @@ that imitates it receives nothing.
    backup key, so run `bash scripts/backup-key-escrow.sh show` (it creates the key if there is none) or `npm run db:backup` first on an
    installation that has none yet. **Run setup again after updating
    the checkout** ([Rerun and upgrade](#rerun-and-upgrade); `setup.sh` runs first) so the installed helper and the unit match it
-   (`status` warns when they do not): the unit of this release has a 6-hour time limit for a run (the old one had 2 hours, too short
-   for a large drive) and carries a keep count other than 3 if you chose one; both reach an installation only through this rerun. An installation that was
-   set up with readable archives and never reruns it keeps writing them: `status`, `npm run doctor` and the checker's `usb_backup`
-   alert say so until it does. `sudo bash scripts/backup-usb.sh uninstall` removes everything it installed and never
+   (`status` warns when they do not): the unit has a 6-hour time limit for a run and carries a keep count other than 3 if you chose one;
+   both reach an installation only through this rerun. `sudo bash scripts/backup-usb.sh uninstall` removes everything it installed and never
    touches a drive.
-2. From then on: plug the drive in and wait (on a Windows host, plug it in and then attach it to the distro with `usbipd attach`:
-   [Backups off the host](#backups-off-the-host-windows)). The run takes minutes at first and longer as the photos grow (it reads the backup,
+2. From then on: plug the drive in and wait (on a Windows host with the Warehouse USB task, plug it into the same port and wait;
+   without the task, attach it with `usbipd attach`: [Backups off the host](#backups-off-the-host-windows)). The run takes minutes at first and longer as the photos grow (it reads the backup,
    writes and reads back one archive, and checks every archive it keeps); when the drive disappears from the file manager
    (or `lsblk` shows no mount point for it), it is unmounted and safe to remove. Do not unplug during a copy; an
    interrupted archive is left as a `.partial` file that the next run removes, together with any checksum or signature file
@@ -1649,8 +1644,7 @@ one is written beside it and read back first) and is never pruned; a run deletes
 three valid archives of this installation (`--keep N`) and deletes the older ones with their `.sha256` and `.hmac` files. Valid
 means the bytes match the checksum and the signature is one of the current backup key. An archive that is damaged, has no signature,
 or was signed with another key (after a key replacement, see [Backup key](#backup-key)) is **reported by name and never counted or
-deleted**; neither is any other file on the drive. An archive without a signature (a readable one that an earlier release wrote before
-archives were signed) is kept as well, and the run names it **on every run** until you remove it yourself. The newest valid archive is
+deleted**; neither is any other file on the drive. An archive without a signature is kept as well, and the run names it **on every run** until you remove it yourself. The newest valid archive is
 never deleted. A run that fails deletes nothing, with
 one exception: if the new archive will not fit, it deletes the oldest valid archives, one at a time while more than one remains, until
 it does; it deletes nothing at all when even all of them would not make room, and if it still will not fit the run fails with
@@ -1666,16 +1660,6 @@ an archive contains `compose.env`, which holds every credential of the instance,
 phones' traffic, sign-in codes included. **The price: after the switch, a lost backup key means the encrypted archives are
 unrecoverable.** That is why the key copy must be confirmed before a drive is enrolled or an encrypted archive is written
 (`bash scripts/backup-key-escrow.sh show`), and why the copy belongs somewhere that survives the loss of the facility.
-
-**An installation set up before this release** wrote readable archives (encryption was off unless you typed `--encrypt`), and its stored
-configuration says `ENCRYPT=no`. The first `sudo bash scripts/backup-usb.sh setup --state "$WAREHOUSE_STATE_DIR"` after the update
-switches it to encrypted archives and prints a notice saying so (`status` warns until you run it). Until you confirm the key copy,
-the runs then refuse. When the first encrypted archive has been written and verified in a run, the **readable archives of this
-installation on the drive are deleted** (the run prints each one): they hold every credential, and keeping them would defeat the
-switch. During the first few runs after it the drive therefore holds fewer than three archives. A readable archive that carries no
-valid signature of this installation is not provably yours, so it is not deleted; the run names it on every run, and you remove it
-yourself. The deletion is done only after the run has hashed the encrypted archive and checked its restore; a run with restore
-verification switched off (a test switch) deletes nothing readable.
 
 **Deleting a readable archive does not wipe it from an exFAT drive.** `rm` only frees the space; the contents of a deleted
 `warehouse-<utc>.tar` (the `compose.env` with every credential, the database dump, the tunnel credential) stay on the stick until
@@ -1729,9 +1713,7 @@ bash scripts/data-fingerprint.sh > ~/fingerprint-<backup name>.txt
 It prints a row count and a SHA-256 for every business table (customers, items, prices, GRNs, dispatches, invoices, stock
 movements, users, orders with their lines and revisions, and payments), for the three append-only histories (invoice
 discounts, zero charges, item prices), the storage catalog and the stored files. Take both fingerprints to compare on the
-same release: one from an earlier release has fewer lines, so a restore does not print `IDENTICAL` against it. A fingerprint recorded before this release sorted with the database
-collation; its sha256 values can differ for identical data. Compare the `rows=` counts, and take a new fingerprint after
-upgrading. It holds no secrets; keep a copy off the host (for example next to the archive on the drive). After a restore the same command must
+same release: a fingerprint from another release can differ in its lines, so a restore does not print `IDENTICAL` against it; take a new one after upgrading. It holds no secrets; keep a copy off the host (for example next to the archive on the drive). After a restore the same command must
 print identical lines.
 
 ### In-place restore of the same instance
@@ -1781,8 +1763,7 @@ recreates the `postgres` database from `template0` (connected to `template1`) an
 archived owners and ACLs (as the verifier does), diffs `scripts/backup-integrity.sql` against the backup's `integrity.txt`,
 runs `scripts/migrate.sh --operator` (a no-op unless this checkout added migrations after the backup), starts every service
 with `--wait` and runs `doctor --local`. After the services are up the restore looks at up to 20 of the restored files; if any
-has no content type (a v5 backup holds no extended attributes, and neither does a v6 backup of files that had lost theirs or one
-that went through a USB archive written before archives kept them) it runs `npm run storage:retag`, which sets each file's
+has no content type (a v5 backup holds no extended attributes, and neither does a v6 backup of files that had lost theirs) it runs `npm run storage:retag`, which sets each file's
 content type and cache control again from the catalog (the bytes are intact either way; a failure there is a warning). Role passwords always come from the active `compose.env`; the backup never
 contains them. Pass `--restore-config` only when the keys in the backup are the ones the restored data was signed with,
 that is, when `rotate-keys.sh` ran after the backup and the restored sessions must match the old keys.
@@ -1814,9 +1795,8 @@ ls "$WAREHOUSE_STATE_DIR/data"   # only db and storage remain
 
 The Storage service reads each stored file's content type and cache control from extended attributes of the file. A file
 without them is served as `application/octet-stream` with `no-cache`, and its modification time shows 1970 if it was restored
-from a tarball that fixed the time. Backups before format v6 did not keep the attributes, so **every restore from such a backup
-dropped them**, and so did the [major PostgreSQL upgrade](#major-postgresql-upgrade) of earlier releases, which is an in-place
-restore. The bytes are intact and the app's image viewer recognises its content, so nothing looks broken; downloads of a PDF
+from a tarball that fixed the time. A restore from a v5 backup can leave files without them. The bytes are intact and the
+app's image viewer recognises its content, so nothing looks broken; downloads of a PDF
 may name the wrong type. To set them again for every object the catalog knows:
 
 ```bash
@@ -1827,13 +1807,12 @@ npm run storage:retag
 It reads the catalog (`storage.objects.metadata`: `mimetype`, `cacheControl`) and sets `user.supabase.content-type` and
 `user.supabase.cache-control` of each file from inside the storage container, with the same module the Storage service
 uses. It changes nothing else, may be run at any time, and prints how many files it updated, how many were already correct,
-and how many catalogued objects have no file. Run it once on an installation that went through the PostgreSQL 17 to 18
-restore; `db:restore` (and so `db:restore-host`) runs it itself after a restore when a sample of the restored files has no
+and how many catalogued objects have no file. `db:restore` (and so `db:restore-host`) runs it itself after a restore when a sample of the restored files has no
 content type. `npm run storage:retag -- --if-missing` does that look at a sample first and sets nothing when none lacks one.
 
 The change of attributes counts as a change for the next backup: it links a file to the earlier backup's copy only when the
-attributes are the same too, so **the first backup after a retag copies every photo again** (a full copy, as the first v6 backup
-does). Run it right after the update, before the first v6 backup, so that only one full copy is made.
+attributes are the same too, so **the first backup after a retag copies every photo again** (a full copy, as the first backup
+does).
 
 ### Recover a lost host from the USB drive
 
@@ -1858,15 +1837,14 @@ Before you start you need: the new host prepared as in
 `rsync` and GNU `tar`, `cloudflared`, your user in the `docker` group), the USB drive, and **your
 copy of the [backup key](#backup-key)** in a file on the new host (for example
 `~/backup.key`, mode 0600; one line of 64 hexadecimal characters). Backups taken
-after `tunnel.sh adopt` carry the tunnel credential; for older backups you also
+after `tunnel.sh adopt` carry the tunnel credential; if the tunnel was not adopted, you also
 need your private copy of it (the tunnel `config.yml` plus its credentials
 JSON, or the dashboard token file). If this facility's central sign-in reads its
-keys from a file, backups taken with this release carry that file too
-(`central-jwks.json`); for older backups keep the key set the association sent
-you (step 7). The drive carries the old host's saved images beside the archive (`warehouse-backups/<state name>/images`,
+keys from a file, backups carry that file too
+(`central-jwks.json`); keep the key set the association sent
+you as well (step 7). The drive carries the old host's saved images beside the archive (`warehouse-backups/<state name>/images`,
 [Backup and restore](#backup-and-restore)), so **no Debian, npm or Chrome for Testing mirror has to answer** to rebuild the images of a lost host. **Docker Hub is still needed:** the restore
-check runs the official postgres image (`scripts/db-image.sh`) and Compose pulls PostgREST from it, and neither is in the saved images. A drive that
-was written before this release has no such folder: bring a copy of the old host's `images` folder if you have one (step 3). Without
+check runs the official postgres image (`scripts/db-image.sh`) and Compose pulls PostgREST from it, and neither is in the saved images. If the drive has no such folder, bring a copy of the old host's `images` folder if you have one (step 3). Without
 saved images, a checkout that is exactly at a release tag pulls the images the release published for its recipes (`restore-host` runs
 `build-images.sh --from-release` before the restore, which needs GitHub and `ghcr.io`) and builds the rest; any other checkout builds them all
 (the fallback below). **Do not run `setup.sh` before the restore**: on the new host it
@@ -1878,9 +1856,9 @@ one rerun with both sets of options does.
 1. **Get the code.** Clone the repository with `umask 022` as in the Ubuntu
    sequence. Any release at least as new as the backup works (the backup's
    `metadata.txt` records `source_commit`); newer migrations are applied during
-   the restore. A checkout older than the release that wrote the backup format `warehouse-backup-v6` refuses such a backup at
-   once ("backup format 'warehouse-backup-v6' is no longer supported; take a new backup with this version"), before it
-   reaches the `source_commit` hint: check out this release or a later one.
+   the restore. A checkout older than the release that wrote the backup refuses it at
+   once ("Refusing: the backup has N migrations and this checkout only M. Check out a release at least as new as the backup (metadata.txt source_commit=...)"):
+   check out that release or a later one.
 2. **Attach the drive and choose the backup.** The desktop usually mounts it under `/media/$USER/`;
    otherwise `udisksctl mount -b /dev/sdX1` (find it with
    `lsblk -o NAME,TRAN,FSTYPE,LABEL,MOUNTPOINTS`: `usb`, `exfat`).
@@ -1935,7 +1913,7 @@ one rerun with both sets of options does.
    new state; an encrypted archive is also unpacked once) and stops, naming the numbers, before it writes anything.
    A backup that fails the signature check was changed after it was written or
    belongs to another installation: do not restore it. A backup of an older
-   format than v5 is refused (v5 and v6 are taken). A backup whose `SHA256SUMS.hmac` is missing is
+   format than v5 is refused. A backup whose `SHA256SUMS.hmac` is missing is
    accepted only with `--allow-unsigned` and without `--backup-key`, for a drive
    that never left your custody; leave `--backup-key` out only when the key is
    really lost. The command then creates the state from the backup's `compose.env`
@@ -1956,11 +1934,7 @@ one rerun with both sets of options does.
    bash scripts/data-fingerprint.sh | diff ~/fingerprint-warehouse-<utc>.txt - && echo IDENTICAL
    ```
 
-   A fingerprint recorded by an earlier release has fewer lines (see above), so
-   compare the other lines and record a new one after upgrading.
-
-   A fingerprint recorded before this release sorted with the database collation; its sha256 values can differ for
-   identical data. Compare the `rows=` counts, and take a new fingerprint after upgrading.
+   A fingerprint recorded by another release can differ in its lines (see above); take a new fingerprint after upgrading.
 
    Otherwise sign in to the app and check the latest GRNs, dispatches and
    invoices you remember. Record the result.
@@ -1979,9 +1953,9 @@ one rerun with both sets of options does.
    the credential is lost too, create a new tunnel and point the existing
    hostname at it in the Cloudflare dashboard, replacing the old tunnel's record.
 7. **Central sign-in from a key file.** Skip this unless `CENTRAL_JWKS_FILE` is set
-   in `config/compose.env` ([Central sign-in](#central-sign-in)). A recent backup
-   brought `public/central-jwks.json` back, and `node scripts/doctor.mjs --local`
-   confirms it. For an older one, run the `setup.sh --operator ... --central-issuer ...
+   in `config/compose.env` ([Central sign-in](#central-sign-in)). When the backup
+   brought `public/central-jwks.json` back, `node scripts/doctor.mjs --local`
+   confirms it. Otherwise run the `setup.sh --operator ... --central-issuer ...
    --central-jwks-file ...` command that `db:restore-host` printed, with your usual
    administrator phone and name and the key set the association sent you. Setup
    keeps the instance identity and the data and rebuilds the images once. Until
@@ -2001,8 +1975,7 @@ one rerun with both sets of options does.
    secret and is not in a backup: if this installation sent alerts to Slack,
    alerts are local only until you run `setup.sh --operator` again with your
    usual inputs, leaving out `--alert-webhook-file off` (it then asks for the URL on a terminal), or with `--alert-webhook-file` ([MONITORING.md](MONITORING.md#alert-delivery)).
-9. **Rotate if the drive may have been exposed.** Unencrypted archives (a drive set up with `--no-encrypt`, or one that an
-   earlier release wrote and no run has cleaned yet, or a drive that held readable archives that a run has since deleted: deleting
+9. **Rotate if the drive may have been exposed.** Unencrypted archives (a drive set up with `--no-encrypt`, or a drive that held readable archives that a run has since deleted: deleting
    does not wipe them from an exFAT drive) hold every key in plain text; an encrypted one is as safe as your key copy. `bash rotate-keys.sh --yes` replaces the signing keys (every phone
    signs in again). Rotate the MSG91 key in its console and apply it as in
    [Replacing MSG91 credentials](#authentication-and-otp-limits), replace
@@ -2021,6 +1994,7 @@ from the internet through the tunnel: they matter to someone who also reaches th
 | --- | --- | --- |
 | `CUPS_ADMIN_PASSWORD` | The CUPS administration page (printing profile). | Manual, below. |
 | The Slack webhook URL (`config/slack-webhook-url`) | Posting messages to the facility's Slack channel, by anyone who holds the URL. | Revoke it in Slack (Apps → Incoming Webhooks) and create a new one, then rerun `setup.sh --operator` with your usual inputs and `--alert-webhook-file ask` (or a file holding the new URL; create it with `install -m 600 /dev/null FILE` and an editor, so the URL stays out of the shell history). |
+| The sensor Slack webhook URL (`config/sensor-webhook-url`) | Posting messages to the channel that gets the sensor alerts, by anyone who holds the URL. | Revoke it in Slack (Apps → Incoming Webhooks) and create a new one, then rerun `setup.sh --operator` with your usual inputs and `--sensor-webhook-file` (a private file holding the new URL, created as for the facility webhook). |
 | `TAPO_PASSWORD` (with `TAPO_USERNAME`) | The Tapo account of the hubs: the hubs on the LAN, and the account in the Tapo app and cloud (sensors profile). | Change it in the Tapo app, set the new value in `compose.env`, then `bash scripts/compose.sh --profile sensors up -d --force-recreate sensor-bridge`. |
 | `SENSOR_INGEST_KEY` | Posting sensor readings to this installation's ingest function, from anywhere the gateway is reachable (sensors profile). | Mint a new key with a new label (`bash scripts/compose.sh exec -T db psql -X -qAt -v ON_ERROR_STOP=1 -U supabase_admin -d postgres -v label=<new label> < scripts/sensor-ingest-key.sql`, which prints it once), set it, recreate the bridge, then revoke the old one (`bash scripts/compose.sh exec -T db psql -X -q -v ON_ERROR_STOP=1 -U supabase_admin -d postgres -c "UPDATE warehouse_security.sensor_ingest_keys SET revoked_at = now() WHERE label = '<old label>' AND revoked_at IS NULL"`); [SENSORS.md](SENSORS.md#ingest-keys). |
 | `POSTGRES_PASSWORD` | The superuser login (`supabase_admin`), from inside the Compose network or the host. | `npm run db:rotate-passwords -- --yes --superuser`; see [Rotating the database passwords](#rotating-the-database-passwords). |
@@ -2119,15 +2093,8 @@ bash scripts/pooler.sh off      # stops and removes the container, records POOLE
 bash scripts/pooler.sh status   # prints on, off or unset
 ```
 
-**One-time clean-up on upgrade.** `setup.sh` runs `bash scripts/pooler.sh cleanup` (after migrations, before the roles are applied) for an
-installation whose `compose.env` has no `POOLER_ENABLED` line. If a supavisor container exists, it records `on`. Otherwise, if `_supabase`
-holds no relation and no schema besides `_supavisor` and `public`, it drops the schema `pgbouncer`, the role `pgbouncer` and the database
-`_supabase`, removes the three secrets from `compose.env`, records `off` and prints what it removed. If `_supabase` holds relations or other
-schemas it prints `Pooler clean-up refused ...`, changes nothing and exits 1; `setup.sh` warns and goes on, and asks again at the next setup.
-
 After an in-place or lost-host restore the pooler is not started (the restore starts the core services only); while `POOLER_ENABLED=true`
-the restore recreates its role, schema and `_supabase` database, and `bash scripts/pooler.sh on` starts it again. Backups made before
-2026-10-21 also hold `_supabase.dump`; restore and verify-restore skip it with a note. Test: `npm run test:pooler`.
+the restore recreates its role, schema and `_supabase` database, and `bash scripts/pooler.sh on` starts it again. Test: `npm run test:pooler`.
 
 ## Rerun and upgrade
 
@@ -2135,15 +2102,14 @@ A rerun is the same `setup.sh --operator ...` command with the same inputs again
 regenerates nothing that already exists: identity, signing keys, database, stored files, the administrator and the provider
 lines are preserved (a different `--provider-env` file replaces only the MSG91 lines; the `--central-…` options set or
 replace only the [central sign-in](#central-sign-in) lines and its key file; `--gateway-port` replaces only
-`GATEWAY_HTTP_PORT`, and only while the containers are stopped). A rerun also adds what an older state lacks and never replaces
-what exists: the per-role database passwords and the backup key. Run it a second time right after installation and compare
+`GATEWAY_HTTP_PORT`, and only while the containers are stopped). A rerun never replaces the per-role database passwords or the backup key. Run it a second time right after installation and compare
 `public/instance.json` and the administrator record before and after.
 
 **Operators follow release tags (`vMAJOR.MINOR.PATCH`), not `main`.** `main` is where development happens, and a commit on it
 can carry changes that were never released. A release is a tag with a GitHub release note; a security fix is announced in a
 release note with "Security" in its title, and is supported for the current and the previous minor line ([SECURITY.md](../SECURITY.md)).
-Read the release note, then upgrade within one PostgreSQL major (an installation built before the PostgreSQL 17 release needs the
-[Baseline reload](#baseline-reload) once; one that runs PostgreSQL 17 needs the [Major PostgreSQL upgrade](#major-postgresql-upgrade) once):
+Read the release note, then upgrade within one PostgreSQL major (a move to a new PostgreSQL major is a manual step that
+`upgrade.sh` refuses; the release that brings it documents the steps, see [Major PostgreSQL upgrade](#major-postgresql-upgrade)):
 
 ```bash
 cd /path/to/installed/backend
@@ -2174,17 +2140,14 @@ verified backup plus its database dump plus 1 GiB, because the way back from the
 it (`scripts/upgrade-rehearse.sh`), prints `applying them took N s` (only the migrations are timed) and removes the container. The live database and its files are only read, so a
 `--dry-run` rehearses too. A migration that fails on your data refuses the upgrade before the backup and the checkout: the message names the
 file (for example `00000000000117_customer_name_rule.sql`) and the database's own error, and says "Nothing was changed". Do not retry the same
-command: the failure is in the data or in the release, and it repeats. Report the message with the release number; for the customer-name
-index, the query under "Before migration 117" in the changelog finds the names that clash. The rehearsal is of the newest verified backup, not
+command: the failure is in the data or in the release, and it repeats. Report the message with the release number. The rehearsal is of the newest verified backup, not
 of the moment: it prints that backup's name and age and warns when it is more than two days old. A backup only counts once it is verified and
 recorded: the nightly pass does that, and so does `upgrade.sh` for the backup it takes; to do it by hand run `bash scripts/backup.sh`, then
 `bash scripts/verify-restore.sh <the new folder under backups/>`, then `node scripts/watch.mjs record-verified <its name>`. If the copy cannot
 be restored, the refusal quotes the restore's own last message: the host (free disk space or memory, a database image that has to be pulled
 while the host is offline) is as likely a cause as the backup. With no verified backup on record it warns that it did not rehearse and the
 upgrade goes on (the migrations then run for the first time on the live database, after the checkout).
-Any refusal says "Nothing was changed". A release from before the preflight has none: `upgrade.sh` says so and goes on with its own checks. The
-`upgrade.sh` that reads a preflight is the one of the release you run now, so the move **to** the first release that has one is still made by
-the older script, and the preflight works from the move after it. The facility is closed to phones for the backup, the proof that it restores and
+Any refusal says "Nothing was changed". The facility is closed to phones for the backup, the proof that it restores and
 the setup of the release (*While it upgrades*, below). **Run it inside `tmux` or `screen` when you are connected over SSH:** a dropped connection stops it
 half way (the rerun below finishes it, but there is no reason to need that). Run it as the installation user, not with `sudo`.
 **It refuses, and changes nothing,** when: it runs as root, or the checkout belongs to another user; the checkout has uncommitted changes
@@ -2231,8 +2194,7 @@ release (`off`, which also runs the health check).
   checker raises `upgrade_interrupted` at once ([MONITORING.md](MONITORING.md)) and does not restart services meanwhile.
 - **By hand.** `bash scripts/maintenance.sh status` says whether it is on and what each gateway was started with (it works while an upgrade
   holds the lock); `on` and `off` take the lock. `off` recreates the gateways without the word and runs the health check; if the gateway does
-  not come up the marker is put back, so the API is closed or down and never half open. **The first move to a release that has this is made
-  by the `upgrade.sh` you run now, which does not close the API and does not check for sessions;** from the next upgrade on it does.
+  not come up the marker is put back, so the API is closed or down and never half open.
 
 *The setup arguments.* You do not repeat them: `setup.sh --operator` needs `--state-dir`, `--admin-phone` and `--admin-name`, and every other
 option keeps what the state holds on a rerun (identity, URLs, provider lines, central sign-in, gateway port, letterhead, signing keys).
@@ -2283,31 +2245,27 @@ connection leaves it too). A failed step prints the same facts, then both ways o
   nothing, and `<state>/images`, the signed copy of the images that a lost-host restore loads first, would still hold the new release's
   images: `bash scripts/build-images.sh --save` after the old release's setup writes the images that now run, and their build record, there
   again (it builds nothing). After a successful upgrade only the newest `pre-` set is kept (older tags are removed by exact name; `docker image prune` is never run);
-  remove the last one with `docker image rm <project>-<service>:pre-<release>` once the upgrade is accepted. Older releases' `setup.sh`
-  does not recreate `functions`: the command after it is for them. Add `--alert-webhook-file off` to the setup line when the facility has
+  remove the last one with `docker image rm <project>-<service>:pre-<release>` once the upgrade is accepted. Add `--alert-webhook-file off` to the setup line when the facility has
   no Slack webhook (the printed line does).
 
 Every run that gets past the checks adds a line to `$WAREHOUSE_STATE_DIR/config/upgrades.log` (UTC time, from, to, the old commit,
 the backup, `resumed` for a rerun, then `ok` or the step it failed at).
 
-*The first time.* A checkout from before `upgrade.sh` has no such file, and `git pull` would move it to `main`. Move it once with the
-manual sequence below, to the first release that contains `upgrade.sh`; use `bash upgrade.sh` from then on.
-
 <details>
-<summary>What upgrade.sh does (the manual sequence, for the first time or when you want each step by hand)</summary>
+<summary>What upgrade.sh does (the manual sequence, when you want each step by hand)</summary>
 
 ```bash
 cd /path/to/installed/backend
 export WAREHOUSE_STATE_DIR=/absolute/path/to/this/warehouse
 git status --short                     # must print nothing for tracked files
 git fetch --tags origin
-bash scripts/maintenance.sh on         # only on a release that has the script: closes the API to phones (pause fas-sync first); not on the first move
+bash scripts/maintenance.sh on         # closes the API to phones (pause fas-sync first)
 npm run db:backup                      # prints the backup directory
 npm run db:verify-restore -- "$WAREHOUSE_STATE_DIR/backups/warehouse-<utc>"
 (umask 022; git checkout --detach vX.Y.Z)
 bash setup.sh --operator --state-dir "$WAREHOUSE_STATE_DIR" --admin-phone 91XXXXXXXXXX --admin-name 'Warehouse Administrator' \
   --alert-webhook-file off             # the same inputs as the installation; leave the --alert-webhook-file line out when a Slack webhook is stored
-bash scripts/maintenance.sh off        # only if you ran `on`
+bash scripts/maintenance.sh off
 node scripts/doctor.mjs                # the public check; setup has just run the local one
 sudo bash scripts/backup-usb.sh setup --state "$WAREHOUSE_STATE_DIR"   # only if you use a USB backup drive
 ```
@@ -2327,8 +2285,7 @@ sudo bash scripts/backup-usb.sh setup --state "$WAREHOUSE_STATE_DIR"   # only if
    configuration, restarts the services whose definition changed, **recreates the `functions` container** and runs
    `node scripts/doctor.mjs --local`. The edge functions (`functions/`, including `functions/_shared/`) are bind-mounted into the
    `functions` container and the edge runtime keeps the modules it has loaded, so neither a checkout nor a start reloads them; forgetting
-   the recreate used to be the usual way to run new SQL under old function code. Setup does it on every run since the release that
-   moved it there; a move from an older release used to need `bash scripts/compose.sh up -d --force-recreate functions` by hand.
+   the recreate is the usual way to run new SQL under old function code. Setup does it on every run.
    The marker `config/maintenance` is still there, so the gateways that setup recreates come back closed, and `doctor --local` says it could not probe
    the API through them.
    Then `scripts/maintenance.sh off` of the new release opens the API and runs the health check.
@@ -2336,52 +2293,10 @@ sudo bash scripts/backup-usb.sh setup --state "$WAREHOUSE_STATE_DIR"   # only if
 8. A line in `upgrades.log`, the record deleted, and the `pre-` image tags of earlier upgrades removed.
 
 The last manual line keeps the USB choices of your earlier setup (`--no-encrypt` if you typed it, `--daily`, `--no-fresh-backup`, `--keep`); it prints them, so
-check that line. A setup from before encryption became the default is switched to encrypted archives by it, and says so; confirm the backup key
-copy first (`bash scripts/backup-key-escrow.sh show`, [Backup key](#backup-key)). Database migrations need no separate step: setup applies them. If setup prints a
+check that line. Database migrations need no separate step: setup applies them. If setup prints a
 `sudo bash scripts/watch-timer.sh install …` command, run it.
 
 </details>
-
-**What the nginx gateway release asks of you.** Nothing beyond this upgrade. The gateway used to be Kong; it is now plain nginx
-built from `docker/nginx` (`docs/CONTAINER_SECURITY.md`, "Gateway limits and routes"), so:
-
-- `setup.sh` builds the `gateway` image (it pulls the pinned nginx image and applies the Alpine updates: the host needs the
-  network once). Its `compose up --remove-orphans` removes the old `kong` container and starts `gateway` on the **same loopback
-  port**; the tunnel, its config and `cloudflared` stay as they are. The port check that `setup.sh` and `start.sh` make first
-  accepts the port while the installation's own `kong` container still holds it (any container of the installation's project
-  that publishes the port counts as its own; a process or another project's container on it is still refused; `upgrade.sh` runs
-  this setup with the stack up, so it relies on that). Expect the API
-  to be unanswered from the moment `kong` is removed, which is the first `compose up` of the run, until the last `up` of the run
-  starts `gateway`: the migrations, the role changes and Storage's start come in between, so it is seconds on an upgrade without
-  migrations and minutes on one with. Do the upgrade at a quiet hour. The service is named `gateway` now:
-  `bash scripts/compose.sh logs --tail 50 gateway`. A script of your own that names `kong` must change.
-- `compose.env` keeps working with `KONG_HTTP_PORT` until the next `setup.sh`, which renames the line to `GATEWAY_HTTP_PORT` in place with the same port (a file that already has `GATEWAY_HTTP_PORT` is left as it is; `--gateway-port` also removes an old line that is left beside it). To go back to an older checkout after that, put `KONG_HTTP_PORT=<port>` back (the `--restore-config` restore in the way back that `upgrade.sh` prints brings back the `compose.env` of the backup, with the old name): the older Compose file reads only that name.
-- The rate limits are a leaky bucket (a burst of 1800 for the REST route, then 30 a second; functions a burst of 100, then 100 a
-  minute) instead of a counter per clock minute. A facility that stays within the old limits on average stays within the new
-  ones; the exception is two bursts back to back across a minute boundary, which passed under the fixed window and are now
-  mostly refused.
-- After the upgrade is accepted, `docker image rm kong:3.9.4-ubuntu` frees about 380 MB; nothing uses the image any more.
-- **Going back to a release from before nginx** (a checkout or tag that still has Kong): run `bash stop.sh` first, with the nginx
-  checkout. The older release's `doctor` asks Compose for a container named `kong`, finds none, and sees the `gateway` container
-  holding the loopback port, so its `setup.sh` and `start.sh` stop with "Loopback gateway port ... is already in use" until
-  `stop.sh` has removed it; the older release's code cannot be changed (the way back that `upgrade.sh` prints when a step fails
-  already begins with `stop.sh`). Then check out the older release, put
-  `KONG_HTTP_PORT=<port>` in `config/compose.env` if `setup.sh` had renamed the line (it does on every run; the older Compose file reads only that
-  name), and run its `start.sh` (or `setup.sh`). The older release pulls `kong:3.9.4-ubuntu` again if you removed the image, so the
-  host needs the network; the API is down from `stop.sh` until then. This covers the gateway only: a database that the newer
-  release migrated is not changed back (restore the backup taken before the upgrade if the older release needs the older schema).
-
-**What the slimming release (migration 123) asks of you.**
-
-- The `db`, `storage` and `pdf-renderer` recipes changed, so setup rebuilds those three images; the first run is slower.
-- Setup (and a restore) rewrites an old default `PGRST_DB_SCHEMAS` (`public,storage` or `public,storage,graphql_public`) in
-  `compose.env` to `public` and recreates `rest`; a list you edited yourself is left alone. `/rest/v1/` then serves no OpenAPI
-  document and cannot reach the `storage` schema.
-- `get-public-config` can answer 503 between the code update (`git pull`) and migration 123, because the function it calls
-  (`get_public_config`) does not exist yet. Run `setup.sh` at once after the pull; do not leave the new code on the old schema.
-- Migration 123 refuses to run if a table or column it drops holds data. It stops with `Migration 123 would drop data: ...` and
-  changes nothing. Look at what it names, export what you need, empty those objects, and run `setup.sh` again. A database that
-  never held such data passes without a message.
 
 **Setup rebuilds the images whose recipes changed, or pulls the released ones.** Before it starts
 anything, `setup.sh` runs `scripts/build-images.sh --from-release`. That script compares each
@@ -2458,12 +2373,6 @@ file on each run, and `bash scripts/checkout-permissions.sh` does the same on
 its own, for example after a `git pull` or `git checkout` made without
 `umask 022`.
 
-**Migration 42 and tables of your own.** Migration 42 closes direct writes on the template's nineteen business tables and
-verifies only those; a table you added, with its grants and row policies, is left as it is. The migration stops with
-`authenticated still holds a direct write on: <table>` or
-`Unexpected write policy on a business table: <table>.<policy>` only when one of the nineteen tables carries an extra write
-policy; drop that policy or make it `FOR SELECT`, then rerun.
-
 The rerun applies only the migrations the ledger has not seen (append-only and
 checksum-verified; a changed applied file is refused) and recreates the
 services whose definition changed. Read `CHANGELOG.md` for the release first:
@@ -2473,489 +2382,47 @@ with the in-place restore above.
 
 ## Baseline reload
 
-The release that introduced PostgreSQL 17 (the official `postgres:17.11-trixie` image) made the schema one migration,
-`migrations/00000000000000_baseline.sql`, in place of the chain of migrations 000 to 110 (110 files; there is no 050). A
-database built before this release (the Supabase PostgreSQL 15 image and that chain) **cannot be upgraded in place**:
-PostgreSQL 15 data files do not open in 17, the roles differ, and the ledger names files that no longer exist. Do not run
-`setup.sh` or `start.sh` of a later release on such an installation: both stop before they rebuild or start anything
-(`scripts/db-version-preflight.sh`; `setup.sh` checks before it rewrites `compose.env`), and no database, container or image is changed:
+A script that refuses with a message naming "Baseline reload" has found a database or a backup that this checkout cannot
+use as it is. Nothing was changed when it refused. Which case you have:
 
-```
-Refusing: <the running database reports server_version_num 150008 (PostgreSQL 15). | the data directory <path> holds a PostgreSQL 15 database (PG_VERSION).> This release runs PostgreSQL 18 and cannot start on that data. No database, container or image was changed. Back the installation up with the release tagged migrations-pre-baseline, then reload the data into a new PostgreSQL 18 database: docs/OPERATOR_INSTALL.md, "Baseline reload".
-```
+- **The checkout is older than the database, or the release was rebuilt on a new baseline.** The migration ledger guard
+  stops `scripts/migrate.sh`, `setup.sh` and `upgrade.sh` when the database recorded a migration the checkout does not
+  contain. `scripts/migration-plan.mjs` words it: "This database recorded migrations that are not in this release ...
+  or it is newer than this checkout (check out the release that recorded those migrations)". For `migrate.sh` and
+  `setup.sh` on a fresh installation this means the checkout is older than the database: check out the release that
+  recorded those migrations, or a later one, and run the command again. `upgrade.sh` takes a target and only moves
+  forward: it says that either the target release was rebuilt on a new baseline, which cannot be applied in place (the
+  release note of that release gives the reload), or the target is older than the release that recorded the migrations;
+  for an older target, name the release that recorded them or a later one.
+- **The database or backup was made on another database image.** `setup.sh`, `start.sh`, `rotate-keys.sh` and
+  `rotate-db-passwords.sh` (`scripts/db-version-preflight.sh`) refuse data from before PostgreSQL 17 ("... cannot start on
+  that data ..."). `db:backup` refuses a running database that is not on this release's database yet ("This installation has not been
+  moved to this release's database yet"; it names "Major PostgreSQL upgrade" and "Baseline reload"). `db:restore`, `db:restore-host` and `db:verify-restore`
+  refuse a backup made on the `supabase/postgres` image, a backup with no `database_image=` line, a dump from PostgreSQL
+  older than 17, and a backup whose `roles.txt` lists a role this version does not have. No installation made with this
+  release has such data, so a fresh install does not meet this case. The conversion procedure (a data-only dump loaded into a
+  new cluster that this release builds) is in this guide as it stands on main at commit `b45ae0b`
+  (`git show b45ae0b:docs/OPERATOR_INSTALL.md`); the old schema's migration files and the release that can restore such a
+  backup are in the git tag `migrations-pre-baseline`.
 
-(The reload below was written for the PostgreSQL 17 release; the new database it builds is the one of the release you check out in step 5, and the restore of a pre-baseline backup works the same.)
-
-`scripts/migrate.sh` run on its own against such a database stops at the ledger guard, with nothing changed:
-
-```
-This database recorded migrations that are not in this release (...). Either it was built by an earlier migration chain and cannot be migrated in place (reload it: docs/OPERATOR_INSTALL.md, "Baseline reload"), or it is newer than this checkout (check out the release that recorded those migrations).
-```
-
-The way forward is a reload: a data-only dump goes into a new cluster that this release builds. A new installation needs
-none of this. The services are down from step 4 to step 8, so plan a window. The old data directory is only moved, and the
-old database image is kept under a second tag, so the way back (step 9) stays open. The old migration files are in the git
-tag `migrations-pre-baseline`, the last release with the chain (`git show migrations-pre-baseline:migrations/<file>`).
-
-The dump holds every secret of the installation (configuration, sessions, one-time-code hashes). Keep it in a mode 0700
-directory and treat it like a backup. Use one shell for all steps; start with these helpers:
-
-```bash
-cd /path/to/installed/backend
-export WAREHOUSE_STATE_DIR=/absolute/path/to/this/warehouse
-B="$WAREHOUSE_STATE_DIR/backups/baseline-reload-$(date -u +%Y%m%dT%H%M%SZ)"; (umask 077; mkdir -p "$B")
-dbsql() { bash scripts/compose.sh exec -T db psql -X -q -U supabase_admin -d postgres -v ON_ERROR_STOP=1 "$@"; }
-cat > "$B/record.sql" <<'SQL'
-SELECT line FROM (
-  SELECT 'rows ' || table_schema || '.' || table_name || ' ' || (xpath('/row/c/text()', query_to_xml(format('SELECT count(*) AS c FROM %I.%I', table_schema, table_name), false, true, '')))[1]::text AS line
-    FROM information_schema.tables WHERE table_type = 'BASE TABLE' AND table_schema || '.' || table_name <> 'storage.migrations'
-     AND table_schema IN ('public', 'storage', 'utils', 'warehouse_maintenance', 'warehouse_security')
-  UNION ALL
-  SELECT 'sequence ' || schemaname || '.' || sequencename || ' ' || coalesce(last_value::text, 'unused') FROM pg_sequences
-   WHERE schemaname IN ('public', 'storage', 'utils', 'warehouse_maintenance', 'warehouse_security')
-  UNION ALL
-  SELECT 'trigger ' || n.nspname || '.' || c.relname || ' ' || t.tgname || ' ' || t.tgenabled::text
-    FROM pg_trigger t JOIN pg_class c ON c.oid = t.tgrelid JOIN pg_namespace n ON n.oid = c.relnamespace
-   WHERE NOT t.tgisinternal AND n.nspname IN ('public', 'storage', 'utils', 'warehouse_maintenance', 'warehouse_security')
-  UNION ALL
-  SELECT 'storage_migrations ' || count(*) FROM storage.migrations
-) s ORDER BY line COLLATE "C";
-SQL
-record() { dbsql -At < "$B/record.sql"; }
-```
-
-`record` prints the row count of every table, the sequence positions, which triggers are enabled and the number of
-Storage migrations. It is taken before and after, and the two outputs must be equal.
-
-**Step 1. Bring the installation to the last old release.** Check out `migrations-pre-baseline` first, then deploy it
-the normal way (backup, then `setup.sh`), so the database has the whole old chain. The backup comes after the checkout on
-purpose: the backup script of this release refuses a PostgreSQL 15 server, the one of the tag does not. Make sure the
-network is up: step 5 builds an image while the facility is down.
-
-```bash
-git fetch --tags origin
-(umask 022; git checkout --detach migrations-pre-baseline); bash scripts/checkout-permissions.sh
-npm run db:backup
-bash setup.sh --operator ...        # the same inputs as the installation; write them down, step 8 needs them again
-git ls-tree --name-only migrations-pre-baseline migrations/ | grep '\.sql$' | while read -r f; do printf '%s|%s\n' "${f#migrations/}" "$(git show "migrations-pre-baseline:$f" | sha256sum | cut -d' ' -f1)"; done | LC_ALL=C sort > "$B/ledger-tag.txt"
-dbsql -At -c 'SELECT name, checksum FROM warehouse_migrations.applied ORDER BY name COLLATE "C"' > "$B/ledger-db.txt"; diff "$B/ledger-tag.txt" "$B/ledger-db.txt" && echo 'ledger equals the tag'
-```
-
-Run any `sudo` command that `setup.sh` prints at its end (the checker timer: `watch-timer.sh install`; the USB backup:
-`backup-usb.sh setup`). The ledger has 110 lines (000 to 110; there is no 050). Mute the checker for the window (`node scripts/watch.mjs mute 240`);
-unmute it after step 8.
-
-**Step 2. Take the lock, a verified backup, the fingerprints and the record, with the writers stopped.** Hold the operator
-lock in this shell until step 8 (`backup.sh`, `build-images.sh` and `migrate.sh` accept the inherited lock). Database and
-Storage keep running (the file fingerprint reads the files through the Storage container). The old images are tagged so that
-a rollback uses them instead of building them again:
-
-```bash
-exec 9>"$WAREHOUSE_STATE_DIR/config/operator.lock"; flock -n 9 && echo 'operator lock held'    # stop if this prints nothing
-npm run db:backup -- "$B/backup"
-bash scripts/compose.sh --profile '*' ps --status running --services > "$B/running-services.txt"
-cp -p "$WAREHOUSE_STATE_DIR/config/compose.env" "$B/compose.env"   # the old configuration, put back by the rollback (step 9)
-P=$(sed -n 's/^WAREHOUSE_PROJECT_NAME=//p' "$WAREHOUSE_STATE_DIR/config/compose.env"); : > "$B/old-images.txt"
-while read -r s; do c=$(bash scripts/compose.sh --profile '*' ps -q "$s"); i=$(docker inspect --format '{{.Config.Image}}' "$c")
-  case "$i" in "$P-"*@*|"") continue;; "$P-"*) docker tag "$(docker inspect --format '{{.Image}}' "$c")" "$P-$s:pre-baseline" && echo "$s" >> "$B/old-images.txt";; esac
-done < "$B/running-services.txt"
-grep -qx db "$B/old-images.txt" && cp -p "$WAREHOUSE_STATE_DIR/config/image-recipes.sha256" "$B/" && echo 'old images kept'
-(cd "$B/backup" && sha256sum -c --quiet SHA256SUMS) && npm run db:verify-restore -- "$B/backup"   # must pass before anything is stopped
-dbsql -At -c "SELECT n.nspname || '.' || c.relname || ' ' || (xpath('/row/c/text()', query_to_xml(format('SELECT count(*) AS c FROM %I.%I', n.nspname, c.relname), false, true, '')))[1]::text FROM pg_class c JOIN pg_namespace n ON n.oid = c.relnamespace WHERE c.relkind IN ('r','p') AND n.nspname IN ('cron','net','graphql','graphql_public','vault','supabase_functions','realtime','_realtime','warehouse_migrations','auth') AND n.nspname || '.' || c.relname NOT IN ('auth.schema_migrations','warehouse_migrations.applied')" | awk '$2 != 0'   # must print nothing
-bash scripts/compose.sh --profile '*' stop gateway functions rest pdf-renderer supavisor cups sensor-bridge
-bash scripts/data-fingerprint.sh > "$B/fingerprint-before.txt"
-bash scripts/data-fingerprint.sh --all > "$B/fingerprint-all-before.txt"
-record > "$B/record-before.txt"
-```
-
-"old images kept" must print: it means the image of `db` was found. Any line of the schema check is a stop: those rows would
-not be carried over. Do not run `docker image prune` or `docker builder prune` until the reload is accepted.
-
-**Step 3. Dump the data only, with the old image's own `pg_dump`.** Stop Storage first:
-
-```bash
-bash scripts/compose.sh stop storage
-(umask 077; bash scripts/compose.sh exec -T db pg_dump -U supabase_admin -d postgres \
-  --data-only --format=custom --compress=6 \
-  --exclude-schema=cron --exclude-schema=net --exclude-schema=graphql --exclude-schema=graphql_public \
-  --exclude-schema=vault --exclude-schema=supabase_functions --exclude-schema=realtime --exclude-schema=_realtime \
-  --exclude-schema=warehouse_migrations --exclude-schema=auth --exclude-table=storage.migrations \
-  > "$B/data-only.dump")
-record > "$B/record-after-dump.txt"; diff "$B/record-before.txt" "$B/record-after-dump.txt" && echo 'nothing wrote during the dump'
-```
-
-If the two records differ, something wrote during the dump: start again at step 2. Do not add `--load-via-partition-root`:
-a partition that the baseline lacks must make the load fail, not re-route rows. The dump keeps the sequence positions
-(`SEQUENCE SET` entries). The schemas left out belong to the old image's extensions and services (the baseline has none of
-them), `warehouse_migrations` is the ledger (the baseline run writes it), and `auth` holds GoTrue tables that nothing uses.
-The `_supabase` database (the pooler's tenant) is no longer in backups at all; while `POOLER_ENABLED=true`, setup recreates it with the pooler's role and schema.
-
-**Step 4. Move the old data directory aside. Never delete it.** First mark the stack as stopped by you, so that a reboot or the
-checker cannot start it on the empty directory (`start.sh` and `setup.sh` remove the mark when they bring the stack up):
-
-```bash
-touch "$WAREHOUSE_STATE_DIR/config/stopped-by-operator"
-bash scripts/compose.sh --profile '*' down --remove-orphans
-D="$WAREHOUSE_STATE_DIR/data/db"; test ! -e "$D.pre-baseline" && mv -T "$D" "$D.pre-baseline" && mkdir -m 700 "$D"
-```
-
-The files in `data/storage` stay where they are; the reload does not touch them.
-
-If you copy files into `data/storage` by hand (for example to bring over the photos of another server), make the folders
-mode 755 and the files mode 644, whatever the source had. Files that keep a source mode such as 700, or that belong to
-root, make `db:backup` fail with `rsync: ... opendir "<state>/data/storage/stub/stub/<bucket>" failed: Permission denied` (rsync exit 23).
-
-**Step 5. Check out this release, build the new database, apply the baseline, let Storage migrate.**
-
-```bash
-git checkout --detach <this release>        # the tag or commit you are installing
-bash scripts/checkout-permissions.sh
-bash scripts/build-images.sh                 # builds the new db image; needs the network (if the build fails, go to step 9)
-bash scripts/compose.sh up -d --wait --wait-timeout 180 db
-bash scripts/migrate.sh --operator --through 00000000000000_baseline.sql   # applies the baseline only; the ledger gets one row
-bash scripts/compose.sh up -d --no-deps --wait --wait-timeout 180 storage
-dbsql -At -c "SELECT count(*) FROM storage.migrations"   # must equal the storage_migrations line of record-before.txt
-bash scripts/compose.sh stop storage
-```
-
-`--through` stops the migration run after the named file. Without it `migrate.sh` applies every file of the directory, and
-the files after the baseline (111 onward) must not run yet: migration 123 drops tables and columns that the old data fills,
-so the dump of step 6 would no longer load, and its guard (which refuses to drop objects that hold rows) would only look at
-the new, empty database. Step 8 applies 111 onward on the loaded data. An unknown name is refused before the database is touched.
-
-The first start of the empty data directory runs only `docker/volumes/db/00-bootstrap.sql` and `roles.sql` (no `_supabase.sql`, no `pooler.sql`, no pgbouncer role; [roles](CONTAINER_SECURITY.md#database-roles)). Storage builds its own tables in the schema `storage`. It is
-stopped again so that nothing writes during the load.
-
-**Step 6. Empty the tables the dump fills, then load.** The baseline seeded rows that the dump holds too, and
-`storage.buckets` and `storage.objects` must equal the old catalog. A check constraint added `NOT VALID` because old rows
-break it (the two blank-number checks on `dispatch` and `goodsreceived`) is still enforced while rows load, so it is
-taken off for the load and put back with the same definition, still `NOT VALID`:
-
-```bash
-bash scripts/compose.sh cp "$B/data-only.dump" db:/tmp/data-only.dump
-tables=$(bash scripts/compose.sh exec -T db pg_restore -l /tmp/data-only.dump | awk '$4=="TABLE" && $5=="DATA" {print $6"."$7}' | paste -sd, -)
-{ echo 'SET session_replication_role = replica;'; echo "TRUNCATE $tables;"; } | dbsql   # one statement for all tables; never CASCADE; replica: the history tables' TRUNCATE guards do not fire
-dbsql -At -c "SELECT format('ALTER TABLE %s ADD CONSTRAINT %I %s;', conrelid::regclass, conname, pg_get_constraintdef(oid)) FROM pg_constraint WHERE contype = 'c' AND NOT convalidated" > "$B/add-not-valid.sql"
-dbsql -At -c "SELECT format('ALTER TABLE %s DROP CONSTRAINT %I;', conrelid::regclass, conname) FROM pg_constraint WHERE contype = 'c' AND NOT convalidated" | dbsql
-bash scripts/compose.sh exec -T db pg_restore -U supabase_admin -d postgres \
-  --data-only --single-transaction --disable-triggers --exit-on-error --no-owner --no-acl /tmp/data-only.dump
-dbsql < "$B/add-not-valid.sql"
-bash scripts/compose.sh exec -T db rm /tmp/data-only.dump
-```
-
-`session_replication_role = replica` keeps the TRUNCATE guards of the history tables (and the trigger that records a
-price-table truncate) from firing. `--single-transaction` means that a failed load leaves the new database empty. To retry,
-first run `dbsql < "$B/add-not-valid.sql"` (the checks are off after a failed load), then repeat this step; do not regenerate
-`add-not-valid.sql` while the checks are off. `--disable-triggers` switches off the foreign-key triggers and the
-application triggers (audit, stock movement, number generation, direct-write guard) for the load, which is wanted: the rows
-are already consistent.
-
-**Step 7. Check the result.** The load did not check foreign keys, so check them (empty output means pass; any line is an
-orphan count other than 0), then compare the record and the fingerprints with the ones from step 2:
-
-```bash
-cat > "$B/fk-check.sql" <<'SQL'
-SELECT c.conrelid::regclass AS child, c.conname,
-       (xpath('/row/n/text()', query_to_xml(format(
-         'SELECT count(*) AS n FROM %s ch WHERE %s AND NOT EXISTS (SELECT 1 FROM %s pa WHERE %s)',
-         c.conrelid::regclass, j.nonnull, c.confrelid::regclass, j.joined), false, true, '')))[1]::text::int AS orphans
-FROM pg_constraint c
-CROSS JOIN LATERAL (
-  SELECT string_agg(format('ch.%I IS NOT NULL', ca.attname), ' AND ' ORDER BY k.ord) AS nonnull,
-         string_agg(format('pa.%I = ch.%I', fa.attname, ca.attname), ' AND ' ORDER BY k.ord) AS joined
-  FROM unnest(c.conkey, c.confkey) WITH ORDINALITY AS k(ck, fk, ord)
-  JOIN pg_attribute ca ON ca.attrelid = c.conrelid AND ca.attnum = k.ck
-  JOIN pg_attribute fa ON fa.attrelid = c.confrelid AND fa.attnum = k.fk) j
-WHERE c.contype = 'f' AND c.conparentid = 0
-ORDER BY 1, 2;
-SQL
-dbsql -At < "$B/fk-check.sql" | awk -F'|' '$3 != 0'     # empty output = pass
-dbsql -c ANALYZE                                   # a new cluster has no statistics
-record > "$B/record-after.txt"; diff "$B/record-before.txt" "$B/record-after.txt" && echo 'rows, sequences, triggers equal'
-bash scripts/compose.sh up -d --no-deps --wait --wait-timeout 180 storage
-bash scripts/data-fingerprint.sh > "$B/fingerprint-after.txt"; diff "$B/fingerprint-before.txt" "$B/fingerprint-after.txt" && echo IDENTICAL
-bash scripts/data-fingerprint.sh --all > "$B/fingerprint-all-after.txt"; diff "$B/fingerprint-all-before.txt" "$B/fingerprint-all-after.txt" && echo IDENTICAL
-```
-
-Any orphan, any `diff` output or a missing `IDENTICAL` is a stop: go to step 9. The fingerprints also cover the storage
-catalog and the stored files.
-
-**Step 8. Run setup.** With the arguments written down in step 1. It runs the migrations after the baseline (111 onward) on
-the data you loaded. Migration 123 refuses to drop a table or column that holds rows: if the old database used any of them,
-setup stops with `Migration 123 would drop data: ...` and nothing of 123 is applied (the database stays at the migrations before it). Check
-that the named data is not needed, export it if it is, empty those objects (`dbsql -c 'TRUNCATE <table>'`, or set the named
-column to NULL), and run the same setup command again. If you cannot decide, go to step 9: the old database is untouched. It is idempotent, sets the role passwords and the
-configuration, and starts the core services. Release the lock first (setup takes it again; it also accepts a lock this shell still holds,
-checking that it really holds it), then start the optional
-services that ran before. The pooler exists only while it is turned on, and the new cluster has no `_supabase` database, so setup
-keeps the pooler secrets and records it off (it prints the path of a saved copy of `compose.env`). If `supavisor` was in
-`running-services.txt`, turn the pooler on with `pooler.sh on` instead of starting it with `up`:
-
-```bash
-exec 9>&-
-bash setup.sh --operator ...
-bash scripts/compose.sh --profile '*' up -d --wait --wait-timeout 180 $(grep -vx supavisor "$B/running-services.txt")   # the optional services that ran before
-if grep -qx supavisor "$B/running-services.txt"; then bash scripts/pooler.sh on; fi   # role, schema, _supabase and the supavisor service
-node scripts/doctor.mjs --local && node scripts/doctor.mjs
-npm run db:backup                                  # the first backup of the new database
-node scripts/watch.mjs unmute
-```
-
-Run any `sudo` command that `setup.sh` printed (`watch-timer.sh install`, `backup-usb.sh setup`). Sign in from a phone with
-one role before the window ends. Keep `data/db.pre-baseline` for at least a day of use. Remove it
-(with `sudo rm -rf` on that exact path, the files belong to the container's user) only after `npm run db:verify-restore`
-passed on the first new backup, and delete `$B/data-only.dump` once the reload is accepted. At the same time remove what the earlier release left and
-this one does not use: `docker network rm "${P}_admin"` and `docker volume rm "${P}_db-config" "${P}_prometheus_data"`
-(`P` is `WAREHOUSE_PROJECT_NAME` from `compose.env`, as in step 2; a name that does not exist is not an error to worry about).
-
-**Step 9. Rollback** (any failure before the new database is accepted). The old directory was only moved and the old
-database image is still tagged `<project>-db:pre-baseline` (step 2). Do not run `docker image prune` before the reload is
-accepted. Files uploaded or deleted after step 8 are not rolled back:
-
-```bash
-exec 9>&-
-bash scripts/data-fingerprint.sh | diff "$B/fingerprint-after.txt" - || echo 'the new database changed after step 7: those writes are lost by the rollback'   # only if step 7 got that far
-bash stop.sh
-D="$WAREHOUSE_STATE_DIR/data/db"; test ! -e "$D.failed" && mv -T "$D" "$D.failed" && mv -T "$D.pre-baseline" "$D"
-(umask 022; git checkout --detach migrations-pre-baseline); bash scripts/checkout-permissions.sh
-P=$(sed -n 's/^WAREHOUSE_PROJECT_NAME=//p' "$WAREHOUSE_STATE_DIR/config/compose.env")
-while read -r s; do docker tag "$P-$s:pre-baseline" "$P-$s"; done < "$B/old-images.txt"
-cp -p "$B/image-recipes.sha256" "$WAREHOUSE_STATE_DIR/config/image-recipes.sha256"
-cp -p "$B/compose.env" "$WAREHOUSE_STATE_DIR/config/compose.env"   # the configuration from step 2: the old release needs DB_PASSWORD_POOLER, which the new setup may have removed
-bash scripts/compose.sh up -d --no-build --wait --wait-timeout 180 db storage
-bash scripts/data-fingerprint.sh | diff "$B/fingerprint-before.txt" - && echo IDENTICAL   # before any writer starts; a difference: stop here
-bash start.sh
-bash scripts/compose.sh --profile '*' up -d --no-build --wait --wait-timeout 180 $(cat "$B/running-services.txt")
-```
-
-Stored files were never changed by the reload. Anything written to the new database after the load is lost by a rollback.
-The old data directory still has its `pgbouncer` role. If you roll back with the new database kept (`data/db` not moved back), or run an
-older release's `setup.sh` against a database where the pooler objects were removed, create the role first, because the older
-`setup.sh` runs `ALTER ROLE pgbouncer`: `bash scripts/compose.sh exec -T db psql -X -U supabase_admin -d postgres -c 'CREATE ROLE pgbouncer LOGIN'`
-(skip it if `\du pgbouncer` shows the role).
-
-### Restoring a pre-baseline backup
-
-A backup made before this release (format `warehouse-backup-v5`, taken on the Supabase image) holds the old schema,
-roles and ledger. `db:restore`, `db:restore-host` and `db:verify-restore` refuse it before the backup's own signature check and
-before anything of the installation is changed:
-
-```
-Refusing: the backup was made on the database image 'supabase/postgres...', which this version no longer runs. Restore it with the release tagged migrations-pre-baseline, then reload the data into this version (docs/OPERATOR_INSTALL.md, "Baseline reload").
-```
-
-A backup with no `database_image=` line is refused the same way, with the message `Refusing: the backup records no database_image= line in metadata.txt, so it was made before the move to PostgreSQL 17. Restore it with the release tagged migrations-pre-baseline, then reload the data into this version (docs/OPERATOR_INSTALL.md, "Baseline reload").` A backup whose `roles.txt` lists `postgres`, `supabase_auth_admin` or `dashboard_user` is refused with `Refusing: the backup lists the role '<role>', which this version does not have: it was dumped from the earlier image, whatever its database_image= line says. Restore it with the release tagged migrations-pre-baseline, then reload the data into this version (docs/OPERATOR_INSTALL.md, "Baseline reload").`, and `db:verify-restore` refuses a dump written by a server below PostgreSQL 17. `db:backup` itself refuses to back up a server that is not this release's (`Refusing: the running database reports ...`): such an installation has not been moved yet.
-
-Restore an old backup only with the release tagged `migrations-pre-baseline`, then follow the reload above from step 2.
-On an installation that already runs this release, bring the old database image back first: after
-`(umask 022; git checkout --detach migrations-pre-baseline)`, run `docker tag <project>-db:pre-baseline <project>-db` if you
-kept it, else `bash scripts/build-images.sh` (needs the network); then `npm run db:restore -- --yes <backup>`; then the
-reload from step 2, after moving any `data/db.pre-baseline` left by an earlier reload out of the way. Backups made by this
-release restore with this release.
 
 ## Major PostgreSQL upgrade
 
-This section moves an installation from PostgreSQL 17 to 18. This release runs the official PostgreSQL 18 image (`postgres:18.6-trixie`, pinned in `docker/postgres/Dockerfile`; `scripts/db-image.sh`
-prints the pin and is the one source every script reads). The schema is the same baseline plus the migrations after it. PostgreSQL 17
-data files do not open in 18, so an installation that runs PostgreSQL 17 **cannot be upgraded in place**: `setup.sh` and `start.sh` of this
-release stop before they build or recreate anything (`scripts/db-version-preflight.sh`), and `db:backup` refuses the running 17 server:
+A move to a new PostgreSQL major version is a manual backup-and-restore move, because the data files of one major do not
+open in the next. The scripts refuse it before they change anything:
 
-```
-Refusing: the data directory <path> holds a PostgreSQL 17 database (PG_VERSION). This release runs PostgreSQL 18 and cannot start on PostgreSQL 17 data. No database, container or image was changed. The data moves with a major upgrade: back up with the checkout that runs PostgreSQL 17, then restore on this one (docs/OPERATOR_INSTALL.md, "Major PostgreSQL upgrade").
-```
+- `bash upgrade.sh` stops when the release runs another PostgreSQL major than the checkout ("A new PostgreSQL major
+  cannot be applied in place: follow docs/OPERATOR_INSTALL.md, `Major PostgreSQL upgrade`") or when the database server runs another
+  major than the checkout says.
+- `setup.sh`, `start.sh`, `rotate-keys.sh` and `rotate-db-passwords.sh` stop (`scripts/db-version-preflight.sh`) with "This release runs PostgreSQL <new> and cannot
+  start on PostgreSQL <old> data. No database, container or image was changed. The data moves with a major upgrade: back up
+  with the checkout that runs PostgreSQL <old>, then restore on this one".
 
-`bash upgrade.sh` refuses a release that runs another PostgreSQL major than the checkout (it compares `scripts/db-image.sh` of both trees, changes
-nothing and points here), so this procedure stays manual; it checks the release out itself in step 4. Once the installation runs the new major,
-`upgrade.sh` moves it to later releases as usual.
-
-The way forward is the ordinary backup and in-place restore ([In-place restore of the same instance](#in-place-restore-of-the-same-instance)),
-taken across the two releases: a backup made by the PostgreSQL 17 checkout restores on this one (the restore builds a new 18 cluster and
-replays the logical dump; a backup from a newer major than the checkout runs is refused, so the other way round does not work). The
-services are down from step 4 until step 7 ends, so plan a window. The old data directory is only moved and the old images are kept under a
-second tag, so the way back (step 9) stays open. The data directory inside the container stays `/var/lib/postgresql/data` (the stack sets
-`PGDATA` to it); the official 18 image's own default is elsewhere, so nothing else needs changing on the host.
-
-Data checksums: a new PostgreSQL 18 cluster has data checksums on by default, and an upgraded facility gets them through the restore (the restore creates a
-new cluster). No action is needed.
-
-Use one shell for all steps. Start with these helpers and the disk check: the new
-cluster, the backup and the kept 17 directory exist side by side, so check the free space first.
-
-```bash
-cd /path/to/installed/backend
-export WAREHOUSE_STATE_DIR=/absolute/path/to/this/warehouse
-B="$WAREHOUSE_STATE_DIR/backups/pg18-upgrade-$(date -u +%Y%m%dT%H%M%SZ)"; (umask 077; mkdir -p "$B")
-df -h "$WAREHOUSE_STATE_DIR" /var/lib/docker       # free space must be at least 3 times the size of data/db plus 3 times the size of data/storage (step 6's restore copies the photos again and refuses without that much plus 1 GiB free) plus the new images (about 1 GiB)
-du -sh "$WAREHOUSE_STATE_DIR/data/db" "$WAREHOUSE_STATE_DIR/data/storage"
-```
-
-The lock is held by this shell on descriptor 9 from step 1 until the start of step 4. Run `bash scripts/backup.sh` directly, never
-`npm run db:backup`, in that stretch: npm does not pass descriptor 9 on, so the backup could not take the lock. `stop.sh` and `restore.sh` take the
-lock themselves, so the lock is released before them (step 4 and step 6). `verify-restore.sh` takes no lock.
-
-**Step 1. Take the operator lock, record the old commit and stop every writer.** Stop what writes from outside the stack: a sensor bridge on
-another host, a script that posts readings or uploads. Mute the checker for the window (`node scripts/watch.mjs mute 240`). Then stop the
-stack's own writers; the database and Storage stay up for the backup and the fingerprints. With the writers already stopped, `backup.sh`
-finds nothing to pause and restarts nothing but Storage (which it stops for the capture itself), so no write can sneak in between the backup and the restore.
-Steps 1 to 3 run on the OLD checkout, so a `backup.sh` older than this release brings Storage back with `compose up` without `--no-deps`, and that also starts `rest`
-again (Storage depends on it). Step 2 therefore stops `rest` again right after the backup. From this release on, `backup.sh` restarts with `--no-deps` and does not do this.
-
-```bash
-exec 9>"$WAREHOUSE_STATE_DIR/config/operator.lock"; flock -n 9 && echo 'operator lock held'    # stop if this prints nothing
-git rev-parse HEAD > "$B/old-commit.txt"; cat "$B/old-commit.txt"
-bash scripts/compose.sh --profile '*' ps --status running --services > "$B/running-services.txt"
-bash scripts/compose.sh --profile '*' stop gateway functions rest pdf-renderer supavisor cups sensor-bridge
-bash scripts/compose.sh --profile '*' ps --status running --services     # only db and storage may remain
-```
-
-**Step 2. With the OLD checkout (still PostgreSQL 17), take a verified backup and record the data.** Right after the backup, the configuration directory is copied whole
-for the rollback (`config/` holds `compose.env`, the backup key and the other private files; the copy is as private as the backup). It sits before the checks so that
-a failing check cannot skip it, and `mkdir` (without `-p`) refuses a rerun instead of nesting a second copy inside the first. The row counts come from the query file `$B/counts.sql`,
-written here and run again unchanged in step 8, because the old checkout has no `data-fingerprint.sh --counts` (that mode exists from this release on and
-runs the same query, for later moves).
-
-```bash
-bash scripts/db-image.sh                         # must print postgres:17.…: this is still the old checkout
-bash scripts/backup.sh "$B/backup"
-bash scripts/compose.sh stop rest                # a backup.sh older than this release starts rest again with Storage; stop it (a no-op when it is already stopped)
-mkdir "$B/config" && cp -a "$WAREHOUSE_STATE_DIR/config/." "$B/config/"   # compose.env, backup.key, image-recipes.sha256 and the rest, for the rollback
-(cd "$B/backup" && sha256sum -c --quiet SHA256SUMS) && npm run db:verify-restore -- "$B/backup"   # must pass
-bash scripts/data-fingerprint.sh > "$B/fingerprint-before.txt"
-bash scripts/data-fingerprint.sh --all > "$B/fingerprint-all-before.txt"
-cat > "$B/counts.sql" <<'SQL'
-SELECT n.nspname || '.' || c.relname || ' ' || (xpath('/row/c/text()', query_to_xml(format('SELECT count(*) AS c FROM %I.%I', n.nspname, c.relname), false, true, '')))[1]::text FROM pg_class c JOIN pg_namespace n ON n.oid = c.relnamespace WHERE c.relkind IN ('r','p') AND n.nspname IN ('public','storage','warehouse_security','warehouse_maintenance') ORDER BY (n.nspname || '.' || c.relname) COLLATE "C"
-SQL
-bash scripts/compose.sh exec -T db psql -X -At -v ON_ERROR_STOP=1 -U supabase_admin -d postgres < "$B/counts.sql" > "$B/counts-before.txt"
-```
-
-**Step 3. Tag the current images** (of stopped containers too: `ps -a`, because step 1 stopped most of them) so that a rollback uses them instead of building them again (the db image is the one that matters):
-
-```bash
-P=$(sed -n 's/^WAREHOUSE_PROJECT_NAME=//p' "$WAREHOUSE_STATE_DIR/config/compose.env"); : > "$B/old-images.txt"
-while read -r s; do c=$(bash scripts/compose.sh --profile '*' ps -a -q "$s" | head -n 1); [ -n "$c" ] || continue; i=$(docker inspect --format '{{.Config.Image}}' "$c")
-  case "$i" in "$P-"*@*|"") continue;; "$P-"*) docker tag "$(docker inspect --format '{{.Image}}' "$c")" "$P-$s:pre-pg18" && echo "$s" >> "$B/old-images.txt";; esac
-done < "$B/running-services.txt"
-grep -qx db "$B/old-images.txt" && echo 'old images kept'
-```
-
-"old images kept" must print. Do not run `docker image prune` or `docker builder prune` until the upgrade is accepted.
-
-**Step 4. Stop the stack with the old checkout, check out the new release and build the images.** Release the lock first (`stop.sh` takes it
-itself). The facility is down from here. The build needs the network; if it fails, nothing has been moved yet: use rollback A.
-
-```bash
-exec 9>&-
-bash stop.sh                                     # the old checkout stops the old containers
-git fetch --tags origin
-git checkout --detach <this release>             # the tag or commit you are installing
-bash scripts/checkout-permissions.sh
-bash scripts/db-image.sh                         # must print postgres:18.…
-bash scripts/build-images.sh                     # takes the lock itself; builds the images whose recipe changed, the db image among them
-```
-
-**Step 5. Rehearse the restore.** The rehearsal restores the backup into a disposable PostgreSQL 18 container and compares the integrity report
-and the object catalog; it touches nothing of the installation and takes no lock. It refuses a backup made by a newer major than 18.
-
-```bash
-npm run db:verify-restore -- "$B/backup"      # must pass
-```
-
-**Step 6. Restore.** `db:restore` takes the lock itself and needs the stack down (step 4). It moves `data/db` to `data/db.pre-restore-<utc>` and
-`data/storage` to `data/storage.pre-restore-<utc>`, creates a new PostgreSQL 18 cluster from the db image of this checkout (it rebuilds a stale db image
-first and refuses, before moving anything, if it cannot), replays the dump, analyzes every database (`vacuumdb --all --analyze-in-stages`: a dump made by
-`pg_dump` 18 does not carry planner statistics, so without this the restored tables stay unanalyzed until autovacuum reaches them; the disposable rehearsal of
-step 5 does not need it, because it only compares the integrity report and the catalog), runs `migrate.sh --operator`, starts the services and runs `doctor --local`:
-
-```bash
-npm run db:restore -- --yes "$B/backup"
-```
-
-**Step 7. Run setup.** With the arguments of the installation (the same `setup.sh --operator ...` command as the last rerun). It is idempotent,
-sets the role passwords and the configuration, starts the core services, and now reports the running server's version. The restored cluster has no
-`_supabase` database, so setup keeps the pooler secrets and records the pooler off. If `supavisor` was in `running-services.txt`, `pooler.sh on`
-recreates its role, schema, database and service. Then start the other optional services that ran before:
-
-```bash
-bash setup.sh --operator ...
-bash scripts/compose.sh --profile '*' up -d --wait --wait-timeout 180 $(grep -vx supavisor "$B/running-services.txt")
-if grep -qx supavisor "$B/running-services.txt"; then bash scripts/pooler.sh on; fi
-```
-
-**Step 8. Check the result.** Every line must pass; the first failure is a stop, go to step 9.
-
-```bash
-bash scripts/compose.sh exec -T db psql -X -At -U supabase_admin -d postgres -c 'SELECT version()'          # PostgreSQL 18.6
-bash scripts/compose.sh exec -T db cat /var/lib/postgresql/data/PG_VERSION                          # 18 (read inside the container, no sudo)
-bash scripts/data-fingerprint.sh | diff "$B/fingerprint-before.txt" - && echo IDENTICAL
-bash scripts/data-fingerprint.sh --all | diff "$B/fingerprint-all-before.txt" - && echo IDENTICAL   # run on a quiet system (the file says which tables move on their own)
-bash scripts/compose.sh exec -T db psql -X -At -v ON_ERROR_STOP=1 -U supabase_admin -d postgres < "$B/counts.sql" | diff "$B/counts-before.txt" - && echo 'counts equal'
-ORIGIN=$(sed -n 's/.*"canonicalOrigin": *"\([^"]*\)".*/\1/p' "$WAREHOUSE_STATE_DIR/public/instance.json")
-curl -s -o /dev/null -w '%{url_effective} %{http_code}\n' "$ORIGIN/functions/v1/get-public-config"     # prints the URL it hit, then 200
-bash scripts/compose.sh ps                                  # every service Up (healthy); rest has no healthcheck and shows plain Up
-node scripts/doctor.mjs --local && node scripts/doctor.mjs
-npm run test:gateway
-bash scripts/compose.sh exec -T db psql -X -q -U supabase_admin -d postgres -c "NOTIFY pgrst, 'reload schema'"
-npm run db:backup                                           # the first backup of the new database
-npm run db:verify-restore -- "$(ls -dt "$WAREHOUSE_STATE_DIR"/backups/warehouse-* | head -n 1)"     # adjust the path if backups are written elsewhere
-node scripts/watch.mjs unmute
-bash scripts/compose.sh exec -T db psql -X -At -U supabase_admin -d postgres -c 'SELECT max(measured_at) FROM sensor_readings'   # newest sensor reading: run it again a minute later; a later value shows the sensor bridge writes again
-```
-
-Run any `sudo` command that `setup.sh` printed. Sign in from a phone with one role before the window ends. Restart what you stopped outside the
-stack in step 1. Keep `data/db.pre-restore-<utc>` and `data/storage.pre-restore-<utc>` for at least a day of use, then remove the two exact
-paths with `sudo rm -rf` (the files belong to the containers' users) only after the first new backup passed `db:verify-restore`.
-Remove the `pre-pg18` image tags (`docker image rm "$P-<service>:pre-pg18"`) at the same time.
-
-**Step 9. Rollback** (any failure before the new database is accepted). Do not run `docker image prune` before the upgrade is accepted. Writes made after
-step 6 are lost by a rollback. First find out whether `restore.sh` moved the data:
-
-```bash
-D="$WAREHOUSE_STATE_DIR/data"; ls -d "$D"/db.pre-restore-* 2>/dev/null || echo 'data not moved'
-```
-
-**Rollback A, data not moved** (the build, the rehearsal or `db:restore` failed or refused before moving anything; no `db.pre-restore-*` directory).
-`data/db` is the live PostgreSQL 17 directory and is not touched. Go back to the old commit and the old images:
-
-```bash
-exec 9>&-
-git checkout --detach "$(cat "$B/old-commit.txt")"; bash scripts/checkout-permissions.sh
-P=$(sed -n 's/^WAREHOUSE_PROJECT_NAME=//p' "$WAREHOUSE_STATE_DIR/config/compose.env")
-while read -r s; do docker tag "$P-$s:pre-pg18" "$P-$s"; done < "$B/old-images.txt"
-cp -p "$B/config/image-recipes.sha256" "$WAREHOUSE_STATE_DIR/config/image-recipes.sha256"
-cp -p "$B/config/compose.env" "$WAREHOUSE_STATE_DIR/config/compose.env"   # the saved configuration (the pooler secrets setup may have removed)
-bash start.sh
-bash scripts/data-fingerprint.sh | diff "$B/fingerprint-before.txt" - && echo IDENTICAL
-bash scripts/compose.sh --profile '*' up -d --no-build --wait --wait-timeout 180 $(cat "$B/running-services.txt")
-```
-
-If setup of this release already ran, the pooler role `pgbouncer` was dropped when the pooler was off. Before running the old release's
-`setup.sh`, create it: `bash scripts/compose.sh exec -T db psql -X -U supabase_admin -d postgres -c 'CREATE ROLE pgbouncer LOGIN'` (skip it if the role exists).
-
-**Rollback B, data moved by `restore.sh`** (a `db.pre-restore-<utc>` and a `storage.pre-restore-<utc>` directory exist). Every command after the
-guard sits inside it: nothing is moved or changed unless both kept directories are there. If `Stop:` is printed, run nothing more and investigate.
-
-```bash
-exec 9>&-
-bash stop.sh
-U=$(ls "$D" | sed -n 's/^db\.pre-restore-//p' | sort | tail -n 1); echo "kept: $U"
-if test -n "$U" && test -d "$D/db.pre-restore-$U" && test -d "$D/storage.pre-restore-$U" && test ! -e "$D/db.failed" && test ! -e "$D/storage.failed" \
-   && mv -T "$D/db" "$D/db.failed" && mv -T "$D/db.pre-restore-$U" "$D/db" \
-   && mv -T "$D/storage" "$D/storage.failed" && mv -T "$D/storage.pre-restore-$U" "$D/storage"; then
-  git checkout --detach "$(cat "$B/old-commit.txt")"; bash scripts/checkout-permissions.sh
-  cp -a "$B/config/." "$WAREHOUSE_STATE_DIR/config/"       # the configuration as it was before step 4 (undoes setup.sh and --restore-config; puts the pooler secrets back)
-  P=$(sed -n 's/^WAREHOUSE_PROJECT_NAME=//p' "$WAREHOUSE_STATE_DIR/config/compose.env")
-  while read -r s; do docker tag "$P-$s:pre-pg18" "$P-$s"; done < "$B/old-images.txt"
-  bash start.sh
-  bash scripts/data-fingerprint.sh | diff "$B/fingerprint-before.txt" - && echo IDENTICAL
-  bash scripts/compose.sh --profile '*' up -d --no-build --wait --wait-timeout 180 $(cat "$B/running-services.txt")
-else
-  echo 'Stop: the kept directories are missing, db.failed already exists, or a move failed; check the directories by hand.'
-fi
-```
-
-The kept database is the old one and has its `pgbouncer` role. If you instead keep a database where this release's `setup.sh` or `pooler.sh off`
-removed the pooler objects, create the role before an older release's `setup.sh` (it runs `ALTER ROLE pgbouncer`):
-`bash scripts/compose.sh exec -T db psql -X -U supabase_admin -d postgres -c 'CREATE ROLE pgbouncer LOGIN'`.
+The way forward is the ordinary backup and [in-place restore](#in-place-restore-of-the-same-instance) taken across the two
+releases: back up with the checkout that runs the old major, check out the release with the new major, restore. The release
+that brings a new major documents the steps, the way back and the disk it needs, in its release note and in this section. Nothing
+is needed on an installation that already runs the release's major. The procedure for 17 to 18 is in this guide as it stands on main at
+commit `b45ae0b` (`git show b45ae0b:docs/OPERATOR_INSTALL.md`).
 
 ### Collation changes
 
@@ -3026,10 +2493,18 @@ with `db:verify-restore`, the monitoring and boot units, a Cloudflare tunnel cre
 installed as a service (the external doctor, run on the host, healthy), a reboot with nobody signed in, recovery after
 `wsl --shutdown`, `wsl --terminate` and a host reboot, disabling and enabling the keep-alive task for planned work, a WSL update
 (with the task disabled), and a USB backup drive passed into the distro with `usbipd-win` (enrolled, and one automatic run
-copied and verified). What was **not** verified: `sudo` asking for a password, Windows 11, the Home edition, mirrored
+copied and verified), the sensor bridge's `--once --dump` check against Tapo H200 hubs, and a bridge started with `up` whose scheduled post was stored in the database ([Sensors (Windows)](#sensors-windows)).
+
+Also verified, with both tasks registered by `scripts/windows/register-tasks.ps1` (Windows 10 Pro 22H2): after `Restart-Computer`
+and after `wsl --shutdown`, with no one touching anything, the distro came back by itself (about 1 minute), `usbipd-win` attached
+the USB drive again within about 1 minute of that, the USB backup unit ran after the stack unit and succeeded, and the monitoring
+checker raised no false alert. A console session was signed in again after the restart (Windows auto logon, apparently), so the
+test did not show the tasks working with nobody signed in. The tasks store the account's password and should not depend on a
+signed-in session, but that was **not tested** with auto logon off.
+What was **not** verified: `sudo` asking for a password, Windows 11, the Home edition, mirrored
 networking, that the `.wslconfig` memory limit takes effect, recovery after a WSL update with the task enabled, the version after
-`wsl --update`, a real Windows Update reboot, a graceful stop when Windows shuts down, an automatic re-attach of the USB drive, a physical re-plug of the
-drive, a USB run that also takes a fresh backup, and printing.
+`wsl --update`, a real Windows Update reboot, a graceful stop when Windows shuts down, a restart with the tasks registered by the script and no
+console session signed in at all, a physical re-plug of the drive, a USB run that also takes a fresh backup, printing, and the sensor bridge running for hours or days or through a restart ([Sensors (Windows)](#sensors-windows)).
 
 ### Prerequisites
 
@@ -3101,8 +2576,10 @@ Notes for typing commands into the distro from Windows:
 - `wsl` starts in the Windows working directory, so a `git clone` typed without `cd ~` lands on the Windows disk. Open a shell
   with `wsl -d Ubuntu-24.04 --cd ~`, or `cd ~` first.
 - `wsl -l -v` prints UTF-16: captured into a file or a pipe it contains null bytes.
-- A command run as `wsl -d Ubuntu-24.04 -- bash -c "node ..."` is not a login shell and does not read `~/.profile`, where the
-  Node `PATH` is set, so it finds no `node`. Use `bash -lc '...'`, in the keep-alive task and in scripts too.
+- A command run as `wsl -d Ubuntu-24.04 -- bash -c "node ..."` is not a login shell and does not read `~/.profile`, so it finds
+  no `node` and no `WAREHOUSE_STATE_DIR`. Run such commands (your own scripts or jobs started from Windows) as
+  `wsl.exe -d Ubuntu-24.04 -u warehouse -- bash -lc '<command>'`. The tasks that `register-tasks.ps1` creates run no warehouse
+  command and need no login shell.
 - A multi-line step such as the `printf ... | sudo tee` lines of this guide is mangled by nested quoting (for example `ssh`
   into Windows, then `wsl`): the file is silently not written. Work in a shell inside the distro, or put the steps in a script.
 - Prove that the distro itself restarted with `ps -o lstart= -p 1`; `uptime -s` does not change after `wsl --terminate`.
@@ -3154,11 +2631,21 @@ Differences:
 - Right after the distro has just started, Docker may not answer for a moment. `setup.sh` waits for the Docker daemon for up to
   60 s before it refuses (verified: after `wsl --terminate` it printed "Waiting for the Docker daemon to answer (up to 60 s)..." and
   went on); if it still stops with "Docker did not answer within 60 s", check `systemctl status docker`.
-- Under WSL 3.0.3 the checker raises a `disk_low:/usr/src/linux-headers-...-WSL2` alert for a small mount provided by WSL that is
-  always full (observed). That one alert is false; ignore it until the watch rule skips such mounts.
+- Under WSL 3.0.3, WSL mounts full images read-only at `/usr/src/linux-headers-...-WSL2` and `/usr/lib/linux-tools/...`. The checker
+  skips read-only mounts, so it raises no `disk_low` alert for them (not yet observed on a WSL host).
 - Decide the public hostname before the first setup ([Setup](#setup)).
-- A shell started later needs the Node `PATH` and the state directory again: `export WAREHOUSE_STATE_DIR=...` in `~/.profile`, and
-  `bash -lc` when a command is started from Windows.
+- Put the Node `PATH` and `export WAREHOUSE_STATE_DIR=...` in `~/.profile`: the Ubuntu terminal is a login shell and reads it
+  (for commands started from Windows see [the notes above](#wsl-and-ubuntu-2404-with-systemd)).
+
+- The clock: `systemd-timesyncd` keeps the distro's clock right by NTP (`timedatectl` shows `NTP service: active`). After the
+  distro starts, or after the Windows host has been asleep or busy, the clock can be off by several seconds and `timedatectl`
+  can show `System clock synchronized: no`; `clock_unsynced` has fired on a WSL2 host this way (clock about 13 s ahead). The
+  checker raises it when `NTPSynchronized` is `no` or the clock is more than 10 s from the public address's clock, and alerts
+  after two checker runs in a row ([MONITORING.md](MONITORING.md)). Check `timedatectl status`, `timedatectl timesync-status`
+  (a small `Offset` and a recent server mean it is working) and `systemctl status systemd-timesyncd`. If it stays `no`, run
+  `sudo timedatectl set-ntp true` and `sudo systemctl restart systemd-timesyncd`, and check that the host can reach its time
+  servers (UDP 123 not blocked). This was **not** tried on a Windows host while the alert was firing (the clock was
+  synchronised, offset under 1 s, when looked at afterwards).
 
 ### Keep the distro running and start it at boot
 
@@ -3169,28 +2656,49 @@ enough: the restart count acts on a task that failed to launch, not on a `wsl.ex
 stayed down for nearly 10 minutes after `wsl --shutdown`). The verified form is a boot trigger plus a trigger that repeats every
 2 minutes without end, with new instances ignored while one is running.
 
-[PS-admin], in a console on the host (run `Get-Credential` at the console; it may not prompt over a remote session). The task
-must run as the Windows account that owns the distro: `SYSTEM` cannot see it. The registration lines below were run as typed
-(verified), and the settings read back: State Running; RunLevel Highest; MultipleInstances IgnoreNew; StartWhenAvailable; both
-battery switches off (`DisallowStartIfOnBatteries` and `StopIfGoingOnBatteries` False); RestartCount 999 at 1 minute; no time
-limit; the boot trigger and the 2-minute repeating trigger enabled. Check the task after you register it
-(`Get-ScheduledTask 'Warehouse WSL' | Get-ScheduledTaskInfo` and `Get-ScheduledTask 'Warehouse WSL' | Select -ExpandProperty Settings`):
+The task is registered by `scripts/windows/register-tasks.ps1` from the checkout inside the distro: boot plus every 2 minutes,
+running whether or not anyone is signed in, as the Windows account that owns the distro (`SYSTEM` cannot see the distro). It is
+verified that tasks registered by the script bring the distro back after a host restart and after `wsl --shutdown`
+([Windows host (Ubuntu in WSL2)](#windows-host-ubuntu-in-wsl2)). Read back after the script ran (verified, including
+`-Force` replacing existing tasks and `-BusId` registering both): Running; RunLevel Highest; MultipleInstances IgnoreNew; StartWhenAvailable; both battery switches off
+(`DisallowStartIfOnBatteries` and `StopIfGoingOnBatteries` False); RestartCount 999 at 1 minute; no time limit; the boot trigger
+and the 2-minute repeating trigger enabled. Do not run the script while the tasks are disabled for planned work; it registers
+them enabled and starts them.
+
+[PS-admin], in a console on the host (the script asks for the password with `Get-Credential`, which may not prompt over a remote
+session). Run it from an elevated PowerShell of the Windows account that owns the distro (the account that ran `wsl --install`).
+The prompt is filled in with that account; type its password. The script refuses if the account typed at the prompt is not the one running it (not tested). Use the checkout path of this guide (`~/backend` for the user
+`warehouse`):
 
 ```powershell
-$c = Get-Credential -UserName "$env:COMPUTERNAME\<windows-user>" -Message 'Windows account that owns the distro'
-$a = New-ScheduledTaskAction -Execute 'C:\Windows\System32\wsl.exe' -Argument '-d Ubuntu-24.04 --exec /usr/bin/sleep infinity'
-$t = @((New-ScheduledTaskTrigger -AtStartup), (New-ScheduledTaskTrigger -Once -At (Get-Date) -RepetitionInterval (New-TimeSpan -Minutes 2)))
-$s = New-ScheduledTaskSettingsSet -ExecutionTimeLimit ([TimeSpan]::Zero) -MultipleInstances IgnoreNew -StartWhenAvailable -AllowStartIfOnBatteries -DontStopIfGoingOnBatteries -RestartCount 999 -RestartInterval (New-TimeSpan -Minutes 1)
-Register-ScheduledTask -TaskName 'Warehouse WSL' -Action $a -Trigger $t -Settings $s -User $c.UserName -Password $c.GetNetworkCredential().Password -RunLevel Highest
+powershell -NoProfile -ExecutionPolicy Bypass -File \\wsl.localhost\Ubuntu-24.04\home\warehouse\backend\scripts\windows\register-tasks.ps1
 ```
 
-Do not type the password into the command line (`-Password (Read-Host ...)` shows it on screen).
-
-- The task shows **Running** all the time, and the 2-minute repeat ends with `LastTaskResult` 2147946720 (0x800710E0) because it
-  finds the first instance still running. That is expected and not a fault.
-- After the Windows account's password changes, update the task, or it stops starting (not verified yet):
+- `-ExecutionPolicy Bypass` applies to this one command only; it does not change the machine's policy. It also avoids the
+  "not digitally signed" refusal that a script read from a network path can meet under `RemoteSigned`. The `\\wsl.localhost`
+  command above is verified (Windows 10 22H2, elevated PowerShell, with `-Force -BusId`). If the path is not found right after the
+  distro starts, try again a few seconds later. If `\\wsl.localhost` is still not found, use `\\wsl$\Ubuntu-24.04\...` for the same path.
+  If the script still does not start from there, copy it to your own temp folder and run it from there (not verified on
+  Windows 10 22H2):
+  `Copy-Item \\wsl$\Ubuntu-24.04\home\warehouse\backend\scripts\windows\register-tasks.ps1 $env:TEMP\`, then
+  `powershell -NoProfile -ExecutionPolicy Bypass -File $env:TEMP\register-tasks.ps1`. Use the temp folder of your own account,
+  not `C:\Temp`: a folder that other users can write to is unsafe for a script that runs elevated. An execution policy set by
+  Group Policy overrides `-ExecutionPolicy Bypass`.
+- Parameters: `-Distro` (default `Ubuntu-24.04`), `-BusId` (also registers the USB task, see
+  [Backups off the host](#backups-off-the-host-windows)), `-UsbOnly`, and `-Force` (replace tasks that exist (verified); without it the
+  script refuses). The script checks that it is elevated and that the distro exists before it changes anything, asks once for the
+  password, never stores or prints it, starts the task, and reads it back: State, LastRunTime, LastTaskResult, the triggers
+  (with the repeat duration; empty means no end), MultipleInstances, the battery switches, RunLevel, the user and logon type, the
+  restart settings, time limit, StartWhenAvailable and the action. Check that the task shows Running with the boot trigger and the 2-minute
+  repeating trigger.
+- The task shows **Running** all the time (`LastTaskResult` 267009, 0x41301, means running now), and the 2-minute repeat ends with
+  2147946720 (0x800710E0) because it finds the first instance still running. Both are expected and not a fault; the script
+  prints the same note.
+- After the Windows account's password changes, update the tasks, or they stop starting (a password change was not tested; the rerun with `-Force` itself is verified): run the script
+  again with `-Force`, with the stick plugged in (add `-BusId <id>` if the USB task exists; the bus id is in
+  `(Get-ScheduledTask 'Warehouse USB').Actions.Arguments`). Alternatively, for each task:
   `Set-ScheduledTask -TaskName 'Warehouse WSL' -User $c.UserName -Password $c.GetNetworkCredential().Password` with a new
-  `$c` from `Get-Credential`. `Register-ScheduledTask` fails on an existing name unless you add `-Force`.
+  `$c` from `Get-Credential`, and the same for `'Warehouse USB'`.
 - Recovery times measured with the verified task (single samples per run, plus or minus 20 seconds): the public address answered
   again about 40 seconds to 2 minutes after `wsl --shutdown`, about 85 seconds after `wsl --terminate`, and about 70 to 90
   seconds after a host reboot with nobody signed in.
@@ -3222,13 +2730,16 @@ modes passing.
 
 1. [Ubuntu] `export WAREHOUSE_STATE_DIR=...`, then `bash stop.sh`.
 2. [Ubuntu] Silence the checker for the window: `node scripts/watch.mjs mute <minutes>`.
-3. [PS-admin] `Disable-ScheduledTask 'Warehouse WSL'`, so the distro is not started again in the middle of the work.
+3. [PS-admin] `Disable-ScheduledTask 'Warehouse WSL'`, so the distro is not started again in the middle of the work. If the
+   [Warehouse USB task](#backups-off-the-host-windows) exists, also `Disable-ScheduledTask 'Warehouse USB'`.
 4. Do the work: update WSL (`wsl --update`), Windows, `wsl --shutdown`, restart.
 5. [PS-admin] `Enable-ScheduledTask 'Warehouse WSL'`, then `Start-ScheduledTask 'Warehouse WSL'`.
 6. [Ubuntu] `bash start.sh`, then `node scripts/watch.mjs unmute` and the doctor in both modes.
+7. [PS-admin] If the Warehouse USB task exists, `Enable-ScheduledTask 'Warehouse USB'` now that both doctor modes pass; its repeating
+   trigger attaches the drive within 2 minutes, and that starts a USB run.
 
 A task left disabled keeps the facility down after the next restart of Windows. `Disable-ScheduledTask` does not stop the
-keep-alive that is already running, so the distro stays up until the next `wsl --shutdown`, WSL update or restart of Windows.
+keep-alive or the USB loop that is already running, so the distro stays up until the next `wsl --shutdown`, WSL update or restart of Windows.
 While the work is going on, the public address answers 530 when the tunnel or the distro is down, and 502 when the tunnel is up
 but the stack is stopped (for example after `stop.sh`); both are normal.
 
@@ -3237,12 +2748,39 @@ version afterwards were not read back): it stopped the distro, which then stayed
 [Monthly host maintenance](#monthly-host-maintenance) is done inside Ubuntu as written; a restart of the host is the Windows
 restart in step 4 of this list, not `sudo reboot` (not verified yet).
 
+### Sensors (Windows)
+
+Sensors are optional: without them skip this section. If Slack alerts are enabled for the facility and sensors are on, a separate Slack webhook for sensor alerts is required: create a second incoming webhook (for the channel the people who watch the cold rooms follow) and give it to setup with `--sensor-webhook-file`. Example: `bash setup.sh --operator ... --sensor-webhook-file /secure/warehouse-sensor-slack-webhook.txt` (with your usual inputs). If you configure sensors, the install is not done until readings are
+verified in the database as in [step 6](SENSORS.md#run-it-as-a-profile-of-the-installation) of the SENSORS.md section (the SQL there; the doctor is only the quick check), which
+means running the bridge with `up` and waiting about 10 minutes. The `--once --dump` check further down only shows that the hubs can be reached.
+
+The optional sensor bridge ([SENSORS.md](SENSORS.md#run-it-as-a-profile-of-the-installation)) runs inside the distro like the
+rest of the stack. The hub addresses in `SENSOR_BRIDGE_HUBS` must be reachable from inside the distro; under WSL's default NAT
+networking outgoing connections to the LAN normally work (verified below), and mirrored networking is not verified (as in
+[Ingress and the LAN](#ingress-and-the-lan)). Before you start the bridge, set `SENSOR_BRIDGE_HUBS`, `TAPO_USERNAME` and
+`TAPO_PASSWORD` as in step 2 of that section (the ingest key is not needed for this check), then run:
+
+[Ubuntu] `bash scripts/compose.sh --profile sensors run --rm sensor-bridge --once --dump`
+
+The check passes when it prints the sensors of each hub with no `"error"` entry and exits 0; an unreachable hub is printed as
+`{"host": ..., "error": ...}` and the command exits 1.
+
+Give each hub a DHCP reservation on the router, by MAC address and outside the DHCP pool; the distro and its NAT do not change
+that ([SENSORS.md](SENSORS.md#keep-the-hub-addresses-fixed)). If an address changes anyway (a power cut or a router reboot), the
+running bridge finds the hub again: its sweep uses unicast TCP connects, which leave the distro's NAT network (broadcast discovery
+would not), and the log says `event=hub_moved`. This is not verified on a Windows host yet.
+
+Verified, on Windows 10 Pro 22H2 with WSL's default NAT networking: this check reached three Tapo H200 hubs (firmware 1.7.7) from
+inside the distro and from a container on the stack's default network, listed all four T310 sensors of the three hubs (one of them offline at its hub, listed without an error) and exited 0.
+In a second run (2026-10-30), following [SENSORS.md](SENSORS.md#run-it-as-a-profile-of-the-installation) step by step: the bridge started with `up -d --wait` (healthy), its first scheduled post about 5 minutes after `up` was accepted and stored (the step 6 SQL), `get-public-config` showed `capabilities.sensors` `true`, and a `db:backup` taken while it ran caused one `post_failed`, from which it recovered by itself. One of the three hubs was unreachable on the LAN that day, and the step 3 commands exited 1 for it, as described there.
+**Not verified**: the bridge running for hours or days, or through a restart of Windows or `wsl --shutdown`; finding a hub that moved (`event=hub_moved`); mirrored networking; and Windows 11.
+
 ### Backups off the host (Windows)
 
-**A Windows host meets the off-host backup requirement only while the operator attaches the USB drive to the distro after every
-restart, and that blocks an unattended go-live for a real facility.** The USB drive is the off-host copy
-([PRODUCTION_DEPENDENCIES.md](PRODUCTION_DEPENDENCIES.md)), and `backup-usb.sh` writes only to an enrolled USB drive that the
-distro can see. On this route the drive is passed into the distro with `usbipd-win` on Windows.
+**A Windows host meets the off-host backup requirement only while the USB drive is attached to the distro, and the attach is lost
+whenever the distro stops. The "Warehouse USB" task below attaches it again by itself (verified after a host restart and after `wsl --shutdown`).** The USB
+drive is the off-host copy ([PRODUCTION_DEPENDENCIES.md](PRODUCTION_DEPENDENCIES.md)), and `backup-usb.sh` writes only to an enrolled
+USB drive that the distro can see. On this route the drive is passed into the distro with `usbipd-win` on Windows.
 
 Verified on WSL 3.0.3 with usbipd-win 5.3.0: the distro's kernel has exFAT, the udev rule fires inside the distro when the drive
 is attached, the drive was enrolled, and an automatic run copied the newest verified backup and the saved images to the drive,
@@ -3251,22 +2789,49 @@ read them back and passed the restore verification of the copy. The attach was t
 with a `sudo` password (the test host used passwordless `sudo`).
 
 Install usbipd-win once: download the signed MSI from its GitHub releases and run it from an elevated PowerShell,
-[PS-admin] `msiexec /i <msi> /qn /norestart`. The `usbipd` command is found only in sessions opened after the install. Then:
+[PS-admin] `msiexec /i <msi> /qn /norestart`. The `usbipd` command is found only in sessions opened after the install. Then, in
+this order:
 
-- [PS-admin] `usbipd list`, to find the drive's bus id.
-- [PS-admin] `usbipd bind --busid <id>`, once; the bind persists.
-- [PS] `usbipd attach --wsl --busid <id>`, every time the drive has to reach the distro (run from an elevated PowerShell in the test;
-  the usbipd-win documentation says an ordinary one is enough). Inside the distro, `lsblk` shows the
-  drive as `usb` and `exfat`, and USB backup continues as written in [USB backup drive](#usb-backup-drive).
+1. [PS-admin] `usbipd list`, to find the drive's bus id.
+2. [PS-admin] `usbipd bind --busid <id>`, once; the bind persists.
+3. Register the keep-alive task first ([above](#keep-the-distro-running-and-start-it-at-boot)), then the "Warehouse USB" task
+   [PS-admin], in a console on the host, after `usbipd bind`, with the bus id from step 1 (the command is
+   the one of the keep-alive section with `-UsbOnly -BusId`; the task runs as the Windows account that owns the distro, and the
+   script finds `usbipd.exe` itself and refuses a bus id that is not shared):
 
-The usbipd-win documentation says the bus id changes when the stick moves to another port; that was not tested here.
+   ```powershell
+   powershell -NoProfile -ExecutionPolicy Bypass -File \\wsl.localhost\Ubuntu-24.04\home\warehouse\backend\scripts\windows\register-tasks.ps1 -UsbOnly -BusId <id>
+   ```
 
-**The attach does not survive a restart.** After a host reboot the drive was listed as Shared, not Attached (verified); the
-drive is also expected to detach whenever the distro stops (`wsl --shutdown`, a WSL update; not read back in the test). Every plug-in on Windows needs
-a `usbipd attach` as well, so "plug the drive in and wait" does not apply there. There is no automatic re-attach: none is built
-or tested, so do not rely on one. Until one exists and is verified, a Windows host meets the off-host requirement only if the
-operator attaches the drive after every restart. If nobody does, the `usb_backup` alert and `npm run doctor` warn once the last
-copy is over 7 days old (the default of `WAREHOUSE_USB_BACKUP_MAX_AGE_DAYS`). Printing over USB has the same limits
+   It is shaped like the keep-alive task for a reason. `--auto-attach` keeps running and attaches the stick again whenever it comes
+   back, but it refuses to start while the distro is down and ends when WSL stops (from the usbipd-win source; not tested here);
+   the repeating trigger starts it again after every `wsl --shutdown`, WSL update or restart, and `IgnoreNew` keeps one copy running.
+   A repeat while the distro is down ends with `LastTaskResult` 1, which is expected. The loop holds a distro session, so it also keeps
+   the distro up. `--wsl Ubuntu-24.04` ties the loop to the warehouse distro, like the keep-alive's `-d Ubuntu-24.04`. `--unplugged` lets it start while the
+   stick is out. The bus id belongs to the USB port, not to the stick: keep the stick in the same port (the usbipd-win
+   documentation says the id changes with the port; not tested here). If you must move it: [PS-admin] `Stop-ScheduledTask 'Warehouse USB'`,
+   repeat steps 1 and 2 for the new bus id, run the script again with `-UsbOnly -BusId <new> -Force` (it starts the task again). To remove the task: [PS-admin]
+   `Stop-ScheduledTask 'Warehouse USB'; Unregister-ScheduledTask 'Warehouse USB' -Confirm:$false`, then `usbipd detach --busid <id>`.
+   Like the keep-alive task, it shows Running all the time, and a repeat that finds it running is expected, not a fault.
+   The script reads the task back and prints `usbipd list` for the bus id; with the stick in, its state
+   should be **Attached** within 2 minutes once the distro is up. It re-attached the drive after a host restart and after `wsl --shutdown`; whether it does so with no console session signed in is not verified.
+4. [Ubuntu] Inside the distro, `lsblk` shows the drive as `usb` and `exfat`. Then set up USB backup as written in
+   [USB backup drive](#usb-backup-drive), with `--daily` now that the drive stays attached:
+   `sudo bash scripts/backup-usb.sh setup --state "$WAREHOUSE_STATE_DIR" --daily --enroll /dev/sdX1`. Every re-attach (after a
+   restart, a WSL update or a re-plug) also starts a USB run through the udev rule, as a plug-in does on Linux.
+   Setup copies nothing to a drive that is already attached. Make the first copy with [PS] `usbipd detach --busid <id>`: the task's loop
+   attaches it again within seconds and the run starts (the usbipd-win behaviour; not tested here). Check with
+   `bash scripts/backup-usb.sh status`. After a restart a USB run may start within a few minutes and hold the operator lock: wait for it
+   (`journalctl -f -u 'warehouse-usb-backup@*'`) before `start.sh`, `setup.sh` or `upgrade.sh`.
+
+Fallback, if the task is not registered or does not work: [PS] `usbipd attach --wsl --busid <id>` by hand, every time the drive
+has to reach the distro (run from an elevated PowerShell in the test; the usbipd-win documentation says an ordinary one is enough).
+
+**Without the task the attach does not survive a restart.** After a host reboot the drive was listed as Shared, not Attached
+(verified); it is also expected to detach whenever the distro stops (`wsl --shutdown`, a WSL update; not read back in the test), and
+every plug-in on Windows needs an attach too. The "Warehouse USB" task is the answer to that: it was run through a host restart and a
+`wsl --shutdown`. Still check `usbipd list` for "Attached" after every restart and use the manual attach if it says "Shared". If nobody does, the `usb_backup` alert and `npm run doctor` warn once the last copy is over 7 days old
+(the default of `WAREHOUSE_USB_BACKUP_MAX_AGE_DAYS`). Printing over USB has the same limits
 ([PRINTING.md](PRINTING.md)), and is not verified on this route. Copying files to a Windows drive through `/mnt/<drive>` loses the
 extended attributes and ownership that a restore needs from the stored photos, so it is not a substitute.
 
@@ -3286,6 +2851,8 @@ Before the facility goes live, on this host, with nobody signed in to Windows:
    this host only). If any step does not behave as written, stop and report it; do not go live.
 4. Check the keep-alive task after it is registered: it shows Running, with the two triggers.
 5. A USB backup drive, enrolled and copying a verified backup, and still working after the same restart, is required for a real facility.
-   On Windows the drive has to be attached again after every restart ([Backups off the host](#backups-off-the-host-windows)); this
-   fails unattended, so a Windows host does not yet pass acceptance unless the operator attaches the drive after each restart.
+   On Windows this is met with the Warehouse USB task: after the same restart `usbipd list` shows the drive
+   Attached and `bash scripts/backup-usb.sh status` shows a successful run after the restart, without anyone attaching it
+   ([Backups off the host](#backups-off-the-host-windows)). If it shows Shared, this host does not pass: report it; a manual
+   `usbipd attach` is only a stopgap, not acceptance.
    Printing, where the facility uses it, is not verified on this route either.

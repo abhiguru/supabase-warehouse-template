@@ -67,8 +67,8 @@ fresh build and scan before each release instead). Before every release tag:
 - [ ] A release that changes `scripts/watch-timer.sh` or `scripts/backup-usb.sh` in a way that changes the units, the udev rule or the
       installed helper (any edit changes their recipe hash) carries an Operator action: `sudo bash scripts/watch-timer.sh install --state <state>`
       and/or `sudo bash scripts/backup-usb.sh setup --state <state>`. Until it is done, `root_copy_stale` reminds weekly.
-- [ ] If the release changes the PostgreSQL major, the section says so at the top and links the "Major PostgreSQL upgrade" procedure
-      (`upgrade.sh` refuses such a move). If the migrations were squashed, the section lists the migration names the new baseline replaces.
+- [ ] If the release changes the PostgreSQL major, the section says so at the top, writes the procedure, its way back and its disk need into the
+      "Major PostgreSQL upgrade" section of `docs/OPERATOR_INSTALL.md` and links it (`upgrade.sh` refuses such a move). If the migrations were squashed, the section lists the migration names the new baseline replaces.
 - [ ] The release contains `upgrade.sh`, `scripts/pg-major.sh` and, in `setup.sh`, `operator_lock_or_inherited` and the recreate of
       the `functions` container (the steps that depend on the release live in its `setup.sh`: `CONTRIBUTING.md`, "Releases").
       `scripts/check-release-contents.sh` checks these and the `CHANGELOG.md` section when the tag is pushed.
@@ -169,14 +169,18 @@ record the result and the evidence named (command output or a timed log) in the 
 - [ ] `node scripts/doctor.mjs --local` passes; record its last line.
 - [ ] `bash scripts/tunnel.sh create` and the public check: `get-public-config` answers 200 on the public address; record the
       status code and the time.
+- [ ] Both tasks registered with `scripts/windows/register-tasks.ps1` (with `-BusId` for the USB task); record the script's read-back output.
 - [ ] The keep-alive task read back (`Get-ScheduledTask 'Warehouse WSL' | Get-ScheduledTaskInfo` and its settings): Running, both
       triggers, `IgnoreNew`, battery switches off.
-- [ ] Recovery after a reboot with nobody signed in, and after `wsl --shutdown`; record seconds until the first 200 for each.
+- [ ] Recovery after a reboot with nobody signed in (Windows auto logon off; check with `quser` or the Security log for no interactive logon), and after `wsl --shutdown`; record seconds until the first 200 for each.
 - [ ] The planned-work order of the guide end to end, including `Disable-ScheduledTask`, `Enable-ScheduledTask` and both doctor
       modes at the end; record any step that did not behave as written.
-- [ ] USB: `usbipd attach`, enrol, and one automatic run; record the run's journal summary and that the copy was verified.
-- [ ] Known gaps noted in the release note, if still open: no automatic USB re-attach after a restart, and the false `disk_low`
-      alert for the WSL kernel-tools mount.
+- [ ] USB: the "Warehouse USB" task registered, `usbipd list` shows the stick "Attached", enrol, and one automatic run; record the
+      run's journal summary and that the copy was verified.
+- [ ] The stick is "Attached" again in `usbipd list` after a reboot with nobody signed in (Windows auto logon off; check with `quser` or the Security log for no interactive logon), and after `wsl --shutdown`, and a USB run
+      after each restart succeeded (`backup-usb.sh status`); record the seconds it took.
+- [ ] Known gaps noted in the release note, if still open: a restart with no console session signed in (Windows auto logon off)
+      with the tasks registered by the script.
 
 ## Release note
 

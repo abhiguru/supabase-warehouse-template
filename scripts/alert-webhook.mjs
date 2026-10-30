@@ -24,6 +24,8 @@ export const WEBHOOK_MAX_BYTES = 2048;
 // for Alertmanager under config/monitoring/alertmanager/; a setup rerun moves it (placeWebhook).
 export const WEBHOOK_FILE = 'config/slack-webhook-url';
 export const LEGACY_WEBHOOK_FILE = 'config/monitoring/alertmanager/webhook-url';
+// The separate webhook for sensor alerts (sensors_stale and the sensor-bridge service alerts), same rules: mode 0600, never printed.
+export const SENSOR_WEBHOOK_FILE = 'config/sensor-webhook-url';
 
 export const MAX_ATTEMPTS = 3;
 export const PROMPT = company => `Slack incoming-webhook URL for ${company} alerts (create one in Slack: Apps → Incoming Webhooks):`;
@@ -132,6 +134,7 @@ export function postSlackMessage(url, text, { origin = testOrigin(), timeoutMs =
 }
 
 export const testMessage = company => `Test message from the ${company} warehouse server: Slack alerts are connected. You will get a "Monitoring is alive" message here once a day.`;
+export const sensorTestMessage = company => `Test message from the ${company} warehouse server (sensor alerts): this channel gets the sensor and sensor-bridge alerts and a "Monitoring is alive" message once a day.`;
 
 export function storedWebhook(state) {
   for (const file of [WEBHOOK_FILE, LEGACY_WEBHOOK_FILE]) {
@@ -143,27 +146,46 @@ export function storedWebhook(state) {
   return null;
 }
 
+// The stored sensor-alert webhook, or null (none, or the file does not hold a Slack URL).
+export function storedSensorWebhook(state) {
+  const path = join(state, SENSOR_WEBHOOK_FILE);
+  if (!lstatSync(path, { throwIfNoEntry: false })?.isFile()) return null;
+  const value = readFileSync(path, 'utf8').trim();
+  return SLACK_WEBHOOK_PATTERN.test(value) ? value : null;
+}
+
+// The notice printed when the facility webhook is stored and no valid sensor webhook is (null otherwise). Not an error: the
+// sensor alerts then go to the facility channel, but a separate webhook is required while sensors are on.
+export function sensorWebhookNotice(state) {
+  if (!storedWebhook(state) || storedSensorWebhook(state)) return null;
+  return 'NOTICE: Slack alerts are on and sensors are on, but no separate Slack webhook for sensor alerts is stored, and one is required: sensor alerts go to the facility channel until you set it. '
+    + 'Create a second incoming webhook (for the channel the people who watch the cold rooms follow), save its URL in a private file (mode 0600, outside the checkout) and run: '
+    + 'bash setup.sh --operator ... --sensor-webhook-file /absolute/path/to/sensor-webhook-url-file (with your usual inputs; docs/MONITORING.md, "Separate webhook for sensor alerts").';
+}
+
 // The address in an --alert-webhook-file: one Slack incoming-webhook URL. The file is the operator's
 // secret (the address carries a token), so no message here quotes its contents.
-export function alertWebhookAddress(text) {
+export function alertWebhookAddress(text, option = '--alert-webhook-file') {
   const value = text.replace(/^\uFEFF/, '').trim();
-  if (!SLACK_WEBHOOK_PATTERN.test(value)) throw new Error('--alert-webhook-file must hold one Slack incoming-webhook URL (https://hooks.slack.com/services/...).');
+  if (!SLACK_WEBHOOK_PATTERN.test(value)) throw new Error(`${option} must hold one Slack incoming-webhook URL (https://hooks.slack.com/services/...).`);
   return value;
 }
 
 // --alert-webhook-file PATH | off. Returns undefined (leave the state alone), null (remove the stored
 // address) or the address. Everything is checked before anything is written.
-export function readAlertWebhook(path, checkout) {
+export function readAlertWebhook(path, checkout, option = '--alert-webhook-file') {
   if (path === undefined) return undefined;
   if (path === 'off') return null;
-  if (!isAbsolute(path)) throw new Error('--alert-webhook-file must be an absolute path (or off).');
+  if (!isAbsolute(path)) throw new Error(`${option} must be an absolute path (or off).`);
   const st = lstatSync(path, { throwIfNoEntry: false });
-  if (!st?.isFile()) throw new Error('--alert-webhook-file must be a regular file.');
-  if (resolve(path).startsWith(checkout + sep) || realpathSync(path).startsWith(checkout + sep)) throw new Error('--alert-webhook-file must be outside the checkout.');
-  if (st.uid !== process.getuid() || (st.mode & 0o077)) throw new Error('--alert-webhook-file must be owned by this user and mode 0600 (it holds a secret address).');
-  if (st.size > WEBHOOK_MAX_BYTES) throw new Error('--alert-webhook-file is larger than 2 KB.');
-  return alertWebhookAddress(readFileSync(path, 'utf8'));
+  if (!st?.isFile()) throw new Error(`${option} must be a regular file.`);
+  if (resolve(path).startsWith(checkout + sep) || realpathSync(path).startsWith(checkout + sep)) throw new Error(`${option} must be outside the checkout.`);
+  if (st.uid !== process.getuid() || (st.mode & 0o077)) throw new Error(`${option} must be owned by this user and mode 0600 (it holds a secret address).`);
+  if (st.size > WEBHOOK_MAX_BYTES) throw new Error(`${option} is larger than 2 KB.`);
+  return alertWebhookAddress(readFileSync(path, 'utf8'), option);
 }
+// --sensor-webhook-file ABSOLUTE|off: the same rules, for the separate sensor-alert webhook.
+export const readSensorWebhook = (path, checkout) => readAlertWebhook(path, checkout, '--sensor-webhook-file');
 
 // Replaces a file through a same-directory temporary, so a reader sees the old or the new content.
 function place(path, bytes, mode) {
@@ -209,6 +231,20 @@ export function placeWebhook(state, webhook) {
   return { moved, cleaned };
 }
 
+// Throws when the sensor webhook's place in `state` is not a regular file (or absent), so configure can refuse before it changes anything else.
+export function assertSensorWebhookPlaceable(state) {
+  const st = lstatSync(join(state, SENSOR_WEBHOOK_FILE), { throwIfNoEntry: false });
+  if (st && !st.isFile()) throw new Error(`${join(state, SENSOR_WEBHOOK_FILE)} must be a regular file.`);
+}
+
+// Writes or removes the sensor webhook in `state` (undefined keeps it, null removes it, a string stores it). Returns true when the file changed.
+export function placeSensorWebhook(state, webhook) {
+  const path = join(state, SENSOR_WEBHOOK_FILE);
+  if (typeof webhook === 'string') return place(path, Buffer.from(`${webhook}\n`), 0o600);
+  if (webhook === null && lstatSync(path, { throwIfNoEntry: false })) { rmSync(path); return true; }
+  return false;
+}
+
 // What to do about the webhook: 'off' (given as off), 'file' (a path was given), 'stored' (the state has one),
 // 'prompt' (ask on the terminal: nothing given and nothing stored, or `ask` to replace the stored one) or
 // 'refuse' (it needs a terminal and there is none).
@@ -246,10 +282,20 @@ if (isMain(import.meta.url)) {
         try {
           const read = text => readHidden(text, { keepRaw: true });
           const ask = async text => { cooked(); try { return await readLine(text); } finally { tty.setRawMode(true); } };
+          // The test message uses postSlackMessage, the sender notify.mjs's Slack adapter also uses. This file must not import
+          // notify.mjs (it imports this one): a top-level await on that cycle never settles.
           writeWebhookFile(out, await obtainWebhook({ company, read, ask, write }));
         } finally { cooked(); }
         write('Slack webhook accepted; setup stores it in the state (mode 0600).\n');
       }
-    } else throw new Error('Usage: alert-webhook.mjs gate ...');
+    } else if (command === 'sensor-notice') {
+      // setup.sh, at its end: the notice when the sensors capability is on (the manifest) and the sensor webhook is missing.
+      const state = option(args, '--state-dir');
+      if (!state) throw new Error('Usage: alert-webhook.mjs sensor-notice --state-dir STATE');
+      let sensorsOn = false;
+      try { sensorsOn = JSON.parse(readFileSync(join(state, 'public/instance.json'), 'utf8'))?.capabilities?.sensors === true; } catch { /* no readable manifest: no notice */ }
+      const notice = sensorsOn ? sensorWebhookNotice(state) : null;
+      if (notice) console.log(notice);
+    } else throw new Error('Usage: alert-webhook.mjs gate|sensor-notice ...');
   } catch (error) { console.error(`Slack webhook: ${error.message}`); process.exitCode = 1; }
 }

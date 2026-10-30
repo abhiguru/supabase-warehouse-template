@@ -1,6 +1,6 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
-import { readFileSync, readdirSync } from 'node:fs';
+import { readdirSync } from 'node:fs';
 import { spawnSync } from 'node:child_process';
 import { migrationPlan } from '../scripts/migration-plan.mjs';
 
@@ -32,16 +32,4 @@ test('--through refuses an unknown name, in the plan, its command line and migra
     assert.equal(run.status, 1, args.join(' '));
     assert.match(run.stderr, /Usage: scripts\/migrate\.sh --operator \[--through/);
   }
-});
-
-test('the Baseline reload applies only the baseline before the data load and leaves 111 onward to setup', () => {
-  const doc = readFileSync(`${root}docs/OPERATOR_INSTALL.md`, 'utf8');
-  const reload = doc.slice(doc.indexOf('## Baseline reload'), doc.indexOf('## Major PostgreSQL upgrade'));
-  const step5 = reload.slice(reload.indexOf('**Step 5.'), reload.indexOf('**Step 6.'));
-  const step8 = reload.slice(reload.indexOf('**Step 8.'), reload.indexOf('**Step 9.'));
-  assert.match(step5, new RegExp(`bash scripts/migrate\\.sh --operator --through ${BASELINE.replace('.', '\\.')}`));
-  assert.doesNotMatch(step5, /migrate\.sh --operator\s+#/);
-  assert.match(step8, /111 onward/);
-  assert.match(step8, /Migration 123 would drop data/);
-  assert.match(step8, /run the same setup command again/);
 });

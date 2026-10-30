@@ -4,7 +4,8 @@ import importlib.util
 import unittest
 from types import SimpleNamespace
 
-from sensor_bridge.hub import HubError, KasaHub, dump_of, read_child, snapshot_of, to_celsius
+from sensor_bridge.hub import (HubError, KasaHub, dump_of, identity_of, read_child, require_id, snapshot_of,
+                               to_celsius)
 
 from .fakes import FAKE_PASSWORD, cid
 
@@ -99,6 +100,46 @@ class ReadChildTest(unittest.TestCase):
         self.assertNotIn("VEgy", str(data))
 
 
+def device(model="H200", kind="hub", children=(), device_id="HUB" + "1" * 37):
+    return SimpleNamespace(device_id=device_id, model=model, device_type=SimpleNamespace(value=kind),
+                           children=list(children))
+
+
+class IdentityTest(unittest.TestCase):
+    def test_a_hub_with_sensors(self):
+        ident = identity_of(device(children=[t310(1), t310(2)]), NAMES)
+        self.assertEqual((ident.hub_id, ident.model, ident.is_hub, ident.sensors), ("HUB" + "1" * 37, "H200", True, 2))
+        self.assertTrue(identity_of(device("H100"), NAMES).is_hub)
+
+    def test_a_hub_without_temperature_sensors_counts_none(self):
+        button = SimpleNamespace(device_id=cid(9), alias="S200", model="S200B", modules={"BatterySensor": object()})
+        self.assertEqual(identity_of(device(children=[button]), NAMES).sensors, 0)
+
+    def test_a_camera_or_doorbell_or_other_hub_is_not_a_hub_of_this_family(self):
+        for model, kind in (("C200", "camera"), ("D230", "camera"), ("C200", "hub"), ("H200", "camera"),
+                            ("KH100", "hub"), (None, "hub")):
+            with self.subTest(model=model, kind=kind):
+                self.assertFalse(identity_of(device(model, kind), NAMES).is_hub)
+
+    def test_a_device_without_an_id_is_an_error_never_its_address(self):
+        for missing in (None, "", "None"):
+            with self.subTest(missing=missing):
+                with self.assertRaises(HubError):
+                    identity_of(device(device_id=missing), NAMES)
+                with self.assertRaises(HubError):
+                    require_id(device(device_id=missing))
+
+    def test_poll_refuses_a_hub_without_an_id(self):
+        hub = KasaHub("192.0.2.10", "u", FAKE_PASSWORD)
+
+        async def update():
+            return None
+
+        hub._device = SimpleNamespace(update=update, device_id=None, model="H200", hw_info={}, children=[])
+        with self.assertRaises(HubError):
+            asyncio.run(hub.poll())
+
+
 class KasaHubTest(unittest.TestCase):
     def test_every_error_becomes_hub_error_without_the_login(self):
         hub = KasaHub("192.0.2.10", "owner@example.test", FAKE_PASSWORD, timeout=1)
@@ -135,6 +176,32 @@ class KasaHubTest(unittest.TestCase):
         with self.assertRaises(HubError):
             hub.dump()
         asyncio.run(hub.close())  # closing a hub that never connected is fine
+
+    @unittest.skipUnless(HAVE_KASA, "python-kasa is not installed")
+    def test_probes_never_attempt_the_less_secure_md5_login(self):
+        from kasa.transports.sslaestransport import SslAesTransport
+
+        from sensor_bridge.hub import _probe_transport
+
+        probe = _probe_transport()
+        self.assertTrue(issubclass(probe, SslAesTransport))
+        self.assertIsNot(probe.try_perform_less_secure_login, SslAesTransport.try_perform_less_secure_login)
+        bare = object.__new__(probe)  # no connection: the override must answer without touching the network
+        self.assertFalse(asyncio.run(bare.try_perform_less_secure_login("u", "p")))
+        self.assertIs(_probe_transport(), probe)
+
+    def test_a_refused_login_is_marked(self):
+        hub = KasaHub("192.0.2.10", "u", FAKE_PASSWORD)
+
+        async def refused():
+            raise type("AuthenticationError", (Exception,), {})("bad login")
+
+        with self.assertRaises(HubError) as caught:
+            asyncio.run(hub._call(refused))
+        self.assertTrue(caught.exception.login)
+        with self.assertRaises(HubError) as other:
+            asyncio.run(hub._call(lambda: asyncio.sleep(5), 0.01))
+        self.assertFalse(other.exception.login)
 
     @unittest.skipUnless(HAVE_KASA, "python-kasa is not installed")
     def test_python_kasa_names_match_what_the_bridge_uses(self):

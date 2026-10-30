@@ -69,7 +69,7 @@ address pools (about 30 networks); `docker network prune` removes unused ones.
 
 The gateway is plain nginx (`docker/nginx`; Kong until 2026-10). Only it publishes a host port, on loopback
 (`127.0.0.1:${GATEWAY_HTTP_PORT}`, default 18000; `KONG_HTTP_PORT`, the name it had, is still read), apart from the optional
-`gateway-lan` service, which publishes the host's own private address while the LAN fallback is on ([LAN fallback](#lan-fallback-plain-http-on-the-warehouse-network)). The Cloudflare Tunnel
+`gateway-lan` service, which publishes the host's own private address while the LAN fallback is on ([LAN fallback](OPERATOR_INSTALL.md#lan-fallback-plain-http-on-the-warehouse-network)). The Cloudflare Tunnel
 connector is the only ingress: nginx reads the client address from `CF-Connecting-IP` (`real_ip_header`) and trusts it
 only from the loopback hop and Docker's private ranges, with recursion off. That trust is written in the public server only
 (`templates/gateway.conf.template`), never in the routes file `api-locations.conf` that a second server shares, so a server
@@ -469,8 +469,8 @@ reading scan numbers, record the build date with the scan, and cut no release fr
   runs `npm ls --omit=dev --all`, which fails on an invalid, missing or extraneous package.
 
 **Database image rule.** The database image is the official PostgreSQL image, pinned by digest in `docker/postgres/Dockerfile`
-and bumped by Dependabot within major 18 (a new major needs a planned dump and restore on every installation; the PostgreSQL 17 to 18 move is in
-[Major PostgreSQL upgrade](OPERATOR_INSTALL.md#major-postgresql-upgrade), the 15 to 17 move in [Baseline reload](OPERATOR_INSTALL.md#baseline-reload)). The data directory is set explicitly (`PGDATA=/var/lib/postgresql/data`, the mount of the `db` service): the official 18 image defaults elsewhere. The cluster uses the `en_US.UTF-8` collation of the image's
+and bumped by Dependabot within major 18 (a new major needs a planned dump and restore on every installation; the refusals are explained in
+[Major PostgreSQL upgrade](OPERATOR_INSTALL.md#major-postgresql-upgrade)). The data directory is set explicitly (`PGDATA=/var/lib/postgresql/data`, the mount of the `db` service): the official 18 image defaults elsewhere. The cluster uses the `en_US.UTF-8` collation of the image's
 glibc, so a base-image bump that changes glibc or its locale data can change index order. Check the base image's changes
 before moving the digest, and plan a reindex if the collation changed.
 
@@ -676,7 +676,7 @@ right after `CREATE EXTENSION` (section "Privileges of extension members" at the
 
 **The old chain is refused.** `setup.sh` and `start.sh` stop before they rebuild or start anything when the database is below
 PostgreSQL 18 (`scripts/db-version-preflight.sh`; a PostgreSQL 17 database is pointed to the [Major PostgreSQL upgrade](OPERATOR_INSTALL.md#major-postgresql-upgrade), an earlier one to the reload); a database whose ledger names a migration this release does not contain
-stops `scripts/migrate.sh` with `This database recorded migrations that are not in this release (...)` (full text in
+stops `scripts/migrate.sh` with `This database recorded migrations that are not in this release (...)` (explained in
 [OPERATOR_INSTALL.md](OPERATOR_INSTALL.md#baseline-reload)) and changes nothing. `db:restore`, `db:restore-host` and `db:verify-restore` call
 `scripts/backup-image.sh` first and refuse a backup whose `database_image=` line is missing or names `supabase/postgres...`, or
 whose `roles.txt` lists a role of the earlier image, before the backup's own signature check and before anything of the

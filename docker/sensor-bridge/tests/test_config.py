@@ -104,5 +104,43 @@ class CronTest(unittest.TestCase):
                 Cron(text)
 
 
+class ScanTest(unittest.TestCase):
+    def test_default_is_the_24_of_each_private_hub_address(self):
+        c = load(env(SENSOR_BRIDGE_HUBS="10.0.0.5,10.0.0.9,10.0.1.7,hub-b.lan"))
+        self.assertEqual(c.scan, ("10.0.0.0/24", "10.0.1.0/24"))
+        self.assertEqual(c.relocate_seconds, 600)
+
+    def test_no_default_for_names_or_non_private_addresses(self):
+        self.assertEqual(load(env(SENSOR_BRIDGE_HUBS="192.0.2.10,hub-b.lan")).scan, ())
+
+    def test_off_and_explicit_networks(self):
+        self.assertEqual(load(env(SENSOR_BRIDGE_HUBS="10.0.0.5", SENSOR_BRIDGE_SCAN="off")).scan, ())
+        c = load(env(SENSOR_BRIDGE_SCAN="10.0.0.0/23, 172.16.5.0/24"))
+        self.assertEqual(c.scan, ("10.0.0.0/23", "172.16.5.0/24"))
+
+    def test_public_and_too_large_networks_are_refused_without_echoing_them(self):
+        for value in ("203.0.113.0/24", "192.0.2.0/24", "10.0.0.0/16", "10.0.0.0/8", "not-a-network", "fd00::/64"):
+            with self.assertRaises(ConfigError) as caught:
+                load(env(SENSOR_BRIDGE_SCAN=value))
+            self.assertIn("SENSOR_BRIDGE_SCAN", str(caught.exception))
+            self.assertNotIn(value, str(caught.exception))
+
+    def test_the_total_number_of_addresses_is_capped(self):
+        self.assertEqual(load(env(SENSOR_BRIDGE_SCAN="10.0.0.0/22")).scan, ("10.0.0.0/22",))
+        for value in ("10.0.0.0/22, 10.0.4.0/24", "10.0.0.0/23,10.0.2.0/23,10.0.4.0/24"):
+            with self.assertRaises(ConfigError) as caught:
+                load(env(SENSOR_BRIDGE_SCAN=value))
+            self.assertIn("at most 1024", str(caught.exception))
+        hubs = ",".join(f"10.0.{n}.5" for n in range(5))  # five derived /24s are 1280 addresses
+        with self.assertRaises(ConfigError):
+            load(env(SENSOR_BRIDGE_HUBS=hubs))
+
+    def test_relocate_seconds_range(self):
+        self.assertEqual(load(env(SENSOR_BRIDGE_RELOCATE_SECONDS="60")).relocate_seconds, 60)
+        for bad in ("59", "86401", "x"):
+            with self.assertRaises(ConfigError):
+                load(env(SENSOR_BRIDGE_RELOCATE_SECONDS=bad))
+
+
 if __name__ == "__main__":
     unittest.main()

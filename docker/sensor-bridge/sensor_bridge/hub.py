@@ -13,7 +13,14 @@ from dataclasses import asdict, dataclass
 
 
 class HubError(Exception):
-    """The hub could not be reached, refused the login, or answered something unusable."""
+    """The hub could not be reached, refused the login, or answered something unusable.
+
+    `login` is True when the device answered but refused the account's login.
+    """
+
+    def __init__(self, message: str = "", login: bool = False):
+        super().__init__(message)
+        self.login = login
 
 
 @dataclass(frozen=True)
@@ -99,6 +106,39 @@ def read_child(child, names) -> ChildReading | None:
     )
 
 
+@dataclass(frozen=True)
+class Identity:
+    """What a sweep learns about a device that logged in: only a hub of the H100/H200 family counts."""
+
+    hub_id: str
+    model: str | None
+    is_hub: bool
+    sensors: int  # children that report temperature or humidity
+
+
+HUB_MODELS = ("H100", "H200")
+PROBE_TIMEOUT = 8  # seconds for one sweep probe, so one silent address cannot hold the sweep
+
+
+def require_id(device) -> str:
+    """The device's own id; a device without one is an error (the address is never used as an id)."""
+    value = _get(device, "device_id")
+    if value in (None, "", "None"):
+        raise HubError("the device reports no id")
+    return str(value)
+
+
+def identity_of(device, names) -> Identity:
+    hub_id = require_id(device)
+    model = _get(device, "model")
+    model = model if isinstance(model, str) else None
+    kind = _get(device, "device_type")
+    kind = getattr(kind, "value", kind)
+    is_hub = kind == "hub" and bool(model) and model.upper().startswith(HUB_MODELS)
+    sensors = sum(1 for ch in (_get(device, "children") or []) if read_child(ch, names))
+    return Identity(hub_id, model, is_hub, sensors)
+
+
 def hub_id_of(device, host: str) -> str:
     value = _get(device, "device_id")
     return str(value) if value not in (None, "", "None") else host
@@ -130,6 +170,23 @@ def dump_of(device, host: str, names) -> dict:
     return {"host": host, "hub_id": snap.hub_id, "model": snap.model, "firmware": snap.firmware, "children": children}
 
 
+_PROBE = None
+
+
+def _probe_transport():
+    """python-kasa's hub transport with the MD5 "less secure" login removed (built once, imports kasa lazily)."""
+    global _PROBE
+    if _PROBE is None:
+        from kasa.transports.sslaestransport import SslAesTransport
+
+        class ProbeTransport(SslAesTransport):
+            async def try_perform_less_secure_login(self, username: str, password: str) -> bool:
+                return False
+
+        _PROBE = ProbeTransport
+    return _PROBE
+
+
 class KasaHub:
     """A Tapo hub (H100/H200) reached with python-kasa's SMART protocol over AES, login v3, HTTPS."""
 
@@ -144,11 +201,11 @@ class KasaHub:
         for secret in (self._password, self._username):
             if len(secret) >= 4:  # a shorter value would mangle ordinary words (the log filter still has it)
                 text = text.replace(secret, "***")
-        return HubError(text[:200])
+        return HubError(text[:200], login=type(exc).__name__ == "AuthenticationError")
 
-    async def _call(self, make):
+    async def _call(self, make, timeout: float | None = None):
         try:
-            return await asyncio.wait_for(make(), self.timeout)
+            return await asyncio.wait_for(make(), timeout or self.timeout)
         except HubError:
             raise
         except Exception as exc:  # noqa: BLE001 - every kasa error becomes HubError
@@ -160,27 +217,67 @@ class KasaHub:
 
         return (Module.TemperatureSensor, Module.HumiditySensor, Module.BatterySensor, Module.ReportMode)
 
+    def _config(self):
+        from kasa import (Credentials, DeviceConfig, DeviceConnectionParameters, DeviceEncryptionType,
+                          DeviceFamily)
+
+        return DeviceConfig(
+            host=self.host,
+            credentials=Credentials(self._username, self._password),
+            connection_type=DeviceConnectionParameters(
+                DeviceFamily.SmartTapoHub, DeviceEncryptionType.Aes, login_version=3, https=True),
+        )
+
     async def connect(self) -> None:
         async def go():
-            from kasa import (Credentials, Device, DeviceConfig, DeviceConnectionParameters,
-                              DeviceEncryptionType, DeviceFamily)
+            from kasa import Device
 
-            config = DeviceConfig(
-                host=self.host,
-                credentials=Credentials(self._username, self._password),
-                connection_type=DeviceConnectionParameters(
-                    DeviceFamily.SmartTapoHub, DeviceEncryptionType.Aes, login_version=3, https=True),
-            )
-            return await Device.connect(config=config)
+            return await Device.connect(config=self._config())
 
         await self.close()
         self._device = await self._call(go)
+
+    async def identify(self) -> Identity:
+        """Log in the way a sweep may (no "less secure" fallback), read what the device is, disconnect.
+
+        python-kasa's normal login falls back, for devices that ask for it, to sending an MD5 hash of the
+        password; a sweep never does that (the transport below refuses it), so a camera or router on port
+        443 learns only the account name and a challenge response. Raises HubError when the login fails.
+        """
+        async def go():
+            from kasa import DeviceFamily
+            from kasa.device_factory import get_device_class_from_family
+            from kasa.protocols.smartcamprotocol import SmartCamProtocol
+
+            # The same device class, protocol and transport as Device.connect picks for SMART.TAPOHUB over HTTPS.
+            cls = get_device_class_from_family(DeviceFamily.SmartTapoHub.value, https=True)
+            protocol = SmartCamProtocol(transport=_probe_transport()(config=self._config()))
+            device = cls(host=self.host, protocol=protocol)
+            try:
+                await device.update()
+            except BaseException:
+                await protocol.close()
+                raise
+            return device
+
+        await self.close()
+        try:
+            self._device = await self._call(go, min(self.timeout, PROBE_TIMEOUT))
+            try:
+                return identity_of(self._device, self._names())
+            except HubError:
+                raise
+            except Exception as exc:  # noqa: BLE001
+                raise self._error(exc) from None
+        finally:
+            await self.close()
 
     async def poll(self) -> HubSnapshot:
         if self._device is None:
             raise HubError("not connected")
         await self._call(self._device.update)
         try:
+            require_id(self._device)  # a hub is never known by its address
             return snapshot_of(self._device, self.host, self._names())
         except Exception as exc:  # noqa: BLE001
             raise self._error(exc) from None

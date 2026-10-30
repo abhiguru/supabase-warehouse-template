@@ -163,5 +163,30 @@ class QueueTest(unittest.TestCase):
         self.assertEqual([r["external_id"] for _, r in self.queue.take("h", 10)[2]], [cid(4), cid(5), cid(6)])
 
 
+class RekeyTest(unittest.TestCase):
+    def test_rekey_moves_readings_and_drops_the_old_status(self):
+        queue = Queue(open_db(":memory:"))
+        queue.set_hub("10.0.0.5", {"id": "10.0.0.5"})
+        queue.put("10.0.0.5", [{"external_id": "S1", "measured_at": "2026-10-03T04:00:00Z"}], 1.0)
+        queue.rekey("10.0.0.5", "HUBID")
+        self.assertEqual(queue.pending_hubs(), ["HUBID"])
+        self.assertEqual(queue.take("10.0.0.5", 10)[0], None)
+        self.assertEqual(len(queue.take("HUBID", 10)[2]), 1)
+        queue.rekey("HUBID", "HUBID")  # same key: nothing happens
+        self.assertEqual(queue.size(), 1)
+
+    def test_keep_status_moves_the_status_row_unless_the_new_key_has_one(self):
+        queue = Queue(open_db(":memory:"))
+        queue.set_hub("10.0.0.5", {"id": "HUBID", "host": "10.0.0.5"})
+        queue.rekey("10.0.0.5", "HUBID", keep_status=True)
+        self.assertEqual(queue.take("HUBID", 10)[0], {"id": "HUBID", "host": "10.0.0.5"})
+        self.assertIsNone(queue.take("10.0.0.5", 10)[0])
+        queue.set_hub("10.0.0.6", {"id": "10.0.0.6"})
+        queue.set_hub("HUBID", {"id": "HUBID", "host": "10.0.0.9"})
+        queue.rekey("10.0.0.6", "HUBID", keep_status=True)
+        self.assertEqual(queue.take("HUBID", 10)[0]["host"], "10.0.0.9", "the newer row is kept")
+        self.assertIsNone(queue.take("10.0.0.6", 10)[0])
+
+
 if __name__ == "__main__":
     unittest.main()

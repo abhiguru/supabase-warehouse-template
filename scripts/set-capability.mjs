@@ -14,6 +14,7 @@ import { randomBytes } from 'node:crypto';
 import { isAbsolute, join } from 'node:path';
 import { isDeepStrictEqual } from 'node:util';
 import { isMain } from './is-main.mjs';
+import { sensorWebhookNotice } from './alert-webhook.mjs';
 
 export const CAPABILITIES = ['sensors', 'printing'];
 const VALUES = { on: true, off: false };
@@ -87,6 +88,12 @@ if (isMain(import.meta.url)) {
       console.log('Restart the function runtime so the app is told: bash scripts/compose.sh restart functions');
       console.log('A backup taken before this change can only be restored with restore-host (npm run db:restore-host);');
       console.log('db:restore refuses a backup whose instance.json differs. Take a new backup now: npm run db:backup');
+      // Only a notice (the exit code stays 0): the sensor alerts then go to the facility channel.
+      if (result.name === 'sensors' && result.enabled) {
+        let notice = null;
+        try { notice = sensorWebhookNotice(process.env.WAREHOUSE_STATE_DIR); } catch { /* the notice is a courtesy */ }
+        if (notice) console.log(notice);
+      }
       if (result.name === 'printing' && result.enabled) console.log('The print routes still answer 503 until printing is accepted (docs/PRINTING.md).');
     }
   } catch (error) { console.error(`set-capability: ${error.message}`); process.exitCode = 1; }

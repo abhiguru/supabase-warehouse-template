@@ -2,7 +2,8 @@
 //
 //   node scripts/watch.mjs run                      one pass: checks, alerts, heartbeat (the systemd timer runs this every 5 minutes)
 //   node scripts/watch.mjs daily                    the daily backup, verification, pruning and retention (its own systemd timer runs this)
-//   node scripts/watch.mjs test-message             post a test message to the facility's Slack webhook
+//   node scripts/watch.mjs test-message [sensors]   post a test message to the facility's alert channel (sensors: the sensor-alert channel)
+//   node scripts/watch.mjs history [--days N]       the local record of alert deliveries (logs/alerts.jsonl, default 30 days)
 //   node scripts/watch.mjs status                   what is failing, muted, and when the daily jobs last ran
 //   node scripts/watch.mjs mute MINUTES ["ALERT"]   silence all alerts, or one alert id, for MINUTES
 //   node scripts/watch.mjs unmute ["ALERT"]
@@ -56,7 +57,9 @@ import { centralKeyFault, gatewayPortText, letterheadProblem, readEnv, root as c
 import { LAN_SERVICE, describeAddresses, hostHasAddress, lanOrigin, lanSettings, probeLanKeys, readHostInterfaces } from './lan-common.mjs';
 import { redactServiceLog } from './service-diagnostics.mjs';
 import { usbBackupWarning } from './usb-backup-status.mjs';
-import { postSlackMessage, storedWebhook, testMessage } from './alert-webhook.mjs';
+import { ageText, sensorCheck, sensorLimitSeconds } from './sensors-check.mjs';
+import { postSlackMessage, sensorTestMessage, testMessage } from './alert-webhook.mjs';
+import { ADAPTERS, AUDIENCES, TARGET_IDS, audienceOf, ALERT_LOG, createAlertLog, deliver, historyLine, loadTargets, pickAudience, readAlertLog, secretsOf, targetsOf } from './notify.mjs';
 
 const MIN = 60 * 1000;
 const HOUR = 60 * MIN;
@@ -91,6 +94,18 @@ export const LIMITS = {
   healUnhealthyRuns: 3, healGapMs: HOUR, healMaxPerDay: 6,
   // The state file's lock: how long a save waits for the other process, and when a lock file left by a crash is taken over.
   stateLockWaitMs: 10000, stateLockStaleMs: MIN,
+  // The 5-minute checker (not health, doctor or the daily gate) does not fail a container whose health is still "starting" for this
+  // long after its StartedAt, unless it restarted in the last hour. The slowest healthchecks in docker/docker-compose.yml (functions,
+  // cups, sensor-bridge, pdf-renderer: interval 30 s, timeout 10 s, 3 retries, start_period 30-60 s) turn "starting" into "unhealthy"
+  // after at most start_period + one interval + 3 x (interval + timeout) = about 190-200 s, so 4 minutes covers every start that
+  // ends healthy or unhealthy by itself; one still "starting" after that is stuck and fails as before. Faster checks (gateway,
+  // storage, db: 5-10 s interval) finish well inside it.
+  startingGraceMs: 4 * MIN,
+  // Containers that all got a new StartedAt within this span of each other are one whole-stack restart (host or distro restart,
+  // start.sh): it is not counted as container restarts but as one stack restart (stack_restarts). Compose and the restart policy
+  // start every container within a minute or two. A container that starts later than the run that saw the rest, but within this span
+  // of that restart's recorded time, belongs to it as well (a start in stages, or a slot between two parts).
+  stackRestartSpanMs: 5 * MIN,
 };
 export const OPTIONAL_SERVICES = ['supavisor', 'cups', 'sensor-bridge'];
 export const BACKUP_DIR_PATTERN = /^warehouse-\d{8}T\d{6}Z$/;
@@ -105,9 +120,10 @@ export const LEGACY_DAILY_ALERT = 'daily_timer_legacy';
 export const legacyDailyAdvice = (root, state) => `Run: sudo bash ${join(root, 'scripts/watch-timer.sh')} install --state ${state}`;
 
 // ---------------------------------------------------------------- redaction
-export function redact(text, env = {}, webhook = null) {
+// `secrets` is one secret address, or a list of them (every target's, from the adapters); null entries are skipped.
+export function redact(text, env = {}, secrets = null) {
   let out = redactServiceLog(String(text ?? ''), env);
-  if (webhook) out = out.split(webhook).join('[REDACTED]');
+  for (const url of [secrets].flat()) if (url) out = out.split(url).join('[REDACTED]');
   return out.replace(/https:\/\/hooks\.slack\.com\/services\/[A-Za-z0-9/]+/g, '[REDACTED]');
 }
 const clip = (text, n = 300) => (text.length > n ? `${text.slice(0, n)}...` : text);
@@ -119,9 +135,9 @@ const numOrNull = v => v === null || isNum(v);
 export const statePath = state => join(state, 'config/watch-state.json');
 export const mutesPath = state => join(state, 'config/watch-mutes.json');
 export const freshState = now => ({
-  version: 1, firstRun: now, alerts: {}, containers: {}, cpu: null, lastRunAt: null, lastHeartbeat: null,
-  lastDailyRun: {}, dailyAttempt: null, dailyRunning: null, dailySkipped: null, busySince: null, lastPostError: null,
-  memoryNote: null, heal: {}, lastSmsCheck: null,
+  version: 1, firstRun: now, alerts: {}, containers: {}, cpu: null, lastRunAt: null,
+  lastDailyRun: {}, dailyAttempt: null, dailyRunning: null, dailySkipped: null, busySince: null, delivery: {},
+  memoryNote: null, heal: {}, lastSmsCheck: null, stackRestarts: [],
   // Mutes live in their own file (loadMutes) and are filled in from it; they are never part of the run state.
   muteUntil: null, mutes: {},
 });
@@ -140,6 +156,9 @@ function normalizeAlert(id, raw, log) {
     check: fix('check', text, ''), summary: fix('summary', text, ''), detail: fix('detail', text, ''),
   };
   if (!isObj(raw)) log(`alert "${id}" was not an object and was reset`);
+  // Optional: which audience the alert's start was sent to ('facility' | 'sensors'; 'sensor' in older state files), so its repeat and clear go to the same place.
+  if (audienceOf(a.via)) out.via = audienceOf(a.via);
+  else if ('via' in a) log(`alert "${id}": field "via" had the wrong type and was reset`);
   return out;
 }
 function normalizeContainer(service, raw, log) {
@@ -150,6 +169,39 @@ function normalizeContainer(service, raw, log) {
 }
 
 // Keeps every field that has the right type and resets the others (logging each reset through log).
+// Per-target delivery records: delivery: { <targetId>: { lastError: { at, message } | null, lastHeartbeat: ms | null } }.
+// State files from before the delivery layer keep the same facts under lastPostError and lastHeartbeat (the facility's
+// Slack webhook) and lastSensorPostError and lastSensorHeartbeat (the sensor webhook): they are moved under the stable
+// target ids, and the old keys are not written again. A record in `delivery` wins over an old key.
+const errorShape = v => v === null || (isObj(v) && isNum(v.at) && typeof v.message === 'string');
+function normalizeDelivery(raw, out, log) {
+  const record = id => (out.delivery[id] ??= { lastError: null, lastHeartbeat: null });
+  const valid = new Set();   // the delivery fields that were present and well-formed: they win over the old keys
+  if ('delivery' in raw && !isObj(raw.delivery)) log('state field "delivery" had the wrong type and was reset');
+  if (isObj(raw.delivery)) {
+    for (const [id, entry] of Object.entries(raw.delivery)) {
+      // A malformed field is reset on its own; the other field of the entry is kept, and an old key can still fill the reset one.
+      if (!isObj(entry)) { log(`state field "delivery" entry "${id}" had the wrong type and was reset`); continue; }
+      const kept = { lastError: null, lastHeartbeat: null };
+      let reset = false;
+      for (const [field, ok] of [['lastError', errorShape], ['lastHeartbeat', numOrNull]]) {
+        if (!(field in entry)) continue;
+        if (ok(entry[field])) { kept[field] = entry[field]; valid.add(`${id}/${field}`); } else reset = true;
+      }
+      if (reset) log(`state field "delivery" entry "${id}" had the wrong type and was reset`);
+      out.delivery[id] = kept;
+    }
+  }
+  const legacy = [['lastPostError', TARGET_IDS.facility, 'lastError', errorShape], ['lastHeartbeat', TARGET_IDS.facility, 'lastHeartbeat', numOrNull],
+    ['lastSensorPostError', TARGET_IDS.sensors, 'lastError', errorShape], ['lastSensorHeartbeat', TARGET_IDS.sensors, 'lastHeartbeat', numOrNull]];
+  for (const [key, id, field, ok] of legacy) {
+    if (!(key in raw)) continue;
+    if (!ok(raw[key])) { log(`state field "${key}" had the wrong type and was reset`); continue; }
+    if (raw[key] === null || valid.has(`${id}/${field}`)) continue;
+    record(id)[field] = raw[key];
+  }
+}
+
 export function normalizeState(raw, now, log = () => {}) {
   const out = freshState(now);
   if (!isObj(raw)) { log('the state file is not a JSON object; starting fresh'); return out; }
@@ -158,14 +210,15 @@ export function normalizeState(raw, now, log = () => {}) {
     if (ok(raw[key])) out[key] = raw[key]; else log(`state field "${key}" had the wrong type and was reset`);
   };
   take('firstRun', isNum);
-  for (const key of ['lastRunAt', 'lastHeartbeat', 'busySince']) take(key, numOrNull);
+  for (const key of ['lastRunAt', 'busySince']) take(key, numOrNull);
   take('cpu', v => v === null || (isObj(v) && isNum(v.total) && isNum(v.idle) && isNum(v.at)));
   take('dailyRunning', v => v === null || (isObj(v) && isNum(v.startedAt)));
   take('dailySkipped', v => v === null || (isObj(v) && isNum(v.at)));
   take('dailyAttempt', v => v === null || (isObj(v) && typeof v.date === 'string' && isNum(v.count) && numOrNull(v.lastAt) && typeof v.done === 'boolean'));
-  take('lastPostError', v => v === null || (isObj(v) && isNum(v.at) && typeof v.message === 'string'));
+  normalizeDelivery(raw, out, log);
   take('memoryNote', v => v === null || typeof v === 'string');
   take('lastSmsCheck', numOrNull);
+  take('stackRestarts', v => Array.isArray(v) && v.every(isNum));   // absent in older state files: the fresh default stays
   take('heal', v => isObj(v) && Object.values(v).every(x => isObj(x) && isNum(x.unhealthyRuns) && numOrNull(x.lastAt) && typeof x.lastAction === 'string'
     && (x.actions === undefined || (Array.isArray(x.actions) && x.actions.every(isNum)))));
   take('lastDailyRun', v => isObj(v) && Object.values(v).every(x => isObj(x) && typeof x.date === 'string' && typeof x.result === 'string'));
@@ -238,6 +291,22 @@ export function withStateLock(state, fn, { waitMs = LIMITS.stateLockWaitMs, stal
   }
   try { return fn(); } finally { if (held) { try { unlinkSync(path); } catch { /* already taken over */ } } }
 }
+// For this release the state file also carries the keys of the checker before the delivery layer, mirrored from `delivery`
+// (lastPostError, lastHeartbeat, lastSensorPostError, lastSensorHeartbeat) and the old `via` values ('sensor' for the sensors
+// audience), so a rollback, or an old-code daily pass running while this one saves, keeps the heartbeat timing, the errors and
+// the alert routing. The loader prefers `delivery` and only reads these when it is missing. The mirror can go in a later release.
+export function withOldKeys(persisted) {
+  const facility = persisted.delivery?.[TARGET_IDS.facility];
+  const sensors = persisted.delivery?.[TARGET_IDS.sensors];
+  const out = {
+    ...persisted, lastPostError: facility?.lastError ?? null, lastHeartbeat: facility?.lastHeartbeat ?? null,
+    alerts: Object.fromEntries(Object.entries(persisted.alerts ?? {}).map(([id, a]) => [id, a.via === 'sensors' ? { ...a, via: 'sensor' } : a])),
+  };
+  // The old loader rejects a null lastSensorPostError, so the sensor keys are written only when they hold something.
+  if (sensors?.lastError) out.lastSensorPostError = sensors.lastError;
+  if (sensors?.lastHeartbeat != null) out.lastSensorHeartbeat = sensors.lastHeartbeat;
+  return out;
+}
 export const DAILY_KEYS = ['lastDailyRun', 'dailyAttempt', 'dailyRunning', 'dailySkipped'];
 export function saveState(state, data, api, { daily = false, readText = readFileOrNull, lock = {} } = {}) {
   const { muteUntil, mutes, ...persisted } = data;
@@ -249,7 +318,7 @@ export function saveState(state, data, api, { daily = false, readText = readFile
         for (const key of Object.keys(persisted)) if (DAILY_KEYS.includes(key) !== daily) persisted[key] = other[key];
       } catch { /* an unreadable file is replaced by ours */ }
     }
-    writeFileAtomic(statePath(state), `${JSON.stringify(persisted, null, 2)}\n`, api);
+    writeFileAtomic(statePath(state), `${JSON.stringify(withOldKeys(persisted), null, 2)}\n`, api);
   }, lock);
 }
 
@@ -317,12 +386,9 @@ export function defaultDeps(env = process.env) {
   };
 }
 
-// The facility's Slack webhook, kept by setup.sh as config/slack-webhook-url (mode 0600); an install that setup has
-// not rerun since the Alertmanager stack was removed still has it at the old path, which storedWebhook also reads.
-// Null when none is stored (--alert-webhook-file off).
-export function readWebhook(state) {
-  try { return storedWebhook(state); } catch { return null; }
-}
+// The alerts that go to the sensors audience: the sensor readings and the sensor-bridge container's own faults.
+export const isSensorAlert = id => id === 'sensors_stale' || id === 'check_error:sensors_stale'
+  || /^(service_down|container_restarts|container_oom|container_memory):sensor-bridge$/.test(id);
 
 // ---------------------------------------------------------------- context
 // `index` and not `.State.Health`: some docker CLIs run the template on the decoded JSON map and stop with
@@ -335,6 +401,10 @@ const INSPECT_FORMAT = [
 
 export function makeContext(deps, data) {
   const ctx = { ...deps, data, memo: {} };
+  // The alert channels of this installation (notify.mjs), read once; their secret addresses; the local record of deliveries.
+  ctx.targets = () => (ctx.memo.targets ??= loadTargets(deps.state));
+  ctx.secrets = () => secretsOf(ctx.targets());
+  ctx.alertLog = () => (ctx.memo.alertLog ??= deps.alertLog ?? createAlertLog(deps.state, { now: deps.now, warn: message => (deps.log ?? stderrLog)(message) }));
   ctx.env_ = () => (ctx.memo.env ??= (() => { try { return readEnv(join(deps.state, 'config/compose.env')); } catch { return {}; } })());
   ctx.compose = (args, opts) => deps.run('bash', [join(deps.root, 'scripts/compose.sh'), ...args], opts);
   // The services this installation's compose file runs by default (profile services are not expected).
@@ -406,9 +476,12 @@ export function checkDisks(ctx) {
   out.push(result('disk', 'disk_root_low', !(root < LIMITS.diskRootFreePercent), `Disk space on / ${root.toFixed(0)}% free (limit ${LIMITS.diskRootFreePercent}%)`));
   const mounts = String(ctx.readText(join(ctx.proc, 'mounts')) ?? '').split('\n').map(l => l.split(' ')).filter(p => p.length >= 3);
   const seen = new Set(mounts.filter(p => unescapeMount(p[1]) === '/').map(p => p[0]));
-  for (const [dev, mp, type] of mounts) {
+  for (const [dev, mp, type, opts = ''] of mounts) {
     const path = unescapeMount(mp);
     if (path === '/' || !['ext4', 'xfs', 'btrfs'].includes(type) || seen.has(dev) || path.startsWith('/var/lib/docker/')) continue;
+    // The stack cannot fill a read-only mount (WSL mounts full images read-only), so its free space does not matter.
+    // Skipped before seen.add so a read-only mount does not hide a later read-write mount of the same device.
+    if (opts.split(',').includes('ro')) continue;
     seen.add(dev);
     let pct;
     try { pct = free(path); } catch { continue; }   // a mount that vanished or cannot be read must not stop the other checks
@@ -494,7 +567,8 @@ function memoryFromStats(ctx, containers) {
   return ctx.memo.stats;
 }
 
-function trackOne(ctx, c, now) {
+// covered: true when this container's new start is part of a whole-stack restart (see track).
+function trackOne(ctx, c, now, covered = false) {
   const prev = ctx.data.containers[c.service];
   const st = prev ?? { restartCount: c.restartCount, startedAt: c.startedAt, events: [], oomKill: null, lastOom: null, oomStart: null, lastOomEvent: null };
   st.events = (st.events ?? []).filter(t => now - t < HOUR);
@@ -502,7 +576,7 @@ function trackOne(ctx, c, now) {
   const renewed = Boolean(prev) && (prev.id !== c.id || prev.startedAt !== c.startedAt);
   if (prev) {
     if (c.restartCount > prev.restartCount) for (let i = 0; i < c.restartCount - prev.restartCount; i++) st.events.push(now);
-    else if (c.startedAt !== prev.startedAt) st.events.push(now);
+    else if (c.startedAt !== prev.startedAt && !covered) st.events.push(now);
   }
   if (renewed) st.oomKill = null;
   st.id = c.id; st.restartCount = c.restartCount; st.startedAt = c.startedAt;
@@ -532,11 +606,38 @@ function trackOne(ctx, c, now) {
   return { c, st, memoryRatio, noCgroup: dir === null };
 }
 
+// The time (ms, the newest StartedAt) of the whole-stack restart this run sees, else null. A whole-stack restart is: at least two
+// running containers with a stored history, every one of them with a new StartedAt, those StartedAt values within stackRestartSpanMs
+// of each other, and (when the expected default-profile services are known) more than half of those services running, so a stack of
+// which most is exited or missing is not called a restart. A container whose RestartCount went up is left out of the span (it is
+// counted through its counter whatever else happens, so a crash loop cannot hide a stack restart or be hidden by one); a single
+// container or a subset restarting is not a whole-stack restart.
+export function wholeStackRestart(containers, stored, expected = null) {
+  const running = containers.filter(c => c.status === 'running' && stored[c.service]);
+  const changed = running.filter(c => c.startedAt !== stored[c.service].startedAt);
+  if (changed.length < 2 || changed.length !== running.length) return null;
+  if (expected && expected.length && containers.filter(c => c.status === 'running' && expected.includes(c.service)).length * 2 <= expected.length) return null;
+  const times = changed.filter(c => !(c.restartCount > stored[c.service].restartCount)).map(c => Date.parse(c.startedAt));
+  if (times.length < 2 || times.some(Number.isNaN)) return null;
+  return Math.max(...times) - Math.min(...times) <= LIMITS.stackRestartSpanMs ? Math.max(...times) : null;
+}
+export const isWholeStackRestart = (...args) => wholeStackRestart(...args) !== null;
+
 // One pass over the containers shared by the three container checks; keeps per-service history in the state.
 function track(ctx) {
   if (ctx.memo.tracked) return ctx.memo.tracked;
   const now = ctx.now();
-  const out = ctx.containers().map(c => trackOne(ctx, c, now));
+  const containers = ctx.containers();
+  let expected = null;
+  try { expected = ctx.expectedServices(); } catch { /* the services check reports it; the majority rule is then skipped */ }
+  // Whole-stack restarts are kept as a list of times (pruned to the last hour like a container's events) for stack_restarts.
+  const stack = (ctx.data.stackRestarts = (Array.isArray(ctx.data.stackRestarts) ? ctx.data.stackRestarts : []).filter(t => isNum(t) && now - t < HOUR));
+  const at = wholeStackRestart(containers, ctx.data.containers, expected);
+  if (at !== null) stack.push(Math.min(at, now));
+  const last = stack.length ? Math.max(...stack) : null;
+  // A start is covered when this run sees the whole stack restart, or when it lies within the span of the last recorded one.
+  const covered = c => at !== null || (last !== null && Math.abs(Date.parse(c.startedAt) - last) <= LIMITS.stackRestartSpanMs);
+  const out = containers.map(c => trackOne(ctx, c, now, covered(c)));
   // cgroup v1 or rootless Docker: the cgroup files cannot be read, so ask Docker for the memory share.
   const blind = out.filter(t => t.noCgroup);
   ctx.memo.memoryUnavailable = false;
@@ -554,6 +655,12 @@ export const checkContainerOom = ctx => track(ctx).map(({ c, st }) => {
 });
 export const checkContainerRestarts = ctx => track(ctx).map(({ c, st }) => result('container_restarts', `container_restarts:${c.service}`,
   !(st.events.length > LIMITS.restartsPerHour), `Container ${c.service} restarted ${st.events.length} times in the last hour (limit ${LIMITS.restartsPerHour})`));
+export function checkStackRestarts(ctx) {
+  track(ctx);
+  const n = ctx.data.stackRestarts.length;
+  return [result('stack_restarts', 'stack_restarts', !(n > LIMITS.restartsPerHour),
+    `The whole stack restarted ${n} times in the last hour (limit ${LIMITS.restartsPerHour})`, 'The host, WSL or Docker keeps restarting.')];
+}
 export function checkContainerMemory(ctx) {
   const tracked = track(ctx);
   const out = tracked.filter(t => t.memoryRatio !== null).map(({ c, memoryRatio }) => result('container_memory', `container_memory:${c.service}`,
@@ -574,8 +681,19 @@ export function checkServices(ctx) {
   return wanted.map(name => {
     const c = by.get(name);
     const state = c ? `${c.status}${c.health ? ` ${c.health}` : ''}` : 'missing';
-    const ok = Boolean(c) && c.status === 'running' && !['unhealthy', 'starting'].includes(c.health);
-    return result('services', `service_down:${name}`, ok, `Service ${name} is ${state}`, '', { running: c?.status === 'running' });
+    // "starting" is normal for a while after a (re)start; the checker runs seconds after a boot when its timer slot was missed.
+    // Only the 5-minute checker sets ctx.startingGrace; health, doctor and the daily gate keep counting "starting" as failing. No
+    // grace for a container that restarted in the last hour (a crash loop restarts before its healthcheck can fail), nor for a start
+    // time far in the future (the clock moved back; a little skew is allowed).
+    const age = c ? ctx.now() - Date.parse(c.startedAt) : NaN;
+    const starting = c?.health === 'starting';
+    const inWindow = age > -MIN && age < LIMITS.startingGraceMs;
+    const restarted = ctx.startingGrace && starting && inWindow && (track(ctx).find(t => t.c.service === name)?.st.events.length ?? 0) > 0;
+    const young = Boolean(ctx.startingGrace) && starting && inWindow && !restarted;
+    const ok = Boolean(c) && c.status === 'running' && (young || !['unhealthy', 'starting'].includes(c.health));
+    let detail = '';
+    if (ctx.startingGrace && starting && !young) detail = restarted ? 'It restarted in the last hour, so the start-up grace period does not apply.' : `Still starting more than ${LIMITS.startingGraceMs / MIN} minutes after it started.`;
+    return result('services', `service_down:${name}`, ok, `Service ${name} is ${state}`, detail, { running: c?.status === 'running' });
   });
 }
 
@@ -1068,13 +1186,61 @@ export function checkRootCopies(ctx) {
     `They run as root or at boot from an earlier release's recipe. Run: ${fixes.join(' ; ')}`, { repeatHours: HOST_DRIFT_REPEAT_HOURS })];
 }
 
+// ---------------------------------------------------------------- sensors
+// The `sensors` capability (public/instance.json) needs readings in the database: a bridge container can be healthy while it polls
+// hub addresses that no longer exist, so only the data says whether sensors work (scripts/sensors-check.mjs, which the doctor also
+// uses: one query, one limit, one set of rules). One alert, sensors_stale, whatever the fault; its summary names each one. Silent
+// (an empty list, so a standing alert clears) while the capability is off.
+//   Container: a missing sensor-bridge container (SENSOR_BRIDGE_HUBS set, none exists) is told here, because service_down judges only
+//   containers that exist. An existing container that is exited or unhealthy is service_down:sensor-bridge's; its stale data is told
+//   here as well (a different fault: the data), which is why the two alerts may fire together.
+//   Settling: after a host restart or a bridge start the first readings need up to the limit (3 x the larger poll or heartbeat
+//   interval + the post interval, 16 minutes by default) and the alert already needs two failing runs (10 minutes), so while the
+//   db or the sensor-bridge container has run for less than the limit the readings are not judged (nothing is returned, so a standing
+//   alert stays as it is; only a missing container is told). A container that restarted in the last hour gets no grace. A crash-looping bridge never gets past this, which is right: container_restarts and service_down say so.
+//   A bridge run as its own Compose project is not in this project's containers; the db container's age is then the grace.
+//   Database: not responding is postgres_down's alone (null: the alert stays as it is); a query that fails is the finding "could not
+//   read the sensor tables", the same text as the doctor's.
+export function checkSensors(ctx) {
+  let manifest = null;
+  try { manifest = JSON.parse(ctx.readText(join(ctx.state, 'public/instance.json')) ?? 'null'); } catch { /* no manifest: not on */ }
+  if (manifest?.capabilities?.sensors !== true) return [];
+  if (!databaseReady(ctx)) return null;
+  const env = ctx.env_();
+  const limitMs = sensorLimitSeconds(env) * 1000;
+  const now = ctx.now();
+  // No grace for a container that restarted in the last hour (the rule of checkServices), nor for a start time far in the future
+  // (the clock moved back; a little skew is allowed).
+  const tracked = track(ctx);
+  const settling = ctx.containers().some(c => ['db', 'sensor-bridge'].includes(c.service) && c.status === 'running'
+    && now - Date.parse(c.startedAt) > -MIN && now - Date.parse(c.startedAt) < limitMs
+    && !((tracked.find(t => t.c.service === c.service)?.st.events.length ?? 0) > 0));
+  const asResult = r => ({ ok: r.status === 0, output: String(r.stdout ?? '') });
+  const { limitSeconds, findings } = sensorCheck({
+    env, settling,
+    db: args => asResult(ctx.compose(['exec', '-T', '-e', 'PGOPTIONS=-c statement_timeout=10000', 'db', ...args])),
+    compose: args => asResult(ctx.compose(args)),
+  });
+  const limit = ageText(limitSeconds);
+  if (!findings.length) {
+    // Settling: nothing was judged, so a standing alert is left as it is (null), not cleared by a restart.
+    if (settling) return null;
+    return [result('sensors_stale', 'sensors_stale', true, 'Sensors: readings arrive')];
+  }
+  // The limit applies to readings only; it is left out when every finding is a missing container or an offline hub.
+  const readingsLimit = findings.some(f => /silent|no hub has ever|newest reading|no reading stored/.test(f.short)) ? ` (readings limit ${limit})` : '';
+  return [result('sensors_stale', 'sensors_stale', false, `Sensors: ${findings.map(f => f.short).join('; ')}${readingsLimit}`,
+    'See docs/SENSORS.md, Troubleshooting, and docs/TROUBLESHOOTING.md#sensors-show-no-data. node scripts/doctor.mjs --local names each fault with the command to read the bridge log.')];
+}
+
 export const CHECKS = [
   ['cpu', checkCpu], ['memory', checkMemory], ['disk', checkDisks], ['database', checkDatabase],
   ['services', checkServices], ['container_oom', checkContainerOom], ['container_restarts', checkContainerRestarts],
+  ['stack_restarts', checkStackRestarts],
   ['container_memory', checkContainerMemory], ['api_local', checkApiLocal], ['api_public', checkApiPublic], ['api_lan', checkApiLan],
   ['api_logs', checkApiLogs], ['pdf_renderer', checkPdfRenderer], ['central_key', checkCentralKey], ['letterhead', checkLetterhead], ['backups', checkBackups],
   ['restore_space', checkRestoreSpace], ['upgrade', checkUpgrade], ['sms_delivery', checkSmsDelivery], ['break_glass', checkBreakGlass], ['clock', checkClock],
-  ['cloudflared', checkCloudflared], ['host_node', checkHostNode], ['root_copies', checkRootCopies],
+  ['cloudflared', checkCloudflared], ['host_node', checkHostNode], ['root_copies', checkRootCopies], ['sensors_stale', checkSensors],
 ];
 
 // Runs every check; a throwing check becomes one failing result carrying its (redacted) error text.
@@ -1082,7 +1248,7 @@ export async function runChecks(ctx, checks = CHECKS) {
   const results = [];
   const ran = new Set();
   const env = ctx.env_();
-  const webhook = readWebhook(ctx.state);
+  const webhook = ctx.secrets();
   for (const [name, fn] of checks) {
     try {
       const list = await fn(ctx);
@@ -1294,63 +1460,95 @@ export function describe(ctx) {
   try { company = JSON.parse(ctx.readText(join(ctx.state, 'public/instance.json')) ?? '{}').companyName ?? ''; } catch { /* no manifest */ }
   return company ? `${company} (${project})` : project || ctx.state;
 }
-export function formatAlerts({ start, repeat, clear }, name, env, webhook) {
-  const text = (value, n) => clip(redact(value, env, webhook), n);
+// The channel-neutral message for one audience (notify.mjs renders it for each channel; Slack gets the same text as always).
+export function formatAlerts({ start, repeat, clear }, name, env, secrets, audience = 'facility') {
+  const text = (value, n) => clip(redact(value, env, secrets), n);
   const line = a => `- ${text(a.summary, 200)}${a.detail ? `: ${text(a.detail, 300)}` : ''}`;
-  const parts = [];
-  if (start.length) parts.push(`[FIRING] ${name}\n${start.map(line).join('\n')}`);
-  if (repeat.length) parts.push(`[STILL FIRING] ${name}\n${repeat.map(line).join('\n')}`);
-  if (clear.length) parts.push(`[CLEARED] ${name}\n${clear.map(a => `- ${text(a.summary, 200)}`).join('\n')}`);
-  return parts.join('\n\n');
+  const sections = [];
+  const add = (heading, list, format) => {
+    if (list.length) sections.push({ heading, lines: list.map(format), items: list.map(a => ({ id: a.id, summary: text(a.summary, 200) })) });
+  };
+  add('FIRING', start, line);
+  add('STILL FIRING', repeat, line);
+  add('CLEARED', clear, a => `- ${text(a.summary, 200)}`);
+  return { audience, kind: 'alerts', name, sections };
 }
 
 // ---------------------------------------------------------------- posting
-// postSlackMessage resolves with the HTTP status whatever it is: only a 2xx counts as delivered.
-export async function postOk(ctx, webhook, text) {
-  const status = await ctx.post(webhook, text);
-  if (typeof status === 'number' && !(status >= 200 && status < 300)) throw new Error(`Slack answered HTTP ${status}`);
+export const deliveryOf = (data, id) => (data.delivery[id] ??= { lastError: null, lastHeartbeat: null });
+
+// Sends `message` to the targets in `list` through notify.mjs and writes the attempt to the local alert record
+// (logs/alerts.jsonl; no URL, and a failure to write it never gets here). Resolves with one result per target; errors are
+// redacted and clipped. Never throws.
+async function sendAndRecord(ctx, list, message) {
+  const raw = await deliver({ post: ctx.post }, list, message);
+  const env = ctx.env_();
+  const secrets = ctx.secrets();
+  const results = raw.map(r => ({ target: r.target, label: r.label, ok: r.ok === true, status: r.status, error: r.ok ? undefined : clip(redact(r.error ?? 'not delivered', env, secrets), 200) }));
+  const alerts = (message.sections ?? []).flatMap(s => (s.items ?? []).map(i => ({ id: i.id, change: s.heading, summary: i.summary })));
+  ctx.alertLog().append({
+    t: new Date(ctx.now()).toISOString(), audience: message.audience, kind: message.kind, ...(alerts.length ? { alerts } : {}),
+    results: results.map(r => ({ target: r.target, ok: r.ok, ...(r.status === undefined ? {} : { status: r.status }), ...(r.error ? { error: r.error } : {}) })),
+  });
+  return results;
 }
 
 // If the state cannot be saved, say so once an hour (a stateless rule: only the run that starts in the first 5
 // minutes of an hour), then stop the run.
-async function saveOrWarn(ctx, webhook) {
+async function saveOrWarn(ctx) {
   try { saveState(ctx.state, ctx.data, ctx.fsApi); } catch (error) {
-    if (webhook && new Date(ctx.now()).getMinutes() < 5) {
-      try { await postOk(ctx, webhook, redact(`[WATCH] cannot save its state: ${error.message}`, ctx.env_(), webhook)); } catch { /* nowhere left to report */ }
+    const list = targetsOf(ctx.targets(), pickAudience(ctx.targets(), 'facility'));
+    if (list.length && new Date(ctx.now()).getMinutes() < 5) {
+      const text = redact(`[WATCH] cannot save its state: ${error.message}`, ctx.env_(), ctx.secrets());
+      try { await sendAndRecord(ctx, list, { audience: 'facility', kind: 'warning', name: describe(ctx), text }); } catch { /* nowhere left to report */ }
     }
     throw error;
   }
 }
 
-// Marks the message as sent and saves BEFORE posting, so a crash or a second process cannot post it twice; when the
-// post fails the marks are undone and saved again, and the failure is recorded for `status`.
-async function postThenKeep(ctx, webhook, text, apply, undo) {
+// Marks the message as sent and saves BEFORE sending, so a crash or a second process cannot send it twice; when no
+// target accepted it the marks are undone and saved again. Each target's own outcome is kept in data.delivery[<target id>]
+// (lastError is set by that target's failure and cleared only by its own success), so one channel's failure never hides
+// another's. With several targets for one audience the message counts as delivered when any of them took it (a retry would
+// repeat it to the others); the ones that failed still show their error.
+async function postThenKeep(ctx, list, message, apply, undo) {
   const now = ctx.now();
   apply();
-  await saveOrWarn(ctx, webhook);
-  try {
-    await postOk(ctx, webhook, text);
-    ctx.data.lastPostError = null;
-  } catch (error) {
-    undo();
-    ctx.data.lastPostError = { at: now, message: clip(redact(error.message, ctx.env_(), webhook), 200) };
-    await saveOrWarn(ctx, webhook);
-  }
+  await saveOrWarn(ctx);
+  const results = await sendAndRecord(ctx, list, message);
+  if (!results.some(r => r.ok)) undo();
+  for (const r of results) deliveryOf(ctx.data, r.target).lastError = r.ok ? null : { at: now, message: r.error };
+  if (results.some(r => !r.ok)) await saveOrWarn(ctx);
 }
 
-async function notify(ctx, webhook, plan) {
+// Sensor alerts (start, repeat and clear) go to the sensors audience when it has a target, everything else to the
+// facility's. Without a sensors target the sensor alerts go to the facility's, so nothing is lost. An alert's start
+// records where it went (`via`, an audience); its repeat and clear go to the same place, even when the routing changed
+// meanwhile (a sensor channel added or removed), unless that audience is gone: then to the one that exists.
+function audienceFor(ctx, alert, kind) {
+  const via = kind === 'start' ? undefined : ctx.data.alerts[alert.id]?.via;
+  return pickAudience(ctx.targets(), via ?? (isSensorAlert(alert.id) ? 'sensors' : 'facility'));
+}
+async function notify(ctx, plan) {
+  const parts = { facility: { start: [], repeat: [], clear: [] }, sensors: { start: [], repeat: [], clear: [] } };
+  for (const kind of ['start', 'repeat', 'clear']) for (const a of plan[kind]) parts[audienceFor(ctx, a, kind)][kind].push(a);
+  await notifyTo(ctx, parts.facility, 'facility');
+  await notifyTo(ctx, parts.sensors, 'sensors');
+}
+async function notifyTo(ctx, plan, audience) {
   const { start, repeat, clear } = plan;
-  if ((!start.length && !repeat.length && !clear.length) || !webhook) return;
+  const list = targetsOf(ctx.targets(), audience);
+  if ((!start.length && !repeat.length && !clear.length) || !list.length) return;
   const { data } = ctx;
   const now = ctx.now();
-  const text = formatAlerts(plan, describe(ctx), ctx.env_(), webhook);
-  const sent = [...start, ...repeat].map(a => [a.id, data.alerts[a.id].lastSent]);
+  const message = formatAlerts(plan, describe(ctx), ctx.env_(), ctx.secrets(), audience);
+  const sent = [...start, ...repeat].map(a => [a.id, data.alerts[a.id].lastSent, data.alerts[a.id].via]);
   const cleared = clear.map(a => [a.id, data.alerts[a.id]]);
-  await postThenKeep(ctx, webhook, text, () => {
-    for (const [id] of sent) data.alerts[id].lastSent = now;
+  await postThenKeep(ctx, list, message, () => {
+    for (const [id] of sent) { data.alerts[id].lastSent = now; data.alerts[id].via = audience; }
     for (const [id] of cleared) delete data.alerts[id];
   }, () => {
-    for (const [id, before] of sent) if (data.alerts[id]) data.alerts[id].lastSent = before;
+    for (const [id, before, viaBefore] of sent) if (data.alerts[id]) { data.alerts[id].lastSent = before; if (viaBefore === undefined) delete data.alerts[id].via; else data.alerts[id].via = viaBefore; }
     for (const [id, entry] of cleared) data.alerts[id] = entry;
   });
 }
@@ -1367,20 +1565,31 @@ export function heartbeatDue(now, last, heartbeatAt = DEFAULT_HEARTBEAT_AT) {
   const m = parseTime(heartbeatAt, DEFAULT_HEARTBEAT_AT);
   return localDate(now) !== localDate(last) && minutesOfDay(now) >= Number(m[1]) * 60 + Number(m[2]);
 }
-async function heartbeat(ctx, webhook) {
+// One heartbeat per target and calendar day (delivery[<target id>].lastHeartbeat): a failing target does not block the others.
+async function heartbeat(ctx) {
   const { data } = ctx;
   const now = ctx.now();
-  if (!webhook || !heartbeatDue(now, data.lastHeartbeat, ctx.heartbeatAt)) return;
-  const firing = Object.values(data.alerts).filter(a => a.firingSince).length;
-  const notes = [];
-  if (data.muteUntil && now < data.muteUntil) notes.push(`Alerts are muted until ${new Date(data.muteUntil).toISOString()}.`);
-  const mutedIds = Object.entries(data.mutes ?? {}).filter(([, until]) => now < until).map(([id]) => id);
-  if (mutedIds.length) notes.push(`Muted: ${mutedIds.join(', ')}.`);
-  if (notes.length) notes.push(`${listIds(NEVER_MUTED)} are never muted: they are posted anyway.`);
-  const muted = notes.length ? ` ${notes.join(' ')}` : '';
-  const text = redact(`Monitoring is alive - ${describe(ctx)}\n${firing ? `${firing} alert(s) firing.` : 'No alerts firing.'}${muted}`, ctx.env_(), webhook);
-  const before = data.lastHeartbeat;
-  await postThenKeep(ctx, webhook, text, () => { data.lastHeartbeat = now; }, () => { data.lastHeartbeat = before; });
+  const firingOf = keep => Object.entries(data.alerts).filter(([id, a]) => a.firingSince && keep(id)).length;
+  for (const target of ctx.targets()) {
+    const before = data.delivery[target.id]?.lastHeartbeat ?? null;
+    if (!heartbeatDue(now, before, ctx.heartbeatAt)) continue;
+    let text;
+    if (target.audience === 'sensors') {
+      const firing = firingOf(isSensorAlert);
+      text = `Monitoring is alive (sensor alerts) - ${describe(ctx)}\n${firing ? `${firing} sensor alert(s) firing.` : 'No sensor alerts firing.'}`;
+    } else {
+      const firing = firingOf(() => true);
+      const notes = [];
+      if (data.muteUntil && now < data.muteUntil) notes.push(`Alerts are muted until ${new Date(data.muteUntil).toISOString()}.`);
+      const mutedIds = Object.entries(data.mutes ?? {}).filter(([, until]) => now < until).map(([id]) => id);
+      if (mutedIds.length) notes.push(`Muted: ${mutedIds.join(', ')}.`);
+      if (notes.length) notes.push(`${listIds(NEVER_MUTED)} are never muted: they are posted anyway.`);
+      const muted = notes.length ? ` ${notes.join(' ')}` : '';
+      text = `Monitoring is alive - ${describe(ctx)}\n${firing ? `${firing} alert(s) firing.` : 'No alerts firing.'}${muted}`;
+    }
+    const message = { audience: target.audience, kind: 'heartbeat', name: describe(ctx), text: redact(text, ctx.env_(), ctx.secrets()) };
+    await postThenKeep(ctx, [target], message, () => { deliveryOf(data, target.id).lastHeartbeat = now; }, () => { deliveryOf(data, target.id).lastHeartbeat = before; });
+  }
 }
 
 // The daily window starts at the latest local occurrence of dailyAt that is not after now and lasts 6 hours. Its
@@ -1589,10 +1798,10 @@ function keptNote(prune) {
 }
 
 // Records one finished pass; returns whether today's backup is done (made and verified).
-function recordDaily(ctx, data, outcome, attempt, webhook) {
+function recordDaily(ctx, data, outcome, attempt, secrets) {
   const now = ctx.now();
   const env = ctx.env_();
-  const clean = text => redact(text, env, webhook);
+  const clean = text => redact(text, env, secrets);
   const date = localDate(now);
   const { backup, verify } = outcome;
   const name = backup.dir ? backup.dir.split('/').pop() : '';
@@ -1622,7 +1831,7 @@ function recordDaily(ctx, data, outcome, attempt, webhook) {
   return backupOk;
 }
 
-export async function runDaily(ctx, data, healthy, runner = dailyRunner, webhook = null) {
+export async function runDaily(ctx, data, healthy, runner = dailyRunner, secrets = null) {
   const now = ctx.now();
   if (data.dailyRunning) {
     if (now >= data.dailyRunning.startedAt && now - data.dailyRunning.startedAt < LIMITS.jobStaleMs) return;
@@ -1646,10 +1855,10 @@ export async function runDaily(ctx, data, healthy, runner = dailyRunner, webhook
     outcome = { backup: { result: 'failed', message: `the daily run crashed: ${error.message}` }, verify: { result: 'skipped' }, prune: { result: 'skipped' }, retention: { result: 'skipped', message: 'retention not run: the daily run crashed' } };
   }
   data.dailyRunning = null;
-  if (outcome.skipped) { data.dailySkipped = { at: now, reason: redact(outcome.skipped, ctx.env_(), webhook) }; saveState(ctx.state, data, ctx.fsApi, { daily: true }); return; }
+  if (outcome.skipped) { data.dailySkipped = { at: now, reason: redact(outcome.skipped, ctx.env_(), secrets) }; saveState(ctx.state, data, ctx.fsApi, { daily: true }); return; }
   data.dailySkipped = null;
   attempt.count += 1; attempt.lastAt = now;
-  attempt.done = recordDaily(ctx, data, outcome, attempt.count, webhook);
+  attempt.done = recordDaily(ctx, data, outcome, attempt.count, secrets);
   saveState(ctx.state, data, ctx.fsApi, { daily: true });
 }
 
@@ -1712,7 +1921,7 @@ export async function runOnce(deps, { checks = CHECKS, heal = selfHeal } = {}) {
   const data = loadState(deps.state, now, deps.readText, deps.log);
   Object.assign(data, loadMutes(deps.state, deps.readText));
   const ctx = makeContext(deps, data);
-  const webhook = readWebhook(deps.state);
+  ctx.startingGrace = true;   // only this run tolerates a young "starting" container (see checkServices)
   // A checker unit from before the split still carries the daily time: the backup then runs below, inside this run.
   const legacy = Boolean(deps.env?.WAREHOUSE_WATCH_DAILY_AT);
   let stuck = false;
@@ -1752,14 +1961,15 @@ export async function runOnce(deps, { checks = CHECKS, heal = selfHeal } = {}) {
   ran.add('daily_timer');   // every run, so the alert clears once the unit is replaced
   data.lastRunAt = now;
   const plan = evaluate(data, results, ran, now);
-  await notify(ctx, webhook, plan);
-  await heartbeat(ctx, webhook);
+  await notify(ctx, plan);
+  await heartbeat(ctx);
   saveState(deps.state, data, deps.fsApi);
+  ctx.alertLog().ensure();   // the record exists after the first run, whether or not a channel is set
   await pingExternalHeartbeat(ctx);
   // The old unit's pass, as it always ran (the old unit allows it 4 hours): after the checks, the alert and the ping, so none
   // of them waits for it and a crash of the pass loses nothing already saved.
   if (legacy && !stuck && !passHolds) {
-    await runDaily(ctx, data, dailyHealthy(results), dailyRunner, webhook);
+    await runDaily(ctx, data, dailyHealthy(results), dailyRunner, ctx.secrets());
     saveState(deps.state, data, deps.fsApi, { daily: true });
   }
   return { results, plan, data };
@@ -1771,22 +1981,22 @@ export const DAILY_GATE_CHECKS = [['database', checkDatabase], ['services', chec
 export async function runDailyCommand(deps, { checks = DAILY_GATE_CHECKS, daily = dailyRunner } = {}) {
   const data = loadState(deps.state, deps.now(), deps.readText, deps.log);
   const ctx = makeContext(deps, data);
-  const webhook = readWebhook(deps.state);
   // This unit never runs twice at once (systemd does not start an active oneshot), so a pass the state calls running while
   // nothing holds the operator lock was cut off (a power cut, a killed unit): clear the mark now instead of after 4 hours,
   // or the day's backup waits for the next trigger after that.
   if (data.dailyRunning && !lockIsHeld(ctx)) data.dailyRunning = null;
-  await runDaily(ctx, data, async () => dailyHealthy((await runChecks(ctx, checks)).results), daily, webhook);
+  await runDaily(ctx, data, async () => dailyHealthy((await runChecks(ctx, checks)).results), daily, ctx.secrets());
   saveState(deps.state, data, deps.fsApi, { daily: true });
   return { data };
 }
 
 // ---------------------------------------------------------------- commands
-const USAGE = `Usage: node scripts/watch.mjs run | daily | health [--wait SECONDS] | test-message | status | mute MINUTES ["ALERT ID"] | unmute ["ALERT ID"]
+const USAGE = `Usage: node scripts/watch.mjs run | daily | health [--wait SECONDS] | test-message [sensors] | history [--days N] | status | mute MINUTES ["ALERT ID"] | unmute ["ALERT ID"]
   run           one pass of the checks (the systemd timer runs this every 5 minutes); it makes no backup, except under an old checker unit that sets WAREHOUSE_WATCH_DAILY_AT (daily_timer_legacy)
   daily         the daily backup, verification, pruning and retention, inside the window after --daily-at (its own timer runs this)
   health        the operator health check now: services, database, gateway, get_public_config RPC probe, PDF renderer (exit 1 on a fault; --wait: seconds to wait for the gateway, default 90)
-  test-message  post a test message to the facility's Slack webhook
+  test-message  post a test message to the facility's alert channel (test-message sensors: to the separate sensor-alert channel)
+  history       the local record of alert deliveries (logs/alerts.jsonl, 12 months): when, which alerts, which channel, delivered or failed; --days N (default 30)
   status        failing alerts, mutes, the daily jobs and the time zone
   mute          silence all alerts (or one alert id, quoted when it has spaces) for MINUTES; backup_missing and backup_failed are never muted
   unmute        end the mute (all, or one alert id)
@@ -1797,9 +2007,15 @@ newest 7 backups of this installation in $STATE/backups (backups made by hand th
 newest one that passed its verify; pruning and retention run even when the day's backup or verify failed.
 Needs WAREHOUSE_STATE_DIR. Install the timer with: sudo bash scripts/watch-timer.sh install`;
 
-function statusLines(ctx, webhook, now) {
+// "Slack" (the labels of the audience's targets), or null when it has none. Never the address.
+const channelsText = (ctx, audience) => {
+  const labels = targetsOf(ctx.targets(), audience).map(t => `${ADAPTERS[t.type].label} configured`);
+  return labels.length ? labels.join(', ') : null;
+};
+function statusLines(ctx, now) {
   const { data } = ctx;
-  const lines = [`Installation: ${describe(ctx)}`, `Slack webhook: ${webhook ? 'configured' : 'none (alerts are recorded, not posted)'}`];
+  const lines = [`Installation: ${describe(ctx)}`, `Alert channel: ${channelsText(ctx, 'facility') ?? 'none (alerts are recorded, not posted)'}`,
+    `Sensor alert channel: ${channelsText(ctx, 'sensors') ?? 'none (sensor alerts go to the facility channel)'}`];
   let external;
   try { external = readHeartbeatUrl(ctx.state); } catch { external = { problem: 'cannot be read' }; }
   lines.push(`External heartbeat: ${external.problem ? `not sent (${external.problem})` : external.url ? 'configured (pinged at the end of each run)' : 'none (config/heartbeat-url)'}`);
@@ -1830,8 +2046,12 @@ function statusLines(ctx, webhook, now) {
   if (attempt) lines.push(`Daily pass ${attempt.date}: ${attempt.count} of ${LIMITS.dailyAttempts} attempts${attempt.done ? ', done' : ''}`);
   if (data.dailySkipped) lines.push(`Daily pass last skipped at ${new Date(data.dailySkipped.at).toISOString()}: ${data.dailySkipped.reason}`);
   if (data.memoryNote) lines.push(`Note: ${data.memoryNote}`);
-  if (data.lastPostError) lines.push(`Last Slack post failed at ${new Date(data.lastPostError.at).toISOString()}: ${data.lastPostError.message}`);
-  lines.push(`Last heartbeat: ${data.lastHeartbeat ? new Date(data.lastHeartbeat).toISOString() : 'never'}`);
+  // The same wording as before the delivery layer: "Last Slack post failed" (facility) and "Last sensor Slack post failed".
+  for (const audience of AUDIENCES) {
+    const failed = data.delivery[TARGET_IDS[audience]]?.lastError;
+    if (failed) lines.push(`Last ${audience === 'sensors' ? 'sensor ' : ''}${ADAPTERS.slack.label} post failed at ${new Date(failed.at).toISOString()}: ${failed.message}`);
+  }
+  lines.push(`Last heartbeat: ${data.delivery[TARGET_IDS.facility]?.lastHeartbeat ? new Date(data.delivery[TARGET_IDS.facility].lastHeartbeat).toISOString() : 'never'}`);
   return lines;
 }
 
@@ -1882,16 +2102,30 @@ export async function main(argv, deps = defaultDeps(), out = text => console.log
     out(`recorded ${name} as verified`);
     return 0;
   }
+  if (command === 'history') {
+    if (args.length && !(args.length === 2 && args[0] === '--days' && /^\d{1,4}$/.test(args[1]) && Number(args[1]) > 0)) { out('history takes only --days N (1 to 9999).'); return 1; }
+    const days = args.length ? Number(args[1]) : 30;
+    let entries;
+    try { entries = readAlertLog(deps.state, { days, now }); } catch (error) { err(`cannot read ${join(deps.state, ALERT_LOG)} (${error?.code ?? 'error'})`); return 1; }
+    out(entries.length ? entries.map(historyLine).join('\n') : `No alert deliveries are recorded for the last ${days} day${days === 1 ? '' : 's'}.`);
+    return 0;
+  }
   const ctx = makeContext(deps, Object.assign(loadState(deps.state, now, deps.readText), loadMutes(deps.state, deps.readText)));
-  const webhook = readWebhook(deps.state);
   if (command === 'test-message') {
-    if (!webhook) { out('No Slack webhook is configured for this installation; nothing was sent.'); return 1; }
-    const status = await ctx.post(webhook, testMessage(describe(ctx)));
-    out(`Slack answered HTTP ${status}.`);
-    return status >= 200 && status < 300 ? 0 : 1;
+    const sensors = args[0] === 'sensors';
+    const list = targetsOf(ctx.targets(), sensors ? 'sensors' : 'facility');
+    if (!list.length) {
+      out(sensors ? 'No sensor alert channel is configured for this installation; nothing was sent (sensor alerts go to the facility channel).' : 'No alert channel is configured for this installation; nothing was sent.');
+      return 1;
+    }
+    const text = (sensors ? sensorTestMessage : testMessage)(describe(ctx));
+    const results = await sendAndRecord(ctx, list, { audience: sensors ? 'sensors' : 'facility', kind: 'test', name: describe(ctx), text });
+    // As before the delivery layer: an answer is said on the normal output, a network error on standard error as "Watch: ...".
+    for (const r of results) { if (r.status === undefined) err(`Watch: ${r.error}`); else out(`${r.label} answered HTTP ${r.status}.`); }
+    return results.every(r => r.ok) ? 0 : 1;
   }
   const data = ctx.data;
-  if (command === 'status') { out(statusLines(ctx, webhook, now).join('\n')); return 0; }
+  if (command === 'status') { out(statusLines(ctx, now).join('\n')); return 0; }
   if (command === 'mute') {
     const minutes = Number(args[0]);
     if (!Number.isFinite(minutes) || minutes <= 0 || minutes > 60 * 24 * 14) { out('mute needs MINUTES (1 to 20160).'); return 1; }

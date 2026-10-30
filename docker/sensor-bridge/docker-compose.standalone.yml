@@ -8,6 +8,7 @@ services:
     build:
       context: ${SENSOR_BRIDGE_SOURCE:-.}
     restart: unless-stopped
+    # Every setting, including SENSOR_BRIDGE_SCAN and SENSOR_BRIDGE_RELOCATE_SECONDS, comes from this file.
     env_file:
       - sensor-bridge.env
     volumes:

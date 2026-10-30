@@ -205,7 +205,6 @@ const components = [
         ['scripts/doctor.mjs', 'the port preflight accepts the installation\'s own kong container (an upgrade from the Kong release)'],
         ['tests/doctor.test.mjs', 'tests that port preflight with a kong container'],
         ['docs/CONTAINER_SECURITY.md', 'compares the gateway with Kong'],
-        ['docs/OPERATOR_INSTALL.md', 'the upgrade note and the old port name'],
         ['tests/compose-networks.test.mjs', 'a comment on why `dns_search` was once needed'],
         ['tests/configure.test.mjs', 'tests the old port name'],
         ['scripts/tunnel.sh', 'create reads KONG_HTTP_PORT as the fallback of GATEWAY_HTTP_PORT, as doctor-common.mjs does'],

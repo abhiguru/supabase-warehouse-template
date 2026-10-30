@@ -73,6 +73,22 @@ class Queue:
                             (payload, hub_key))
             return True
 
+    def rekey(self, old: str, new: str, keep_status: bool = False) -> None:
+        """Move a hub's queued readings to a new key.
+
+        The old status row is dropped (the caller sets the new one), except with keep_status, which moves it
+        to the new key when that has none: state written before hubs were keyed by id has a status row under
+        the address, and readings cannot be sent without a status row (see Delivery.tick).
+        """
+        if old == new:
+            return
+        with self.db:
+            self.db.execute("UPDATE outbox SET hub_key=? WHERE hub_key=?", (new, old))
+            if keep_status and self.db.execute("SELECT 1 FROM hub_status WHERE hub_key=?", (new,)).fetchone() is None:
+                self.db.execute("UPDATE hub_status SET hub_key=? WHERE hub_key=?", (new, old))
+            else:
+                self.db.execute("DELETE FROM hub_status WHERE hub_key=?", (old,))
+
     def pending_hubs(self) -> list[str]:
         rows = self.db.execute(
             "SELECT hub_key FROM hub_status WHERE version > sent_version "

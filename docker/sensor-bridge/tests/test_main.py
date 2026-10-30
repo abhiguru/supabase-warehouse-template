@@ -113,5 +113,33 @@ class LoggingTest(unittest.TestCase):
         self.assertRegex(text, r"^\d{4}-\d\d-\d\dT\d\d:\d\d:\d\dZ INFO event=x")
 
 
+class ForgetHubTest(unittest.TestCase):
+    def test_it_clears_what_was_learned_for_one_entry_and_nothing_else(self):
+        from sensor_bridge.queue import open_db
+        from sensor_bridge.state import ChangeDetector
+
+        with tempfile.TemporaryDirectory() as tmp:
+            path = os.path.join(tmp, "bridge.sqlite3")
+            db = open_db(path)
+            detector = ChangeDetector(db, 300)
+            for key, value in (("hub_id:192.0.2.10", "HUB-A"), ("host_of:HUB-A", "192.0.2.10 192.0.2.34"),
+                               ("hub_id:192.0.2.11", "HUB-B")):
+                detector.set(key, value)
+            db.close()
+            settings = env(SENSOR_BRIDGE_HUBS="192.0.2.10,192.0.2.11", SENSOR_BRIDGE_QUEUE_PATH=path,
+                           SENSOR_INGEST_URL=None, SENSOR_INGEST_KEY=None)
+            code, out, _ = run(["--forget-hub", "192.0.2.10"], settings)
+            self.assertEqual((code, "HUB-A" in out), (0, True))
+            db = open_db(path)
+            detector = ChangeDetector(db, 300)
+            self.assertFalse(detector.get("hub_id:192.0.2.10"))
+            self.assertFalse(detector.get("host_of:HUB-A"))
+            self.assertEqual(detector.get("hub_id:192.0.2.11"), "HUB-B")
+            db.close()
+            code, out, _ = run(["--forget-hub", "192.0.2.99"], settings)
+            self.assertEqual(code, 1)
+            self.assertIn("not in SENSOR_BRIDGE_HUBS", out)
+
+
 if __name__ == "__main__":
     unittest.main()

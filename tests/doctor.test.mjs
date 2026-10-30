@@ -13,9 +13,9 @@ test('operator configuration requires canonical HTTPS origins and supported Node
 // testvm2 F1 / known issue 3: a pre-created state under a root-owned parent passed
 // the preflight and then failed with EACCES when setup staged its files next to it.
 import { mkdtempSync, mkdirSync, writeFileSync, chmodSync, rmSync, utimesSync } from 'node:fs';
-import { tmpdir } from 'node:os';
+import { tmpdir, userInfo } from 'node:os';
 import { join } from 'node:path';
-import { checkStatePlacement, checkerWarnings, CHECKER_MAX_AGE_MS, NO_WEBHOOK_WARNING, stoppedWarning, timerUnit, dailyTimerUnit, freeSpaceVerdict } from '../scripts/doctor.mjs';
+import { checkStatePlacement, checkerWarnings, CHECKER_MAX_AGE_MS, NO_WEBHOOK_WARNING, NO_SENSOR_WEBHOOK_WARNING, INVALID_SENSOR_WEBHOOK_WARNING, SAME_SENSOR_WEBHOOK_WARNING, stoppedWarning, timerUnit, dailyTimerUnit, freeSpaceVerdict } from '../scripts/doctor.mjs';
 
 test('a fresh install refuses a state whose parent is not writable, naming the fix', { skip: process.getuid() === 0 && 'root can write anywhere' }, () => {
   const base = mkdtempSync(join(tmpdir(), 'state-parent-'));
@@ -337,6 +337,7 @@ function checkerState({ webhook = true, ran = null, daily = null } = {}) {
   const base = mkdtempSync(join(tmpdir(), 'doctor-checker-'));
   const state = join(base, 'acme');
   mkdirSync(join(state, 'config'), { recursive: true });
+  mkdirSync(join(state, 'public'), { recursive: true });
   writeFileSync(join(state, 'config/compose.env'), 'WAREHOUSE_PROJECT_NAME=warehouse-acme\n', { mode: 0o600 });
   if (webhook) writeFileSync(join(state, 'config/slack-webhook-url'), `${HOOK}\n`, { mode: 0o600 });
   if (ran !== null) {
@@ -681,4 +682,139 @@ test('doctor refuses at once, without waiting, when the docker CLI is missing', 
   assert.match(run.stderr, /Missing or unavailable prerequisite: docker Compose\./);
   assert.doesNotMatch(run.stderr, /Waiting for the Docker daemon/);
   assert.ok(Date.now() - started < 20000, 'it waited');
+});
+
+// The separate sensor-alert webhook (docs/MONITORING.md).
+test('doctor warns when facility Slack and sensors are on but no sensor webhook is stored, and when both hold the same URL', () => {
+  const now = Date.now();
+  const f = checkerState({ ran: now - 60 * 1000 });
+  try {
+    const opts = { now, timerActive: () => true };
+    const sensorsOn = on => writeFileSync(join(f.state, 'public/instance.json'), JSON.stringify({ capabilities: { sensors: on } }));
+    sensorsOn(false);
+    assert.deepEqual(checkerWarnings(f.state, opts), [], 'sensors off: silent');
+    sensorsOn(true);
+    assert.deepEqual(checkerWarnings(f.state, opts), [NO_SENSOR_WEBHOOK_WARNING]);
+    assert.match(NO_SENSOR_WEBHOOK_WARNING, /^Sensors are on and Slack alerts are on, but no separate sensor webhook is set: sensor alerts go to the facility channel\. Set one with setup\.sh --sensor-webhook-file/);
+    writeFileSync(join(f.state, 'config/sensor-webhook-url'), `${HOOK}\n`, { mode: 0o600 });
+    assert.deepEqual(checkerWarnings(f.state, opts), [SAME_SENSOR_WEBHOOK_WARNING]);
+    writeFileSync(join(f.state, 'config/sensor-webhook-url'), `${HOOK.replace('B0000000', 'B0000001')}\n`, { mode: 0o600 });
+    assert.deepEqual(checkerWarnings(f.state, opts), [], 'a separate sensor webhook: silent');
+    assert.ok(![NO_SENSOR_WEBHOOK_WARNING, SAME_SENSOR_WEBHOOK_WARNING].some(text => text.includes('hooks.slack.com')), 'the warnings never quote a URL');
+  } finally { rmSync(f.base, { recursive: true, force: true }); }
+});
+
+test('doctor says nothing about the sensor webhook when no facility webhook is stored', () => {
+  const now = Date.now();
+  const f = checkerState({ webhook: false, ran: now - 60 * 1000 });
+  try {
+    writeFileSync(join(f.state, 'public/instance.json'), JSON.stringify({ capabilities: { sensors: true } }));
+    assert.deepEqual(checkerWarnings(f.state, { now, timerActive: () => true }), [NO_WEBHOOK_WARNING]);
+  } finally { rmSync(f.base, { recursive: true, force: true }); }
+});
+
+test('doctor says the sensor webhook file is invalid (not "not set") when it exists but holds no Slack URL', () => {
+  const now = Date.now();
+  const f = checkerState({ ran: now - 60 * 1000 });
+  try {
+    writeFileSync(join(f.state, 'public/instance.json'), JSON.stringify({ capabilities: { sensors: true } }));
+    writeFileSync(join(f.state, 'config/sensor-webhook-url'), 'not a webhook\n', { mode: 0o600 });
+    assert.deepEqual(checkerWarnings(f.state, { now, timerActive: () => true }), [INVALID_SENSOR_WEBHOOK_WARNING]);
+    assert.match(INVALID_SENSOR_WEBHOOK_WARNING, /sensor webhook file .* is not a valid Slack webhook/);
+    assert.ok(!INVALID_SENSOR_WEBHOOK_WARNING.includes('not a webhook\n'));
+  } finally { rmSync(f.base, { recursive: true, force: true }); }
+});
+
+test('doctor warns when the latest post to the sensor webhook failed within 24 hours, and not for an old failure or sensors off', () => {
+  const now = Date.now();
+  const f = checkerState({ ran: now - 60 * 1000 });
+  try {
+    const opts = { now, timerActive: () => true };
+    writeFileSync(join(f.state, 'public/instance.json'), JSON.stringify({ capabilities: { sensors: true } }));
+    writeFileSync(join(f.state, 'config/sensor-webhook-url'), `${HOOK.replace('B0000000', 'B0000001')}\n`, { mode: 0o600 });
+    const record = at => {
+      const file = join(f.state, 'config/watch-state.json');
+      writeFileSync(file, `${JSON.stringify({ lastSensorPostError: { at, message: 'Slack answered HTTP 404' } })}\n`);
+      utimesSync(file, new Date(now - 60 * 1000), new Date(now - 60 * 1000));
+    };
+    assert.deepEqual(checkerWarnings(f.state, opts), [], 'no failure recorded: silent');
+    record(now - 2 * 60 * 60 * 1000);
+    const warnings = checkerWarnings(f.state, opts);
+    assert.equal(warnings.length, 1);
+    assert.match(warnings[0], /last post to the sensor Slack webhook failed 120 minutes ago \(Slack answered HTTP 404\)/);
+    assert.match(warnings[0], /node scripts\/watch\.mjs test-message sensors/);
+    assert.match(warnings[0], /docs\/MONITORING\.md/);
+    record(now - 25 * 60 * 60 * 1000);
+    assert.deepEqual(checkerWarnings(f.state, opts), [], 'older than 24 hours: silent');
+    record(now - 60 * 1000);
+    writeFileSync(join(f.state, 'public/instance.json'), JSON.stringify({ capabilities: { sensors: false } }));
+    assert.deepEqual(checkerWarnings(f.state, opts), [], 'sensors off: silent');
+  } finally { rmSync(f.base, { recursive: true, force: true }); }
+});
+
+test('doctor reads a failed sensor delivery from the delivery record of the sensors target (the shape the checker writes now)', () => {
+  const now = Date.now();
+  const f = checkerState({ ran: now - 60 * 1000 });
+  try {
+    const opts = { now, timerActive: () => true };
+    writeFileSync(join(f.state, 'public/instance.json'), JSON.stringify({ capabilities: { sensors: true } }));
+    writeFileSync(join(f.state, 'config/sensor-webhook-url'), `${HOOK.replace('B0000000', 'B0000001')}\n`, { mode: 0o600 });
+    const record = delivery => {
+      const file = join(f.state, 'config/watch-state.json');
+      writeFileSync(file, `${JSON.stringify({ delivery })}\n`);
+      utimesSync(file, new Date(now - 60 * 1000), new Date(now - 60 * 1000));
+    };
+    record({ 'sensors-slack': { lastError: null, lastHeartbeat: now } });
+    assert.deepEqual(checkerWarnings(f.state, opts), [], 'cleared by a later success: silent');
+    record({ 'sensors-slack': { lastError: { at: now - 2 * 60 * 60 * 1000, message: 'Slack answered HTTP 404' }, lastHeartbeat: null } });
+    const warnings = checkerWarnings(f.state, opts);
+    assert.equal(warnings.length, 1);
+    assert.match(warnings[0], /last post to the sensor Slack webhook failed 120 minutes ago \(Slack answered HTTP 404\)/);
+    record({ 'facility-slack': { lastError: { at: now - 60 * 1000, message: 'Slack answered HTTP 404' }, lastHeartbeat: null } });
+    assert.deepEqual(checkerWarnings(f.state, opts), [], 'a facility failure is not a sensor warning');
+  } finally { rmSync(f.base, { recursive: true, force: true }); }
+});
+
+test('doctor leaves out the sensor-webhook advice when setup.sh prints it itself, and keeps the other sensor webhook warnings', () => {
+  const now = Date.now();
+  const f = checkerState({ ran: now - 60 * 1000 });
+  try {
+    writeFileSync(join(f.state, 'public/instance.json'), JSON.stringify({ capabilities: { sensors: true } }));
+    const opts = { now, timerActive: () => true };
+    assert.deepEqual(checkerWarnings(f.state, opts), [NO_SENSOR_WEBHOOK_WARNING]);
+    assert.deepEqual(checkerWarnings(f.state, { ...opts, skipSensorWebhookAdvice: true }), []);
+    writeFileSync(join(f.state, 'config/sensor-webhook-url'), 'not a url\n', { mode: 0o600 });
+    assert.deepEqual(checkerWarnings(f.state, { ...opts, skipSensorWebhookAdvice: true }), [INVALID_SENSOR_WEBHOOK_WARNING], 'an invalid file is still reported');
+    writeFileSync(join(f.state, 'config/sensor-webhook-url'), `${HOOK}\n`, { mode: 0o600 });
+    assert.deepEqual(checkerWarnings(f.state, { ...opts, skipSensorWebhookAdvice: true }), [SAME_SENSOR_WEBHOOK_WARNING], 'other warnings stay');
+    const setup = readFileSync(new URL('../setup.sh', import.meta.url), 'utf8');
+    assert.match(setup, /export WAREHOUSE_SETUP_SENSOR_NOTICE=yes\nnode "\$ROOT\/scripts\/doctor\.mjs" --local\nunset WAREHOUSE_SETUP_SENSOR_NOTICE/);
+    assert.match(readFileSync(new URL('../scripts/doctor.mjs', import.meta.url), 'utf8'), /skipSensorWebhookAdvice: process\.env\.WAREHOUSE_SETUP_SENSOR_NOTICE === 'yes'/);
+  } finally { rmSync(f.base, { recursive: true, force: true }); }
+});
+
+test('doctor warns when the alert record folder or file is not writable by the operator user, with the chown fix', { skip: process.getuid() === 0 && 'root can write anywhere' }, () => {
+  const now = Date.now();
+  const f = checkerState({ ran: now - 60 * 1000 });
+  const opts = { now, timerActive: () => true };
+  try {
+    assert.deepEqual(checkerWarnings(f.state, opts), [], 'no logs folder yet: silent');
+    mkdirSync(join(f.state, 'logs'), { mode: 0o700 });
+    writeFileSync(join(f.state, 'logs/alerts.jsonl'), '', { mode: 0o600 });
+    assert.deepEqual(checkerWarnings(f.state, opts), [], 'writable: silent');
+    chmodSync(join(f.state, 'logs/alerts.jsonl'), 0o400);
+    const file = checkerWarnings(f.state, opts);
+    assert.equal(file.length, 1);
+    assert.match(file[0], /alerts\.jsonl is not writable by this user/);
+    const me = userInfo();
+    const names = (cmd, args) => spawnSync(cmd, args, { encoding: 'utf8' }).stdout.trim();
+    const expected = `sudo chown -R ${names('id', ['-un', String(me.uid)])}:${names('getent', ['group', String(me.gid)]).split(':')[0]} ${join(f.state, 'logs')}`;
+    assert.ok(file[0].endsWith(`Fix it with: ${expected}`), file[0]);
+    assert.doesNotMatch(file[0], /\$\(id/, 'the names are resolved, not left to the shell');
+    chmodSync(join(f.state, 'logs/alerts.jsonl'), 0o600);
+    chmodSync(join(f.state, 'logs'), 0o500);
+    const dir = checkerWarnings(f.state, opts);
+    assert.equal(dir.length, 1);
+    assert.match(dir[0], /\/logs is not writable by this user/);
+  } finally { try { chmodSync(join(f.state, 'logs'), 0o700); } catch { /* absent */ } rmSync(f.base, { recursive: true, force: true }); }
 });

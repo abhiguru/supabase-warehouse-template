@@ -13,6 +13,7 @@ import time
 
 from . import __version__
 from .config import EX_CONFIG, Config, ConfigError, load
+from .locate import Locator
 from .poster import Delivery, HttpPoster
 from .queue import Queue, open_db
 from .scheduler import Bridge, HubRunner
@@ -57,10 +58,18 @@ def kasa_factory(config: Config):
 def build(config: Config, hub_factory, poster=None, clock=time.time) -> Bridge:
     db = open_db(config.queue_path)
     queue, detector = Queue(db), ChangeDetector(db, config.heartbeat_seconds)
-    runners = [HubRunner(h, hub_factory(h), detector, queue, config) for h in config.hubs]
+
+    async def probe(host: str):
+        return await hub_factory(host).identify()
+
+    locator = Locator(config.scan, probe)
+    known_ids: set[str] = set()
+    runners = [HubRunner(h, hub_factory(h), detector, queue, config, locator, hub_factory, known_ids)
+               for h in config.hubs]
+    locator.runners = runners
     delivery = Delivery(queue, poster or HttpPoster(config.ingest_url, config.ingest_key), config.bridge_id,
                         config.max_batch)
-    return Bridge(runners, delivery, queue, clock, config.health_path)
+    return Bridge(runners, delivery, queue, clock, config.health_path, locator)
 
 
 async def dump(config: Config, hub_factory, out) -> bool:
@@ -84,6 +93,27 @@ async def dump(config: Config, hub_factory, out) -> bool:
     return ok
 
 
+def forget_hub(config: Config, host: str, out) -> int:
+    """Undo what the bridge learned for one configured address (a wrong claim): stop the bridge first.
+
+    Removes the stored hub id and move, so the entry starts again as never reached. The hub's queued
+    readings stay and are delivered; nothing is sent to the backend.
+    """
+    if host not in config.hubs:
+        print(f"{host} is not in SENSOR_BRIDGE_HUBS", file=out)
+        return 1
+    db = open_db(config.queue_path)
+    detector = ChangeDetector(db, config.heartbeat_seconds)
+    hub_id = detector.get(f"hub_id:{host}")
+    if not hub_id:
+        print(f"nothing learned for {host}", file=out)
+        return 0
+    detector.set(f"hub_id:{host}", "")
+    detector.set(f"host_of:{hub_id}", "")
+    print(f"forgot hub {hub_id} for {host}; start the bridge again", file=out)
+    return 0
+
+
 async def run_forever(bridge: Bridge) -> None:
     stop = asyncio.Event()
     loop = asyncio.get_running_loop()
@@ -96,12 +126,14 @@ def main(argv: list[str] | None = None, env: dict | None = None, hub_factory=Non
     parser = argparse.ArgumentParser(prog="sensor_bridge", description=__doc__)
     parser.add_argument("--once", action="store_true", help="poll every hub once, post once, exit (0 = all ok)")
     parser.add_argument("--dump", action="store_true", help="print what each hub reports; posts nothing")
+    parser.add_argument("--forget-hub", metavar="ADDRESS",
+                        help="undo what was learned for this SENSOR_BRIDGE_HUBS entry (stop the bridge first)")
     parser.add_argument("--check-config", action="store_true", help="validate the settings and exit")
     parser.add_argument("--version", action="version", version=__version__)
     args = parser.parse_args(argv)
     out = out or sys.stdout
     try:
-        config = load(env, need_ingest=not args.dump)
+        config = load(env, need_ingest=not (args.dump or args.forget_hub))
     except ConfigError as exc:
         setup_logging([])
         log.error("event=config_error reason=%s", exc)
@@ -111,6 +143,8 @@ def main(argv: list[str] | None = None, env: dict | None = None, hub_factory=Non
         print(json.dumps(config.summary(), indent=2), file=out)
         return 0
     factory = hub_factory or kasa_factory(config)
+    if args.forget_hub:
+        return forget_hub(config, args.forget_hub, out)
     if args.dump:
         return 0 if asyncio.run(dump(config, factory, out)) else 1
     bridge = build(config, factory, poster)

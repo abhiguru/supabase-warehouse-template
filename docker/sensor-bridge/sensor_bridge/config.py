@@ -3,6 +3,7 @@
 
 from __future__ import annotations
 
+import ipaddress
 import os
 import re
 import time
@@ -23,7 +24,51 @@ NUMBERS = {
     "POST_SECONDS": (60, 5, 3600),
     "HEARTBEAT_SECONDS": (300, 60, 86400),
     "MAX_BATCH": (200, 1, 500),
+    "RELOCATE_SECONDS": (600, 60, 86400),
 }
+PRIVATE_RANGES = tuple(ipaddress.ip_network(n) for n in ("10.0.0.0/8", "172.16.0.0/12", "192.168.0.0/16"))
+SCAN_MIN_PREFIX = 22  # no single network larger than this
+SCAN_MAX_ADDRESSES = 1024  # and no more than this many addresses in all
+
+
+def _private(network: ipaddress.IPv4Network) -> bool:
+    return any(network.subnet_of(p) for p in PRIVATE_RANGES)
+
+
+def parse_scan(raw: str, hubs: tuple[str, ...]) -> tuple[str, ...]:
+    """The networks the bridge may sweep for a moved hub, as CIDR strings.
+
+    'off' gives none. Empty means the /24 of every hub given as a private IPv4 address (a hub given
+    by name, or at a public or documentation address, adds nothing). Explicit entries must be private
+    (RFC 1918) IPv4 networks of /22 or smaller; all together they may cover at most 1024 addresses.
+    """
+    if raw.lower() == "off":
+        return ()
+    nets: list[ipaddress.IPv4Network] = []
+    if raw:
+        for item in (i.strip() for i in raw.split(",") if i.strip()):
+            try:
+                net = ipaddress.IPv4Network(item, strict=False)
+            except ValueError:
+                raise ConfigError("SENSOR_BRIDGE_SCAN must be 'off' or a comma-separated list of IPv4 CIDR networks") from None
+            if not _private(net):
+                raise ConfigError("SENSOR_BRIDGE_SCAN may only name private (RFC 1918) networks")
+            if net.prefixlen < SCAN_MIN_PREFIX:
+                raise ConfigError(f"SENSOR_BRIDGE_SCAN networks may be no larger than /{SCAN_MIN_PREFIX}")
+            nets.append(net)
+    else:
+        for host in hubs:
+            try:
+                net = ipaddress.IPv4Network(f"{ipaddress.IPv4Address(host)}/24", strict=False)
+            except ValueError:
+                continue
+            if _private(net):
+                nets.append(net)
+    total = sum(n.num_addresses for n in ipaddress.collapse_addresses(nets))
+    if total > SCAN_MAX_ADDRESSES:
+        raise ConfigError(f"SENSOR_BRIDGE_SCAN covers {total} addresses; at most {SCAN_MAX_ADDRESSES} are allowed "
+                          "(name fewer or smaller networks, or set it to 'off')")
+    return tuple(dict.fromkeys(str(n) for n in nets))
 
 
 class ConfigError(Exception):
@@ -93,6 +138,8 @@ class Config:
     post_seconds: int = 60
     heartbeat_seconds: int = 300
     max_batch: int = 200
+    relocate_seconds: int = 600
+    scan: tuple[str, ...] = ()
     reboot_cron: Cron | None = None
     queue_path: str = "/data/bridge.sqlite3"
     health_path: str = "/data/health.json"
@@ -114,6 +161,8 @@ class Config:
             "post_seconds": self.post_seconds,
             "heartbeat_seconds": self.heartbeat_seconds,
             "max_batch": self.max_batch,
+            "relocate_seconds": self.relocate_seconds,
+            "scan": list(self.scan) or "off",
             "reboot_cron_utc": self.reboot_cron.text if self.reboot_cron else None,
             "queue_path": self.queue_path,
             "health_path": self.health_path,
@@ -172,6 +221,7 @@ def load(env: dict | None = None, need_ingest: bool = True) -> Config:
         ingest_url=url,
         ingest_key=key,
         bridge_id=bridge_id,
+        scan=parse_scan(get("SENSOR_BRIDGE_SCAN"), hubs),
         reboot_cron=Cron(cron_text) if cron_text else None,
         queue_path=get("SENSOR_BRIDGE_QUEUE_PATH") or "/data/bridge.sqlite3",
         health_path=get("SENSOR_BRIDGE_HEALTH_PATH") or "/data/health.json",
