@@ -22,8 +22,8 @@ Sections: [host prerequisites](#host-prerequisites),
 [rotate signing keys](#rotate-signing-keys),
 [backup and restore](#backup-and-restore),
 [rerun and upgrade](#rerun-and-upgrade),
-[baseline reload](#baseline-reload) (for a database built before PostgreSQL 17; the reload builds the current major, 18),
-[major PostgreSQL upgrade](#major-postgresql-upgrade) (17 to 18),
+[baseline reload](#baseline-reload) (what the refusals that name it mean),
+[major PostgreSQL upgrade](#major-postgresql-upgrade) (a new PostgreSQL major is a manual move),
 [Windows host (Ubuntu in WSL2)](#windows-host-ubuntu-in-wsl2).
 
 ## Host prerequisites
@@ -2367,489 +2367,47 @@ with the in-place restore above.
 
 ## Baseline reload
 
-The release that introduced PostgreSQL 17 (the official `postgres:17.11-trixie` image) made the schema one migration,
-`migrations/00000000000000_baseline.sql`, in place of the chain of migrations 000 to 110 (110 files; there is no 050). A
-database built before this release (the Supabase PostgreSQL 15 image and that chain) **cannot be upgraded in place**:
-PostgreSQL 15 data files do not open in 17, the roles differ, and the ledger names files that no longer exist. Do not run
-`setup.sh` or `start.sh` of a later release on such an installation: both stop before they rebuild or start anything
-(`scripts/db-version-preflight.sh`; `setup.sh` checks before it rewrites `compose.env`), and no database, container or image is changed:
+A script that refuses with a message naming "Baseline reload" has found a database or a backup that this checkout cannot
+use as it is. Nothing was changed when it refused. Which case you have:
 
-```
-Refusing: <the running database reports server_version_num 150008 (PostgreSQL 15). | the data directory <path> holds a PostgreSQL 15 database (PG_VERSION).> This release runs PostgreSQL 18 and cannot start on that data. No database, container or image was changed. Back the installation up with the release tagged migrations-pre-baseline, then reload the data into a new PostgreSQL 18 database: docs/OPERATOR_INSTALL.md, "Baseline reload".
-```
+- **The checkout is older than the database, or the release was rebuilt on a new baseline.** The migration ledger guard
+  stops `scripts/migrate.sh`, `setup.sh` and `upgrade.sh` when the database recorded a migration the checkout does not
+  contain. `scripts/migration-plan.mjs` words it: "This database recorded migrations that are not in this release ...
+  or it is newer than this checkout (check out the release that recorded those migrations)". For `migrate.sh` and
+  `setup.sh` on a fresh installation this means the checkout is older than the database: check out the release that
+  recorded those migrations, or a later one, and run the command again. `upgrade.sh` takes a target and only moves
+  forward: it says that either the target release was rebuilt on a new baseline, which cannot be applied in place (the
+  release note of that release gives the reload), or the target is older than the release that recorded the migrations;
+  for an older target, name the release that recorded them or a later one.
+- **The database or backup was made on another database image.** `setup.sh`, `start.sh`, `rotate-keys.sh` and
+  `rotate-db-passwords.sh` (`scripts/db-version-preflight.sh`) refuse data from before PostgreSQL 17 ("... cannot start on
+  that data ..."). `db:backup` refuses a running database that is not on this release's database yet ("This installation has not been
+  moved to this release's database yet"; it names "Major PostgreSQL upgrade" and "Baseline reload"). `db:restore`, `db:restore-host` and `db:verify-restore`
+  refuse a backup made on the `supabase/postgres` image, a backup with no `database_image=` line, a dump from PostgreSQL
+  older than 17, and a backup whose `roles.txt` lists a role this version does not have. No installation made with this
+  release has such data, so a fresh install does not meet this case. The conversion procedure (a data-only dump loaded into a
+  new cluster that this release builds) is in this guide as it stands on main at commit `b45ae0b`
+  (`git show b45ae0b:docs/OPERATOR_INSTALL.md`); the old schema's migration files and the release that can restore such a
+  backup are in the git tag `migrations-pre-baseline`.
 
-(The reload below was written for the PostgreSQL 17 release; the new database it builds is the one of the release you check out in step 5, and the restore of a pre-baseline backup works the same.)
-
-`scripts/migrate.sh` run on its own against such a database stops at the ledger guard, with nothing changed:
-
-```
-This database recorded migrations that are not in this release (...). Either it was built by an earlier migration chain and cannot be migrated in place (reload it: docs/OPERATOR_INSTALL.md, "Baseline reload"), or it is newer than this checkout (check out the release that recorded those migrations).
-```
-
-The way forward is a reload: a data-only dump goes into a new cluster that this release builds. A new installation needs
-none of this. The services are down from step 4 to step 8, so plan a window. The old data directory is only moved, and the
-old database image is kept under a second tag, so the way back (step 9) stays open. The old migration files are in the git
-tag `migrations-pre-baseline`, the last release with the chain (`git show migrations-pre-baseline:migrations/<file>`).
-
-The dump holds every secret of the installation (configuration, sessions, one-time-code hashes). Keep it in a mode 0700
-directory and treat it like a backup. Use one shell for all steps; start with these helpers:
-
-```bash
-cd /path/to/installed/backend
-export WAREHOUSE_STATE_DIR=/absolute/path/to/this/warehouse
-B="$WAREHOUSE_STATE_DIR/backups/baseline-reload-$(date -u +%Y%m%dT%H%M%SZ)"; (umask 077; mkdir -p "$B")
-dbsql() { bash scripts/compose.sh exec -T db psql -X -q -U supabase_admin -d postgres -v ON_ERROR_STOP=1 "$@"; }
-cat > "$B/record.sql" <<'SQL'
-SELECT line FROM (
-  SELECT 'rows ' || table_schema || '.' || table_name || ' ' || (xpath('/row/c/text()', query_to_xml(format('SELECT count(*) AS c FROM %I.%I', table_schema, table_name), false, true, '')))[1]::text AS line
-    FROM information_schema.tables WHERE table_type = 'BASE TABLE' AND table_schema || '.' || table_name <> 'storage.migrations'
-     AND table_schema IN ('public', 'storage', 'utils', 'warehouse_maintenance', 'warehouse_security')
-  UNION ALL
-  SELECT 'sequence ' || schemaname || '.' || sequencename || ' ' || coalesce(last_value::text, 'unused') FROM pg_sequences
-   WHERE schemaname IN ('public', 'storage', 'utils', 'warehouse_maintenance', 'warehouse_security')
-  UNION ALL
-  SELECT 'trigger ' || n.nspname || '.' || c.relname || ' ' || t.tgname || ' ' || t.tgenabled::text
-    FROM pg_trigger t JOIN pg_class c ON c.oid = t.tgrelid JOIN pg_namespace n ON n.oid = c.relnamespace
-   WHERE NOT t.tgisinternal AND n.nspname IN ('public', 'storage', 'utils', 'warehouse_maintenance', 'warehouse_security')
-  UNION ALL
-  SELECT 'storage_migrations ' || count(*) FROM storage.migrations
-) s ORDER BY line COLLATE "C";
-SQL
-record() { dbsql -At < "$B/record.sql"; }
-```
-
-`record` prints the row count of every table, the sequence positions, which triggers are enabled and the number of
-Storage migrations. It is taken before and after, and the two outputs must be equal.
-
-**Step 1. Bring the installation to the last old release.** Check out `migrations-pre-baseline` first, then deploy it
-the normal way (backup, then `setup.sh`), so the database has the whole old chain. The backup comes after the checkout on
-purpose: the backup script of this release refuses a PostgreSQL 15 server, the one of the tag does not. Make sure the
-network is up: step 5 builds an image while the facility is down.
-
-```bash
-git fetch --tags origin
-(umask 022; git checkout --detach migrations-pre-baseline); bash scripts/checkout-permissions.sh
-npm run db:backup
-bash setup.sh --operator ...        # the same inputs as the installation; write them down, step 8 needs them again
-git ls-tree --name-only migrations-pre-baseline migrations/ | grep '\.sql$' | while read -r f; do printf '%s|%s\n' "${f#migrations/}" "$(git show "migrations-pre-baseline:$f" | sha256sum | cut -d' ' -f1)"; done | LC_ALL=C sort > "$B/ledger-tag.txt"
-dbsql -At -c 'SELECT name, checksum FROM warehouse_migrations.applied ORDER BY name COLLATE "C"' > "$B/ledger-db.txt"; diff "$B/ledger-tag.txt" "$B/ledger-db.txt" && echo 'ledger equals the tag'
-```
-
-Run any `sudo` command that `setup.sh` prints at its end (the checker timer: `watch-timer.sh install`; the USB backup:
-`backup-usb.sh setup`). The ledger has 110 lines (000 to 110; there is no 050). Mute the checker for the window (`node scripts/watch.mjs mute 240`);
-unmute it after step 8.
-
-**Step 2. Take the lock, a verified backup, the fingerprints and the record, with the writers stopped.** Hold the operator
-lock in this shell until step 8 (`backup.sh`, `build-images.sh` and `migrate.sh` accept the inherited lock). Database and
-Storage keep running (the file fingerprint reads the files through the Storage container). The old images are tagged so that
-a rollback uses them instead of building them again:
-
-```bash
-exec 9>"$WAREHOUSE_STATE_DIR/config/operator.lock"; flock -n 9 && echo 'operator lock held'    # stop if this prints nothing
-npm run db:backup -- "$B/backup"
-bash scripts/compose.sh --profile '*' ps --status running --services > "$B/running-services.txt"
-cp -p "$WAREHOUSE_STATE_DIR/config/compose.env" "$B/compose.env"   # the old configuration, put back by the rollback (step 9)
-P=$(sed -n 's/^WAREHOUSE_PROJECT_NAME=//p' "$WAREHOUSE_STATE_DIR/config/compose.env"); : > "$B/old-images.txt"
-while read -r s; do c=$(bash scripts/compose.sh --profile '*' ps -q "$s"); i=$(docker inspect --format '{{.Config.Image}}' "$c")
-  case "$i" in "$P-"*@*|"") continue;; "$P-"*) docker tag "$(docker inspect --format '{{.Image}}' "$c")" "$P-$s:pre-baseline" && echo "$s" >> "$B/old-images.txt";; esac
-done < "$B/running-services.txt"
-grep -qx db "$B/old-images.txt" && cp -p "$WAREHOUSE_STATE_DIR/config/image-recipes.sha256" "$B/" && echo 'old images kept'
-(cd "$B/backup" && sha256sum -c --quiet SHA256SUMS) && npm run db:verify-restore -- "$B/backup"   # must pass before anything is stopped
-dbsql -At -c "SELECT n.nspname || '.' || c.relname || ' ' || (xpath('/row/c/text()', query_to_xml(format('SELECT count(*) AS c FROM %I.%I', n.nspname, c.relname), false, true, '')))[1]::text FROM pg_class c JOIN pg_namespace n ON n.oid = c.relnamespace WHERE c.relkind IN ('r','p') AND n.nspname IN ('cron','net','graphql','graphql_public','vault','supabase_functions','realtime','_realtime','warehouse_migrations','auth') AND n.nspname || '.' || c.relname NOT IN ('auth.schema_migrations','warehouse_migrations.applied')" | awk '$2 != 0'   # must print nothing
-bash scripts/compose.sh --profile '*' stop gateway functions rest pdf-renderer supavisor cups sensor-bridge
-bash scripts/data-fingerprint.sh > "$B/fingerprint-before.txt"
-bash scripts/data-fingerprint.sh --all > "$B/fingerprint-all-before.txt"
-record > "$B/record-before.txt"
-```
-
-"old images kept" must print: it means the image of `db` was found. Any line of the schema check is a stop: those rows would
-not be carried over. Do not run `docker image prune` or `docker builder prune` until the reload is accepted.
-
-**Step 3. Dump the data only, with the old image's own `pg_dump`.** Stop Storage first:
-
-```bash
-bash scripts/compose.sh stop storage
-(umask 077; bash scripts/compose.sh exec -T db pg_dump -U supabase_admin -d postgres \
-  --data-only --format=custom --compress=6 \
-  --exclude-schema=cron --exclude-schema=net --exclude-schema=graphql --exclude-schema=graphql_public \
-  --exclude-schema=vault --exclude-schema=supabase_functions --exclude-schema=realtime --exclude-schema=_realtime \
-  --exclude-schema=warehouse_migrations --exclude-schema=auth --exclude-table=storage.migrations \
-  > "$B/data-only.dump")
-record > "$B/record-after-dump.txt"; diff "$B/record-before.txt" "$B/record-after-dump.txt" && echo 'nothing wrote during the dump'
-```
-
-If the two records differ, something wrote during the dump: start again at step 2. Do not add `--load-via-partition-root`:
-a partition that the baseline lacks must make the load fail, not re-route rows. The dump keeps the sequence positions
-(`SEQUENCE SET` entries). The schemas left out belong to the old image's extensions and services (the baseline has none of
-them), `warehouse_migrations` is the ledger (the baseline run writes it), and `auth` holds GoTrue tables that nothing uses.
-The `_supabase` database (the pooler's tenant) is no longer in backups at all; while `POOLER_ENABLED=true`, setup recreates it with the pooler's role and schema.
-
-**Step 4. Move the old data directory aside. Never delete it.** First mark the stack as stopped by you, so that a reboot or the
-checker cannot start it on the empty directory (`start.sh` and `setup.sh` remove the mark when they bring the stack up):
-
-```bash
-touch "$WAREHOUSE_STATE_DIR/config/stopped-by-operator"
-bash scripts/compose.sh --profile '*' down --remove-orphans
-D="$WAREHOUSE_STATE_DIR/data/db"; test ! -e "$D.pre-baseline" && mv -T "$D" "$D.pre-baseline" && mkdir -m 700 "$D"
-```
-
-The files in `data/storage` stay where they are; the reload does not touch them.
-
-If you copy files into `data/storage` by hand (for example to bring over the photos of another server), make the folders
-mode 755 and the files mode 644, whatever the source had. Files that keep a source mode such as 700, or that belong to
-root, make `db:backup` fail with `rsync: ... opendir "<state>/data/storage/stub/stub/<bucket>" failed: Permission denied` (rsync exit 23).
-
-**Step 5. Check out this release, build the new database, apply the baseline, let Storage migrate.**
-
-```bash
-git checkout --detach <this release>        # the tag or commit you are installing
-bash scripts/checkout-permissions.sh
-bash scripts/build-images.sh                 # builds the new db image; needs the network (if the build fails, go to step 9)
-bash scripts/compose.sh up -d --wait --wait-timeout 180 db
-bash scripts/migrate.sh --operator --through 00000000000000_baseline.sql   # applies the baseline only; the ledger gets one row
-bash scripts/compose.sh up -d --no-deps --wait --wait-timeout 180 storage
-dbsql -At -c "SELECT count(*) FROM storage.migrations"   # must equal the storage_migrations line of record-before.txt
-bash scripts/compose.sh stop storage
-```
-
-`--through` stops the migration run after the named file. Without it `migrate.sh` applies every file of the directory, and
-the files after the baseline (111 onward) must not run yet: migration 123 drops tables and columns that the old data fills,
-so the dump of step 6 would no longer load, and its guard (which refuses to drop objects that hold rows) would only look at
-the new, empty database. Step 8 applies 111 onward on the loaded data. An unknown name is refused before the database is touched.
-
-The first start of the empty data directory runs only `docker/volumes/db/00-bootstrap.sql` and `roles.sql` (no `_supabase.sql`, no `pooler.sql`, no pgbouncer role; [roles](CONTAINER_SECURITY.md#database-roles)). Storage builds its own tables in the schema `storage`. It is
-stopped again so that nothing writes during the load.
-
-**Step 6. Empty the tables the dump fills, then load.** The baseline seeded rows that the dump holds too, and
-`storage.buckets` and `storage.objects` must equal the old catalog. A check constraint added `NOT VALID` because old rows
-break it (the two blank-number checks on `dispatch` and `goodsreceived`) is still enforced while rows load, so it is
-taken off for the load and put back with the same definition, still `NOT VALID`:
-
-```bash
-bash scripts/compose.sh cp "$B/data-only.dump" db:/tmp/data-only.dump
-tables=$(bash scripts/compose.sh exec -T db pg_restore -l /tmp/data-only.dump | awk '$4=="TABLE" && $5=="DATA" {print $6"."$7}' | paste -sd, -)
-{ echo 'SET session_replication_role = replica;'; echo "TRUNCATE $tables;"; } | dbsql   # one statement for all tables; never CASCADE; replica: the history tables' TRUNCATE guards do not fire
-dbsql -At -c "SELECT format('ALTER TABLE %s ADD CONSTRAINT %I %s;', conrelid::regclass, conname, pg_get_constraintdef(oid)) FROM pg_constraint WHERE contype = 'c' AND NOT convalidated" > "$B/add-not-valid.sql"
-dbsql -At -c "SELECT format('ALTER TABLE %s DROP CONSTRAINT %I;', conrelid::regclass, conname) FROM pg_constraint WHERE contype = 'c' AND NOT convalidated" | dbsql
-bash scripts/compose.sh exec -T db pg_restore -U supabase_admin -d postgres \
-  --data-only --single-transaction --disable-triggers --exit-on-error --no-owner --no-acl /tmp/data-only.dump
-dbsql < "$B/add-not-valid.sql"
-bash scripts/compose.sh exec -T db rm /tmp/data-only.dump
-```
-
-`session_replication_role = replica` keeps the TRUNCATE guards of the history tables (and the trigger that records a
-price-table truncate) from firing. `--single-transaction` means that a failed load leaves the new database empty. To retry,
-first run `dbsql < "$B/add-not-valid.sql"` (the checks are off after a failed load), then repeat this step; do not regenerate
-`add-not-valid.sql` while the checks are off. `--disable-triggers` switches off the foreign-key triggers and the
-application triggers (audit, stock movement, number generation, direct-write guard) for the load, which is wanted: the rows
-are already consistent.
-
-**Step 7. Check the result.** The load did not check foreign keys, so check them (empty output means pass; any line is an
-orphan count other than 0), then compare the record and the fingerprints with the ones from step 2:
-
-```bash
-cat > "$B/fk-check.sql" <<'SQL'
-SELECT c.conrelid::regclass AS child, c.conname,
-       (xpath('/row/n/text()', query_to_xml(format(
-         'SELECT count(*) AS n FROM %s ch WHERE %s AND NOT EXISTS (SELECT 1 FROM %s pa WHERE %s)',
-         c.conrelid::regclass, j.nonnull, c.confrelid::regclass, j.joined), false, true, '')))[1]::text::int AS orphans
-FROM pg_constraint c
-CROSS JOIN LATERAL (
-  SELECT string_agg(format('ch.%I IS NOT NULL', ca.attname), ' AND ' ORDER BY k.ord) AS nonnull,
-         string_agg(format('pa.%I = ch.%I', fa.attname, ca.attname), ' AND ' ORDER BY k.ord) AS joined
-  FROM unnest(c.conkey, c.confkey) WITH ORDINALITY AS k(ck, fk, ord)
-  JOIN pg_attribute ca ON ca.attrelid = c.conrelid AND ca.attnum = k.ck
-  JOIN pg_attribute fa ON fa.attrelid = c.confrelid AND fa.attnum = k.fk) j
-WHERE c.contype = 'f' AND c.conparentid = 0
-ORDER BY 1, 2;
-SQL
-dbsql -At < "$B/fk-check.sql" | awk -F'|' '$3 != 0'     # empty output = pass
-dbsql -c ANALYZE                                   # a new cluster has no statistics
-record > "$B/record-after.txt"; diff "$B/record-before.txt" "$B/record-after.txt" && echo 'rows, sequences, triggers equal'
-bash scripts/compose.sh up -d --no-deps --wait --wait-timeout 180 storage
-bash scripts/data-fingerprint.sh > "$B/fingerprint-after.txt"; diff "$B/fingerprint-before.txt" "$B/fingerprint-after.txt" && echo IDENTICAL
-bash scripts/data-fingerprint.sh --all > "$B/fingerprint-all-after.txt"; diff "$B/fingerprint-all-before.txt" "$B/fingerprint-all-after.txt" && echo IDENTICAL
-```
-
-Any orphan, any `diff` output or a missing `IDENTICAL` is a stop: go to step 9. The fingerprints also cover the storage
-catalog and the stored files.
-
-**Step 8. Run setup.** With the arguments written down in step 1. It runs the migrations after the baseline (111 onward) on
-the data you loaded. Migration 123 refuses to drop a table or column that holds rows: if the old database used any of them,
-setup stops with `Migration 123 would drop data: ...` and nothing of 123 is applied (the database stays at the migrations before it). Check
-that the named data is not needed, export it if it is, empty those objects (`dbsql -c 'TRUNCATE <table>'`, or set the named
-column to NULL), and run the same setup command again. If you cannot decide, go to step 9: the old database is untouched. It is idempotent, sets the role passwords and the
-configuration, and starts the core services. Release the lock first (setup takes it again; it also accepts a lock this shell still holds,
-checking that it really holds it), then start the optional
-services that ran before. The pooler exists only while it is turned on, and the new cluster has no `_supabase` database, so setup
-keeps the pooler secrets and records it off (it prints the path of a saved copy of `compose.env`). If `supavisor` was in
-`running-services.txt`, turn the pooler on with `pooler.sh on` instead of starting it with `up`:
-
-```bash
-exec 9>&-
-bash setup.sh --operator ...
-bash scripts/compose.sh --profile '*' up -d --wait --wait-timeout 180 $(grep -vx supavisor "$B/running-services.txt")   # the optional services that ran before
-if grep -qx supavisor "$B/running-services.txt"; then bash scripts/pooler.sh on; fi   # role, schema, _supabase and the supavisor service
-node scripts/doctor.mjs --local && node scripts/doctor.mjs
-npm run db:backup                                  # the first backup of the new database
-node scripts/watch.mjs unmute
-```
-
-Run any `sudo` command that `setup.sh` printed (`watch-timer.sh install`, `backup-usb.sh setup`). Sign in from a phone with
-one role before the window ends. Keep `data/db.pre-baseline` for at least a day of use. Remove it
-(with `sudo rm -rf` on that exact path, the files belong to the container's user) only after `npm run db:verify-restore`
-passed on the first new backup, and delete `$B/data-only.dump` once the reload is accepted. At the same time remove what the earlier release left and
-this one does not use: `docker network rm "${P}_admin"` and `docker volume rm "${P}_db-config" "${P}_prometheus_data"`
-(`P` is `WAREHOUSE_PROJECT_NAME` from `compose.env`, as in step 2; a name that does not exist is not an error to worry about).
-
-**Step 9. Rollback** (any failure before the new database is accepted). The old directory was only moved and the old
-database image is still tagged `<project>-db:pre-baseline` (step 2). Do not run `docker image prune` before the reload is
-accepted. Files uploaded or deleted after step 8 are not rolled back:
-
-```bash
-exec 9>&-
-bash scripts/data-fingerprint.sh | diff "$B/fingerprint-after.txt" - || echo 'the new database changed after step 7: those writes are lost by the rollback'   # only if step 7 got that far
-bash stop.sh
-D="$WAREHOUSE_STATE_DIR/data/db"; test ! -e "$D.failed" && mv -T "$D" "$D.failed" && mv -T "$D.pre-baseline" "$D"
-(umask 022; git checkout --detach migrations-pre-baseline); bash scripts/checkout-permissions.sh
-P=$(sed -n 's/^WAREHOUSE_PROJECT_NAME=//p' "$WAREHOUSE_STATE_DIR/config/compose.env")
-while read -r s; do docker tag "$P-$s:pre-baseline" "$P-$s"; done < "$B/old-images.txt"
-cp -p "$B/image-recipes.sha256" "$WAREHOUSE_STATE_DIR/config/image-recipes.sha256"
-cp -p "$B/compose.env" "$WAREHOUSE_STATE_DIR/config/compose.env"   # the configuration from step 2: the old release needs DB_PASSWORD_POOLER, which the new setup may have removed
-bash scripts/compose.sh up -d --no-build --wait --wait-timeout 180 db storage
-bash scripts/data-fingerprint.sh | diff "$B/fingerprint-before.txt" - && echo IDENTICAL   # before any writer starts; a difference: stop here
-bash start.sh
-bash scripts/compose.sh --profile '*' up -d --no-build --wait --wait-timeout 180 $(cat "$B/running-services.txt")
-```
-
-Stored files were never changed by the reload. Anything written to the new database after the load is lost by a rollback.
-The old data directory still has its `pgbouncer` role. If you roll back with the new database kept (`data/db` not moved back), or run an
-older release's `setup.sh` against a database where the pooler objects were removed, create the role first, because the older
-`setup.sh` runs `ALTER ROLE pgbouncer`: `bash scripts/compose.sh exec -T db psql -X -U supabase_admin -d postgres -c 'CREATE ROLE pgbouncer LOGIN'`
-(skip it if `\du pgbouncer` shows the role).
-
-### Restoring a pre-baseline backup
-
-A backup made before this release (format `warehouse-backup-v5`, taken on the Supabase image) holds the old schema,
-roles and ledger. `db:restore`, `db:restore-host` and `db:verify-restore` refuse it before the backup's own signature check and
-before anything of the installation is changed:
-
-```
-Refusing: the backup was made on the database image 'supabase/postgres...', which this version no longer runs. Restore it with the release tagged migrations-pre-baseline, then reload the data into this version (docs/OPERATOR_INSTALL.md, "Baseline reload").
-```
-
-A backup with no `database_image=` line is refused the same way, with the message `Refusing: the backup records no database_image= line in metadata.txt, so it was made before the move to PostgreSQL 17. Restore it with the release tagged migrations-pre-baseline, then reload the data into this version (docs/OPERATOR_INSTALL.md, "Baseline reload").` A backup whose `roles.txt` lists `postgres`, `supabase_auth_admin` or `dashboard_user` is refused with `Refusing: the backup lists the role '<role>', which this version does not have: it was dumped from the earlier image, whatever its database_image= line says. Restore it with the release tagged migrations-pre-baseline, then reload the data into this version (docs/OPERATOR_INSTALL.md, "Baseline reload").`, and `db:verify-restore` refuses a dump written by a server below PostgreSQL 17. `db:backup` itself refuses to back up a server that is not this release's (`Refusing: the running database reports ...`): such an installation has not been moved yet.
-
-Restore an old backup only with the release tagged `migrations-pre-baseline`, then follow the reload above from step 2.
-On an installation that already runs this release, bring the old database image back first: after
-`(umask 022; git checkout --detach migrations-pre-baseline)`, run `docker tag <project>-db:pre-baseline <project>-db` if you
-kept it, else `bash scripts/build-images.sh` (needs the network); then `npm run db:restore -- --yes <backup>`; then the
-reload from step 2, after moving any `data/db.pre-baseline` left by an earlier reload out of the way. Backups made by this
-release restore with this release.
 
 ## Major PostgreSQL upgrade
 
-This section moves an installation from PostgreSQL 17 to 18. This release runs the official PostgreSQL 18 image (`postgres:18.6-trixie`, pinned in `docker/postgres/Dockerfile`; `scripts/db-image.sh`
-prints the pin and is the one source every script reads). The schema is the same baseline plus the migrations after it. PostgreSQL 17
-data files do not open in 18, so an installation that runs PostgreSQL 17 **cannot be upgraded in place**: `setup.sh` and `start.sh` of this
-release stop before they build or recreate anything (`scripts/db-version-preflight.sh`), and `db:backup` refuses the running 17 server:
+A move to a new PostgreSQL major version is a manual backup-and-restore move, because the data files of one major do not
+open in the next. The scripts refuse it before they change anything:
 
-```
-Refusing: the data directory <path> holds a PostgreSQL 17 database (PG_VERSION). This release runs PostgreSQL 18 and cannot start on PostgreSQL 17 data. No database, container or image was changed. The data moves with a major upgrade: back up with the checkout that runs PostgreSQL 17, then restore on this one (docs/OPERATOR_INSTALL.md, "Major PostgreSQL upgrade").
-```
+- `bash upgrade.sh` stops when the release runs another PostgreSQL major than the checkout ("A new PostgreSQL major
+  cannot be applied in place: follow docs/OPERATOR_INSTALL.md, `Major PostgreSQL upgrade`") or when the database server runs another
+  major than the checkout says.
+- `setup.sh`, `start.sh`, `rotate-keys.sh` and `rotate-db-passwords.sh` stop (`scripts/db-version-preflight.sh`) with "This release runs PostgreSQL <new> and cannot
+  start on PostgreSQL <old> data. No database, container or image was changed. The data moves with a major upgrade: back up
+  with the checkout that runs PostgreSQL <old>, then restore on this one".
 
-`bash upgrade.sh` refuses a release that runs another PostgreSQL major than the checkout (it compares `scripts/db-image.sh` of both trees, changes
-nothing and points here), so this procedure stays manual; it checks the release out itself in step 4. Once the installation runs the new major,
-`upgrade.sh` moves it to later releases as usual.
-
-The way forward is the ordinary backup and in-place restore ([In-place restore of the same instance](#in-place-restore-of-the-same-instance)),
-taken across the two releases: a backup made by the PostgreSQL 17 checkout restores on this one (the restore builds a new 18 cluster and
-replays the logical dump; a backup from a newer major than the checkout runs is refused, so the other way round does not work). The
-services are down from step 4 until step 7 ends, so plan a window. The old data directory is only moved and the old images are kept under a
-second tag, so the way back (step 9) stays open. The data directory inside the container stays `/var/lib/postgresql/data` (the stack sets
-`PGDATA` to it); the official 18 image's own default is elsewhere, so nothing else needs changing on the host.
-
-Data checksums: a new PostgreSQL 18 cluster has data checksums on by default, and an upgraded facility gets them through the restore (the restore creates a
-new cluster). No action is needed.
-
-Use one shell for all steps. Start with these helpers and the disk check: the new
-cluster, the backup and the kept 17 directory exist side by side, so check the free space first.
-
-```bash
-cd /path/to/installed/backend
-export WAREHOUSE_STATE_DIR=/absolute/path/to/this/warehouse
-B="$WAREHOUSE_STATE_DIR/backups/pg18-upgrade-$(date -u +%Y%m%dT%H%M%SZ)"; (umask 077; mkdir -p "$B")
-df -h "$WAREHOUSE_STATE_DIR" /var/lib/docker       # free space must be at least 3 times the size of data/db plus 3 times the size of data/storage (step 6's restore copies the photos again and refuses without that much plus 1 GiB free) plus the new images (about 1 GiB)
-du -sh "$WAREHOUSE_STATE_DIR/data/db" "$WAREHOUSE_STATE_DIR/data/storage"
-```
-
-The lock is held by this shell on descriptor 9 from step 1 until the start of step 4. Run `bash scripts/backup.sh` directly, never
-`npm run db:backup`, in that stretch: npm does not pass descriptor 9 on, so the backup could not take the lock. `stop.sh` and `restore.sh` take the
-lock themselves, so the lock is released before them (step 4 and step 6). `verify-restore.sh` takes no lock.
-
-**Step 1. Take the operator lock, record the old commit and stop every writer.** Stop what writes from outside the stack: a sensor bridge on
-another host, a script that posts readings or uploads. Mute the checker for the window (`node scripts/watch.mjs mute 240`). Then stop the
-stack's own writers; the database and Storage stay up for the backup and the fingerprints. With the writers already stopped, `backup.sh`
-finds nothing to pause and restarts nothing but Storage (which it stops for the capture itself), so no write can sneak in between the backup and the restore.
-Steps 1 to 3 run on the OLD checkout, so a `backup.sh` older than this release brings Storage back with `compose up` without `--no-deps`, and that also starts `rest`
-again (Storage depends on it). Step 2 therefore stops `rest` again right after the backup. From this release on, `backup.sh` restarts with `--no-deps` and does not do this.
-
-```bash
-exec 9>"$WAREHOUSE_STATE_DIR/config/operator.lock"; flock -n 9 && echo 'operator lock held'    # stop if this prints nothing
-git rev-parse HEAD > "$B/old-commit.txt"; cat "$B/old-commit.txt"
-bash scripts/compose.sh --profile '*' ps --status running --services > "$B/running-services.txt"
-bash scripts/compose.sh --profile '*' stop gateway functions rest pdf-renderer supavisor cups sensor-bridge
-bash scripts/compose.sh --profile '*' ps --status running --services     # only db and storage may remain
-```
-
-**Step 2. With the OLD checkout (still PostgreSQL 17), take a verified backup and record the data.** Right after the backup, the configuration directory is copied whole
-for the rollback (`config/` holds `compose.env`, the backup key and the other private files; the copy is as private as the backup). It sits before the checks so that
-a failing check cannot skip it, and `mkdir` (without `-p`) refuses a rerun instead of nesting a second copy inside the first. The row counts come from the query file `$B/counts.sql`,
-written here and run again unchanged in step 8, because the old checkout has no `data-fingerprint.sh --counts` (that mode exists from this release on and
-runs the same query, for later moves).
-
-```bash
-bash scripts/db-image.sh                         # must print postgres:17.…: this is still the old checkout
-bash scripts/backup.sh "$B/backup"
-bash scripts/compose.sh stop rest                # a backup.sh older than this release starts rest again with Storage; stop it (a no-op when it is already stopped)
-mkdir "$B/config" && cp -a "$WAREHOUSE_STATE_DIR/config/." "$B/config/"   # compose.env, backup.key, image-recipes.sha256 and the rest, for the rollback
-(cd "$B/backup" && sha256sum -c --quiet SHA256SUMS) && npm run db:verify-restore -- "$B/backup"   # must pass
-bash scripts/data-fingerprint.sh > "$B/fingerprint-before.txt"
-bash scripts/data-fingerprint.sh --all > "$B/fingerprint-all-before.txt"
-cat > "$B/counts.sql" <<'SQL'
-SELECT n.nspname || '.' || c.relname || ' ' || (xpath('/row/c/text()', query_to_xml(format('SELECT count(*) AS c FROM %I.%I', n.nspname, c.relname), false, true, '')))[1]::text FROM pg_class c JOIN pg_namespace n ON n.oid = c.relnamespace WHERE c.relkind IN ('r','p') AND n.nspname IN ('public','storage','warehouse_security','warehouse_maintenance') ORDER BY (n.nspname || '.' || c.relname) COLLATE "C"
-SQL
-bash scripts/compose.sh exec -T db psql -X -At -v ON_ERROR_STOP=1 -U supabase_admin -d postgres < "$B/counts.sql" > "$B/counts-before.txt"
-```
-
-**Step 3. Tag the current images** (of stopped containers too: `ps -a`, because step 1 stopped most of them) so that a rollback uses them instead of building them again (the db image is the one that matters):
-
-```bash
-P=$(sed -n 's/^WAREHOUSE_PROJECT_NAME=//p' "$WAREHOUSE_STATE_DIR/config/compose.env"); : > "$B/old-images.txt"
-while read -r s; do c=$(bash scripts/compose.sh --profile '*' ps -a -q "$s" | head -n 1); [ -n "$c" ] || continue; i=$(docker inspect --format '{{.Config.Image}}' "$c")
-  case "$i" in "$P-"*@*|"") continue;; "$P-"*) docker tag "$(docker inspect --format '{{.Image}}' "$c")" "$P-$s:pre-pg18" && echo "$s" >> "$B/old-images.txt";; esac
-done < "$B/running-services.txt"
-grep -qx db "$B/old-images.txt" && echo 'old images kept'
-```
-
-"old images kept" must print. Do not run `docker image prune` or `docker builder prune` until the upgrade is accepted.
-
-**Step 4. Stop the stack with the old checkout, check out the new release and build the images.** Release the lock first (`stop.sh` takes it
-itself). The facility is down from here. The build needs the network; if it fails, nothing has been moved yet: use rollback A.
-
-```bash
-exec 9>&-
-bash stop.sh                                     # the old checkout stops the old containers
-git fetch --tags origin
-git checkout --detach <this release>             # the tag or commit you are installing
-bash scripts/checkout-permissions.sh
-bash scripts/db-image.sh                         # must print postgres:18.…
-bash scripts/build-images.sh                     # takes the lock itself; builds the images whose recipe changed, the db image among them
-```
-
-**Step 5. Rehearse the restore.** The rehearsal restores the backup into a disposable PostgreSQL 18 container and compares the integrity report
-and the object catalog; it touches nothing of the installation and takes no lock. It refuses a backup made by a newer major than 18.
-
-```bash
-npm run db:verify-restore -- "$B/backup"      # must pass
-```
-
-**Step 6. Restore.** `db:restore` takes the lock itself and needs the stack down (step 4). It moves `data/db` to `data/db.pre-restore-<utc>` and
-`data/storage` to `data/storage.pre-restore-<utc>`, creates a new PostgreSQL 18 cluster from the db image of this checkout (it rebuilds a stale db image
-first and refuses, before moving anything, if it cannot), replays the dump, analyzes every database (`vacuumdb --all --analyze-in-stages`: a dump made by
-`pg_dump` 18 does not carry planner statistics, so without this the restored tables stay unanalyzed until autovacuum reaches them; the disposable rehearsal of
-step 5 does not need it, because it only compares the integrity report and the catalog), runs `migrate.sh --operator`, starts the services and runs `doctor --local`:
-
-```bash
-npm run db:restore -- --yes "$B/backup"
-```
-
-**Step 7. Run setup.** With the arguments of the installation (the same `setup.sh --operator ...` command as the last rerun). It is idempotent,
-sets the role passwords and the configuration, starts the core services, and now reports the running server's version. The restored cluster has no
-`_supabase` database, so setup keeps the pooler secrets and records the pooler off. If `supavisor` was in `running-services.txt`, `pooler.sh on`
-recreates its role, schema, database and service. Then start the other optional services that ran before:
-
-```bash
-bash setup.sh --operator ...
-bash scripts/compose.sh --profile '*' up -d --wait --wait-timeout 180 $(grep -vx supavisor "$B/running-services.txt")
-if grep -qx supavisor "$B/running-services.txt"; then bash scripts/pooler.sh on; fi
-```
-
-**Step 8. Check the result.** Every line must pass; the first failure is a stop, go to step 9.
-
-```bash
-bash scripts/compose.sh exec -T db psql -X -At -U supabase_admin -d postgres -c 'SELECT version()'          # PostgreSQL 18.6
-bash scripts/compose.sh exec -T db cat /var/lib/postgresql/data/PG_VERSION                          # 18 (read inside the container, no sudo)
-bash scripts/data-fingerprint.sh | diff "$B/fingerprint-before.txt" - && echo IDENTICAL
-bash scripts/data-fingerprint.sh --all | diff "$B/fingerprint-all-before.txt" - && echo IDENTICAL   # run on a quiet system (the file says which tables move on their own)
-bash scripts/compose.sh exec -T db psql -X -At -v ON_ERROR_STOP=1 -U supabase_admin -d postgres < "$B/counts.sql" | diff "$B/counts-before.txt" - && echo 'counts equal'
-ORIGIN=$(sed -n 's/.*"canonicalOrigin": *"\([^"]*\)".*/\1/p' "$WAREHOUSE_STATE_DIR/public/instance.json")
-curl -s -o /dev/null -w '%{url_effective} %{http_code}\n' "$ORIGIN/functions/v1/get-public-config"     # prints the URL it hit, then 200
-bash scripts/compose.sh ps                                  # every service Up (healthy); rest has no healthcheck and shows plain Up
-node scripts/doctor.mjs --local && node scripts/doctor.mjs
-npm run test:gateway
-bash scripts/compose.sh exec -T db psql -X -q -U supabase_admin -d postgres -c "NOTIFY pgrst, 'reload schema'"
-npm run db:backup                                           # the first backup of the new database
-npm run db:verify-restore -- "$(ls -dt "$WAREHOUSE_STATE_DIR"/backups/warehouse-* | head -n 1)"     # adjust the path if backups are written elsewhere
-node scripts/watch.mjs unmute
-bash scripts/compose.sh exec -T db psql -X -At -U supabase_admin -d postgres -c 'SELECT max(measured_at) FROM sensor_readings'   # newest sensor reading: run it again a minute later; a later value shows the sensor bridge writes again
-```
-
-Run any `sudo` command that `setup.sh` printed. Sign in from a phone with one role before the window ends. Restart what you stopped outside the
-stack in step 1. Keep `data/db.pre-restore-<utc>` and `data/storage.pre-restore-<utc>` for at least a day of use, then remove the two exact
-paths with `sudo rm -rf` (the files belong to the containers' users) only after the first new backup passed `db:verify-restore`.
-Remove the `pre-pg18` image tags (`docker image rm "$P-<service>:pre-pg18"`) at the same time.
-
-**Step 9. Rollback** (any failure before the new database is accepted). Do not run `docker image prune` before the upgrade is accepted. Writes made after
-step 6 are lost by a rollback. First find out whether `restore.sh` moved the data:
-
-```bash
-D="$WAREHOUSE_STATE_DIR/data"; ls -d "$D"/db.pre-restore-* 2>/dev/null || echo 'data not moved'
-```
-
-**Rollback A, data not moved** (the build, the rehearsal or `db:restore` failed or refused before moving anything; no `db.pre-restore-*` directory).
-`data/db` is the live PostgreSQL 17 directory and is not touched. Go back to the old commit and the old images:
-
-```bash
-exec 9>&-
-git checkout --detach "$(cat "$B/old-commit.txt")"; bash scripts/checkout-permissions.sh
-P=$(sed -n 's/^WAREHOUSE_PROJECT_NAME=//p' "$WAREHOUSE_STATE_DIR/config/compose.env")
-while read -r s; do docker tag "$P-$s:pre-pg18" "$P-$s"; done < "$B/old-images.txt"
-cp -p "$B/config/image-recipes.sha256" "$WAREHOUSE_STATE_DIR/config/image-recipes.sha256"
-cp -p "$B/config/compose.env" "$WAREHOUSE_STATE_DIR/config/compose.env"   # the saved configuration (the pooler secrets setup may have removed)
-bash start.sh
-bash scripts/data-fingerprint.sh | diff "$B/fingerprint-before.txt" - && echo IDENTICAL
-bash scripts/compose.sh --profile '*' up -d --no-build --wait --wait-timeout 180 $(cat "$B/running-services.txt")
-```
-
-If setup of this release already ran, the pooler role `pgbouncer` was dropped when the pooler was off. Before running the old release's
-`setup.sh`, create it: `bash scripts/compose.sh exec -T db psql -X -U supabase_admin -d postgres -c 'CREATE ROLE pgbouncer LOGIN'` (skip it if the role exists).
-
-**Rollback B, data moved by `restore.sh`** (a `db.pre-restore-<utc>` and a `storage.pre-restore-<utc>` directory exist). Every command after the
-guard sits inside it: nothing is moved or changed unless both kept directories are there. If `Stop:` is printed, run nothing more and investigate.
-
-```bash
-exec 9>&-
-bash stop.sh
-U=$(ls "$D" | sed -n 's/^db\.pre-restore-//p' | sort | tail -n 1); echo "kept: $U"
-if test -n "$U" && test -d "$D/db.pre-restore-$U" && test -d "$D/storage.pre-restore-$U" && test ! -e "$D/db.failed" && test ! -e "$D/storage.failed" \
-   && mv -T "$D/db" "$D/db.failed" && mv -T "$D/db.pre-restore-$U" "$D/db" \
-   && mv -T "$D/storage" "$D/storage.failed" && mv -T "$D/storage.pre-restore-$U" "$D/storage"; then
-  git checkout --detach "$(cat "$B/old-commit.txt")"; bash scripts/checkout-permissions.sh
-  cp -a "$B/config/." "$WAREHOUSE_STATE_DIR/config/"       # the configuration as it was before step 4 (undoes setup.sh and --restore-config; puts the pooler secrets back)
-  P=$(sed -n 's/^WAREHOUSE_PROJECT_NAME=//p' "$WAREHOUSE_STATE_DIR/config/compose.env")
-  while read -r s; do docker tag "$P-$s:pre-pg18" "$P-$s"; done < "$B/old-images.txt"
-  bash start.sh
-  bash scripts/data-fingerprint.sh | diff "$B/fingerprint-before.txt" - && echo IDENTICAL
-  bash scripts/compose.sh --profile '*' up -d --no-build --wait --wait-timeout 180 $(cat "$B/running-services.txt")
-else
-  echo 'Stop: the kept directories are missing, db.failed already exists, or a move failed; check the directories by hand.'
-fi
-```
-
-The kept database is the old one and has its `pgbouncer` role. If you instead keep a database where this release's `setup.sh` or `pooler.sh off`
-removed the pooler objects, create the role before an older release's `setup.sh` (it runs `ALTER ROLE pgbouncer`):
-`bash scripts/compose.sh exec -T db psql -X -U supabase_admin -d postgres -c 'CREATE ROLE pgbouncer LOGIN'`.
+The way forward is the ordinary backup and [in-place restore](#in-place-restore-of-the-same-instance) taken across the two
+releases: back up with the checkout that runs the old major, check out the release with the new major, restore. The release
+that brings a new major documents the steps, the way back and the disk it needs, in its release note and in this section. Nothing
+is needed on an installation that already runs the release's major. The procedure for 17 to 18 is in this guide as it stands on main at
+commit `b45ae0b` (`git show b45ae0b:docs/OPERATOR_INSTALL.md`).
 
 ### Collation changes
 

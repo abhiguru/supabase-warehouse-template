@@ -49,7 +49,7 @@ enabled, not started, by `install` (so installing never changes what is running)
 **`stop.sh` survives a reboot.** It writes `<state>/config/stopped-by-operator`; `start.sh`, `setup.sh` and `restore.sh` remove it
 when they bring the stack up. While the file exists the boot unit does nothing (`ConditionPathExists=!`), the checker does not
 self-heal, and `status`, `doctor` and the `start.sh` hint say "stopped by the operator; run start.sh". So a reboot in the middle
-of a manual procedure (the Baseline reload, the Major PostgreSQL upgrade, a restore) does not start the stack on an empty or half-replaced
+of a manual procedure (a Major PostgreSQL upgrade, a restore) does not start the stack on an empty or half-replaced
 data directory. If you stop the containers some other way, create the file yourself (`touch "$WAREHOUSE_STATE_DIR/config/stopped-by-operator"`).
 
 The timer runs without a Slack webhook too (`--alert-webhook-file off`): the checks still run and record their state,

@@ -67,8 +67,8 @@ fresh build and scan before each release instead). Before every release tag:
 - [ ] A release that changes `scripts/watch-timer.sh` or `scripts/backup-usb.sh` in a way that changes the units, the udev rule or the
       installed helper (any edit changes their recipe hash) carries an Operator action: `sudo bash scripts/watch-timer.sh install --state <state>`
       and/or `sudo bash scripts/backup-usb.sh setup --state <state>`. Until it is done, `root_copy_stale` reminds weekly.
-- [ ] If the release changes the PostgreSQL major, the section says so at the top and links the "Major PostgreSQL upgrade" procedure
-      (`upgrade.sh` refuses such a move). If the migrations were squashed, the section lists the migration names the new baseline replaces.
+- [ ] If the release changes the PostgreSQL major, the section says so at the top, writes the procedure, its way back and its disk need into the
+      "Major PostgreSQL upgrade" section of `docs/OPERATOR_INSTALL.md` and links it (`upgrade.sh` refuses such a move). If the migrations were squashed, the section lists the migration names the new baseline replaces.
 - [ ] The release contains `upgrade.sh`, `scripts/pg-major.sh` and, in `setup.sh`, `operator_lock_or_inherited` and the recreate of
       the `functions` container (the steps that depend on the release live in its `setup.sh`: `CONTRIBUTING.md`, "Releases").
       `scripts/check-release-contents.sh` checks these and the `CHANGELOG.md` section when the tag is pushed.

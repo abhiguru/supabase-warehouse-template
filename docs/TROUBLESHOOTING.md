@@ -382,37 +382,17 @@ it; only `functions` can.
   the command was started from a shell without a terminal. Run it in a
   terminal window on the host or an SSH session.
 - **`setup.sh` or `start.sh` stops with `Refusing: ... This release runs PostgreSQL 18 and cannot start on PostgreSQL 17 data.`**: the
-  full text is `Refusing: <the running database reports server_version_num 170011 (PostgreSQL 17). | the data directory <path>
-  holds a PostgreSQL 17 database (PG_VERSION).> This release runs PostgreSQL 18 and cannot start on PostgreSQL 17 data. No
-  database, container or image was changed. The data moves with a major upgrade: back up with the checkout that runs PostgreSQL 17,
-  then restore on this one (docs/OPERATOR_INSTALL.md, "Major PostgreSQL upgrade").` The installation still runs PostgreSQL 17.
-  Nothing was built or started. Follow [Major PostgreSQL upgrade](OPERATOR_INSTALL.md#major-postgresql-upgrade). `db:backup` run
-  with this checkout against the 17 server refuses the same way (`the running database reports '17|true'`): take the backup with the old checkout.
-- **`setup.sh` or `start.sh` stops with `Refusing: ... This release runs PostgreSQL 18 and cannot start on that data.`**: the
-  full text is `Refusing: <the running database reports server_version_num 150008 (PostgreSQL 15). | the data directory <path>
-  holds a PostgreSQL 15 database (PG_VERSION).> This release runs PostgreSQL 18 and cannot start on that data. No database,
-  container or image was changed. Back the installation up with the release tagged migrations-pre-baseline, then reload the data into a new
-  PostgreSQL 18 database: docs/OPERATOR_INSTALL.md, "Baseline reload".` The installation still runs the earlier PostgreSQL 15
-  database. Nothing was built or started. Follow [Baseline reload](OPERATOR_INSTALL.md#baseline-reload).
-- **`scripts/migrate.sh` stops with `This database recorded migrations that are not in this release (...)`**: the full text is
-  `This database recorded migrations that are not in this release (<names>). Either it was built by an earlier migration chain
-  and cannot be migrated in place (reload it: docs/OPERATOR_INSTALL.md, "Baseline reload"), or it is newer than this checkout
-  (check out the release that recorded those migrations).` Nothing was changed. Usually the database was built before the
-  PostgreSQL 17 release: follow [Baseline reload](OPERATOR_INSTALL.md#baseline-reload). The message also appears when the
-  checkout is older than the database (check out the release that recorded those migrations) and when a migration file that
-  was applied has been deleted from the checkout (restore the file).
-- **Setup stops in a migration with a message about a pg_cron job, a database
-  webhook or a vault secret** (migrations 103 and 106, which only the release
-  tagged `migrations-pre-baseline` runs, in step 1 of the
-  [Baseline reload](OPERATOR_INSTALL.md#baseline-reload), on a database that
-  still carries them): the message names the object. Remove or change it as the
-  message says (for a pg_cron job of your own,
-  `SELECT jobid, jobname, command FROM cron.job`, run as `supabase_admin` in the SQL prompt of
-  [OPERATOR_INSTALL.md](OPERATOR_INSTALL.md#ordinary-operation) (not the read-only one), then `SELECT cron.unschedule(<jobid>)`
-  for each job that is not `warehouse-list-refresh` or `warehouse-list-refresh-history`),
-  then run setup again. Nothing was changed.
-- **Setup stops in migration 105 with a dependency on the schemas `realtime` or `_realtime`** (only on the release tagged
-  `migrations-pre-baseline`): something of yours depends on them. Remove that dependency and run setup again.
+  data directory or the running server is of the previous PostgreSQL major, which this release cannot open. Nothing was built or
+  started and the installation still runs the old major. Follow [Major PostgreSQL upgrade](OPERATOR_INSTALL.md#major-postgresql-upgrade).
+  `db:backup` run with this checkout against the old server refuses the same way (`the running database reports '17|true'`): take the
+  backup with the old checkout.
+- **`setup.sh` or `start.sh` stops with `Refusing: ... This release runs PostgreSQL 18 and cannot start on that data.`**: the data is
+  from before PostgreSQL 17, which no installation made with this release has. Nothing was built or started. See
+  [Baseline reload](OPERATOR_INSTALL.md#baseline-reload).
+- **`scripts/migrate.sh` stops with `This database recorded migrations that are not in this release (...)`**: nothing was changed.
+  The checkout is older than the database (check out the release that recorded those migrations, or a later one), or a migration
+  file that was applied has been deleted from the checkout (restore the file). A database built before PostgreSQL 17 gives the same
+  message: see [Baseline reload](OPERATOR_INSTALL.md#baseline-reload).
 
 ## Tunnel and public address
 
@@ -529,18 +509,9 @@ Turn the fallback off with `bash scripts/lan.sh off`; the phones keep working ov
   restore initialises a new cluster with the db image of this checkout and found an older image (the previous PostgreSQL major). It
   refused before moving any data. Run `bash scripts/build-images.sh` (needs the network), then retry.
 - **`db:restore`, `db:restore-host` or `db:verify-restore` prints `Refusing: the backup was made on the database image
-  'supabase/postgres...'`**: the full text is `Refusing: the backup was made on the database image '<image>', which this
-  version no longer runs. Restore it with the release tagged migrations-pre-baseline, then reload the data into this
-  version (docs/OPERATOR_INSTALL.md, "Baseline reload").` The backup was made before the PostgreSQL 17 release. Nothing
-  was touched. A backup without a `database_image=` line in `metadata.txt` gets `Refusing: the backup records no
-  database_image= line in metadata.txt, so it was made before the move to PostgreSQL 17. Restore it with the release
-  tagged migrations-pre-baseline, then reload the data into this version (docs/OPERATOR_INSTALL.md, "Baseline reload").`
-  A backup whose `roles.txt` lists `postgres`, `supabase_auth_admin` or `dashboard_user` gets `Refusing: the backup lists
-  the role '<role>', which this version does not have: it was dumped from the earlier image, whatever its database_image=
-  line says. Restore it with the release tagged migrations-pre-baseline, then reload the data into this version
-  (docs/OPERATOR_INSTALL.md, "Baseline reload").`
-  Follow [Restoring a pre-baseline backup](OPERATOR_INSTALL.md#restoring-a-pre-baseline-backup) and the
-  [Baseline reload](OPERATOR_INSTALL.md#baseline-reload).
+  'supabase/postgres...'`** (or `the backup records no database_image= line`, or `the backup lists the role '<role>'`): the
+  backup was made before the PostgreSQL 17 release, which no installation made with this release produces. Nothing was touched.
+  See [Baseline reload](OPERATOR_INSTALL.md#baseline-reload). Backups made by this release restore with this release.
 - **Nothing happens when the USB drive is attached**: check that it is
   enrolled and visible to the host: `bash scripts/backup-usb.sh status` (on a
   Windows host the drive must be attached to the Ubuntu distro, which has no tested way yet:
@@ -665,8 +636,7 @@ Turn the fallback off with `bash scripts/lan.sh off`; the phones keep working ov
      backup as above.
   4. If no copy has the recorded checksum (and the manifest passed step 0), the photo is lost in this installation; tell the
      maintainers, and replace the disk that damaged it.
-- **Stored files are served as `application/octet-stream` and `no-cache` after a restore, or an installation went through the
-  PostgreSQL 17 to 18 move**: the file attributes that hold each file's content type were not kept by the restore. Run
+- **Stored files are served as `application/octet-stream` and `no-cache` after a restore**: the file attributes that hold each file's content type were not kept by the restore. Run
   `npm run storage:retag` ([Content types of stored files](OPERATOR_INSTALL.md#content-types-of-stored-files-npm-run-storageretag)):
   it sets them again from the catalog, is safe to repeat, and prints how many files it changed. It needs the services running.
 - **Backup refused: not enough free space** (`db:backup` stops with `Refusing: not enough free space in <folder>: a backup needs
@@ -680,7 +650,7 @@ Turn the fallback off with `bash scripts/lan.sh off`; the phones keep working ov
   reserve the disk must keep beyond that so that a backup never fills the disk under the database (`WAREHOUSE_BACKUP_RESERVE_MB`, 2048
   by default), A what the disk that holds the backup folder has free. Free at least N + R - A MiB, in this order, each step safe:
   1. Docker leftovers: `docker image prune -f` (dangling images only; never `-a`, never `--volumes`) and `docker builder prune -f`
-     (not during a major PostgreSQL upgrade or a baseline reload that is not accepted yet).
+     (not during a manual PostgreSQL major upgrade that is not accepted yet).
   2. The `data/storage.pre-restore-*` directories of earlier restores that you have accepted
      ([In-place restore](OPERATOR_INSTALL.md#in-place-restore-of-the-same-instance)).
   3. Old local backups. **In the weeks after the update to the v6 backup format** this is the usual fix and it frees a lot: every
