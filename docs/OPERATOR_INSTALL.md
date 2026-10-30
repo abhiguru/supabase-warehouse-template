@@ -3154,8 +3154,9 @@ Differences:
 - Right after the distro has just started, Docker may not answer for a moment. `setup.sh` waits for the Docker daemon for up to
   60 s before it refuses (verified: after `wsl --terminate` it printed "Waiting for the Docker daemon to answer (up to 60 s)..." and
   went on); if it still stops with "Docker did not answer within 60 s", check `systemctl status docker`.
-- Under WSL 3.0.3 the checker raises a `disk_low:/usr/src/linux-headers-...-WSL2` alert for a small mount provided by WSL that is
-  always full (observed). That one alert is false; ignore it until the watch rule skips such mounts.
+- Under WSL 3.0.3, WSL mounts full images read-only at `/usr/src/linux-headers-...-WSL2` and `/usr/lib/linux-tools/...`. The checker
+  skips read-only mounts, so it raises no `disk_low` alert for them (not yet observed on a WSL host); after an upgrade, an alert already
+  raised for one sends one "cleared" message.
 - Decide the public hostname before the first setup ([Setup](#setup)).
 - A shell started later needs the Node `PATH` and the state directory again: `export WAREHOUSE_STATE_DIR=...` in `~/.profile`, and
   `bash -lc` when a command is started from Windows.

@@ -406,9 +406,12 @@ export function checkDisks(ctx) {
   out.push(result('disk', 'disk_root_low', !(root < LIMITS.diskRootFreePercent), `Disk space on / ${root.toFixed(0)}% free (limit ${LIMITS.diskRootFreePercent}%)`));
   const mounts = String(ctx.readText(join(ctx.proc, 'mounts')) ?? '').split('\n').map(l => l.split(' ')).filter(p => p.length >= 3);
   const seen = new Set(mounts.filter(p => unescapeMount(p[1]) === '/').map(p => p[0]));
-  for (const [dev, mp, type] of mounts) {
+  for (const [dev, mp, type, opts = ''] of mounts) {
     const path = unescapeMount(mp);
     if (path === '/' || !['ext4', 'xfs', 'btrfs'].includes(type) || seen.has(dev) || path.startsWith('/var/lib/docker/')) continue;
+    // The stack cannot fill a read-only mount (WSL mounts full images read-only), so its free space does not matter.
+    // Skipped before seen.add so a read-only mount does not hide a later read-write mount of the same device.
+    if (opts.split(',').includes('ro')) continue;
     seen.add(dev);
     let pct;
     try { pct = free(path); } catch { continue; }   // a mount that vanished or cannot be read must not stop the other checks

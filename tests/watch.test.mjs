@@ -126,6 +126,16 @@ test('disk: / under 20% free fails; other ext4/xfs/btrfs mounts under 10%; bind 
   } finally { clean(h); }
 });
 
+test('disk: read-only mounts are not checked, and do not hide a read-write mount of the same device', () => {
+  const h = harness();
+  try {
+    writeFileSync(join(h.proc, 'mounts'), '/dev/sda1 / ext4 rw 0 0\n/dev/sdb /usr/src/hdrs ext4 ro,relatime 0 0\n/dev/sdc /mnt/a ext4 ro,relatime 0 0\n/dev/sdc /mnt/b ext4 rw,relatime 0 0\n/dev/sdd /mnt/c ext4 rw,errors=remount-ro 0 0\n/dev/sde /mnt/d ext4\n');
+    h.statfsTable = { '/': { bavail: 50, blocks: 100 }, '/usr/src/hdrs': { bavail: 0, blocks: 100 }, '/mnt/a': { bavail: 0, blocks: 100 }, '/mnt/b': { bavail: 5, blocks: 100 }, '/mnt/c': { bavail: 50, blocks: 100 }, '/mnt/d': { bavail: 5, blocks: 100 } };
+    const r = W.checkDisks(h.ctx());
+    assert.deepEqual(r.map(x => [x.id, x.ok]), [['disk_root_low', true], ['disk_low:/mnt/b', false], ['disk_low:/mnt/c', true], ['disk_low:/mnt/d', false]]);
+  } finally { clean(h); }
+});
+
 // ---------------------------------------------------------------- database
 test('database: pg_isready, connections > 80, transaction > 300 s, cache < 90%, dead tuples > 100000', () => {
   const h = harness();

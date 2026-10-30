@@ -66,7 +66,7 @@ An alert fires after two failing runs in a row (10 minutes), except the event al
 | `cpu_high` | CPU use averaged since the previous run is above 80% |
 | `memory_high` | Memory use is above 85% |
 | `disk_root_low` | `/` has less than 20% free |
-| `disk_low:<path>` | Another ext4, xfs or btrfs filesystem has less than 10% free (Docker's own mounts are skipped) |
+| `disk_low:<path>` | Another ext4, xfs or btrfs filesystem has less than 10% free (Docker's own mounts and read-only mounts are skipped) |
 | `postgres_down` | `pg_isready` fails inside the database container |
 | `db_connections_high` | More than 80 client connections (the ceiling is 100) |
 | `db_long_transaction` | The oldest open transaction is older than 300 s |
