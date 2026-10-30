@@ -4,7 +4,7 @@ import unittest
 
 from sensor_bridge.locate import CACHE_SECONDS, Found, Locator, addresses
 
-from .fakes import FakeHub, FakeNetwork, T0
+from .fakes import FakeHub, FakeNetwork, T0, child
 
 
 class Stub:
@@ -24,7 +24,14 @@ def locator(net: FakeNetwork, runners, networks=("10.0.0.0/24",)) -> Locator:
 
 
 def find(loc, runner, at=0.0):
-    return asyncio.run(loc.find(runner, T0 + at))
+    """Ask for a sweep at `at` seconds, let it finish, and pick for the runner."""
+    async def go():
+        loc.request(T0 + at)
+        await loc.wait()
+        found = loc.result(T0 + at)
+        return None if found is None else loc.pick(runner, found)
+
+    return asyncio.run(go())
 
 
 class AddressesTest(unittest.TestCase):
@@ -42,7 +49,7 @@ class SweepTest(unittest.TestCase):
         loc = locator(net, [runner])
         self.assertEqual(find(loc, runner), Found("10.0.0.34", "A"))
         self.assertEqual(len(net.tcp_calls), 254)
-        self.assertEqual(loc.found, {"10.0.0.34": "A", "10.0.0.56": "B"})
+        self.assertEqual({h: i.hub_id for h, i in loc.found.items()}, {"10.0.0.34": "A", "10.0.0.56": "B"})
 
     def test_not_found_when_the_hub_is_off(self):
         net = FakeNetwork(**{"10_0_0_34": FakeHub(hub_id="B")})
@@ -67,21 +74,32 @@ class SweepTest(unittest.TestCase):
         find(loc, rb, CACHE_SECONDS + 1)
         self.assertEqual(len(net.tcp_calls), 2 * calls)
 
-    def test_a_second_request_during_a_sweep_gets_nothing_and_starts_no_sweep(self):
+    def test_a_request_during_a_sweep_starts_no_second_sweep_and_has_no_result_yet(self):
         net = FakeNetwork(**{"10_0_0_34": FakeHub(hub_id="A")})
         ra, rb = Stub("10.0.0.74", "A"), Stub("10.0.0.79", "B")
         loc = locator(net, [ra, rb])
 
         async def both():
-            first = asyncio.ensure_future(loc.find(ra, T0))
-            await asyncio.sleep(0)
-            return loc.busy, await loc.find(rb, T0), await first
+            loc.request(T0)
+            first_task = loc.task
+            loc.request(T0 + 1)
+            return loc.busy, loc.result(T0), loc.task is first_task, await loc.wait()
 
-        busy, second, first = asyncio.run(both())
+        busy, early, same, _ = asyncio.run(both())
         self.assertTrue(busy)
-        self.assertIsNone(second)
-        self.assertEqual(first.host, "10.0.0.34")
+        self.assertIsNone(early)
+        self.assertTrue(same)
         self.assertEqual(len(net.tcp_calls), 254)
+        self.assertEqual(loc.pick(ra, loc.result(T0)).host, "10.0.0.34")
+
+    def test_a_failed_sweep_gives_no_result(self):
+        net = FakeNetwork(**{"10_0_0_34": FakeHub(hub_id="A")})
+        runner = Stub("10.0.0.74", "A")
+
+        loc = locator(net, [runner], networks=("not-a-network",))  # the sweep itself raises
+        with self.assertLogs("sensor_bridge", "ERROR"):
+            self.assertIsNone(find(loc, runner))
+        self.assertFalse(loc.busy)
 
     def test_disabled_without_networks(self):
         net = FakeNetwork(**{"10_0_0_34": FakeHub(hub_id="A")})
@@ -92,19 +110,56 @@ class SweepTest(unittest.TestCase):
         self.assertEqual(net.tcp_calls, [])
 
 
+class SafetyTest(unittest.TestCase):
+    def test_a_camera_or_other_device_is_never_a_hub_to_follow_or_claim(self):
+        net = FakeNetwork(**{"10_0_0_20": FakeHub(hub_id="CAM", children=[child(1)], model="C200"),
+                             "10_0_0_21": FakeHub(hub_id="A", children=[child(2)])})
+        fresh = Stub("10.0.0.99")
+        loc = locator(net, [fresh])
+        self.assertEqual(find(loc, fresh), Found("10.0.0.21", "A"))
+        self.assertEqual(list(loc.found), ["10.0.0.21"])
+        learned = Stub("10.0.0.98", "CAM")
+        self.assertIsNone(find(locator(net, [learned]), learned, 100))
+
+    def test_a_hub_without_sensors_is_not_claimed_but_is_followed_by_id(self):
+        net = FakeNetwork(**{"10_0_0_20": FakeHub(hub_id="EMPTY")})
+        fresh, known = Stub("10.0.0.99"), Stub("10.0.0.98", "EMPTY")
+        self.assertIsNone(find(locator(net, [fresh]), fresh))
+        self.assertEqual(find(locator(net, [known]), known), Found("10.0.0.20", "EMPTY"))
+
+    def test_an_address_whose_login_was_refused_is_skipped_for_six_sweeps(self):
+        net = FakeNetwork(**{"10_0_0_20": FakeHub(hub_id="A", children=[child(1)])})
+        net.refuse_login.add("10.0.0.30")
+        runner = Stub("10.0.0.74", "A")
+        loc = locator(net, [runner])
+        seen = []
+        for n in range(8):
+            before = net.tcp_calls.count("10.0.0.30")
+            find(loc, runner, n * 100)
+            seen.append(net.tcp_calls.count("10.0.0.30") - before)
+        self.assertEqual(seen, [1, 0, 0, 0, 0, 0, 0, 1])
+
+    def test_a_non_polling_runners_address_is_offered_only_when_its_hub_is_that_hub(self):
+        net = FakeNetwork(**{"10_0_0_11": FakeHub(hub_id="A", children=[child(1)])})
+        a, b = Stub("10.0.0.10", "A"), Stub("10.0.0.11", "B")
+        self.assertEqual(find(locator(net, [a, b]), a), Found("10.0.0.11", "A"))
+        b.polling = True
+        self.assertIsNone(find(locator(net, [a, b]), a, 100))
+
+
 class ClaimTest(unittest.TestCase):
     def test_a_never_reached_runner_claims_a_hub_no_one_follows(self):
-        net = FakeNetwork(**{"10_0_0_34": FakeHub(hub_id="A"), "10_0_0_58": FakeHub(hub_id="C")})
+        net = FakeNetwork(**{"10_0_0_34": FakeHub(hub_id="A", children=[child(1)]), "10_0_0_58": FakeHub(hub_id="C", children=[child(3)])})
         followed, fresh = Stub("10.0.0.34", "A"), Stub("10.0.0.99")
         self.assertEqual(find(locator(net, [followed, fresh]), fresh), Found("10.0.0.58", "C"))
 
     def test_it_does_not_take_a_hub_sitting_at_another_runners_address(self):
-        net = FakeNetwork(**{"10_0_0_58": FakeHub(hub_id="C")})
+        net = FakeNetwork(**{"10_0_0_58": FakeHub(hub_id="C", children=[child(3)])})
         other, fresh = Stub("10.0.0.58"), Stub("10.0.0.99")  # `other` has not connected yet
         self.assertIsNone(find(locator(net, [other, fresh]), fresh))
 
     def test_two_claimants_never_get_the_same_hub(self):
-        net = FakeNetwork(**{"10_0_0_58": FakeHub(hub_id="C")})
+        net = FakeNetwork(**{"10_0_0_58": FakeHub(hub_id="C", children=[child(3)])})
         r1, r2 = Stub("10.0.0.97"), Stub("10.0.0.98")
         loc = locator(net, [r1, r2])
         got = find(loc, r1)

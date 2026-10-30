@@ -3,10 +3,11 @@
 
 from __future__ import annotations
 
+import asyncio
 import dataclasses
 
 from sensor_bridge.config import load
-from sensor_bridge.hub import ChildReading, HubError, HubSnapshot
+from sensor_bridge.hub import ChildReading, HubError, HubSnapshot, Identity
 from sensor_bridge.poster import PostResult
 
 # Fictional values, assembled at run time so no literal looks like a credential.
@@ -48,8 +49,8 @@ def child(n: int, temperature=21.5, humidity=60.0, battery_low=False, **extra) -
 class FakeHub:
     """Same interface as hub.KasaHub."""
 
-    def __init__(self, hub_id: str = "HUB" + "0" * 37, children=(), firmware: str = "1.4.0"):
-        self.hub_id, self.firmware = hub_id, firmware
+    def __init__(self, hub_id: str = "HUB" + "0" * 37, children=(), firmware: str = "1.4.0", model: str = "H200"):
+        self.hub_id, self.firmware, self.model = hub_id, firmware, model
         self.children = {c.external_id: c for c in children}
         self.down = False  # every call fails while True
         self.fail_next = 0  # the next n connect/poll calls fail
@@ -73,7 +74,7 @@ class FakeHub:
         if not self.connected:
             raise HubError("not connected")
         self._check("poll")
-        return HubSnapshot(self.hub_id, "H200", self.firmware, tuple(self.children.values()))
+        return HubSnapshot(self.hub_id, self.model, self.firmware, tuple(self.children.values()))
 
     def dump(self) -> dict:
         return {"host": "fake", "hub_id": self.hub_id, "firmware": self.firmware,
@@ -135,10 +136,13 @@ class Door:
         await self._hub("connect").connect()
         self.connected = True
 
-    async def identify(self) -> str:
+    async def identify(self) -> Identity:
+        if self.host in self.net.refuse_login:
+            raise HubError("AuthenticationError: login refused", login=True)
         hub = self._hub("connect")
         hub._check("connect")
-        return hub.hub_id
+        self.net.probed.append(self.host)
+        return Identity(hub.hub_id, hub.model, hub.model.upper().startswith(("H100", "H200")), len(hub.children))
 
     async def poll(self) -> HubSnapshot:
         hub = self._hub("poll")
@@ -158,7 +162,10 @@ class FakeNetwork:
     def __init__(self, **placed: FakeHub):
         self.hubs: dict[str, FakeHub] = {}
         self.extra_open: set[str] = set()  # answers on 443 but is not a hub (a router)
+        self.refuse_login: set[str] = set()  # answers on 443 and refuses the account's login
+        self.probed: list[str] = []  # addresses a sweep logged in to
         self.tcp_calls: list[str] = []
+        self.gate: asyncio.Event | None = None  # while set up and not set, every connect test waits (a slow sweep)
         for host, hub in placed.items():
             self.hubs[host.replace("_", ".")] = hub
 
@@ -172,4 +179,6 @@ class FakeNetwork:
 
     async def tcp(self, host: str) -> bool:
         self.tcp_calls.append(host)
-        return host in self.hubs or host in self.extra_open
+        if self.gate is not None:
+            await self.gate.wait()
+        return host in self.hubs or host in self.extra_open or host in self.refuse_login

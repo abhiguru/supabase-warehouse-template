@@ -2,7 +2,7 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import { readFileSync } from 'node:fs';
-import { DEFAULT_SENSOR_LIMIT_S, SENSORS_SQL, ageText, bridgeState, sensorLimitSeconds, sensorProblems, sensorReport } from '../scripts/sensors-check.mjs';
+import { DEFAULT_SENSOR_LIMIT_S, SENSORS_SQL, ageText, bridgeState, sensorLimitSeconds, sensorFindings, sensorProblems, sensorReport } from '../scripts/sensors-check.mjs';
 
 const DAY = 86400;
 const db = answer => args => { db.last = args; return { ok: true, output: `${JSON.stringify(answer)}\n` }; };
@@ -81,6 +81,8 @@ test('sensors: an unreadable database answer is a warning that says so, not a pa
     const problems = sensorProblems({ run, bridge: 'running' });
     assert.equal(problems.length, 1);
     assert.match(problems[0], /could not read sensor_hubs/);
+    assert.ok(!problems.some(text => /undefined/.test(text)));
+    assert.match(sensorFindings({ run, bridge: 'running' })[0].short, /could not be read/);
   }
 });
 

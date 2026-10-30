@@ -61,7 +61,7 @@ export function sensorFindings({ run, bridge = null, limitSeconds = DEFAULT_SENS
   let found;
   try { found = answer.ok ? JSON.parse(answer.output.trim()) : null; } catch { found = null; }
   if (!found || !Array.isArray(found.hubs)) {
-    problems.push(`Sensors: could not read sensor_hubs and sensor_readings from the database, so whether readings arrive is not known. Run node scripts/doctor.mjs --local again. ${SEE}`, 'the sensor tables could not be read from the database');
+    add(`Sensors: could not read sensor_hubs and sensor_readings from the database, so whether readings arrive is not known. Run node scripts/doctor.mjs --local again. ${SEE}`, 'the sensor tables could not be read from the database');
     return problems;
   }
   const newest = found.newest_age_s == null ? null : Math.max(0, Number(found.newest_age_s));

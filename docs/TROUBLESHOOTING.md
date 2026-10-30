@@ -278,13 +278,20 @@ capability is off or the `functions` service was not restarted after
 - **`event=post_failed` with 503:** migration 74 is not applied, or the function runtime or the database
   is down (`node scripts/doctor.mjs --local`). The queue keeps the readings.
 - **`node scripts/doctor.mjs --local` warns `Sensors: hub ... offline for ...` or `silent`:** the capability is on but no reading
-  arrives. A bridge container that is "healthy" can still poll addresses that no longer exist: hubs get new DHCP addresses, and
-  the bridge keeps reporting such a hub offline (so "offline for 5 days" is the time since it went offline). Compare
-  `SENSOR_BRIDGE_HUBS` in `config/compose.env` with the hub's address in the router, give the hub a DHCP reservation, then recreate
+  arrives. Hubs can get new DHCP addresses after a power cut. The bridge looks for a hub that went offline (a sweep of
+  `SENSOR_BRIDGE_SCAN`, at most every `SENSOR_BRIDGE_RELOCATE_SECONDS`) and logs `event=hub_moved hub=<id> old=<address>
+  new=<address>` when it finds it, after which readings arrive again by themselves; look for that line, and for `event=sweep ...
+  hubs=N` (hubs that logged in). If the hub is not found (the scan is `off` or does not cover its network, the Tapo login is
+  wrong, or the hub is switched off), the bridge keeps reporting it offline ("offline for 5 days" is the time since it went
+  offline). Compare `SENSOR_BRIDGE_HUBS` in `config/compose.env` with the hub's address in the router, give the hub a DHCP
+  reservation by MAC address outside the DHCP pool, then recreate
   the bridge: `bash scripts/compose.sh --profile sensors up -d --wait sensor-bridge` (the container does not re-read
   `compose.env` otherwise; add `--force-recreate` if nothing changed), or for a bridge run as its own Compose project
   `docker compose up -d --force-recreate` in the bridge's folder. "Silent" means the hub is online but the bridge has not posted
-  for it: read the bridge log. The check is a warning only (SENSORS.md, "Check that readings arrive").
+  for it: read the bridge log. The check is a warning only (SENSORS.md, "Check that readings arrive"). After a router reboot allow
+  about 15 to 25 minutes (with the 300 second poll) for the bridge to find a moved hub; one `sensors_stale` alert before that is
+  normal. A line `event=hub_moved ... claimed=true` means a hub that had never been reached was claimed; if it is the wrong hub,
+  undo it with `--forget-hub` (SENSORS.md, "Keep the hub addresses fixed").
 - **The doctor keeps warning about a hub that is gone:** a hub removed from `SENSOR_BRIDGE_HUBS`, or a ghost row whose `hub_id` is
   the address that did not answer, is never refreshed again. Remove the row (the sensors and their latest values stay, their
   hub link becomes empty: `ON DELETE SET NULL`):

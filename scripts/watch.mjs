@@ -1140,8 +1140,8 @@ export function checkRootCopies(ctx) {
 //   here as well (a different fault: the data), which is why the two alerts may fire together.
 //   Settling: after a host restart or a bridge start the first readings need up to the limit (3 x the larger poll or heartbeat
 //   interval + the post interval, 16 minutes by default) and the alert already needs two failing runs (10 minutes), so while the
-//   db or the sensor-bridge container has run for less than the limit the readings are not judged (the check passes, only a missing
-//   container is told). A crash-looping bridge never gets past this, which is right: container_restarts and service_down say so.
+//   db or the sensor-bridge container has run for less than the limit the readings are not judged (nothing is returned, so a standing
+//   alert stays as it is; only a missing container is told). A container that restarted in the last hour gets no grace. A crash-looping bridge never gets past this, which is right: container_restarts and service_down say so.
 //   A bridge run as its own Compose project is not in this project's containers; the db container's age is then the grace.
 //   Database: not responding is postgres_down's alone (null: the alert stays as it is); a query that fails is the finding "could not
 //   read the sensor tables", the same text as the doctor's.
@@ -1153,8 +1153,12 @@ export function checkSensors(ctx) {
   const env = ctx.env_();
   const limitMs = sensorLimitSeconds(env) * 1000;
   const now = ctx.now();
+  // No grace for a container that restarted in the last hour (the rule of checkServices), nor for a start time far in the future
+  // (the clock moved back; a little skew is allowed).
+  const tracked = track(ctx);
   const settling = ctx.containers().some(c => ['db', 'sensor-bridge'].includes(c.service) && c.status === 'running'
-    && now - Date.parse(c.startedAt) > -MIN && now - Date.parse(c.startedAt) < limitMs);
+    && now - Date.parse(c.startedAt) > -MIN && now - Date.parse(c.startedAt) < limitMs
+    && !((tracked.find(t => t.c.service === c.service)?.st.events.length ?? 0) > 0));
   const asResult = r => ({ ok: r.status === 0, output: String(r.stdout ?? '') });
   const { limitSeconds, findings } = sensorCheck({
     env, settling,
@@ -1163,10 +1167,14 @@ export function checkSensors(ctx) {
   });
   const limit = ageText(limitSeconds);
   if (!findings.length) {
-    return [result('sensors_stale', 'sensors_stale', true, settling ? `Sensors: started less than ${limit} ago, readings are not judged yet` : 'Sensors: readings arrive')];
+    // Settling: nothing was judged, so a standing alert is left as it is (null), not cleared by a restart.
+    if (settling) return null;
+    return [result('sensors_stale', 'sensors_stale', true, 'Sensors: readings arrive')];
   }
-  return [result('sensors_stale', 'sensors_stale', false, `Sensors: ${findings.map(f => f.short).join('; ')} (limit ${limit})`,
-    'See docs/SENSORS.md, Troubleshooting. node scripts/doctor.mjs --local names each fault with the command to read the bridge log.')];
+  // The limit applies to readings only; it is left out when every finding is a missing container or an offline hub.
+  const readingsLimit = findings.some(f => /silent|no hub has ever|newest reading|no reading stored/.test(f.short)) ? ` (readings limit ${limit})` : '';
+  return [result('sensors_stale', 'sensors_stale', false, `Sensors: ${findings.map(f => f.short).join('; ')}${readingsLimit}`,
+    'See docs/SENSORS.md, Troubleshooting, and docs/TROUBLESHOOTING.md#sensors-show-no-data. node scripts/doctor.mjs --local names each fault with the command to read the bridge log.')];
 }
 
 export const CHECKS = [

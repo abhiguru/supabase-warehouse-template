@@ -2746,6 +2746,11 @@ networking outgoing connections to the LAN normally work (verified below), and m
 The check passes when it prints the sensors of each hub with no `"error"` entry and exits 0; an unreachable hub is printed as
 `{"host": ..., "error": ...}` and the command exits 1.
 
+Give each hub a DHCP reservation on the router, by MAC address and outside the DHCP pool; the distro and its NAT do not change
+that ([SENSORS.md](SENSORS.md#keep-the-hub-addresses-fixed)). If an address changes anyway (a power cut or a router reboot), the
+running bridge finds the hub again: its sweep uses unicast TCP connects, which leave the distro's NAT network (broadcast discovery
+would not), and the log says `event=hub_moved`. This is not verified on a Windows host yet.
+
 Verified, on Windows 10 Pro 22H2 with WSL's default NAT networking: this check reached three Tapo H200 hubs (firmware 1.7.7) from
 inside the distro and from a container on the stack's default network, listed all four T310 sensors of the three hubs (one of them offline at its hub, listed without an error) and exited 0.
 **Not verified**: the bridge running continuously (`up`) and posting readings to the ingest function, mirrored networking, and

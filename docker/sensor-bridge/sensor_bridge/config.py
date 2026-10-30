@@ -27,7 +27,8 @@ NUMBERS = {
     "RELOCATE_SECONDS": (600, 60, 86400),
 }
 PRIVATE_RANGES = tuple(ipaddress.ip_network(n) for n in ("10.0.0.0/8", "172.16.0.0/12", "192.168.0.0/16"))
-SCAN_MIN_PREFIX = 22  # a sweep covers at most 1024 addresses
+SCAN_MIN_PREFIX = 22  # no single network larger than this
+SCAN_MAX_ADDRESSES = 1024  # and no more than this many addresses in all
 
 
 def _private(network: ipaddress.IPv4Network) -> bool:
@@ -39,7 +40,7 @@ def parse_scan(raw: str, hubs: tuple[str, ...]) -> tuple[str, ...]:
 
     'off' gives none. Empty means the /24 of every hub given as a private IPv4 address (a hub given
     by name, or at a public or documentation address, adds nothing). Explicit entries must be private
-    (RFC 1918) IPv4 networks of /22 or smaller.
+    (RFC 1918) IPv4 networks of /22 or smaller; all together they may cover at most 1024 addresses.
     """
     if raw.lower() == "off":
         return ()
@@ -63,6 +64,10 @@ def parse_scan(raw: str, hubs: tuple[str, ...]) -> tuple[str, ...]:
                 continue
             if _private(net):
                 nets.append(net)
+    total = sum(n.num_addresses for n in ipaddress.collapse_addresses(nets))
+    if total > SCAN_MAX_ADDRESSES:
+        raise ConfigError(f"SENSOR_BRIDGE_SCAN covers {total} addresses; at most {SCAN_MAX_ADDRESSES} are allowed "
+                          "(name fewer or smaller networks, or set it to 'off')")
     return tuple(dict.fromkeys(str(n) for n in nets))
 
 

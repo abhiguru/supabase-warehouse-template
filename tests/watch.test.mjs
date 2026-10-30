@@ -3989,8 +3989,12 @@ test('sensors_stale: capability off -> nothing to judge; fresh data passes; stal
     answer(dead);
     r = W.checkSensors(h.ctx())[0];
     assert.equal(r.ok, false);
-    assert.equal(r.summary, 'Sensors: hub 192.0.2.10 offline for 5 days (limit 16 minutes)');
+    assert.equal(r.summary, 'Sensors: hub 192.0.2.10 offline for 5 days');
     assert.match(r.detail, /docs\/SENSORS\.md, Troubleshooting/);
+    assert.match(r.detail, /docs\/TROUBLESHOOTING\.md#sensors-show-no-data/);
+    answer({ hubs: fresh.hubs, newest_age_s: 7200 });
+    assert.equal(W.checkSensors(h.ctx())[0].summary, 'Sensors: newest reading 2 hours ago (readings limit 16 minutes)');
+    answer(dead);
     const { SENSORS_SQL } = await import('../scripts/sensors-check.mjs');
     assert.ok(h.calls.at(-1).includes(SENSORS_SQL), 'the exact SQL text of the doctor');
     assert.match(h.calls.at(-1), /statement_timeout=10000/);
@@ -4029,11 +4033,10 @@ test('sensors_stale: restart grace -> readings are not judged while the db or br
     h.runs['-c SELECT json_build_object'] = ok(`${JSON.stringify({ hubs: [], newest_age_s: null })}\n`);
     const started = Date.parse('2026-10-18T00:00:00Z');   // the fake containers' StartedAt
     h.clock.t = started + 5 * 60 * 1000;
-    let r = W.checkSensors(h.ctx())[0];
-    assert.equal(r.ok, true); assert.match(r.summary, /started less than 16 minutes ago/);
+    assert.equal(W.checkSensors(h.ctx()), null, 'settling with nothing to tell: not judged, a standing alert is left as it is');
     assert.ok(!h.calls.some(c => c.includes('json_build_object')), 'no database question while settling');
     h.clock.t = started + 17 * 60 * 1000;
-    r = W.checkSensors(h.ctx())[0];
+    let r = W.checkSensors(h.ctx())[0];
     assert.equal(r.ok, false); assert.match(r.summary, /no hub has ever reported/);
     // SENSOR_BRIDGE_HUBS set and no container: told even while settling
     writeFileSync(join(h.state, 'config/compose.env'), 'SENSOR_BRIDGE_HUBS=192.0.2.10\nPOSTGRES_PASSWORD=supersecretpassword123\n', { mode: 0o600 });
@@ -4041,5 +4044,61 @@ test('sensors_stale: restart grace -> readings are not judged while the db or br
     h.clock.t = started + 5 * 60 * 1000;
     r = W.checkSensors(h.ctx())[0];
     assert.equal(r.ok, false); assert.match(r.summary, /no sensor-bridge container exists/);
+  } finally { clean(h); }
+});
+
+// The inspect answer with another StartedAt for one service (the fake containers all start at 2026-10-18T00:00:00Z).
+function startedAtOf(h, service, stamp) {
+  const base = h.fakeRun;
+  h.fakeRun = (c, a) => {
+    const r = base(c, a);
+    if (!(c === 'docker' && a[0] === 'inspect')) return r;
+    return ok(r.stdout.split('\n').map(line => (line.split('|')[1] === service ? line.replace('2026-10-18T00:00:00Z', stamp) : line)).join('\n'));
+  };
+}
+
+test('sensors_stale: a standing alert survives a restart (settling returns null, so evaluate leaves it as it is); a settled db with a 5 minute old bridge is settling too', async () => {
+  const h = harness();
+  try {
+    writeFileSync(join(h.state, 'public/instance.json'), JSON.stringify({ capabilities: { sensors: true } }));
+    h.services = [...SERVICES, 'sensor-bridge']; h.stateOf = { 'sensor-bridge': 'running|' };
+    h.runs['-c SELECT json_build_object'] = ok(`${JSON.stringify({ hubs: [], newest_age_s: null })}\n`);
+    startedAtOf(h, 'db', '2026-10-10T00:00:00Z');                 // the db is old, only the bridge is new
+    h.clock.t = Date.parse('2026-10-18T00:05:00Z');
+    assert.equal(W.checkSensors(h.ctx()), null, 'bridge 5 minutes old: settling');
+    assert.ok(!h.calls.some(c => c.includes('json_build_object')));
+    const data = h.ctx().data;
+    data.alerts.sensors_stale = { failingRuns: 2, firingSince: h.clock.t - 600000, lastSent: h.clock.t - 600000, clearPending: false, check: 'sensors_stale', summary: 'Sensors: x', detail: '' };
+    const { results, ran } = await W.runChecks(Object.assign(h.ctx(), { data }), W.CHECKS.filter(([n]) => n === 'sensors_stale'));
+    const out = W.evaluate(data, results, ran, h.clock.t);
+    assert.equal(out.clear.length, 0, 'the standing alert is not cleared');
+    assert.ok(data.alerts.sensors_stale, 'and is kept');
+  } finally { clean(h); }
+});
+
+test('sensors_stale: no grace for a bridge container that restarted in the last hour; none for a start time far in the future', () => {
+  const h = harness();
+  try {
+    writeFileSync(join(h.state, 'public/instance.json'), JSON.stringify({ capabilities: { sensors: true } }));
+    h.services = [...SERVICES, 'sensor-bridge']; h.stateOf = { 'sensor-bridge': 'running|' };
+    h.runs['-c SELECT json_build_object'] = ok(`${JSON.stringify({ hubs: [], newest_age_s: null })}\n`);
+    startedAtOf(h, 'db', '2026-10-10T00:00:00Z');
+    h.clock.t = Date.parse('2026-10-18T00:05:00Z');
+    // history says the bridge started at another time: this run sees a restart of that container alone
+    const data = h.ctx().data;
+    data.containers['sensor-bridge'] = { id: 'old', restartCount: 0, startedAt: '2026-10-17T00:00:00Z', events: [], oomKill: null, lastOom: null, oomStart: null, lastOomEvent: null };
+    const r = W.checkSensors(Object.assign(h.ctx(), { data }));
+    assert.ok(Array.isArray(r) && r[0].ok === false, 'a restarting bridge is judged at once');
+    assert.match(r[0].summary, /no hub has ever reported/);
+    assert.ok(h.calls.some(c => c.includes('json_build_object')));
+    // the clock moved back: StartedAt more than a minute ahead of now is no start-up
+    const h2 = harness();
+    try {
+      writeFileSync(join(h2.state, 'public/instance.json'), JSON.stringify({ capabilities: { sensors: true } }));
+      h2.runs['-c SELECT json_build_object'] = ok(`${JSON.stringify({ hubs: [], newest_age_s: null })}\n`);
+      h2.clock.t = Date.parse('2026-10-17T00:00:00Z');
+      const r2 = W.checkSensors(h2.ctx());
+      assert.ok(Array.isArray(r2) && r2[0].ok === false, 'a future StartedAt gives no grace');
+    } finally { clean(h2); }
   } finally { clean(h); }
 });

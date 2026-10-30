@@ -158,7 +158,7 @@ reachable from the host (on a Windows host, see
 only; once a bridge container exists they replace it when its image or
 configuration changed, and `stop.sh` stops it with everything else.
 
-1. **Mint a key** (above).
+1. **Mint a key** (above). Also give each hub a DHCP reservation ([Keep the hub addresses fixed](#keep-the-hub-addresses-fixed)).
 2. **Configure.** Set these lines in `$WAREHOUSE_STATE_DIR/config/compose.env`
    (setup writes them empty). Keep the file mode 0600.
 
@@ -169,6 +169,7 @@ configuration changed, and `stop.sh` stops it with everything else.
    | `SENSOR_INGEST_KEY` | the key from step 1 |
    | `SENSOR_BRIDGE_ID` | optional name shown in `sensor_hubs.bridge_id` (default `sensor-bridge`) |
    | `SENSOR_BRIDGE_POLL_SECONDS`, `_POST_SECONDS`, `_HEARTBEAT_SECONDS`, `_MAX_BATCH`, `_LOG_LEVEL` | optional: 300, 60, 300, 200, INFO (poll and heartbeat 300: sampled every 5 minutes) |
+   | `SENSOR_BRIDGE_SCAN`, `SENSOR_BRIDGE_RELOCATE_SECONDS` | optional: where to look for a hub that moved to another address (private CIDR networks of /22 or smaller, or `off`; default the /24 of each hub address) and how often at most (600 seconds); see "Keep the hub addresses fixed" below |
    | `SENSOR_BRIDGE_REBOOT_CRON` | optional five-field cron in UTC for a hub reboot, e.g. `30 21 * * 6` (Saturday 21:30 UTC, Sunday 03:00 IST); empty = never |
 
    Compose reads this file with variable substitution: a password that
@@ -273,6 +274,47 @@ is not backed up, like the print spool: readings the bridge had not delivered
 when a host was lost are lost; a restored host's bridge starts with an empty
 queue and sends every sensor's current values once. `db:restore-host` keeps the
 volume when one is left (it holds no database state).
+
+## Keep the hub addresses fixed
+
+The H200 has no setting for a fixed address, so after a power cut or a router reboot a hub can come back on a new DHCP address. Give
+each hub a **DHCP reservation on the router, by the hub's MAC address**, and choose an address outside the router's DHCP pool. Find
+the MAC in the router's client list, or after a ping with `ip neigh show <address>`. Some Tapo firmware has been reported to ignore
+a reservation after an update, so a reservation is the first line of defence, not a guarantee.
+
+If an address changes anyway, the bridge finds the hub again by itself, with no operator action: while a hub is offline it sweeps
+`SENSOR_BRIDGE_SCAN` (by default the /24 of each address in `SENSOR_BRIDGE_HUBS`) at most every `SENSOR_BRIDGE_RELOCATE_SECONDS`,
+with plain TCP connects to port 443 and a login with the Tapo account, so it works in Docker and under WSL2. The hub is recognised by
+its own id, not its address. The log shows `event=hub_moved hub=<id> old=<address> new=<address>`, the hub's row in `sensor_hubs`
+follows to the new address and queued readings are kept; the move is stored, so a restart of the bridge keeps it. The sweep runs in
+the background: the other hubs and the delivery carry on while it runs. A missed reservation therefore costs minutes, not days: after
+a router reboot expect readings back in about 15 to 25 minutes with the default 300 second poll (three failed polls, then a sweep,
+then a reconnect), and one `sensors_stale` alert before it recovers.
+
+A hub that was never reached (so its id is not known) is **claimed**, with a warning `event=hub_moved ... claimed=true`, only if the
+device is a Tapo H100 or H200 hub, logs in with the account, reports at least one temperature or humidity sensor, and no other
+entry follows it. A hub of another facility on the same Tapo account would also qualify, so on an account shared between sites
+give every hub an entry in `SENSOR_BRIDGE_HUBS` that has been reached once, or set `SENSOR_BRIDGE_SCAN` to your own network.
+The claimed hub's earlier row, named by the address that never answered, stays until you remove it (TROUBLESHOOTING.md). To undo a
+wrong claim, stop the bridge and run (the entry is the address as written in `SENSOR_BRIDGE_HUBS`; for the stack, with the sensors
+profile, otherwise in the bridge's own folder):
+
+```bash
+bash scripts/compose.sh --profile sensors run --rm sensor-bridge --forget-hub 192.0.2.10
+bash scripts/compose.sh --profile sensors up -d sensor-bridge
+```
+
+It deletes the entry's stored hub id (`hub_id:<address>`) and stored move (`host_of:<id>`) in the state volume and nothing else;
+the entry then starts again as never reached. Fix the configuration first, or the entry may claim the same hub again.
+
+**What the sweep sends.** The sweep makes a plain TCP connect to port 443 of every address in `SENSOR_BRIDGE_SCAN` (at most 1024
+addresses) and, at each address that answers, tries the hub login with the Tapo account. That login sends the account e-mail
+address, inside TLS that does not check the certificate, to every such host on the scanned networks (a router, a camera, a
+printer) while a hub is being searched for; the password itself is never sent: the sweep refuses python-kasa's "less secure" login, which
+would send an MD5 hash of it, and uses only the challenge login (a device that plays along with the challenge receives a salted
+hash response, not the password). An address that refuses the login is skipped for the next six
+sweeps so that another account's device is not locked out. To limit this, set `SENSOR_BRIDGE_SCAN` to the smallest network that holds
+the hubs, for example the hubs' own /28, or to `off`. Details: `docker/sensor-bridge/README.md`.
 
 ## Troubleshooting
 

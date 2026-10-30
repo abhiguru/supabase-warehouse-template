@@ -73,16 +73,37 @@ future or older than 30 days.
 ### A hub that moves to another address
 
 Reserve each hub's address on the router (docs/SENSORS.md in the stack); if one moves anyway, the
-bridge finds it. While a hub is OFFLINE, at most every `SENSOR_BRIDGE_RELOCATE_SECONDS`, the bridge sweeps
-`SENSOR_BRIDGE_SCAN`: a TCP connect to port 443 of every address (32 at a time, 1 s each), then a login with
-the Tapo account at each address that answers (8 at a time) to read the hub id. One sweep runs at a time and
-its result (kept 60 s) serves every hub that moved together. A hub is matched by the id the bridge learned; a
-hub that was never reached claims a hub that logs in and that no other hub entry follows. On a match the log
-says `event=hub_moved hub=<id> old=<address> new=<address>` (`claimed=true` for a claim), the move is stored in
-the state volume (`host_of:<id>`, so a restart keeps it) and the backend's hub row follows the new address. The
-queued readings are kept. Two hubs that swapped addresses are sorted out the same way. A configured address
-that now answers with a hub another entry follows is treated as a failed poll. The sweep only sends TCP
-connects and the login; it uses no broadcast, so it works in Docker's bridge network and under WSL2.
+bridge finds it. While a hub is OFFLINE, at most every `SENSOR_BRIDGE_RELOCATE_SECONDS`, its entry asks the
+bridge's locator for a sweep of `SENSOR_BRIDGE_SCAN` (at most 1024 addresses in all). The sweep is a background
+task: the other hubs, the delivery and the health file carry on while it runs, and the entry reads the result on
+a later step. It makes a TCP connect to port 443 of every address (32 at a time, 1 s each), then a hub login
+with the Tapo account at each address that answers (8 at a time, 8 s each) to read the device's id, model and
+sensors. One sweep runs at a time and its result (kept 60 s) serves every hub that moved together.
+
+- **What a probe sends.** Only the hub login's challenge exchange; the sweep's transport refuses python-kasa's
+  "less secure" fallback, which would send an MD5 hash of the password to whatever listens on 443. The account
+  e-mail is still sent, inside TLS that does not check the certificate, to every host that answers on the
+  scanned networks; narrow `SENSOR_BRIDGE_SCAN` to limit that. An address whose login is refused is skipped for
+  the next 6 sweeps.
+- **Matching.** A hub is matched by the id the bridge learned, and only a Tapo H100/H200 counts. A hub that was
+  never reached claims a hub only if it is an H100/H200 that logs in, reports at least one temperature or
+  humidity sensor, and no other entry follows it; a claim is logged as a warning. A device without an id is an
+  error, never known by its address. Two entries never follow one hub id (a duplicate stored id is dropped from
+  the later entry at start) and an entry never points at an address another entry is polling.
+- **On a match** the log says `event=hub_moved hub=<id> old=<address> new=<address>` (`claimed=true` for a claim),
+  the move is stored in the state volume (`host_of:<id>`, used at the next start only while the sweep is on) and
+  the backend's hub row follows the new address. The queued readings are kept. Two hubs that swapped addresses
+  are sorted out the same way.
+- **Another hub at the address.** With the sweep on, a configured address that answers with a different hub is a
+  failed poll (so the search runs), not a replacement. A replacement is adopted only at the configured address
+  and only after a sweep did not find the old hub anywhere. With `SENSOR_BRIDGE_SCAN=off` the answering hub is
+  adopted at once, as before this feature.
+- **A dead stored address.** If the address restored at start is offline, the entry tries its configured address
+  while the sweep runs.
+- **Undo a claim.** Stop the bridge and run `--forget-hub <address>` (below).
+
+The sweep uses no broadcast, so it works in Docker's bridge network and under WSL2. `--once` does not search
+(it makes one pass), and `--dump` always connects to the configured addresses, not to a stored move.
 
 ### Delivery
 
@@ -110,8 +131,8 @@ than 29 days are dropped from the queue, and it never holds more than 200,000.
 | `SENSOR_BRIDGE_HEARTBEAT_SECONDS` | `300` | 60 to 86400 |
 | `SENSOR_BRIDGE_MAX_BATCH` | `200` | readings per request, 1 to 500 |
 | `SENSOR_BRIDGE_REBOOT_CRON` | (off) | reboot every hub on this schedule, five cron fields **in UTC**, minute and hour as single numbers; `30 21 * * 6` is Sunday 03:00 in India |
-| `SENSOR_BRIDGE_SCAN` | the /24 of each hub address | where to look for a hub that moved to another address: comma-separated private (RFC 1918) CIDR networks of /22 or smaller, or `off`; hubs given by name or at a non-private address add nothing |
-| `SENSOR_BRIDGE_RELOCATE_SECONDS` | `600` | an OFFLINE hub triggers a sweep at most this often, 60 to 86400 |
+| `SENSOR_BRIDGE_SCAN` | the /24 of each hub address | where to look for a hub that moved to another address: comma-separated private (RFC 1918) CIDR networks of /22 or smaller, or `off`; at most 1024 addresses in all; hubs given by name or at a non-private address add nothing |
+| `SENSOR_BRIDGE_RELOCATE_SECONDS` | `600` | an OFFLINE hub asks for a sweep at most this often, 60 to 86400 |
 | `SENSOR_BRIDGE_QUEUE_PATH` | `/data/bridge.sqlite3` | queue and sent-state |
 | `SENSOR_BRIDGE_HEALTH_PATH` | `/data/health.json` | rewritten every second, whatever the poll interval |
 | `SENSOR_BRIDGE_HEALTH_MAX_AGE` | `120` | seconds; the HEALTHCHECK fails beyond it |
@@ -127,6 +148,7 @@ The image's entrypoint passes options to the bridge and runs any other command a
 
 ```sh
 docker run --rm --env-file sensor-bridge.env IMAGE --check-config   # validate, print settings without secrets
+docker run --rm --env-file sensor-bridge.env -v sensor-bridge-data:/data IMAGE --forget-hub 192.0.2.10   # undo what was learned for one entry
 docker run --rm --env-file sensor-bridge.env IMAGE --once --dump    # print what each hub reports; sends nothing
 docker run --rm --env-file sensor-bridge.env -v sensor-bridge-data:/data IMAGE --once   # one poll, one post
 docker run --rm --network none IMAGE python -m unittest discover -s tests   # unit tests, no hub needed
