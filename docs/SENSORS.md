@@ -7,6 +7,12 @@ the facility's Tapo hubs on the local network and posts what it sees to the
 (`sensor_latest`; there is no live push). The `sensors` capability in the public manifest is off by
 default; the app shows the Sensors screen only where it is on.
 
+**Sensors are optional.** An installation with no sensors skips this whole document: nothing here is needed, the install is
+complete without it, and the app simply does not show the Sensors screen. **If you do provide sensor details** (hub
+addresses, the Tapo login, an ingest key), the install is not finished until you have verified in the database that
+readings arrive: step 6 of [Run it as a profile of the installation](#run-it-as-a-profile-of-the-installation) is a
+must-pass check, not a suggestion.
+
 Built and tested without hardware so far: the bridge's unit tests, the image
 check (`npm run test:sensors`), the function's handler tests and the database
 tests (`tests/sensor_ingest.sql`). A run against real hubs, the heartbeat
@@ -132,7 +138,29 @@ The script is read from standard input (`-f` would look for it inside the
 database container). `label` names the bridge (1 to 64 letters, digits,
 spaces, dots, underscores or hyphens) and is required. It prints the key
 **once**, as the only line of output. Put it straight into `SENSOR_INGEST_KEY` (below);
-do not paste it into a chat, a ticket or a shared document. To revoke a key
+do not paste it into a chat, a ticket or a shared document. To mint a key and put it into `compose.env` without it ever
+being shown, run this instead of the command above (it needs the line `SENSOR_INGEST_KEY=` in the file, which setup
+writes; it writes nothing unless the output is a 64-character hex key, and the file stays mode 0600):
+
+```bash
+ENV_FILE="$WAREHOUSE_STATE_DIR/config/compose.env"
+if grep -q '^SENSOR_INGEST_KEY=' "$ENV_FILE"; then
+  KEY=$(bash scripts/compose.sh exec -T db psql -X -qAt -v ON_ERROR_STOP=1 -U supabase_admin -d postgres \
+    -v label=main-bridge < scripts/sensor-ingest-key.sql)
+  if [[ "$KEY" =~ ^[0-9a-f]{64}$ ]]; then
+    sed -i "s/^SENSOR_INGEST_KEY=.*/SENSOR_INGEST_KEY=$KEY/" "$ENV_FILE" && chmod 600 "$ENV_FILE" && echo "key written"
+  else
+    echo "no key written: check the output of the mint command" >&2
+  fi
+  unset KEY
+else
+  echo "no key minted: $ENV_FILE has no SENSOR_INGEST_KEY= line" >&2
+fi
+```
+
+If the line already held a key, that key stays valid: revoke it by its label (below).
+
+To revoke a key
 (the bridge then gets 401 and pauses), and to see which keys exist:
 
 ```bash
@@ -158,7 +186,7 @@ reachable from the host (on a Windows host, see
 only; once a bridge container exists they replace it when its image or
 configuration changed, and `stop.sh` stops it with everything else.
 
-1. **Mint a key** (above). Also give each hub a DHCP reservation ([Keep the hub addresses fixed](#keep-the-hub-addresses-fixed)).
+1. **Mint a key** (above; the second form writes it into `compose.env` for you, which makes the `SENSOR_INGEST_KEY` line of step 2 done). Also give each hub a DHCP reservation ([Keep the hub addresses fixed](#keep-the-hub-addresses-fixed)).
 2. **Configure.** Set these lines in `$WAREHOUSE_STATE_DIR/config/compose.env`
    (setup writes them empty). Keep the file mode 0600.
 
@@ -179,7 +207,7 @@ configuration changed, and `stop.sh` stops it with everything else.
    reports (ids, values, battery, report interval; no secret), storing and
    sending nothing (`--once --dump` is the same as `--dump`); `--once` polls
    and posts once, and a second `--once` straight after it posts nothing,
-   because the change detector already holds every value:
+   because the change detector already holds every value. **Exit code:** `--check-config` reads no hub: it exits 0 when the settings are valid and 78 when one is wrong. `--dump` and `--once` exit 1 when at least one hub failed (`{"host": ..., "error": ...}` in the `--dump` output; `event=hub_error`, and `hubs_ok=` below the total, in the `--once` log), even though the hubs that answered were still read and, with `--once`, posted. `--once` also exits 1 when its post was not fully delivered (`event=post_failed`). They exit 0 only when every hub in `SENSOR_BRIDGE_HUBS` answered (and, for `--once`, everything was delivered). So exit 1 with `hubs_ok=2/3` and no `post_failed` means one hub is unreachable (see [Troubleshooting](TROUBLESHOOTING.md#sensors-show-no-data)), not that the others are broken:
 
    ```bash
    bash scripts/compose.sh --profile sensors run --rm sensor-bridge --check-config
@@ -199,8 +227,21 @@ configuration changed, and `stop.sh` stops it with everything else.
    bash scripts/compose.sh restart functions
    ```
 
-6. **Check that readings arrive.** Wait about 20 minutes, then run
-   `node scripts/doctor.mjs --local`. While the capability is on it warns, for example
+   Check that the capability is on: the public configuration on the local gateway must show `capabilities.sensors` as `true`
+   (`featureFlags.sensor_monitoring` in the same answer is an unrelated flag and stays `false`):
+
+   ```bash
+   curl -fsS http://127.0.0.1:18000/functions/v1/get-public-config | grep -o '"sensors":[a-z]*'
+   ```
+
+   No output means the request failed or the manifest has no `sensors` capability: run the doctor. The line must read `"sensors":true`. (If it shows `false`, the `functions` restart was missed or the command did not run on
+   this installation.)
+6. **Verify that readings arrive (required).** Only if you configured sensors: the install is not done until this
+   passes. The first `--once` of step 3 already posted every sensor's current values, so right after `up` the bridge has
+   nothing new to send until its next poll: **a quiet first 5 minutes is normal, and a new row per sensor appears about 5
+   minutes after `up`.** Wait about 10 minutes, then run the doctor (the quick check) and the SQL below (the proof).
+
+   The doctor: `node scripts/doctor.mjs --local`. While the capability is on it warns, for example
    `Sensors: hub 192.0.2.10 offline for 5 days; newest reading 5 days ago (limit 16 minutes)`, when
    no hub has reported, a hub is offline (the warning says for how long) or silent (online, but the bridge has not posted for it),
    or no reading is newer than the limit. The limit is three times the larger of `SENSOR_BRIDGE_HEARTBEAT_SECONDS` and
@@ -210,7 +251,33 @@ configuration changed, and `stop.sh` stops it with everything else.
    checker judges the same things and sends the alert `sensors_stale` to Slack (after two failing runs in a row, not in the first
    16 minutes after a start), so a bridge that polls dead addresses is noticed without anyone running the doctor. The cause
    is usually a hub whose address changed ([Troubleshooting](TROUBLESHOOTING.md#sensors-show-no-data)).
-7. **Take a backup:** `npm run db:backup`. `db:restore` refuses a backup whose
+
+   The SQL, which must pass:
+
+   ```bash
+   bash scripts/compose.sh exec -T db psql -X -q -v ON_ERROR_STOP=1 -U supabase_admin -d postgres <<'SQL'
+   -- 1. every hub, and when the bridge last reported for it
+   SELECT hub_id, host, online, last_seen_at, now() - last_seen_at AS age FROM sensor_hubs ORDER BY host;
+   -- 2. every sensor, and the rows stored for it in the last 15 minutes (online state is in sensor_status, not sensor_devices)
+   SELECT s.device_name, s.connectivity_status, s.stale, s.health_status, s.temperature, s.humidity, s.last_seen_at,
+          (SELECT count(*) FROM sensor_readings r
+            WHERE r.device_id = s.device_id AND r.recorded_at > now() - interval '15 minutes') AS readings_15m
+     FROM sensor_status s ORDER BY s.device_name;
+   -- 3. the key is in use
+   SELECT label, last_used_at, revoked_at FROM warehouse_security.sensor_ingest_keys ORDER BY created_at;
+   SQL
+   ```
+
+   Expected, about 10 minutes after `up`: query 1 has one row per address in `SENSOR_BRIDGE_HUBS`, `online` true and `age` under about 6 minutes; query 2 has a row for each sensor that reports, with `connectivity_status` `ONLINE`, `stale` false, `health_status` `healthy` and `readings_15m` of 1 or more (a new row about every 5 minutes); query 3 shows your key's `last_used_at` within the last few minutes and `revoked_at` empty. If a configured hub has no row or `online` false, or a sensor that reports still has `readings_15m` 0 after 15 minutes, do not go on: read the bridge log (`bash scripts/compose.sh --profile sensors logs --tail 50 sensor-bridge`) and [Troubleshooting](TROUBLESHOOTING.md#sensors-show-no-data).
+
+   What the rows can show besides that:
+   - **A sensor with no row, or an old one.** The bridge stores nothing for a sensor its hub reports as offline (flat battery, out of range; the log says `event=sensor_offline`). A sensor that has never reported has no row in query 2; one that reported before keeps its row, with `connectivity_status` `STALE`, `stale` true, `health_status` `offline`, an old `last_seen_at` and `readings_15m` 0. So query 2 can have fewer good rows than sensors installed: check those sensors at the hub. The sensors of a hub that is offline show `OFFLINE`, and those of a hub that was never reached have no row.
+   - **A hub row whose `hub_id` is an IP address** (for example `192.0.2.10`, `online` false) is an address the bridge never reached: the address stands in for the id. If that address is still in `SENSOR_BRIDGE_HUBS`, it is a fault: fix the address or the Tapo login. If the hub was later found at another address (claimed, see [Keep the hub addresses fixed](#keep-the-hub-addresses-fixed)), the row is a harmless leftover. Either way the row is never removed by itself: delete it as in Troubleshooting, "The doctor keeps warning about a hub that is gone". `--forget-hub` does not remove it.
+
+   Read the online state from `sensor_status`: `connectivity_status` is `ONLINE`, `STALE` (no report within the sensor's staleness limit, 30 minutes by default), `OFFLINE` (its hub is offline) or `UNKNOWN` (never seen). The column of the same name in `sensor_devices` is not maintained and stays `UNKNOWN`.
+7. **Take a backup:** `npm run db:backup`. The backup stops the services for about half a minute; a bridge that is
+   running logs one or two `post_failed` meanwhile (the gateway is down), keeps the reading in its queue and delivers it by itself
+   afterwards: harmless. (Take the backup before step 4 if you prefer a log without it.) `db:restore` refuses a backup whose
    `instance.json` or `compose.env` differs from the state, so a backup taken
    before steps 2 and 5 can be restored only with `db:restore-host` (or with
    `--restore-config`, which brings back the old configuration).
@@ -259,6 +326,9 @@ two bridges would each send their own observation times.
    The queue and change detector live in the volume `sensor-bridge_data`;
    `docker compose down` keeps it, `down -v` deletes it with anything not yet
    delivered. `docker/sensor-bridge/README.md` describes every setting.
+
+   Verify ingest as in step 6 above, with the SQL run on the installation's host: the same must-pass check applies to a
+   separate bridge.
 
    The doctor judges this bridge by the data alone: keep `SENSOR_BRIDGE_HUBS` empty in the installation's `compose.env` (the
    container is checked only for the profile way above, where a missing one would otherwise be a false alarm). The doctor reads

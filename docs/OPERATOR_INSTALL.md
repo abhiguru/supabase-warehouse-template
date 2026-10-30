@@ -252,8 +252,11 @@ storage, bootstraps the administrator, starts every service with `--wait` and ru
 on `127.0.0.1:18000` only; the database, CUPS and the sensor bridge are never published.
 
 Optional services are Compose profiles that setup does not start: `printing`, `pooler`, `sensors` and `lan` (the [LAN fallback](#lan-fallback-plain-http-on-the-warehouse-network), switched with `bash scripts/lan.sh on|off|status`; once it is on, setup and start bring it up too, apart from the services they wait for, so that a fault of the fallback is a warning and never stops them). The pooler is off by default and is switched with `bash scripts/pooler.sh on|off|status`, not with `--profile` (see [Pooler (optional)](#pooler-optional)); `sensors` is the Tapo sensor
-bridge; set up as in [SENSORS.md](SENSORS.md#run-it-as-a-profile-of-the-installation), then
-`node scripts/set-capability.mjs sensors on` and a new `db:backup`).
+bridge. **Sensors are optional:** without sensors skip all of this; the install is complete without it. If you do have sensor
+details (hub addresses, the Tapo login), set it up as in [SENSORS.md](SENSORS.md#run-it-as-a-profile-of-the-installation), then
+`node scripts/set-capability.mjs sensors on` and a new `db:backup`. The install is then **not done until ingest is verified in the
+database** ([SENSORS.md, step 6](SENSORS.md#run-it-as-a-profile-of-the-installation): the SQL there must show a row per hub and per sensor with readings); the doctor warning is
+only the quick check.
 
 **Monitoring is not a Compose profile.** One small program, the checker (`scripts/watch.mjs`), runs from a systemd
 timer every 5 minutes, tells the facility's Slack channel when something is wrong, and once a day makes and verifies a
@@ -2478,7 +2481,7 @@ with `db:verify-restore`, the monitoring and boot units, a Cloudflare tunnel cre
 installed as a service (the external doctor, run on the host, healthy), a reboot with nobody signed in, recovery after
 `wsl --shutdown`, `wsl --terminate` and a host reboot, disabling and enabling the keep-alive task for planned work, a WSL update
 (with the task disabled), and a USB backup drive passed into the distro with `usbipd-win` (enrolled, and one automatic run
-copied and verified), and the sensor bridge's `--once --dump` check against Tapo H200 hubs ([Sensors (Windows)](#sensors-windows)).
+copied and verified), the sensor bridge's `--once --dump` check against Tapo H200 hubs, and a bridge started with `up` whose scheduled post was stored in the database ([Sensors (Windows)](#sensors-windows)).
 
 Also verified, with both tasks registered by `scripts/windows/register-tasks.ps1` (Windows 10 Pro 22H2): after `Restart-Computer`
 and after `wsl --shutdown`, with no one touching anything, the distro came back by itself (about 1 minute), `usbipd-win` attached
@@ -2489,7 +2492,7 @@ signed-in session, but that was **not tested** with auto logon off.
 What was **not** verified: `sudo` asking for a password, Windows 11, the Home edition, mirrored
 networking, that the `.wslconfig` memory limit takes effect, recovery after a WSL update with the task enabled, the version after
 `wsl --update`, a real Windows Update reboot, a graceful stop when Windows shuts down, a restart with the tasks registered by the script and no
-console session signed in at all, a physical re-plug of the drive, a USB run that also takes a fresh backup, printing, and the sensor bridge running continuously and posting readings ([Sensors (Windows)](#sensors-windows)).
+console session signed in at all, a physical re-plug of the drive, a USB run that also takes a fresh backup, printing, and the sensor bridge running for hours or days or through a restart ([Sensors (Windows)](#sensors-windows)).
 
 ### Prerequisites
 
@@ -2735,6 +2738,10 @@ restart in step 4 of this list, not `sudo reboot` (not verified yet).
 
 ### Sensors (Windows)
 
+Sensors are optional: without them skip this section. If you configure them, the install is not done until readings are
+verified in the database as in [step 6](SENSORS.md#run-it-as-a-profile-of-the-installation) of the SENSORS.md section (the SQL there; the doctor is only the quick check), which
+means running the bridge with `up` and waiting about 10 minutes. The `--once --dump` check further down only shows that the hubs can be reached.
+
 The optional sensor bridge ([SENSORS.md](SENSORS.md#run-it-as-a-profile-of-the-installation)) runs inside the distro like the
 rest of the stack. The hub addresses in `SENSOR_BRIDGE_HUBS` must be reachable from inside the distro; under WSL's default NAT
 networking outgoing connections to the LAN normally work (verified below), and mirrored networking is not verified (as in
@@ -2753,8 +2760,8 @@ would not), and the log says `event=hub_moved`. This is not verified on a Window
 
 Verified, on Windows 10 Pro 22H2 with WSL's default NAT networking: this check reached three Tapo H200 hubs (firmware 1.7.7) from
 inside the distro and from a container on the stack's default network, listed all four T310 sensors of the three hubs (one of them offline at its hub, listed without an error) and exited 0.
-**Not verified**: the bridge running continuously (`up`) and posting readings to the ingest function, mirrored networking, and
-Windows 11.
+In a second run (2026-10-30), following [SENSORS.md](SENSORS.md#run-it-as-a-profile-of-the-installation) step by step: the bridge started with `up -d --wait` (healthy), its first scheduled post about 5 minutes after `up` was accepted and stored (the step 6 SQL), `get-public-config` showed `capabilities.sensors` `true`, and a `db:backup` taken while it ran caused one `post_failed`, from which it recovered by itself. One of the three hubs was unreachable on the LAN that day, and the step 3 commands exited 1 for it, as described there.
+**Not verified**: the bridge running for hours or days, or through a restart of Windows or `wsl --shutdown`; finding a hub that moved (`event=hub_moved`); mirrored networking; and Windows 11.
 
 ### Backups off the host (Windows)
 

@@ -27,6 +27,7 @@ file used to carry for earlier installations are in git: `git show 835b036:CHANG
 
 ### Documentation
 
+- `docs/SENSORS.md`, `docs/OPERATOR_INSTALL.md`: sensors are optional; when configured, verifying ingest in the database (SQL, timing, `sensor_status`, capability check, exit code 1 with a failed hub, backup while the bridge runs, key into `compose.env` without printing it) is a required step of the install.
 - `docs/OPERATOR_INSTALL.md`, Windows (WSL2) section: the results of a second round on Windows 10 22H2 (what is verified and what is
   not), the keep-alive task registered before `tunnel.sh create`, a wait for systemd after a cold start, the planned-work and
   `wsl --update` notes, the USB drive through `usbipd-win` (works; without the Warehouse USB task below the attach does not survive a restart).
