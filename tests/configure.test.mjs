@@ -997,3 +997,76 @@ test('setup tries --central-jwks-url once and only warns when it does not give a
     assert.equal(off.stderr, '');
   } finally { rmSync(scratch, { recursive: true, force: true }); }
 });
+
+test('--sensor-webhook-file stores, keeps and removes config/sensor-webhook-url (mode 0600) apart from the facility webhook', () => {
+  const scratch = mkdtempSync(join(tmpdir(), 'warehouse-config-sensor-hook-'));
+  const root = join(scratch, 'checkout');
+  const providerEnv = join(scratch, 'provider.env');
+  try {
+    mkdirSync(root);
+    copyFileSync(new URL('../.env.example', import.meta.url), join(root, '.env.example'));
+    writeFileSync(providerEnv, 'SMS_PROVIDER=msg91\nMSG91_AUTH_KEY=provider-key\nMSG91_TEMPLATE_ID=flow-id\nMSG91_PE_ID=pe-id\nMSG91_SENDER_ID=WHOUSE\n', { mode: 0o600 });
+    const hooks = { portFree: () => true, containersRunning: () => false };
+    const facilityUrl = 'https://hooks.slack.com/services/' + 'T0000000/B0000000/facilityfacilityfacility';
+    const sensorUrl = 'https://hooks.slack.com/services/' + 'T0000000/B0000001/sensorsensorsensorsensor';
+    const facilityFile = join(scratch, 'facility.txt');
+    const sensorFile = join(scratch, 'sensor.txt');
+    writeFileSync(facilityFile, `${facilityUrl}\n`, { mode: 0o600 });
+    writeFileSync(sensorFile, `${sensorUrl}\n`, { mode: 0o600 });
+    const state = join(scratch, 'state');
+    const sensorPath = join(state, 'config/sensor-webhook-url');
+    const created = configure(root, { apiUrl: 'https://api.example.com', company: 'Acme Stores', providerEnv, stateDir: state, alertWebhookFile: facilityFile, sensorWebhookFile: sensorFile, ...hooks });
+    assert.equal(created.sensorWebhook, true);
+    assert.equal(readFileSync(sensorPath, 'utf8'), `${sensorUrl}\n`);
+    assert.equal(statSync(sensorPath).mode & 0o777, 0o600);
+    assert.equal(readFileSync(join(state, 'config/slack-webhook-url'), 'utf8'), `${facilityUrl}\n`, 'the facility webhook is a different file');
+    // Absent keeps what is stored.
+    const kept = configure(root, { stateDir: state, ...hooks });
+    assert.equal(kept.sensorWebhook, undefined);
+    assert.equal(readFileSync(sensorPath, 'utf8'), `${sensorUrl}\n`);
+    // Replacing keeps mode 0600.
+    const otherUrl = 'https://hooks.slack.com/services/' + 'T0000000/B0000002/othersensorothersensor';
+    writeFileSync(sensorFile, `${otherUrl}\n`, { mode: 0o600 });
+    configure(root, { stateDir: state, sensorWebhookFile: sensorFile, ...hooks });
+    assert.equal(readFileSync(sensorPath, 'utf8'), `${otherUrl}\n`);
+    assert.equal(statSync(sensorPath).mode & 0o777, 0o600);
+    // Refusals change nothing and never quote the address.
+    writeFileSync(sensorFile, 'not a url\n', { mode: 0o600 });
+    assert.throws(() => configure(root, { stateDir: state, sensorWebhookFile: sensorFile, ...hooks }), error => /--sensor-webhook-file must hold one Slack incoming-webhook URL/.test(error.message) && !error.message.includes('not a url'));
+    assert.throws(() => configure(root, { stateDir: state, sensorWebhookFile: 'relative.txt', ...hooks }), /--sensor-webhook-file must be an absolute path/);
+    chmodSync(sensorFile, 0o644);
+    assert.throws(() => configure(root, { stateDir: state, sensorWebhookFile: sensorFile, ...hooks }), /--sensor-webhook-file must be owned by this user and mode 0600/);
+    assert.equal(readFileSync(sensorPath, 'utf8'), `${otherUrl}\n`);
+    // Off removes only the sensor webhook.
+    assert.equal(configure(root, { stateDir: state, sensorWebhookFile: 'off', ...hooks }).sensorWebhook, null);
+    assert.equal(existsSync(sensorPath), false);
+    assert.equal(existsSync(join(state, 'config/slack-webhook-url')), true);
+    assert.equal(configure(root, { stateDir: state, sensorWebhookFile: 'off', ...hooks }).sensorWebhook, undefined, 'nothing to remove');
+    assert.equal(parseConfigureArgs(['--state-dir', state, '--sensor-webhook-file', 'off']).sensorWebhookFile, 'off');
+  } finally { rmSync(scratch, { recursive: true, force: true }); }
+});
+
+test('a sensor webhook that cannot be placed is refused before the facility webhook changes', () => {
+  const scratch = mkdtempSync(join(tmpdir(), 'warehouse-config-sensor-halfway-'));
+  const root = join(scratch, 'checkout');
+  const providerEnv = join(scratch, 'provider.env');
+  try {
+    mkdirSync(root);
+    copyFileSync(new URL('../.env.example', import.meta.url), join(root, '.env.example'));
+    writeFileSync(providerEnv, 'SMS_PROVIDER=msg91\nMSG91_AUTH_KEY=provider-key\nMSG91_TEMPLATE_ID=flow-id\nMSG91_PE_ID=pe-id\nMSG91_SENDER_ID=WHOUSE\n', { mode: 0o600 });
+    const hooks = { portFree: () => true, containersRunning: () => false };
+    const first = 'https://hooks.slack.com/services/' + 'T0000000/B0000000/firstfirstfirstfirst';
+    const second = 'https://hooks.slack.com/services/' + 'T0000000/B0000003/secondsecondsecond';
+    const facilityFile = join(scratch, 'facility.txt');
+    const sensorFile = join(scratch, 'sensor.txt');
+    writeFileSync(facilityFile, `${first}\n`, { mode: 0o600 });
+    writeFileSync(sensorFile, `${second}\n`, { mode: 0o600 });
+    const state = join(scratch, 'state');
+    configure(root, { apiUrl: 'https://api.example.com', company: 'Acme Stores', providerEnv, stateDir: state, alertWebhookFile: facilityFile, ...hooks });
+    // The sensor webhook's place is a directory: placing it would fail, and must do so before the facility webhook is replaced.
+    mkdirSync(join(state, 'config/sensor-webhook-url'));
+    writeFileSync(facilityFile, `${second}\n`, { mode: 0o600 });
+    assert.throws(() => configure(root, { stateDir: state, alertWebhookFile: facilityFile, sensorWebhookFile: sensorFile, ...hooks }), /must be a regular file/);
+    assert.equal(readFileSync(join(state, 'config/slack-webhook-url'), 'utf8'), `${first}\n`, 'the facility webhook was not changed');
+  } finally { rmSync(scratch, { recursive: true, force: true }); }
+});

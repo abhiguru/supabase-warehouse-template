@@ -278,6 +278,7 @@ node scripts/watch.mjs status          # what is firing, muted, the daily jobs a
 node scripts/watch.mjs run             # one pass of the checks now (what the 5-minute timer does)
 node scripts/watch.mjs daily           # the daily pass, if the window is open and today's is not done (what the daily timer does)
 node scripts/watch.mjs test-message    # post a test message to the stored webhook
+node scripts/watch.mjs test-message sensors   # the same for the separate sensor webhook
 ```
 
 The window of `daily` is computed from `WAREHOUSE_WATCH_DAILY_AT`, which only the unit sets: to run the pass now with the installed
@@ -302,9 +303,39 @@ installs it. `setup.sh --operator` needs it:
   records alerts without posting them. `npm run doctor` warns `No Slack webhook` on every run.
 
 The URL is stored at `config/slack-webhook-url` in the state (mode 0600; never in git, a log, an environment variable or a
-command line). The URL is not in a backup, so after `db:restore-host` run setup again to give it back. It is a secret
+command line). The URL is not in a backup, so after `db:restore-host` run setup again to give it back (the sensor webhook below as well). It is a secret
 that `rotate-keys.sh` does not change
 ([OPERATOR_INSTALL.md](OPERATOR_INSTALL.md#secrets-that-rotate-keys-does-not-change)).
+
+### Separate webhook for sensor alerts
+
+If Slack alerts are on (a facility webhook is stored) and sensors are on, a separate Slack webhook for sensor alerts is required.
+Create a second incoming webhook for the channel the people who watch the cold rooms follow and give it to setup with
+`--sensor-webhook-file PATH` (the same rules as `--alert-webhook-file`: a private file, mode 0600, outside the checkout, one
+line; `off` removes it; leaving the option out keeps the stored one). It is stored at `config/sensor-webhook-url` (mode 0600), is
+not in a backup, and `node scripts/watch.mjs test-message sensors` tests it.
+
+- **Sent to the sensor webhook** (when it fires, repeats and clears): `sensors_stale`, `check_error:sensors_stale` (the sensor check could
+  not run), `service_down:sensor-bridge`, `container_restarts:sensor-bridge`, `container_oom:sensor-bridge` and
+  `container_memory:sensor-bridge`. Every other alert stays on the facility webhook.
+- **Heartbeat.** The daily "Monitoring is alive" message goes to the facility webhook as before and, when a sensor webhook is stored, also
+  to the sensor webhook (a short "Monitoring is alive (sensor alerts)" message), so a silent sensor channel can be told from a broken one.
+  Each webhook's heartbeat is tracked on its own: one failing does not block the other.
+- **Fallback.** With no sensor webhook stored, the sensor alerts go to the facility webhook as before, so nothing is lost.
+- **Changing the routing while an alert is firing.** The checker records where an alert's start was sent; its repeats and its clear go
+  to the same webhook, so the message that opened an alert in one channel is closed in that channel. Adding or removing the sensor
+  webhook therefore takes effect for alerts that start afterwards; if the webhook an alert started on is removed, its later messages go to
+  the other one.
+- **Failed posts.** A failed post to the facility webhook is kept as `lastPostError` in the checker state, a failed post to the sensor
+  webhook separately as `lastSensorPostError`; each is cleared only by a successful post to its own webhook. `node scripts/watch.mjs status`
+  shows both.
+- **Doctor.** `node scripts/doctor.mjs` warns (never fails) when the facility webhook is stored, sensors are on and no sensor webhook is
+  stored ("Sensors are on and Slack alerts are on, but no separate sensor webhook is set: sensor alerts go to the facility channel."), or the
+  file does not hold a valid Slack webhook ("the sensor webhook file is not a valid Slack webhook"). It also warns when both files hold the same
+  URL (the sensor webhook must be a separate webhook) and when the latest post to the sensor webhook failed within the last 24 hours
+  (test it with `node scripts/watch.mjs test-message sensors`). Two different webhooks that post to the same Slack channel are not detected.
+- **Notices.** `node scripts/set-capability.mjs sensors on` and the end of `setup.sh` print a notice (not an error; the exit code is
+  unchanged) when a facility webhook is stored and no sensor webhook is.
 
 ## External heartbeat (the dead-man switch)
 

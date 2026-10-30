@@ -3179,6 +3179,100 @@ test('test-message posts the test text; status lists alerts, the time zone and m
   } finally { clean(h); }
 });
 
+// ---------------------------------------------------------------- sensor webhook
+const SENSOR_WEBHOOK = 'https://hooks.slack.com/services/T0AAAA/B0SENS/sensorSENSOR789';
+const withSensorHook = h => writeFileSync(join(h.state, 'config/sensor-webhook-url'), `${SENSOR_WEBHOOK}\n`, { mode: 0o600 });
+const immediate = (id, summary = `${id} is bad`, detail = '') => ({ id, ok: false, summary, detail, immediate: true });
+const alertPosts = h => h.posts.filter(p => !p.text.startsWith('Monitoring is alive'));
+
+test('sensor alerts are posted to the sensor webhook and every other alert to the facility webhook', async () => {
+  const h = harness();
+  try {
+    withSensorHook(h);
+    assert.equal(W.isSensorAlert('sensors_stale'), true);
+    for (const id of ['service_down:sensor-bridge', 'container_restarts:sensor-bridge', 'container_oom:sensor-bridge', 'container_memory:sensor-bridge', 'check_error:sensors_stale']) assert.equal(W.isSensorAlert(id), true, id);
+    for (const id of ['service_down:db', 'container_restarts:db', 'sensors_stale_x', 'service_down:sensor-bridge-2']) assert.equal(W.isSensorAlert(id), false, id);
+    await W.runOnce(h.deps, { checks: stub(immediate('sensors_stale'), immediate('service_down:sensor-bridge'), immediate('service_down:db')), ...NO_JOBS });
+    const to = url => alertPosts(h).filter(p => p.url === url);
+    assert.equal(alertPosts(h).length, 2);
+    assert.match(to(SENSOR_WEBHOOK)[0].text, /^\[FIRING\]/);
+    assert.ok(to(SENSOR_WEBHOOK)[0].text.includes('sensors_stale is bad') && to(SENSOR_WEBHOOK)[0].text.includes('service_down:sensor-bridge is bad'));
+    assert.ok(!to(SENSOR_WEBHOOK)[0].text.includes('service_down:db'));
+    assert.ok(to(WEBHOOK)[0].text.includes('service_down:db is bad') && !to(WEBHOOK)[0].text.includes('sensor'));
+    // Repeat and clear follow the same routing.
+    h.advance(4 * HOUR + 5 * 60000);
+    await W.runOnce(h.deps, { checks: stub(immediate('sensors_stale'), immediate('service_down:db')), ...NO_JOBS });
+    const after = alertPosts(h).slice(2);
+    assert.ok(after.some(p => p.url === SENSOR_WEBHOOK && /^\[STILL FIRING\]/.test(p.text) && p.text.includes('sensors_stale')));
+    assert.ok(after.some(p => p.url === WEBHOOK && /^\[STILL FIRING\]/.test(p.text) && p.text.includes('service_down:db')));
+    const ok2 = id => ({ id, ok: true, summary: id, detail: '' });
+    h.advance(5 * 60000);
+    await W.runOnce(h.deps, { checks: stub(ok2('sensors_stale'), ok2('service_down:sensor-bridge'), ok2('service_down:db')), ...NO_JOBS });
+    const cleared = alertPosts(h).filter(p => p.text.startsWith('[CLEARED]'));
+    assert.equal(cleared.length, 2);
+    assert.ok(cleared.find(p => p.url === SENSOR_WEBHOOK).text.includes('sensors_stale') && !cleared.find(p => p.url === SENSOR_WEBHOOK).text.includes('service_down:db'));
+    assert.ok(cleared.find(p => p.url === WEBHOOK).text.includes('service_down:db'));
+    assert.deepEqual(h.state_().alerts, {});
+  } finally { clean(h); }
+});
+
+test('without a sensor webhook the sensor alerts go to the facility webhook, as before', async () => {
+  const h = harness();
+  try {
+    await W.runOnce(h.deps, { checks: stub(immediate('sensors_stale'), immediate('service_down:db')), ...NO_JOBS });
+    assert.equal(alertPosts(h).length, 1);
+    assert.equal(alertPosts(h)[0].url, WEBHOOK);
+    assert.ok(alertPosts(h)[0].text.includes('sensors_stale is bad') && alertPosts(h)[0].text.includes('service_down:db is bad'));
+  } finally { clean(h); }
+});
+
+test('a failed sensor post is retried and does not stop the facility post; the daily heartbeat goes to both webhooks', async () => {
+  const h = harness();
+  try {
+    withSensorHook(h);
+    h.postStatuses = [200, 500];   // facility ok, sensor refused
+    await W.runOnce(h.deps, { checks: stub(immediate('sensors_stale'), immediate('service_down:db')), ...NO_JOBS });
+    assert.equal(alertPosts(h).length, 1);
+    assert.equal(alertPosts(h)[0].url, WEBHOOK);
+    assert.ok(h.state_().alerts.sensors_stale.lastSent === null, 'the refused post is not marked as sent');
+    h.advance(5 * 60000);
+    await W.runOnce(h.deps, { checks: stub(immediate('sensors_stale'), immediate('service_down:db')), ...NO_JOBS });
+    assert.equal(alertPosts(h).filter(p => p.url === SENSOR_WEBHOOK).length, 1);
+    const beats = h.posts.filter(p => p.text.startsWith('Monitoring is alive'));
+    assert.deepEqual(beats.map(p => p.url).sort(), [SENSOR_WEBHOOK, WEBHOOK].sort(), 'one heartbeat per webhook, once');
+  } finally { clean(h); }
+});
+
+test('redaction covers both webhook URLs', () => {
+  const text = `failed ${WEBHOOK} and ${SENSOR_WEBHOOK}`;
+  const out = W.redact(text, {}, [WEBHOOK, SENSOR_WEBHOOK]);
+  assert.ok(!out.includes('abcDEF123456') && !out.includes('sensorSENSOR789'));
+  assert.equal(W.redact(`x ${SENSOR_WEBHOOK}`, {}, WEBHOOK).includes('sensorSENSOR789'), false, 'the generic Slack pattern still covers an unlisted URL');
+  assert.ok(!W.formatAlerts({ start: [{ id: 'sensors_stale', summary: `bad ${SENSOR_WEBHOOK}`, detail: `at ${WEBHOOK}` }], repeat: [], clear: [] }, 'Acme', {}, [WEBHOOK, SENSOR_WEBHOOK]).includes('hooks.slack.com'));
+});
+
+test('test-message sensors posts to the sensor webhook only; status says whether one is stored', async () => {
+  const h = harness();
+  try {
+    const out = [];
+    assert.equal(await W.main(['test-message', 'sensors'], h.deps, t => out.push(t)), 1);
+    assert.match(out[0], /No sensor Slack webhook is configured/);
+    assert.equal(h.posts.length, 0);
+    withSensorHook(h);
+    out.length = 0;
+    assert.equal(await W.main(['test-message', 'sensors'], h.deps, t => out.push(t)), 0);
+    assert.equal(h.posts.length, 1);
+    assert.equal(h.posts[0].url, SENSOR_WEBHOOK);
+    assert.match(h.posts[0].text, /^Test message from the Acme Cold \(warehouse-test\) warehouse server \(sensor alerts\)/);
+    assert.ok(!out.join('\n').includes('sensorSENSOR789'));
+    assert.equal(await W.main(['test-message'], h.deps, t => out.push(t)), 0);
+    assert.equal(h.posts[1].url, WEBHOOK, 'plain test-message still goes to the facility webhook');
+    out.length = 0;
+    await W.main(['status'], h.deps, t => out.push(t));
+    assert.match(out[0], /Sensor Slack webhook: configured/);
+  } finally { clean(h); }
+});
+
 // ---------------------------------------------------------------- timer installer
 const TIMER = join(repo, 'scripts/watch-timer.sh');
 function timerFixture() {
@@ -4100,5 +4194,118 @@ test('sensors_stale: no grace for a bridge container that restarted in the last 
       const r2 = W.checkSensors(h2.ctx());
       assert.ok(Array.isArray(r2) && r2[0].ok === false, 'a future StartedAt gives no grace');
     } finally { clean(h2); }
+  } finally { clean(h); }
+});
+
+// Where a failed post is recorded, the heartbeat for each webhook, and where a repeat and a clear go.
+test('a facility failure and a sensor failure are kept apart; each is cleared only by a post to its own webhook', async () => {
+  const h = harness();
+  try {
+    withSensorHook(h);
+    h.seed({ lastHeartbeat: T0 - 60000, lastSensorHeartbeat: T0 - 60000 });   // no heartbeat is due: only the alert posts count
+    const checks = stub(immediate('sensors_stale'), immediate('service_down:db'));
+    // Facility refused (500), sensor accepted: the facility error is kept, there is no sensor error.
+    h.postStatuses = [500, 200];
+    await W.runOnce(h.deps, { checks, ...NO_JOBS });
+    assert.match(h.state_().lastPostError.message, /HTTP 500/);
+    assert.equal(h.state_().lastSensorPostError, undefined);
+    // Facility retry accepted, then the sensor repeat refused: the facility error is cleared, the sensor error is set.
+    h.advance(4 * HOUR + 5 * 60000);
+    h.postStatuses = [200, 500];
+    await W.runOnce(h.deps, { checks, ...NO_JOBS });
+    assert.equal(h.state_().lastPostError, null);
+    assert.match(h.state_().lastSensorPostError.message, /HTTP 500/);
+    // A run that posts to the facility webhook only (the sensor alert is muted) leaves the sensor error alone.
+    writeFileSync(join(h.state, 'config/watch-mutes.json'), JSON.stringify({ all: null, ids: { sensors_stale: h.clock.t + 10 * HOUR } }));
+    h.advance(5 * 60000);
+    await W.runOnce(h.deps, { checks: stub(immediate('sensors_stale'), immediate('service_down:db'), immediate('thing_bad')), ...NO_JOBS });
+    assert.ok(alertPosts(h).some(p => p.url === WEBHOOK && p.text.includes('thing_bad')), 'a facility post succeeded');
+    assert.match(h.state_().lastSensorPostError.message, /HTTP 500/, 'a facility success does not clear the sensor error');
+    // The next successful sensor post clears it.
+    rmSync(join(h.state, 'config/watch-mutes.json'));
+    h.advance(5 * 60000);
+    await W.runOnce(h.deps, { checks: stub(immediate('sensors_stale'), immediate('service_down:db'), immediate('thing_bad')), ...NO_JOBS });
+    assert.equal(h.state_().lastSensorPostError, undefined);
+  } finally { clean(h); }
+});
+
+test('status shows both post errors, and the state loader keeps the optional sensor keys and drops malformed ones', async () => {
+  const h = harness();
+  try {
+    withSensorHook(h);
+    h.seed({ lastPostError: { at: T0, message: 'facility broke' }, lastSensorPostError: { at: T0, message: 'sensor broke' }, lastSensorHeartbeat: T0 - 1000 });
+    const loaded = W.loadState(h.state, T0, h.deps.readText, () => {});
+    assert.equal(loaded.lastSensorPostError.message, 'sensor broke');
+    assert.equal(loaded.lastSensorHeartbeat, T0 - 1000);
+    const bad = W.normalizeState({ ...W.freshState(T0), lastSensorPostError: 'x', lastSensorHeartbeat: 'y', alerts: { a: { via: 'moon' } } }, T0, () => {});
+    assert.equal(bad.lastSensorPostError, undefined);
+    assert.equal(bad.lastSensorHeartbeat, undefined);
+    assert.equal(bad.alerts.a.via, undefined);
+    assert.equal(W.normalizeState({ ...W.freshState(T0) }, T0).lastSensorPostError, undefined, 'an old state file stays compatible');
+    assert.equal(W.normalizeState({ ...W.freshState(T0), alerts: { a: { via: 'sensor' } } }, T0).alerts.a.via, 'sensor');
+    const out = [];
+    await W.main(['status'], h.deps, t => out.push(t));
+    assert.match(out[0], /Last Slack post failed at .*: facility broke/);
+    assert.match(out[0], /Last sensor Slack post failed at .*: sensor broke/);
+  } finally { clean(h); }
+});
+
+test('the daily heartbeat is posted to both webhooks, each tracked on its own: a failing one does not block the other', async () => {
+  const h = harness();
+  try {
+    withSensorHook(h);
+    h.postStatuses = [500];   // the facility heartbeat is refused
+    await W.runOnce(h.deps, { checks: HEALTHY, ...NO_JOBS });
+    const beats = () => h.posts.filter(p => p.text.startsWith('Monitoring is alive'));
+    assert.deepEqual(beats().map(p => p.url), [SENSOR_WEBHOOK], 'the sensor heartbeat went out although the facility one failed');
+    assert.match(beats()[0].text, /^Monitoring is alive \(sensor alerts\)/);
+    assert.equal(h.state_().lastHeartbeat, null, 'the failed facility heartbeat is retried');
+    assert.equal(h.state_().lastSensorHeartbeat, h.clock.t);
+    h.advance(5 * 60000);
+    await W.runOnce(h.deps, { checks: HEALTHY, ...NO_JOBS });
+    assert.deepEqual(beats().map(p => p.url), [SENSOR_WEBHOOK, WEBHOOK], 'only the facility one is retried');
+    // Reverse: the sensor heartbeat is refused.
+    h.advance(24 * HOUR);
+    h.postStatuses = [200, 500];
+    await W.runOnce(h.deps, { checks: HEALTHY, ...NO_JOBS });
+    assert.equal(beats().length, 3);
+    assert.match(h.state_().lastSensorPostError.message, /HTTP 500/);
+    assert.equal(h.state_().lastPostError, null);
+    assert.equal(h.state_().lastHeartbeat, h.clock.t);
+  } finally { clean(h); }
+});
+
+test('an alert keeps the channel its start went to: repeat and clear follow it when the routing changes meanwhile', async () => {
+  const h = harness();
+  try {
+    // Started with no sensor webhook: on the facility webhook.
+    await W.runOnce(h.deps, { checks: stub(immediate('sensors_stale')), ...NO_JOBS });
+    assert.equal(h.state_().alerts.sensors_stale.via, 'facility');
+    assert.equal(alertPosts(h)[0].url, WEBHOOK);
+    // A sensor webhook is added while it fires: the repeat and the clear stay on the facility webhook.
+    withSensorHook(h);
+    h.advance(4 * HOUR + 5 * 60000);
+    await W.runOnce(h.deps, { checks: stub(immediate('sensors_stale')), ...NO_JOBS });
+    assert.equal(alertPosts(h)[1].url, WEBHOOK);
+    assert.match(alertPosts(h)[1].text, /^\[STILL FIRING\]/);
+    h.advance(5 * 60000);
+    await W.runOnce(h.deps, { checks: stub({ id: 'sensors_stale', ok: true, summary: 'ok', detail: '' }), ...NO_JOBS });
+    const clear = alertPosts(h).find(p => p.text.startsWith('[CLEARED]'));
+    assert.equal(clear.url, WEBHOOK);
+    // A new one starts on the sensor webhook, and the sensor webhook is then removed: the clear goes to the facility webhook.
+    h.advance(5 * 60000);
+    await W.runOnce(h.deps, { checks: stub(immediate('sensors_stale')), ...NO_JOBS });
+    assert.equal(h.state_().alerts.sensors_stale.via, 'sensor');
+    assert.equal(alertPosts(h).at(-1).url, SENSOR_WEBHOOK);
+    rmSync(join(h.state, 'config/sensor-webhook-url'));
+    h.advance(5 * 60000);
+    await W.runOnce(h.deps, { checks: stub({ id: 'sensors_stale', ok: true, summary: 'ok', detail: '' }), ...NO_JOBS });
+    assert.equal(alertPosts(h).at(-1).url, WEBHOOK, 'the webhook it started on is gone: the one that exists is used');
+    assert.match(alertPosts(h).at(-1).text, /^\[CLEARED\]/);
+    // A failed post does not record the channel.
+    h.advance(5 * 60000);
+    h.postStatuses = [500];
+    await W.runOnce(h.deps, { checks: stub(immediate('sensors_stale')), ...NO_JOBS });
+    assert.equal(h.state_().alerts.sensors_stale.via, undefined);
   } finally { clean(h); }
 });

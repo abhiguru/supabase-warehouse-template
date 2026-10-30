@@ -163,6 +163,7 @@ The operator scripts use only Node's built-in modules; `npm ci` is needed only t
 | MSG91 provider file | `--provider-env` | Mode-0600 file with five keys; see **MSG91 provider file** below. Required on a first install. |
 | First administrator | `--admin-phone`, `--admin-name` (both required) | `91` and ten digits, and a display name; see **First administrator** below. |
 | Slack webhook file | `--alert-webhook-file` | Private file with the facility's incoming-webhook URL. `off` only for a non-production install; without the option a terminal is asked and no terminal means setup refuses. See [Setup](#setup). |
+| Sensor Slack webhook file | `--sensor-webhook-file` | Private file with a second, separate incoming-webhook URL for sensor alerts. Required when Slack alerts are on and sensors are on; `off` removes it; leave it out to keep what is stored. See [Setup](#setup). |
 | Central sign-in (members only) | `--central-issuer` with `--central-jwks-url` or `--central-jwks-file` | The issuer and the public key set (an address or a file) that the association gives you; see [Central sign-in](#central-sign-in). Leave out for SMS sign-in only. |
 | PDF letterhead | `--letterhead-file` | A JPEG or PNG banner (at most 2 MiB) that the GRN, dispatch, invoice and customer stock PDFs print at the top, or `off` for plain PDFs. On a first install setup asks for it on a terminal (Enter means plain PDFs) and, with no terminal and without the option, refuses; a rerun without the option asks nothing and keeps what is there. See [Letterhead image](#letterhead-image-optional). |
 
@@ -255,7 +256,7 @@ Optional services are Compose profiles that setup does not start: `printing`, `p
 bridge. **Sensors are optional:** without sensors skip all of this; the install is complete without it. If you do have sensor
 details (hub addresses, the Tapo login), set it up as in [SENSORS.md](SENSORS.md#run-it-as-a-profile-of-the-installation), then
 `node scripts/set-capability.mjs sensors on` and a new `db:backup`. The install is then **not done until ingest is verified in the
-database** ([SENSORS.md, step 6](SENSORS.md#run-it-as-a-profile-of-the-installation): the SQL there must show a row per hub and per sensor with readings); the doctor warning is
+database** ([SENSORS.md, step 6](SENSORS.md#run-it-as-a-profile-of-the-installation): the SQL there must show a row per hub and per sensor with readings). When Slack alerts are on, a separate sensor Slack webhook is also required: `--sensor-webhook-file`, see below. The doctor warning is
 only the quick check.
 
 **Monitoring is not a Compose profile.** One small program, the checker (`scripts/watch.mjs`), runs from a systemd
@@ -277,6 +278,17 @@ Slack: Apps, Incoming Webhooks). Give `--alert-webhook-file /absolute/path` (a p
 let setup ask for it on a terminal; without a terminal and without the option setup refuses.
 `--alert-webhook-file off` is for a non-production install. The prompt, the test message, the stored file, the daily
 "Monitoring is alive" message and muting before a planned stop are in [MONITORING.md](MONITORING.md).
+
+If Slack alerts are enabled for the facility and sensors are on, a separate Slack webhook for sensor alerts is required: create a second incoming webhook (for the channel the people who watch the cold rooms follow) and give it to setup with `--sensor-webhook-file`. The option is `--sensor-webhook-file /absolute/path` (a private file, mode 0600, one line; `off` removes the
+stored one; leaving it out keeps it), for example, when you set sensors up on an installation that already has Slack alerts:
+
+```bash
+bash setup.sh --operator --state-dir "$WAREHOUSE_STATE_DIR" --admin-phone 91XXXXXXXXXX --admin-name 'Warehouse Administrator' \
+  --alert-webhook-file /secure/warehouse-slack-webhook.txt \
+  --sensor-webhook-file /secure/warehouse-sensor-slack-webhook.txt     # or: --sensor-webhook-file off (removes it)
+```
+
+Sensor alerts then go to that webhook and everything else stays on the facility webhook ([MONITORING.md](MONITORING.md#alert-delivery)).
 
 The PDF letterhead is asked the same way: give `--letterhead-file /absolute/path` (a JPEG or PNG of at most 2 MiB) or
 `--letterhead-file off` for plain PDFs, or let setup ask on a terminal (the path, or Enter for plain PDFs). Without a
@@ -1983,6 +1995,7 @@ from the internet through the tunnel: they matter to someone who also reaches th
 | --- | --- | --- |
 | `CUPS_ADMIN_PASSWORD` | The CUPS administration page (printing profile). | Manual, below. |
 | The Slack webhook URL (`config/slack-webhook-url`) | Posting messages to the facility's Slack channel, by anyone who holds the URL. | Revoke it in Slack (Apps → Incoming Webhooks) and create a new one, then rerun `setup.sh --operator` with your usual inputs and `--alert-webhook-file ask` (or a file holding the new URL; create it with `install -m 600 /dev/null FILE` and an editor, so the URL stays out of the shell history). |
+| The sensor Slack webhook URL (`config/sensor-webhook-url`) | Posting messages to the channel that gets the sensor alerts, by anyone who holds the URL. | Revoke it in Slack (Apps → Incoming Webhooks) and create a new one, then rerun `setup.sh --operator` with your usual inputs and `--sensor-webhook-file` (a private file holding the new URL, created as for the facility webhook). |
 | `TAPO_PASSWORD` (with `TAPO_USERNAME`) | The Tapo account of the hubs: the hubs on the LAN, and the account in the Tapo app and cloud (sensors profile). | Change it in the Tapo app, set the new value in `compose.env`, then `bash scripts/compose.sh --profile sensors up -d --force-recreate sensor-bridge`. |
 | `SENSOR_INGEST_KEY` | Posting sensor readings to this installation's ingest function, from anywhere the gateway is reachable (sensors profile). | Mint a new key with a new label (`bash scripts/compose.sh exec -T db psql -X -qAt -v ON_ERROR_STOP=1 -U supabase_admin -d postgres -v label=<new label> < scripts/sensor-ingest-key.sql`, which prints it once), set it, recreate the bridge, then revoke the old one (`bash scripts/compose.sh exec -T db psql -X -q -v ON_ERROR_STOP=1 -U supabase_admin -d postgres -c "UPDATE warehouse_security.sensor_ingest_keys SET revoked_at = now() WHERE label = '<old label>' AND revoked_at IS NULL"`); [SENSORS.md](SENSORS.md#ingest-keys). |
 | `POSTGRES_PASSWORD` | The superuser login (`supabase_admin`), from inside the Compose network or the host. | `npm run db:rotate-passwords -- --yes --superuser`; see [Rotating the database passwords](#rotating-the-database-passwords). |
@@ -2738,7 +2751,7 @@ restart in step 4 of this list, not `sudo reboot` (not verified yet).
 
 ### Sensors (Windows)
 
-Sensors are optional: without them skip this section. If you configure them, the install is not done until readings are
+Sensors are optional: without them skip this section. If Slack alerts are enabled for the facility and sensors are on, a separate Slack webhook for sensor alerts is required: create a second incoming webhook (for the channel the people who watch the cold rooms follow) and give it to setup with `--sensor-webhook-file`. Example: `bash setup.sh --operator ... --sensor-webhook-file /secure/warehouse-sensor-slack-webhook.txt` (with your usual inputs). If you configure sensors, the install is not done until readings are
 verified in the database as in [step 6](SENSORS.md#run-it-as-a-profile-of-the-installation) of the SENSORS.md section (the SQL there; the doctor is only the quick check), which
 means running the bridge with `up` and waiting about 10 minutes. The `--once --dump` check further down only shows that the hubs can be reached.
 

@@ -12,7 +12,7 @@ import { isFixtureAddress, isProviderPlaceholder } from './provider-placeholder.
 import { isMain } from './is-main.mjs';
 import { usbBackupWarning } from './usb-backup-status.mjs';
 import { interruptedUpgradeWarning } from './upgrade-record.mjs';
-import { storedWebhook } from './alert-webhook.mjs';
+import { storedSensorWebhook, storedWebhook } from './alert-webhook.mjs';
 import { defaultDeps, legacyDailyAdvice, maintenanceMarked, runHealth, statePath, stoppedByOperator } from './watch.mjs';
 import { sensorReport } from './sensors-check.mjs';
 import { lanChecks } from './lan.mjs';
@@ -33,7 +33,25 @@ export const timerUnit = state => `${timerBase(state)}.timer`;
 export const dailyTimerUnit = state => `${timerBase(state).replace(/-watch$/, '-daily')}.timer`;
 const unitDir = () => process.env.WAREHOUSE_WATCH_UNIT_DIR || '/etc/systemd/system';
 export const stoppedWarning = `The stack was stopped by the operator (config/stopped-by-operator, written by stop.sh): the boot unit and self-healing leave it down, also after a reboot. Run start.sh to bring it back.`;
+export const NO_SENSOR_WEBHOOK_WARNING = 'Sensors are on and Slack alerts are on, but no separate sensor webhook is set: sensor alerts go to the facility channel. Set one with setup.sh --sensor-webhook-file ... (docs/MONITORING.md).';
+export const SAME_SENSOR_WEBHOOK_WARNING = 'The sensor webhook is the same URL as the facility webhook: it must be a separate Slack webhook, or sensor alerts are not separated. Create a second incoming webhook and set it with setup.sh --sensor-webhook-file ... (docs/MONITORING.md).';
 export const NO_WEBHOOK_WARNING = 'No Slack webhook: alerts are recorded on this host but not delivered, so nobody is told when a backup fails or the database stops. That is acceptable only for a test install. For a real facility, rerun setup.sh --operator with your usual inputs, leaving out --alert-webhook-file off (it then asks for the URL on a terminal), or pass --alert-webhook-file <a private file holding the URL> (docs/MONITORING.md, "Alert delivery").';
+
+export const INVALID_SENSOR_WEBHOOK_WARNING = 'Sensors are on and Slack alerts are on, but the sensor webhook file (config/sensor-webhook-url) is not a valid Slack webhook: sensor alerts go to the facility channel. Set a valid one with setup.sh --sensor-webhook-file ... (docs/MONITORING.md).';
+const SENSOR_POST_FAILURE_WINDOW_MS = 24 * 60 * 60 * 1000;
+const sensorWebhookFileExists = state => Boolean(lstatSync(join(state, 'config/sensor-webhook-url'), { throwIfNoEntry: false })?.isFile());
+// The checker's record of its latest failed sensor-webhook post ({ at, message }), or null.
+function sensorPostFailure(state) {
+  try {
+    const failed = JSON.parse(readFileSync(statePath(state), 'utf8'))?.lastSensorPostError;
+    return failed && Number.isFinite(failed.at) && typeof failed.message === 'string' ? failed : null;
+  } catch { return null; }
+}
+
+// The sensors capability in the state's manifest (false when it cannot be read).
+function sensorsOn(state) {
+  try { return JSON.parse(readFileSync(join(state, 'public/instance.json'), 'utf8'))?.capabilities?.sensors === true; } catch { return false; }
+}
 
 // Warnings about the checker: its timer is not active, it has not run in the last 15 minutes (the mtime of its
 // state file; the daily backup is a separate unit, so a backup in progress does not explain a silent checker), the daily
@@ -67,7 +85,18 @@ export function checkerWarnings(state, {
   } else if (checkerActive && !timerActive(dailyTimerUnit(state))) {
     out.push(`The daily backup timer ${dailyTimerUnit(state)} is not installed or not active, so no backup, verification or retention runs for this facility. Install it with: sudo bash scripts/watch-timer.sh install --state ${state} (docs/MONITORING.md).`);
   }
-  if (!storedWebhook(state)) out.push(NO_WEBHOOK_WARNING);
+  const facilityWebhook = storedWebhook(state);
+  if (!facilityWebhook) out.push(NO_WEBHOOK_WARNING);
+  else if (sensorsOn(state)) {
+    const sensorWebhook = storedSensorWebhook(state);
+    if (!sensorWebhook) out.push(sensorWebhookFileExists(state) ? INVALID_SENSOR_WEBHOOK_WARNING : NO_SENSOR_WEBHOOK_WARNING);
+    else {
+      if (sensorWebhook === facilityWebhook) out.push(SAME_SENSOR_WEBHOOK_WARNING);
+      // The checker clears lastSensorPostError on its next successful sensor post, so a recent one means the latest post failed.
+      const failed = sensorPostFailure(state);
+      if (failed && now - failed.at < SENSOR_POST_FAILURE_WINDOW_MS) out.push(`The last post to the sensor Slack webhook failed ${Math.max(0, Math.round((now - failed.at) / 60000))} minutes ago (${failed.message}): sensor alerts may not be reaching the channel. Test it with node scripts/watch.mjs test-message sensors (docs/MONITORING.md).`);
+    }
+  }
   return out;
 }
 

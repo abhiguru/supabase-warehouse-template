@@ -236,10 +236,24 @@ configuration changed, and `stop.sh` stops it with everything else.
 
    No output means the request failed or the manifest has no `sensors` capability: run the doctor. The line must read `"sensors":true`. (If it shows `false`, the `functions` restart was missed or the command did not run on
    this installation.)
+
+   **The sensor Slack webhook (required when Slack alerts are on).** If Slack alerts are enabled for the facility and sensors are on, a separate Slack webhook for sensor alerts is required: create a second incoming webhook (for the channel the people who watch the cold rooms follow) and give it to setup with `--sensor-webhook-file`. Rerun setup with your usual inputs plus the new option, for example:
+
+   ```bash
+   bash setup.sh --operator --state-dir "$WAREHOUSE_STATE_DIR" --admin-phone 91XXXXXXXXXX --admin-name 'Warehouse Administrator' \
+     --alert-webhook-file /secure/warehouse-slack-webhook.txt \
+     --sensor-webhook-file /secure/warehouse-sensor-slack-webhook.txt
+   ```
+
+   The file is private (mode 0600, outside the checkout, one line) and must hold a different URL from the facility webhook. Without it the
+   sensor alerts go to the facility channel, the doctor warns, and `set-capability.mjs sensors on` and the end of `setup.sh` print a notice ([MONITORING.md](MONITORING.md#alert-delivery)). Test it with
+   `node scripts/watch.mjs test-message sensors` (prints the HTTP status Slack answered; the message must arrive in the sensor channel).
 6. **Verify that readings arrive (required).** Only if you configured sensors: the install is not done until this
    passes. The first `--once` of step 3 already posted every sensor's current values, so right after `up` the bridge has
    nothing new to send until its next poll: **a quiet first 5 minutes is normal, and a new row per sensor appears about 5
    minutes after `up`.** Wait about 10 minutes, then run the doctor (the quick check) and the SQL below (the proof).
+
+   The sensor webhook: `node scripts/watch.mjs test-message sensors` must print `Slack answered HTTP 200.` and the message must appear in the sensor channel. With Slack alerts on and no sensor webhook stored the doctor warns.
 
    The doctor: `node scripts/doctor.mjs --local`. While the capability is on it warns, for example
    `Sensors: hub 192.0.2.10 offline for 5 days; newest reading 5 days ago (limit 16 minutes)`, when
@@ -275,7 +289,7 @@ configuration changed, and `stop.sh` stops it with everything else.
    - **A hub row whose `hub_id` is an IP address** (for example `192.0.2.10`, `online` false) is an address the bridge never reached: the address stands in for the id. If that address is still in `SENSOR_BRIDGE_HUBS`, it is a fault: fix the address or the Tapo login. If the hub was later found at another address (claimed, see [Keep the hub addresses fixed](#keep-the-hub-addresses-fixed)), the row is a harmless leftover. Either way the row is never removed by itself: delete it as in Troubleshooting, "The doctor keeps warning about a hub that is gone". `--forget-hub` does not remove it.
 
    Read the online state from `sensor_status`: `connectivity_status` is `ONLINE`, `STALE` (no report within the sensor's staleness limit, 30 minutes by default), `OFFLINE` (its hub is offline) or `UNKNOWN` (never seen). The column of the same name in `sensor_devices` is not maintained and stays `UNKNOWN`.
-7. **Take a backup:** `npm run db:backup`. The backup stops the services for about half a minute; a bridge that is
+7. **Take a backup:** `npm run db:backup` (the sensor webhook URL is a secret and is not in a backup: after `db:restore-host`, give it to setup again with `--sensor-webhook-file`). The backup stops the services for about half a minute; a bridge that is
    running logs one or two `post_failed` meanwhile (the gateway is down), keeps the reading in its queue and delivers it by itself
    afterwards: harmless. (Take the backup before step 4 if you prefer a log without it.) `db:restore` refuses a backup whose
    `instance.json` or `compose.env` differs from the state, so a backup taken

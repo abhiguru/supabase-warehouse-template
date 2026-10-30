@@ -22,7 +22,7 @@ LETTERHEAD_ARG=''
 CONFIG_ARGS=()
 while (($#)); do
   case "$1" in
-    --state-dir|--api-url|--app-url|--company|--provider-env|--admin-phone|--admin-name|--central-issuer|--central-jwks-url|--central-jwks-file|--central-local-code|--alert-webhook-file|--letterhead-file|--gateway-port)
+    --state-dir|--api-url|--app-url|--company|--provider-env|--admin-phone|--admin-name|--central-issuer|--central-jwks-url|--central-jwks-file|--central-local-code|--alert-webhook-file|--sensor-webhook-file|--letterhead-file|--gateway-port)
       if (($# < 2)); then echo "Missing value for $1" >&2; exit 1; fi
       case "$1" in
         --state-dir) STATE="$2"; CONFIG_ARGS+=("$1" "$2") ;;
@@ -192,4 +192,6 @@ node "$ROOT/scripts/doctor.mjs" --local
 echo
 # hint prints the install command when the timer is missing and "refresh" when it runs another checkout.
 WAREHOUSE_STATE_DIR="$STATE" bash "$ROOT/scripts/watch-timer.sh" hint || true
+# A notice (not an error) when sensors are on and Slack alerts are on but no separate sensor webhook is stored.
+node "$ROOT/scripts/alert-webhook.mjs" sensor-notice --state-dir "$STATE" || true
 echo 'Operator services are healthy on the local gateway. Configure the Cloudflare Tunnel connector and its DNS route (deploy/cloudflared-config.example.yml; scripts/tunnel.sh install-service writes the service), then run node scripts/doctor.mjs for external verification.'

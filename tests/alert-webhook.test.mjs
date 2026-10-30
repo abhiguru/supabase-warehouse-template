@@ -10,7 +10,7 @@ import { PassThrough } from 'node:stream';
 import { configure } from '../scripts/configure.mjs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
-import { decideWebhookSource, LEGACY_WEBHOOK_FILE, MAX_ATTEMPTS, obtainWebhook, OFF_WARNING, placeWebhook, postSlackMessage, PROMPT, readAlertWebhook, readLine, REFUSAL, storedWebhook, testMessage, WEBHOOK_FILE, writeWebhookFile } from '../scripts/alert-webhook.mjs';
+import { decideWebhookSource, LEGACY_WEBHOOK_FILE, MAX_ATTEMPTS, obtainWebhook, OFF_WARNING, placeWebhook, postSlackMessage, PROMPT, readAlertWebhook, readLine, REFUSAL, sensorTestMessage, sensorWebhookNotice, storedWebhook, testMessage, WEBHOOK_FILE, writeWebhookFile } from '../scripts/alert-webhook.mjs';
 
 const script = new URL('../scripts/alert-webhook.mjs', import.meta.url).pathname;
 const read = path => readFileSync(new URL(`../${path}`, import.meta.url), 'utf8');
@@ -477,5 +477,62 @@ test('configure.mjs on an existing state with a URL at the old path moves it and
     const off = configure(root, { stateDir: state, alertWebhookFile: 'off' });
     assert.equal(off.webhook, null);
     assert.equal(storedWebhook(state), null);
+  } finally { s.cleanup(); }
+});
+
+// The notice about the separate sensor webhook (docs/MONITORING.md).
+const URL_SENSOR = 'https://hooks.slack.com/services/' + 'T0000000/B0000009/sensorsensorsensorsensor';
+function noticeState(dir, { facility = true, sensor = false, sensors = true } = {}) {
+  const state = join(dir, 'state');
+  mkdirSync(join(state, 'config'), { recursive: true });
+  mkdirSync(join(state, 'public'), { recursive: true });
+  writeFileSync(join(state, 'public/instance.json'), JSON.stringify({ capabilities: { sensors, printing: false } }));
+  if (facility) writeFileSync(join(state, 'config/slack-webhook-url'), `${URL_A}\n`, { mode: 0o600 });
+  if (sensor) writeFileSync(join(state, 'config/sensor-webhook-url'), `${URL_SENSOR}\n`, { mode: 0o600 });
+  return state;
+}
+
+test('sensorWebhookNotice names the exact command when a facility webhook is stored and no sensor webhook is, and never quotes a URL', () => {
+  const s = scratch();
+  try {
+    const notice = sensorWebhookNotice(noticeState(s.dir));
+    assert.match(notice, /^NOTICE: .*separate Slack webhook for sensor alerts .* required/);
+    assert.ok(notice.includes('bash setup.sh --operator ... --sensor-webhook-file /absolute/path'));
+    assert.doesNotMatch(notice, SECRET);
+    assert.equal(sensorWebhookNotice(noticeState(mkdtempSync(join(s.dir, 'b-')), { sensor: true })), null, 'a sensor webhook is stored');
+    assert.equal(sensorWebhookNotice(noticeState(mkdtempSync(join(s.dir, 'c-')), { facility: false })), null, 'no facility webhook');
+    assert.match(sensorTestMessage('Acme'), /^Test message from the Acme warehouse server \(sensor alerts\)/);
+  } finally { s.cleanup(); }
+});
+
+test('set-capability sensors on prints the notice (exit code 0) only when the sensor webhook is missing; sensors off and printing do not', () => {
+  const s = scratch();
+  try {
+    const capability = new URL('../scripts/set-capability.mjs', import.meta.url).pathname;
+    const run = (state, name, value) => spawnSync(process.execPath, [capability, name, value], { env: { ...process.env, WAREHOUSE_STATE_DIR: state }, encoding: 'utf8' });
+    const state = noticeState(s.dir, { sensors: false });
+    chmodSync(state, 0o700); chmodSync(join(state, 'public'), 0o700);
+    const on = run(state, 'sensors', 'on');
+    assert.equal(on.status, 0, on.stderr);
+    assert.match(on.stdout, /NOTICE: .*--sensor-webhook-file/);
+    assert.doesNotMatch(on.stdout, SECRET);
+    assert.doesNotMatch(run(state, 'printing', 'on').stdout, /NOTICE/);
+    assert.doesNotMatch(run(state, 'sensors', 'off').stdout, /NOTICE/);
+    writeFileSync(join(state, 'config/sensor-webhook-url'), `${URL_SENSOR}\n`, { mode: 0o600 });
+    assert.doesNotMatch(run(state, 'sensors', 'on').stdout, /NOTICE/, 'a sensor webhook is stored');
+  } finally { s.cleanup(); }
+});
+
+test('setup.sh passes --sensor-webhook-file to configure.mjs and ends with the sensor-notice command, which prints only while sensors are on', () => {
+  const setup = read('setup.sh');
+  assert.match(setup, /--alert-webhook-file\|--sensor-webhook-file\|--letterhead-file/);
+  assert.match(setup, /\*\) CONFIG_ARGS\+=\("\$1" "\$2"\) ;;/, 'the option reaches configure.mjs unchanged');
+  assert.ok(setup.indexOf('alert-webhook.mjs" sensor-notice --state-dir "$STATE"') > setup.indexOf('watch-timer.sh" hint'), 'the notice is printed at the end');
+  const s = scratch();
+  try {
+    const run = state => spawnSync(process.execPath, [script, 'sensor-notice', '--state-dir', state], { encoding: 'utf8' });
+    assert.match(run(noticeState(s.dir)).stdout, /NOTICE/);
+    assert.equal(run(noticeState(mkdtempSync(join(s.dir, 'off-')), { sensors: false })).stdout, '', 'sensors off: no notice');
+    assert.equal(run(noticeState(mkdtempSync(join(s.dir, 'set-')), { sensor: true })).stdout, '', 'sensor webhook stored: no notice');
   } finally { s.cleanup(); }
 });
