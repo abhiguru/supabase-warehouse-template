@@ -9,6 +9,7 @@ a file in that tag; the baseline `migrations/00000000000000_baseline.sql` is the
 
 ### Added
 
+- `scripts/windows/register-tasks.ps1`: registers the Windows (WSL2) tasks "Warehouse WSL" and, with `-BusId`, "Warehouse USB" from an elevated PowerShell, replacing the two paste-in blocks of `docs/OPERATOR_INSTALL.md`; not verified yet.
 - `bash scripts/tunnel.sh create [--name NAME]`: one guided step for a locally managed tunnel. It runs `cloudflared tunnel login`
   (a link to open on any machine), refuses a tunnel name that already exists, creates the tunnel, routes the installation's hostname
   to it without `--overwrite-dns`, writes and validates the config and adopts the credential into the state. The account

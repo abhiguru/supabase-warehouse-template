@@ -169,6 +169,7 @@ record the result and the evidence named (command output or a timed log) in the 
 - [ ] `node scripts/doctor.mjs --local` passes; record its last line.
 - [ ] `bash scripts/tunnel.sh create` and the public check: `get-public-config` answers 200 on the public address; record the
       status code and the time.
+- [ ] Both tasks registered with `scripts/windows/register-tasks.ps1` (with `-BusId` for the USB task); record the script's read-back output.
 - [ ] The keep-alive task read back (`Get-ScheduledTask 'Warehouse WSL' | Get-ScheduledTaskInfo` and its settings): Running, both
       triggers, `IgnoreNew`, battery switches off.
 - [ ] Recovery after a reboot with nobody signed in, and after `wsl --shutdown`; record seconds until the first 200 for each.

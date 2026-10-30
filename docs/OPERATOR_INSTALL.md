@@ -3028,7 +3028,7 @@ installed as a service (the external doctor, run on the host, healthy), a reboot
 (with the task disabled), and a USB backup drive passed into the distro with `usbipd-win` (enrolled, and one automatic run
 copied and verified). What was **not** verified: `sudo` asking for a password, Windows 11, the Home edition, mirrored
 networking, that the `.wslconfig` memory limit takes effect, recovery after a WSL update with the task enabled, the version after
-`wsl --update`, a real Windows Update reboot, a graceful stop when Windows shuts down, an automatic re-attach of the USB drive (the Warehouse USB task), a physical re-plug of the
+`wsl --update`, a real Windows Update reboot, a graceful stop when Windows shuts down, an automatic re-attach of the USB drive (the Warehouse USB task), registering either task with `scripts/windows/register-tasks.ps1` (the keep-alive task was verified from the pasted block it replaces, and the script is written to register the same task), a physical re-plug of the
 drive, a USB run that also takes a fresh backup, and printing.
 
 ### Prerequisites
@@ -3170,28 +3170,46 @@ enough: the restart count acts on a task that failed to launch, not on a `wsl.ex
 stayed down for nearly 10 minutes after `wsl --shutdown`). The verified form is a boot trigger plus a trigger that repeats every
 2 minutes without end, with new instances ignored while one is running.
 
-[PS-admin], in a console on the host (run `Get-Credential` at the console; it may not prompt over a remote session). The task
-must run as the Windows account that owns the distro: `SYSTEM` cannot see it. The registration lines below were run as typed
-(verified), and the settings read back: State Running; RunLevel Highest; MultipleInstances IgnoreNew; StartWhenAvailable; both
-battery switches off (`DisallowStartIfOnBatteries` and `StopIfGoingOnBatteries` False); RestartCount 999 at 1 minute; no time
-limit; the boot trigger and the 2-minute repeating trigger enabled. Check the task after you register it
-(`Get-ScheduledTask 'Warehouse WSL' | Get-ScheduledTaskInfo` and `Get-ScheduledTask 'Warehouse WSL' | Select -ExpandProperty Settings`):
+The task is registered by `scripts/windows/register-tasks.ps1` from the checkout inside the distro: boot plus every 2 minutes,
+running whether or not anyone is signed in, as the Windows account that owns the distro (`SYSTEM` cannot see the distro). It is
+not verified yet that the script registers it correctly. The same task, registered by hand from the paste-in block of earlier
+versions of this guide, was verified and read back, and the script is written to register the same task: Running; RunLevel Highest; MultipleInstances IgnoreNew; StartWhenAvailable; both battery switches off
+(`DisallowStartIfOnBatteries` and `StopIfGoingOnBatteries` False); RestartCount 999 at 1 minute; no time limit; the boot trigger
+and the 2-minute repeating trigger enabled. Do not run the script while the tasks are disabled for planned work; it registers
+them enabled and starts them.
+
+[PS-admin], in a console on the host (the script asks for the password with `Get-Credential`, which may not prompt over a remote
+session). Run it from an elevated PowerShell of the Windows account that owns the distro (the account that ran `wsl --install`).
+The prompt is filled in with that account; type its password. The script refuses if the account typed at the prompt is not the one running it. Use the checkout path of this guide (`~/backend` for the user
+`warehouse`):
 
 ```powershell
-$c = Get-Credential -UserName "$env:COMPUTERNAME\<windows-user>" -Message 'Windows account that owns the distro'
-$a = New-ScheduledTaskAction -Execute 'C:\Windows\System32\wsl.exe' -Argument '-d Ubuntu-24.04 --exec /usr/bin/sleep infinity'
-$t = @((New-ScheduledTaskTrigger -AtStartup), (New-ScheduledTaskTrigger -Once -At (Get-Date) -RepetitionInterval (New-TimeSpan -Minutes 2)))
-$s = New-ScheduledTaskSettingsSet -ExecutionTimeLimit ([TimeSpan]::Zero) -MultipleInstances IgnoreNew -StartWhenAvailable -AllowStartIfOnBatteries -DontStopIfGoingOnBatteries -RestartCount 999 -RestartInterval (New-TimeSpan -Minutes 1)
-Register-ScheduledTask -TaskName 'Warehouse WSL' -Action $a -Trigger $t -Settings $s -User $c.UserName -Password $c.GetNetworkCredential().Password -RunLevel Highest
+powershell -NoProfile -ExecutionPolicy Bypass -File \\wsl.localhost\Ubuntu-24.04\home\warehouse\backend\scripts\windows\register-tasks.ps1
 ```
 
-Do not type the password into the command line (`-Password (Read-Host ...)` shows it on screen).
-
+- `-ExecutionPolicy Bypass` applies to this one command only; it does not change the machine's policy. It also avoids the
+  "not digitally signed" refusal that a script read from a network path can meet under `RemoteSigned`. The `\\wsl.localhost`
+  command above is itself not verified yet. If `\\wsl.localhost` is not found, use `\\wsl$\Ubuntu-24.04\...` for the same path.
+  If the script still does not start from there, copy it to your own temp folder and run it from there (not verified on
+  Windows 10 22H2):
+  `Copy-Item \\wsl$\Ubuntu-24.04\home\warehouse\backend\scripts\windows\register-tasks.ps1 $env:TEMP\`, then
+  `powershell -NoProfile -ExecutionPolicy Bypass -File $env:TEMP\register-tasks.ps1`. Use the temp folder of your own account,
+  not `C:\Temp`: a folder that other users can write to is unsafe for a script that runs elevated. An execution policy set by
+  Group Policy overrides `-ExecutionPolicy Bypass`.
+- Parameters: `-Distro` (default `Ubuntu-24.04`), `-BusId` (also registers the USB task, see
+  [Backups off the host](#backups-off-the-host-windows)), `-UsbOnly`, and `-Force` (replace tasks that exist; without it the
+  script refuses). The script checks that it is elevated and that the distro exists before it changes anything, asks once for the
+  password, never stores or prints it, starts the task, and reads it back: State, LastRunTime, LastTaskResult, the triggers
+  (with the repeat duration; empty means no end), MultipleInstances, the battery switches, RunLevel, the user and logon type, the
+  restart settings, time limit, StartWhenAvailable and the action. Check that the task shows Running with the boot trigger and the 2-minute
+  repeating trigger.
 - The task shows **Running** all the time, and the 2-minute repeat ends with `LastTaskResult` 2147946720 (0x800710E0) because it
   finds the first instance still running. That is expected and not a fault.
-- After the Windows account's password changes, update the task, or it stops starting (not verified yet):
-  update both tasks: `Set-ScheduledTask -TaskName 'Warehouse WSL' -User $c.UserName -Password $c.GetNetworkCredential().Password` with a new
-  `$c` from `Get-Credential`, and the same for `'Warehouse USB'`. `Register-ScheduledTask` fails on an existing name unless you add `-Force`.
+- After the Windows account's password changes, update the tasks, or they stop starting (not verified yet): run the script
+  again with `-Force`, with the stick plugged in (add `-BusId <id>` if the USB task exists; the bus id is in
+  `(Get-ScheduledTask 'Warehouse USB').Actions.Arguments`). Alternatively, for each task:
+  `Set-ScheduledTask -TaskName 'Warehouse WSL' -User $c.UserName -Password $c.GetNetworkCredential().Password` with a new
+  `$c` from `Get-Credential`, and the same for `'Warehouse USB'`.
 - Recovery times measured with the verified task (single samples per run, plus or minus 20 seconds): the public address answered
   again about 40 seconds to 2 minutes after `wsl --shutdown`, about 85 seconds after `wsl --terminate`, and about 70 to 90
   seconds after a host reboot with nobody signed in.
@@ -3261,16 +3279,12 @@ this order:
 1. [PS-admin] `usbipd list`, to find the drive's bus id.
 2. [PS-admin] `usbipd bind --busid <id>`, once; the bind persists.
 3. Register the keep-alive task first ([above](#keep-the-distro-running-and-start-it-at-boot)), then the "Warehouse USB" task
-   (not verified yet). [PS-admin], in a console on the host. The task runs as the Windows account that owns the distro. First find the full
-   path of the tool with `(Get-Command usbipd).Source`; the default install is the path below. Put your bus id from step 1 in place
-   of `<busid>`:
+   (not verified yet). [PS-admin], in a console on the host, after `usbipd bind`, with the bus id from step 1 (the command is
+   the one of the keep-alive section with `-UsbOnly -BusId`; the task runs as the Windows account that owns the distro, and the
+   script finds `usbipd.exe` itself and refuses a bus id that is not shared):
 
    ```powershell
-   $c = Get-Credential -UserName "$env:COMPUTERNAME\<windows-user>" -Message 'Windows account that owns the distro'
-   $a = New-ScheduledTaskAction -Execute 'C:\Program Files\usbipd-win\usbipd.exe' -Argument 'attach --wsl Ubuntu-24.04 --busid <busid> --auto-attach --unplugged'
-   $t = @((New-ScheduledTaskTrigger -AtStartup), (New-ScheduledTaskTrigger -Once -At (Get-Date) -RepetitionInterval (New-TimeSpan -Minutes 2)))
-   $s = New-ScheduledTaskSettingsSet -ExecutionTimeLimit ([TimeSpan]::Zero) -MultipleInstances IgnoreNew -StartWhenAvailable -AllowStartIfOnBatteries -DontStopIfGoingOnBatteries
-   Register-ScheduledTask -TaskName 'Warehouse USB' -Action $a -Trigger $t -Settings $s -User $c.UserName -Password $c.GetNetworkCredential().Password -RunLevel Highest
+   powershell -NoProfile -ExecutionPolicy Bypass -File \\wsl.localhost\Ubuntu-24.04\home\warehouse\backend\scripts\windows\register-tasks.ps1 -UsbOnly -BusId <id>
    ```
 
    It is shaped like the keep-alive task for a reason. `--auto-attach` keeps running and attaches the stick again whenever it comes
@@ -3280,13 +3294,11 @@ this order:
    the distro up. `--wsl Ubuntu-24.04` ties the loop to the warehouse distro, like the keep-alive's `-d Ubuntu-24.04`. `--unplugged` lets it start while the
    stick is out. The bus id belongs to the USB port, not to the stick: keep the stick in the same port (the usbipd-win
    documentation says the id changes with the port; not tested here). If you must move it: [PS-admin] `Stop-ScheduledTask 'Warehouse USB'`,
-   repeat steps 1 and 2 for the new bus id, register the task again with `-Force` added to `Register-ScheduledTask` (with a new `$c`),
-   then `Start-ScheduledTask 'Warehouse USB'`. To remove the task: [PS-admin]
+   repeat steps 1 and 2 for the new bus id, run the script again with `-UsbOnly -BusId <new> -Force` (it starts the task again). To remove the task: [PS-admin]
    `Stop-ScheduledTask 'Warehouse USB'; Unregister-ScheduledTask 'Warehouse USB' -Confirm:$false`, then `usbipd detach --busid <id>`.
    Like the keep-alive task, it shows Running all the time, and a repeat that finds it running is expected, not a fault.
-   Read it back with `Get-ScheduledTask 'Warehouse USB' | Get-ScheduledTaskInfo` and
-   `Get-ScheduledTask 'Warehouse USB' | Select -ExpandProperty Settings`, then `usbipd list`: with the stick in, its state
-   should be **Attached**. Whether the task works while nobody is signed in is not verified yet.
+   The script reads the task back and prints `usbipd list` for the bus id; with the stick in, its state
+   should be **Attached** within 2 minutes once the distro is up. Whether the task works while nobody is signed in is not verified yet.
 4. [Ubuntu] Inside the distro, `lsblk` shows the drive as `usb` and `exfat`. Then set up USB backup as written in
    [USB backup drive](#usb-backup-drive), with `--daily` now that the drive stays attached:
    `sudo bash scripts/backup-usb.sh setup --state "$WAREHOUSE_STATE_DIR" --daily --enroll /dev/sdX1`. Every re-attach (after a
