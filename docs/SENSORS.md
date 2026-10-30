@@ -74,8 +74,7 @@ recorded separately before anyone is told the screen works.
   Duplicates appear only when the bridge re-sends a batch whose answer it did
   not get (a timeout or a lost 200); a bridge that runs normally reports
   `duplicates=0`.
-- **Retention.** `sensor_readings` older than 90 days (3 months; migration 75,
-  400 days before it) are removed by the database retention job (key
+- **Retention.** `sensor_readings` older than 90 days (3 months) are removed by the database retention job (key
   `sensor_readings`, `npm run retention:preview`, deleted at the next
   `retention:apply`).
 
@@ -158,18 +157,15 @@ reachable from the host. `setup.sh` and `start.sh` start the core services
 only; once a bridge container exists they replace it when its image or
 configuration changed, and `stop.sh` stops it with everything else.
 
-1. **Upgrade** to a backend with migration 74 (the normal
-   [Rerun and upgrade](OPERATOR_INSTALL.md#rerun-and-upgrade)).
-2. **Mint a key** (above).
-3. **Configure.** Set these lines in `$WAREHOUSE_STATE_DIR/config/compose.env`
-   (an installation made after this release already has them, empty; an older
-   one adds them). Keep the file mode 0600.
+1. **Mint a key** (above).
+2. **Configure.** Set these lines in `$WAREHOUSE_STATE_DIR/config/compose.env`
+   (setup writes them empty). Keep the file mode 0600.
 
    | Variable | Value |
    | --- | --- |
    | `SENSOR_BRIDGE_HUBS` | hub addresses, comma-separated: `192.168.1.74,192.168.1.79` |
    | `TAPO_USERNAME`, `TAPO_PASSWORD` | the Tapo account the hubs were set up with |
-   | `SENSOR_INGEST_KEY` | the key from step 2 |
+   | `SENSOR_INGEST_KEY` | the key from step 1 |
    | `SENSOR_BRIDGE_ID` | optional name shown in `sensor_hubs.bridge_id` (default `sensor-bridge`) |
    | `SENSOR_BRIDGE_POLL_SECONDS`, `_POST_SECONDS`, `_HEARTBEAT_SECONDS`, `_MAX_BATCH`, `_LOG_LEVEL` | optional: 300, 60, 300, 200, INFO (poll and heartbeat 300: sampled every 5 minutes) |
    | `SENSOR_BRIDGE_REBOOT_CRON` | optional five-field cron in UTC for a hub reboot, e.g. `30 21 * * 6` (Saturday 21:30 UTC, Sunday 03:00 IST); empty = never |
@@ -177,7 +173,7 @@ configuration changed, and `stop.sh` stops it with everything else.
    Compose reads this file with variable substitution: a password that
    contains `$`, a quote, or a space followed by `#` goes in single quotes
    (`TAPO_PASSWORD='p$ss#word'`), which Compose takes literally.
-4. **Look before posting.** `--dump` connects to every hub and prints what it
+3. **Look before posting.** `--dump` connects to every hub and prints what it
    reports (ids, values, battery, report interval; no secret), storing and
    sending nothing (`--once --dump` is the same as `--dump`); `--once` polls
    and posts once, and a second `--once` straight after it posts nothing,
@@ -190,9 +186,9 @@ configuration changed, and `stop.sh` stops it with everything else.
    bash scripts/compose.sh --profile sensors run --rm sensor-bridge --once   # again at once: event=once ... posts=0 (nothing changed)
    ```
 
-5. **Start it:** `bash scripts/compose.sh --profile sensors up -d --wait sensor-bridge`.
+4. **Start it:** `bash scripts/compose.sh --profile sensors up -d --wait sensor-bridge`.
    The first start builds the image (network needed).
-6. **Turn the capability on**, so the app shows the screen, and restart the
+5. **Turn the capability on**, so the app shows the screen, and restart the
    function runtime (the manifest is mounted as a file; a running container
    keeps the old one):
 
@@ -201,9 +197,9 @@ configuration changed, and `stop.sh` stops it with everything else.
    bash scripts/compose.sh restart functions
    ```
 
-7. **Take a backup:** `npm run db:backup`. `db:restore` refuses a backup whose
+6. **Take a backup:** `npm run db:backup`. `db:restore` refuses a backup whose
    `instance.json` or `compose.env` differs from the state, so a backup taken
-   before steps 3 and 6 can be restored only with `db:restore-host` (or with
+   before steps 2 and 5 can be restored only with `db:restore-host` (or with
    `--restore-config`, which brings back the old configuration).
 
 To turn sensors off: `node scripts/set-capability.mjs sensors off`, restart
@@ -213,8 +209,7 @@ revoke the key, and take a backup. Stored readings stay.
 ## Run it as its own Compose project
 
 The same image runs on any Docker host on the hubs' network, posting to the
-installation's public address through the tunnel. This is how the first
-facility runs it before the profile is used there. Run only one bridge per hub:
+installation's public address through the tunnel. Run only one bridge per hub:
 two bridges would each send their own observation times.
 
 1. **Mint a key** on the installation the bridge posts to (as in

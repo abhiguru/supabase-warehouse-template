@@ -193,14 +193,14 @@ MSG91_SENDER_ID=replace-with-owned-sender-id
 
 `MSG91_TEMPLATE_ID` is the MSG91 **Flow ID** (24 lowercase hex characters), not the DLT template ID. `MSG91_PE_ID` is
 numeric and `MSG91_SENDER_ID` is six uppercase alphanumerics; the installer validates all three. The Flow's variable must
-be named exactly `OTP`. Do not copy a complete legacy `.env` into this file: `SMS_PRODUCTION_MODE` and any other key are
+be named exactly `OTP`. Do not copy a complete `.env` into this file: `SMS_PRODUCTION_MODE` and any other key are
 rejected. The OTP worker accepts a request only after MSG91 confirms it, but an accepted API response does not prove
 handset delivery, so test with an owned phone. Real credentials are mandatory: there is no fixed-OTP or local delivery
 mode. Keep the file out of shell history and version control, and include it in your encrypted off-host backups.
 
-**Notes from an older (pre-template) deployment do not apply.** This backend stores the sign-in codes itself, as an HMAC
+**What setup keeps for you.** This backend stores the sign-in codes itself, as an HMAC
 (the `otp_verifications` table, checked by `operator_verify_otp`), and setup writes the `public.sms_config` row from the
-provider file: do not create either by hand, and do not carry over a `.env` or SQL from the old system. `rotate-keys.sh` takes
+provider file: do not create either by hand. `rotate-keys.sh` takes
 only `--yes` and rotates the signing keys ([Rotate signing keys](#rotate-signing-keys)); it does not set up SMS.
 
 **Test installations (CI, review fixtures).** An installation that is not a real facility never gets a real MSG91 key,
@@ -326,7 +326,7 @@ bash setup.sh --operator --state-dir "$WAREHOUSE_STATE_DIR" --admin-phone 91XXXX
 
 GRN, dispatch and invoice numbers follow a rule of the facility, and **with the rule's check on, a typed number that does not follow the rule is refused when the document is
 saved** ("This number does not follow this facility's numbering (A####)"). Choose the rules at install, or later; an administrator can also change
-them in the app (Document numbers, under Warehouse tools, from the app build that has the screen). Each rerun without the options keeps what is stored.
+them in the app (Document numbers, under Warehouse tools). Each rerun without the options keeps what is stored.
 
 | Option | A rule is written as | Example numbers |
 |---|---|---|
@@ -340,12 +340,10 @@ them in the app (Document numbers, under Warehouse tools, from the app build tha
 bash setup.sh --operator <your usual options> --grn-numbering 'year,prefix=GRN/' --dispatch-numbering 'sequence,prefix=I' --invoice-numbering year
 ```
 
-- **The defaults are what the facility did before:** GRN `letters` (first letter `W` when the facility holds both W and X numbers, `X` when it holds X, Y or Z numbers: FAS's order is W, X, Y, Z, A, B),
-  dispatch `sequence,prefix=I`, invoice `year`. `node scripts/doctor.mjs` prints the rules in force ("Document numbers: GRN A#### (letters), ...").
+- **The defaults:** GRN `letters` starting at A (A0001 ... A1000, B0001 ...), dispatch `sequence,prefix=I` (I0001, I0002 ...), invoice `year`, and every check on. `node scripts/doctor.mjs` prints the rules in force ("Document numbers: GRN A#### (letters), ...").
 - **The check.** Each GRN and dispatch rule has a check: on, a number outside the rule is refused; off, it is saved (a number that is taken is still refused, as is one over 20 characters)
-  and the rule still suggests the next number. The update starts a document type with the check **off** when one of the numbers it holds does not follow the rule it starts with (dispatch
-  numbers such as G1234A or CLR0007 beside I0001, a GRN such as DG1) and prints how many, with up to five examples; every other type starts with it on. `doctor` warns "Dispatch numbers are not checked:
-  N existing numbers do not follow I####" until you switch it on. Switch it on by giving the rule you want with `check=on`, for example
+  and the rule still suggests the next number. A document type whose check is off (see fas-sync below) makes `doctor` warn "Dispatch numbers are not checked:
+  N existing numbers do not follow I####" while numbers that do not follow the rule exist. Switch it on by giving the rule you want with `check=on`, for example
   `--dispatch-numbering sequence,prefix=I,digits=4,start=1,check=on` (the warning prints the exact option for the stored rule); numbers that do not follow it keep their numbers, and setup says
   how many they are. `check=off` switches it off. Giving a rule without `check` leaves the check as it is stored; `free` rules and invoices have no check to switch (an invoice number is always a whole number).
 - **Limits.** A number has at most 20 characters and at most 7 digits after its prefix; the prefix is up to 10 capital letters, digits, `/` and `-`. Setup refuses an unknown scheme,
@@ -359,16 +357,14 @@ bash setup.sh --operator <your usual options> --grn-numbering 'year,prefix=GRN/'
 - **A stray letter.** The GRN suggestion follows the letters in use; a mistyped GRN number such as Q0001 for A0001 can leave a letter beside the series that takes the suggestion over when it is between B and K (in a series that runs W to A; a stray at L does it only when
   the rule's first letter is W, because two runs of unused letters are then equally long). `doctor` lists "GRN letters in use outside the main series W–A: ..." (the main series is the run that holds the most numbers) so that the number
   can be corrected, and warns when the highest letter follows a letter in use that is not full (B0001 beside A0500), which is the one stray that steers the suggestion without standing apart.
-- **fas-sync and other import tools.** The update starts the check only from the numbers already in the database. A number the tool will still push after the update counts too: a GRN such as X1234A (a letter, digits and a letter after them)
-  does not follow the letter rule and the push is refused while the GRN check is on. Push the backlog before the update, or give the update the rule with the check off,
-  `--grn-numbering letters,first=X,check=off` (`first=W` where the facility holds both W and X numbers), and switch the check on later with the same rule and `check=on`.
+- **fas-sync and other import tools.** A number the tool pushes that does not follow the rule is refused while the check is on: a GRN such as X1234A (a letter, digits and a letter after them) does not follow the letter rule.
+  Before the first import, give setup `--grn-numbering letters,first=X,check=off` (`first=W` where the books hold both W and X numbers) and `--dispatch-numbering sequence,prefix=I,check=off`,
+  and switch the checks on later with the same rule and `check=on`.
   It pushes FAS's GRN numbers (a capital letter and digits) and dispatch numbers as they are. At a facility whose GRN rule is `letters` those of a capital letter and digits are saved whatever the first letter. FAS's dispatch numbers (G1234,
-  H0012A, CLR0007) do not follow `sequence,prefix=I`: while the dispatch check is off (the update starts it off at a facility that holds such numbers) they are saved; with the check on, or with a GRN rule that does not match, the push of that document is
+  H0012A, CLR0007) do not follow `sequence,prefix=I`: while the dispatch check is off they are saved; with the check on, or with a GRN rule that does not match, the push of that document is
   refused with the sentence above. Do not use `free` to let them through: a `free` rule suggests no number, and fas-sync reads the suggestion (`get_next_grn_number`, `get_next_dispatch_number`) before and after every push. The suggestion is
   the rule's whether the check is on or off.
-- **Slips and old app builds.** Numbers of up to 20 characters are possible; the pre-printed GRN and dispatch slips print the number in a field made for 8, so check a long number on paper once before you use one. An app build
-  from before this change fills in its own number where no number is suggested (`free`, a full series) and limits the dispatch number to 8 characters: use a rule that suggests numbers of 8 characters or fewer until every phone
-  has the new build.
+- **Slips.** Numbers of up to 20 characters are possible; the pre-printed GRN and dispatch slips print the number in a field made for 8, so check a long number on paper once before you use one.
 
 ## Several facilities on one host
 
@@ -388,8 +384,7 @@ bash setup.sh --operator --state-dir /srv/warehouse/second \
 ```
 
 - Setup test-binds `127.0.0.1:<port>` first and refuses a port that is in use. The port is saved as `GATEWAY_HTTP_PORT` in
-  the state's `config/compose.env`; `doctor` and the smoke scripts read it from there. (A state made while the gateway was
-  Kong has the line as `KONG_HTTP_PORT`: it is still read, and every run of `setup.sh` renames it to `GATEWAY_HTTP_PORT`, keeping the port.)
+  the state's `config/compose.env`; `doctor` and the smoke scripts read it from there.
 - A rerun without `--gateway-port` keeps the saved port. A rerun with another port replaces only that line, and only while
   the installation's containers are stopped (`bash stop.sh`, then setup again).
 - Each tunnel's ingress must point at its own port: change the `service:` line of that facility's `cloudflared`
@@ -580,11 +575,9 @@ default 7776000, never below the idle time and at most 1095 days; a value that
 is not a whole number means the default). So someone who opens the app at least
 once a month is asked for an SMS code about every three months, and a lapse of
 the SMS service (MSG91 balance, DLT header, KYC) does not sign the staff out
-within a week, as it did before migration 126, when a session ended 7 days
-after sign-in whatever the use. Someone who does not use the app for the idle
+within a week. Someone who does not use the app for the idle
 time signs in again with a code. Only an active, approved profile is extended;
-any other active profile keeps the fixed 7 days of a new session. Sessions made
-before migration 126 become sliding at their next renewal. Change a value as
+any other active profile keeps the fixed 7 days of a new session. Change a value as
 `supabase_admin` (`UPDATE warehouse_security.auth_config SET value='1209600'
 WHERE key='session_idle_seconds'`); it applies at the next renewal, and a
 session already past a lowered absolute limit is ended then (the app signs the
@@ -598,12 +591,11 @@ generation, means two devices hold tokens of one session: the session is ended
 for both and the user signs in again. The database log then carries
 `Refresh token reuse: session ... revoked`. The database remembers each replaced
 token for as long as the session can last (until 90 days after sign-in at the
-longest, `session_max_seconds`; before migration 126 a session ended within 7
-days and the record with it), so a stolen token that was replaced is still
+longest, `session_max_seconds`), so a stolen token that was replaced is still
 recognised when the real holder presents it weeks later, as long as the session
 lives. The price is a few small rows per renewal, which go with the session.
 
-**A lost or stolen phone.** A session now lasts weeks, so do not wait for it to
+**A lost or stolen phone.** A session lasts weeks, so do not wait for it to
 end: switch the person off. An administrator (a supervisor can do it for anyone
 who is not an administrator) opens Settings → Users → edit → Account Status and
 switches the user off. That deletes every session of the person at once
@@ -711,10 +703,9 @@ refuses with a message, and makes no code, when standard output is not a termina
 purpose).
 
 Learn it before the day it is needed: the `functions` container must be running the code of this checkout. `setup.sh` recreates it on
-every run (since the release that moved this step into setup; after an upgrade with `upgrade.sh` it has been done), and an installation
-whose last setup was by an older release needs the command by hand (`bash scripts/compose.sh up -d --force-recreate functions`,
-[Rerun and upgrade](#rerun-and-upgrade)); an old `operator-otp` shows the app "SMS delivery unavailable" and never its code screen when
-the provider refuses, and the break-glass code cannot be typed.
+every run, and so does an upgrade with `upgrade.sh`. If you changed the checkout without running either, recreate it by hand
+(`bash scripts/compose.sh up -d --force-recreate functions`, [Rerun and upgrade](#rerun-and-upgrade)); a stale `operator-otp` shows the app
+"SMS delivery unavailable" and never its code screen when the provider refuses, and the break-glass code cannot be typed.
 
 Give the code to that administrator in person or by a call you trust. On their phone: open the app, enter their number, ask for a code (the
 app shows its code screen even while the SMS provider refuses the request, as long as the break-glass code is open), and type the break-glass
@@ -832,7 +823,7 @@ bash setup.sh --operator \
   facility; the price is that whoever controls the central service, or a number's SMS there, can open any person profile
   with that number here. It is refused unless central sign-in is configured. A rerun without the flag keeps the stored
   value; `--central-issuer off` clears it with the rest. It is stored as `CENTRAL_LOCAL_CODE` in `config/compose.env` and
-  as the `auth_config` key `central_local_code`. A service account (a machine, migration 78) is never opened by the
+  as the `auth_config` key `central_local_code`. A service account (a machine) is never opened by the
   central sign-in whatever this says.
 - Check: `curl -s https://<your origin>/functions/v1/get-public-config` shows
   `"centralLogin":{"issuer":"…","localCode":false}` when it is on (`localCode` is `true` with `--central-local-code on`)
@@ -1028,9 +1019,8 @@ zone, by someone who never touches the warehouse server, is enough.
 An internet outage stops the public path (the Cloudflare Tunnel) and, with it, the app on every phone, although the server and the
 phones are on the same Wi-Fi. The LAN fallback gives the phones a second address for the same server: the server's own address on the
 warehouse network, over **plain http**. The app is built to try the public address first and to use the LAN address only after the
-public one has failed, and to return to the public address by itself when the internet is back. Owner decision of 2026-10-26: no
-certificate, no DNS record and no router setting are involved, and this reverses the earlier rule that the app never uses cleartext, for
-this one case.
+public one has failed, and to return to the public address by itself when the internet is back. No
+certificate, no DNS record and no router setting are involved; this is the one case in which the app uses cleartext.
 
 **The app that uses it ships separately and is not released yet.** Until a version of the app that has it is installed on the phones,
 turning the fallback on only opens the listener: nothing uses it, and the exposure below is not yet incurred, only the listener is there.
@@ -1047,7 +1037,7 @@ turning the fallback on only opens the listener: nothing uses it, and the exposu
   is not signed in cannot sign in during an outage, with one exception: **an administrator can sign in over the LAN fallback with a
   break-glass code** ([Break-glass administrator sign-in](#break-glass-administrator-sign-in)). It does not publish anything to the
   internet, and the tunnel and the public gateway are unchanged (the public gateway has no LAN listener at all).
-- **The exposure you accept** (owner decision of 2026-10-26). While a phone uses this path, its access token (one hour) and any
+- **The exposure you accept.** While a phone uses this path, its access token (one hour) and any
   refresh token it exchanges cross the Wi-Fi **unencrypted**, and so do the photos and documents it sends and receives. Anybody who has
   the Wi-Fi password, or is on the network, can read them. That has these consequences:
   - **A token that is read works from anywhere, not only on the LAN**, including from the attacker's own mobile data during your outage,
@@ -1282,7 +1272,7 @@ file installed with `sudo`, such as the USB backup helper or a systemd unit, was
 
 ## Retention
 
-Retention is the owner-approved clean-up of expired sign-in records and generated PDFs (owner decision of 2026-10-19). With
+Retention is the clean-up of expired sign-in records and generated PDFs. With
 the timers installed (see "Monitoring is not a Compose profile" in the installation section above), the daily pass (`watch.mjs daily`, run by the `<project>-daily` timer) runs `scripts/retention.sh apply`
 once a day, after the day's backup attempt and after it has pruned the local backups (it does not wait for the backup or its verify
 to succeed: a backup that is refused for lack of space or fails its verify is when old backups must still go; it is skipped only
@@ -1358,8 +1348,7 @@ photos or with how many are new, but it does grow with the number of files: the 
 every stored file on both sides (twice, the second time as a check that nothing is left to copy), which takes seconds for tens of
 thousands of files, not minutes. `db:backup` prints how long the services were stopped, how long the backup took, and how many files were new
 (`metadata.txt` records `stop_seconds=`, `duration_seconds=`, `storage_files=`, `storage_bytes=`, `storage_new_bytes=` and
-`link_base=`, the backup the files were linked from). The first backup, and the first after an upgrade from a release that
-wrote `warehouse-backup-v5`, is a full copy. The backup it links from is the newest one whose daily verify passed within the last
+`link_base=`, the backup the files were linked from). The first backup is a full copy. The backup it links from is the newest one whose daily verify passed within the last
 two days; when there is none (nights whose verify fails, so that the last verified backup is older), the newest backup that passes
 its signature check, verified or not, so that failing verifies do not make every night copy the same new photos again. Every
 shared file is compared with the signed manifest of that backup, so a backup that was not verified is safe to link from.
@@ -1370,7 +1359,7 @@ that holds its folder, and refuses when the disk could not hold it and still kee
 - **Linking from an earlier backup** (the normal night): twice the stored files that are new since that backup (the files that
   pass 1 would copy, counting 4 KiB for each folder of the tree, which cannot be hard-linked), plus the database dump, plus 256 MiB
   for the rest.
-- **With no backup to link from** (the first v6 backup, or every earlier one is unusable): the whole photo tree **once** plus 10%
+- **With no backup to link from** (the first backup, or every earlier one is unusable): the whole photo tree **once** plus 10%
   of it, plus the database dump, plus 256 MiB. The copy of a tree that is made twice in a row costs the tree only once, because the
   second pass links to the first; the 10% covers the folders and what is uploaded meanwhile.
 - The database dump is counted as 1.5 times the dump of the backup it links from (at least 96 MiB); with no such backup, 1.5 times
@@ -1387,11 +1376,9 @@ keeps running and no partial backup is left. Slack `backup_failed` shows the sam
 [TROUBLESHOOTING.md](TROUBLESHOOTING.md#backup-usb-drive-and-restore), "backup refused: not enough free space". A backup that goes ahead
 records the numbers it was judged by in `metadata.txt` (`preflight_need_mb=`, without the reserve, and `preflight_avail_mb=`).
 
-**The week after the update to this backup format needs the most room.** The first v6 backup has nothing to link from, and the
-older `warehouse-backup-v5` backups are never a base. If the disk was sized for the v5 scheme (seven whole-photo tarballs), it can
-have less free than the photo tree plus the 2 GiB reserve, and then every night is refused until you free the room: a refused night
-makes no new backup, so nothing ages out by itself. Delete the oldest `warehouse-backup-v5` backups by hand (each holds a whole `storage.tar.gz`, so each frees about the size of the photo
-volume). The USB script copies only the newest verified backup and prunes the drive to the newest three archives, so it does not keep
+**A backup with no usable earlier backup to link from needs the most room.** It copies everything. If the disk has
+less free than the photo tree plus the 2 GiB reserve, every night is refused until you free the room: a refused night
+makes no new backup, so nothing ages out by itself. Free the room (delete backups you no longer need from `$WAREHOUSE_STATE_DIR/backups`, or add disk). The USB script copies only the newest verified backup and prunes the drive to the newest three archives, so it does not keep
 an old backup for you; to keep one, write its archive into a folder of its own on the drive, outside this installation's folder (for
 example `warehouse-backups/kept/`: a run never looks into sub-folders, and a signed archive left in `warehouse-backups/<state name>/`
 is pruned at the next good run), with the `backup_archive_write` commands under "Manual fallback" in
@@ -1413,7 +1400,7 @@ The directory contains:
 | `storage/` | The object storage as it was at the moment of the dump: the same folders and files, with their modes, modification times and **extended attributes** (the Storage service keeps each file's content type and cache control there; without them a restored photo or PDF is served as `application/octet-stream`). Files unchanged since the previous backup are hard links to its copy: never change a file in here, in any backup. |
 | `storage.manifest` | The SHA-256 of every file in `storage/` (`<hash>  <path>`, in byte order). It is listed in `SHA256SUMS`, so the signature covers every file of the tree through it. |
 | `storage_objects.txt` | The `storage.objects` catalog as `<bucket>/<name>/<version>`, byte-ordered. |
-| `integrity.txt` | Output of `scripts/backup-integrity.sql`: migration fingerprint, row counts, representative grants. From migration 48 on it also counts the three history tables (invoice discounts, zero charges, item prices) and records that the internal `invoice` columns are closed to the app role; from migration 95 on it also counts payments, order lines and order revisions. A backup taken earlier has no such lines and is still compared line for line. |
+| `integrity.txt` | Output of `scripts/backup-integrity.sql`: migration fingerprint, row counts, representative grants. It also counts the three history tables (invoice discounts, zero charges, item prices), payments, order lines and order revisions, and records that the internal `invoice` columns are closed to the app role. |
 | `roles.txt` | Cluster role names, so runtime-created roles can be recreated before ownership replays. |
 | `compose.env`, `instance.json` | Private configuration and public manifest at backup time. |
 | `central-jwks.json` | Only when the installation reads the central sign-in keys from a file (`--central-jwks-file`): a copy of `public/central-jwks.json`, public keys only. `db:restore-host` puts it back. |
@@ -1448,10 +1435,10 @@ secret. `db:restore-host` loads nothing from a folder whose signature does not c
 (`--backup-key`), and never with `--allow-unsigned`. `scripts/backup-usb.sh` copies the folder whole, as it is, to
 `warehouse-backups/<state name>/images/` on the [USB drive](#usb-backup-drive), next to the archives, where `db:restore-host`
 looks for it: once, and again only when the folder's signed list changes (after an upgrade that built or pulled an image). Add no file of your own to the
-folder. An installation that was built before images were saved has no folder yet; write it once, and the next copy to the drive takes it:
+folder. If the folder is missing (for example after you removed it), write it again, and the next copy to the drive takes it:
 
 ```bash
-bash scripts/build-images.sh --save     # once, on an installation built before images were saved
+bash scripts/build-images.sh --save
 ```
 
 The images are not encrypted on the drive and are not inside the archives: they are made from this repository's recipes (or are the
@@ -1471,11 +1458,7 @@ ACLs, and compares the integrity report and the restored object catalog with
 the backup. Run it against every retained backup; it never touches the installed
 instance.
 
-Formats v6 (the stored files as a tree, written by this release) and v5 (a `storage.tar.gz`, written by earlier releases) are
-accepted: the verifier, `db:restore` and `db:restore-host` refuse any other with "Refusing: backup format
-'warehouse-backup-vN' is no longer supported; take a new backup with this version (only warehouse-backup-v5 and -v6 are
-accepted)". The label must also agree with the signed file list (a v6 backup lists `storage.manifest` and has a `storage/`
-tree, a v5 backup lists `storage.tar.gz`); a backup where they disagree is refused after its signature has been checked.
+Backups of format v6 (written now) and the older v5 are accepted; the verifier, `db:restore` and `db:restore-host` refuse any other format, and a backup whose label disagrees with its signed file list.
 `db:verify-restore --no-storage-tree` leaves the hashing of the tree out and checks the rest (signature, list, manifest,
 database): it is for a copy of a backup that does not hold the tree.
 A backup whose signature is missing is refused unless you add `--allow-unsigned`,
@@ -1577,7 +1560,7 @@ in**: everything recorded after it is lost with the host.
 
 The drive also carries the installation's **saved images** (`$WAREHOUSE_STATE_DIR/images`, about 2.5 GiB) in a folder `images` beside
 the archives, once and not once per archive, so it needs that much room more ([Backup and restore](#backup-and-restore)), and as much again free while a changed set is written beside the old one (about 5 GiB at each image change; the old set is deleted only after the new one has been read back). The copy is the last step of a run, after the archive is on the drive and the drive is pruned: when the images do not fit, the archive copy still counts as successful, the run says "saved images NOT copied" and `npm run doctor` shows it. The enrolment
-output says how much the images add now. A drive enrolled before this release needs no new enrolment or setup run: the run copies the
+output says how much the images add now. The run copies the
 folder as soon as it exists (`bash scripts/build-images.sh --save` writes it on an installation that has none).
 
 The operator's only job is to **attach the drive**. `scripts/backup-usb.sh` installs a udev rule and a systemd unit once;
@@ -1619,10 +1602,8 @@ that imitates it receives nothing.
    backup key, so run `bash scripts/backup-key-escrow.sh show` (it creates the key if there is none) or `npm run db:backup` first on an
    installation that has none yet. **Run setup again after updating
    the checkout** ([Rerun and upgrade](#rerun-and-upgrade); `setup.sh` runs first) so the installed helper and the unit match it
-   (`status` warns when they do not): the unit of this release has a 6-hour time limit for a run (the old one had 2 hours, too short
-   for a large drive) and carries a keep count other than 3 if you chose one; both reach an installation only through this rerun. An installation that was
-   set up with readable archives and never reruns it keeps writing them: `status`, `npm run doctor` and the checker's `usb_backup`
-   alert say so until it does. `sudo bash scripts/backup-usb.sh uninstall` removes everything it installed and never
+   (`status` warns when they do not): the unit has a 6-hour time limit for a run and carries a keep count other than 3 if you chose one;
+   both reach an installation only through this rerun. `sudo bash scripts/backup-usb.sh uninstall` removes everything it installed and never
    touches a drive.
 2. From then on: plug the drive in and wait (on a Windows host with the Warehouse USB task, plug it into the same port and wait (not verified yet);
    without the task, attach it with `usbipd attach`: [Backups off the host](#backups-off-the-host-windows)). The run takes minutes at first and longer as the photos grow (it reads the backup,
@@ -1649,8 +1630,7 @@ one is written beside it and read back first) and is never pruned; a run deletes
 three valid archives of this installation (`--keep N`) and deletes the older ones with their `.sha256` and `.hmac` files. Valid
 means the bytes match the checksum and the signature is one of the current backup key. An archive that is damaged, has no signature,
 or was signed with another key (after a key replacement, see [Backup key](#backup-key)) is **reported by name and never counted or
-deleted**; neither is any other file on the drive. An archive without a signature (a readable one that an earlier release wrote before
-archives were signed) is kept as well, and the run names it **on every run** until you remove it yourself. The newest valid archive is
+deleted**; neither is any other file on the drive. An archive without a signature is kept as well, and the run names it **on every run** until you remove it yourself. The newest valid archive is
 never deleted. A run that fails deletes nothing, with
 one exception: if the new archive will not fit, it deletes the oldest valid archives, one at a time while more than one remains, until
 it does; it deletes nothing at all when even all of them would not make room, and if it still will not fit the run fails with
@@ -1666,16 +1646,6 @@ an archive contains `compose.env`, which holds every credential of the instance,
 phones' traffic, sign-in codes included. **The price: after the switch, a lost backup key means the encrypted archives are
 unrecoverable.** That is why the key copy must be confirmed before a drive is enrolled or an encrypted archive is written
 (`bash scripts/backup-key-escrow.sh show`), and why the copy belongs somewhere that survives the loss of the facility.
-
-**An installation set up before this release** wrote readable archives (encryption was off unless you typed `--encrypt`), and its stored
-configuration says `ENCRYPT=no`. The first `sudo bash scripts/backup-usb.sh setup --state "$WAREHOUSE_STATE_DIR"` after the update
-switches it to encrypted archives and prints a notice saying so (`status` warns until you run it). Until you confirm the key copy,
-the runs then refuse. When the first encrypted archive has been written and verified in a run, the **readable archives of this
-installation on the drive are deleted** (the run prints each one): they hold every credential, and keeping them would defeat the
-switch. During the first few runs after it the drive therefore holds fewer than three archives. A readable archive that carries no
-valid signature of this installation is not provably yours, so it is not deleted; the run names it on every run, and you remove it
-yourself. The deletion is done only after the run has hashed the encrypted archive and checked its restore; a run with restore
-verification switched off (a test switch) deletes nothing readable.
 
 **Deleting a readable archive does not wipe it from an exFAT drive.** `rm` only frees the space; the contents of a deleted
 `warehouse-<utc>.tar` (the `compose.env` with every credential, the database dump, the tunnel credential) stay on the stick until
@@ -1729,9 +1699,7 @@ bash scripts/data-fingerprint.sh > ~/fingerprint-<backup name>.txt
 It prints a row count and a SHA-256 for every business table (customers, items, prices, GRNs, dispatches, invoices, stock
 movements, users, orders with their lines and revisions, and payments), for the three append-only histories (invoice
 discounts, zero charges, item prices), the storage catalog and the stored files. Take both fingerprints to compare on the
-same release: one from an earlier release has fewer lines, so a restore does not print `IDENTICAL` against it. A fingerprint recorded before this release sorted with the database
-collation; its sha256 values can differ for identical data. Compare the `rows=` counts, and take a new fingerprint after
-upgrading. It holds no secrets; keep a copy off the host (for example next to the archive on the drive). After a restore the same command must
+same release: a fingerprint from another release can differ in its lines, so a restore does not print `IDENTICAL` against it; take a new one after upgrading. It holds no secrets; keep a copy off the host (for example next to the archive on the drive). After a restore the same command must
 print identical lines.
 
 ### In-place restore of the same instance
@@ -1781,8 +1749,7 @@ recreates the `postgres` database from `template0` (connected to `template1`) an
 archived owners and ACLs (as the verifier does), diffs `scripts/backup-integrity.sql` against the backup's `integrity.txt`,
 runs `scripts/migrate.sh --operator` (a no-op unless this checkout added migrations after the backup), starts every service
 with `--wait` and runs `doctor --local`. After the services are up the restore looks at up to 20 of the restored files; if any
-has no content type (a v5 backup holds no extended attributes, and neither does a v6 backup of files that had lost theirs or one
-that went through a USB archive written before archives kept them) it runs `npm run storage:retag`, which sets each file's
+has no content type (a v5 backup holds no extended attributes, and neither does a v6 backup of files that had lost theirs) it runs `npm run storage:retag`, which sets each file's
 content type and cache control again from the catalog (the bytes are intact either way; a failure there is a warning). Role passwords always come from the active `compose.env`; the backup never
 contains them. Pass `--restore-config` only when the keys in the backup are the ones the restored data was signed with,
 that is, when `rotate-keys.sh` ran after the backup and the restored sessions must match the old keys.
@@ -1814,9 +1781,8 @@ ls "$WAREHOUSE_STATE_DIR/data"   # only db and storage remain
 
 The Storage service reads each stored file's content type and cache control from extended attributes of the file. A file
 without them is served as `application/octet-stream` with `no-cache`, and its modification time shows 1970 if it was restored
-from a tarball that fixed the time. Backups before format v6 did not keep the attributes, so **every restore from such a backup
-dropped them**, and so did the [major PostgreSQL upgrade](#major-postgresql-upgrade) of earlier releases, which is an in-place
-restore. The bytes are intact and the app's image viewer recognises its content, so nothing looks broken; downloads of a PDF
+from a tarball that fixed the time. A restore from a v5 backup can leave files without them. The bytes are intact and the
+app's image viewer recognises its content, so nothing looks broken; downloads of a PDF
 may name the wrong type. To set them again for every object the catalog knows:
 
 ```bash
@@ -1827,13 +1793,12 @@ npm run storage:retag
 It reads the catalog (`storage.objects.metadata`: `mimetype`, `cacheControl`) and sets `user.supabase.content-type` and
 `user.supabase.cache-control` of each file from inside the storage container, with the same module the Storage service
 uses. It changes nothing else, may be run at any time, and prints how many files it updated, how many were already correct,
-and how many catalogued objects have no file. Run it once on an installation that went through the PostgreSQL 17 to 18
-restore; `db:restore` (and so `db:restore-host`) runs it itself after a restore when a sample of the restored files has no
+and how many catalogued objects have no file. `db:restore` (and so `db:restore-host`) runs it itself after a restore when a sample of the restored files has no
 content type. `npm run storage:retag -- --if-missing` does that look at a sample first and sets nothing when none lacks one.
 
 The change of attributes counts as a change for the next backup: it links a file to the earlier backup's copy only when the
-attributes are the same too, so **the first backup after a retag copies every photo again** (a full copy, as the first v6 backup
-does). Run it right after the update, before the first v6 backup, so that only one full copy is made.
+attributes are the same too, so **the first backup after a retag copies every photo again** (a full copy, as the first backup
+does).
 
 ### Recover a lost host from the USB drive
 
@@ -1858,15 +1823,14 @@ Before you start you need: the new host prepared as in
 `rsync` and GNU `tar`, `cloudflared`, your user in the `docker` group), the USB drive, and **your
 copy of the [backup key](#backup-key)** in a file on the new host (for example
 `~/backup.key`, mode 0600; one line of 64 hexadecimal characters). Backups taken
-after `tunnel.sh adopt` carry the tunnel credential; for older backups you also
+after `tunnel.sh adopt` carry the tunnel credential; if the tunnel was not adopted, you also
 need your private copy of it (the tunnel `config.yml` plus its credentials
 JSON, or the dashboard token file). If this facility's central sign-in reads its
-keys from a file, backups taken with this release carry that file too
-(`central-jwks.json`); for older backups keep the key set the association sent
-you (step 7). The drive carries the old host's saved images beside the archive (`warehouse-backups/<state name>/images`,
+keys from a file, backups carry that file too
+(`central-jwks.json`); keep the key set the association sent
+you as well (step 7). The drive carries the old host's saved images beside the archive (`warehouse-backups/<state name>/images`,
 [Backup and restore](#backup-and-restore)), so **no Debian, npm or Chrome for Testing mirror has to answer** to rebuild the images of a lost host. **Docker Hub is still needed:** the restore
-check runs the official postgres image (`scripts/db-image.sh`) and Compose pulls PostgREST from it, and neither is in the saved images. A drive that
-was written before this release has no such folder: bring a copy of the old host's `images` folder if you have one (step 3). Without
+check runs the official postgres image (`scripts/db-image.sh`) and Compose pulls PostgREST from it, and neither is in the saved images. If the drive has no such folder, bring a copy of the old host's `images` folder if you have one (step 3). Without
 saved images, a checkout that is exactly at a release tag pulls the images the release published for its recipes (`restore-host` runs
 `build-images.sh --from-release` before the restore, which needs GitHub and `ghcr.io`) and builds the rest; any other checkout builds them all
 (the fallback below). **Do not run `setup.sh` before the restore**: on the new host it
@@ -1878,9 +1842,9 @@ one rerun with both sets of options does.
 1. **Get the code.** Clone the repository with `umask 022` as in the Ubuntu
    sequence. Any release at least as new as the backup works (the backup's
    `metadata.txt` records `source_commit`); newer migrations are applied during
-   the restore. A checkout older than the release that wrote the backup format `warehouse-backup-v6` refuses such a backup at
-   once ("backup format 'warehouse-backup-v6' is no longer supported; take a new backup with this version"), before it
-   reaches the `source_commit` hint: check out this release or a later one.
+   the restore. A checkout older than the release that wrote the backup refuses it at
+   once ("Refusing: the backup has N migrations and this checkout only M. Check out a release at least as new as the backup (metadata.txt source_commit=...)"):
+   check out that release or a later one.
 2. **Attach the drive and choose the backup.** The desktop usually mounts it under `/media/$USER/`;
    otherwise `udisksctl mount -b /dev/sdX1` (find it with
    `lsblk -o NAME,TRAN,FSTYPE,LABEL,MOUNTPOINTS`: `usb`, `exfat`).
@@ -1935,7 +1899,7 @@ one rerun with both sets of options does.
    new state; an encrypted archive is also unpacked once) and stops, naming the numbers, before it writes anything.
    A backup that fails the signature check was changed after it was written or
    belongs to another installation: do not restore it. A backup of an older
-   format than v5 is refused (v5 and v6 are taken). A backup whose `SHA256SUMS.hmac` is missing is
+   format than v5 is refused. A backup whose `SHA256SUMS.hmac` is missing is
    accepted only with `--allow-unsigned` and without `--backup-key`, for a drive
    that never left your custody; leave `--backup-key` out only when the key is
    really lost. The command then creates the state from the backup's `compose.env`
@@ -1956,11 +1920,7 @@ one rerun with both sets of options does.
    bash scripts/data-fingerprint.sh | diff ~/fingerprint-warehouse-<utc>.txt - && echo IDENTICAL
    ```
 
-   A fingerprint recorded by an earlier release has fewer lines (see above), so
-   compare the other lines and record a new one after upgrading.
-
-   A fingerprint recorded before this release sorted with the database collation; its sha256 values can differ for
-   identical data. Compare the `rows=` counts, and take a new fingerprint after upgrading.
+   A fingerprint recorded by another release can differ in its lines (see above); take a new fingerprint after upgrading.
 
    Otherwise sign in to the app and check the latest GRNs, dispatches and
    invoices you remember. Record the result.
@@ -1979,9 +1939,9 @@ one rerun with both sets of options does.
    the credential is lost too, create a new tunnel and point the existing
    hostname at it in the Cloudflare dashboard, replacing the old tunnel's record.
 7. **Central sign-in from a key file.** Skip this unless `CENTRAL_JWKS_FILE` is set
-   in `config/compose.env` ([Central sign-in](#central-sign-in)). A recent backup
-   brought `public/central-jwks.json` back, and `node scripts/doctor.mjs --local`
-   confirms it. For an older one, run the `setup.sh --operator ... --central-issuer ...
+   in `config/compose.env` ([Central sign-in](#central-sign-in)). When the backup
+   brought `public/central-jwks.json` back, `node scripts/doctor.mjs --local`
+   confirms it. Otherwise run the `setup.sh --operator ... --central-issuer ...
    --central-jwks-file ...` command that `db:restore-host` printed, with your usual
    administrator phone and name and the key set the association sent you. Setup
    keeps the instance identity and the data and rebuilds the images once. Until
@@ -2001,8 +1961,7 @@ one rerun with both sets of options does.
    secret and is not in a backup: if this installation sent alerts to Slack,
    alerts are local only until you run `setup.sh --operator` again with your
    usual inputs, leaving out `--alert-webhook-file off` (it then asks for the URL on a terminal), or with `--alert-webhook-file` ([MONITORING.md](MONITORING.md#alert-delivery)).
-9. **Rotate if the drive may have been exposed.** Unencrypted archives (a drive set up with `--no-encrypt`, or one that an
-   earlier release wrote and no run has cleaned yet, or a drive that held readable archives that a run has since deleted: deleting
+9. **Rotate if the drive may have been exposed.** Unencrypted archives (a drive set up with `--no-encrypt`, or a drive that held readable archives that a run has since deleted: deleting
    does not wipe them from an exFAT drive) hold every key in plain text; an encrypted one is as safe as your key copy. `bash rotate-keys.sh --yes` replaces the signing keys (every phone
    signs in again). Rotate the MSG91 key in its console and apply it as in
    [Replacing MSG91 credentials](#authentication-and-otp-limits), replace
@@ -2119,15 +2078,8 @@ bash scripts/pooler.sh off      # stops and removes the container, records POOLE
 bash scripts/pooler.sh status   # prints on, off or unset
 ```
 
-**One-time clean-up on upgrade.** `setup.sh` runs `bash scripts/pooler.sh cleanup` (after migrations, before the roles are applied) for an
-installation whose `compose.env` has no `POOLER_ENABLED` line. If a supavisor container exists, it records `on`. Otherwise, if `_supabase`
-holds no relation and no schema besides `_supavisor` and `public`, it drops the schema `pgbouncer`, the role `pgbouncer` and the database
-`_supabase`, removes the three secrets from `compose.env`, records `off` and prints what it removed. If `_supabase` holds relations or other
-schemas it prints `Pooler clean-up refused ...`, changes nothing and exits 1; `setup.sh` warns and goes on, and asks again at the next setup.
-
 After an in-place or lost-host restore the pooler is not started (the restore starts the core services only); while `POOLER_ENABLED=true`
-the restore recreates its role, schema and `_supabase` database, and `bash scripts/pooler.sh on` starts it again. Backups made before
-2026-10-21 also hold `_supabase.dump`; restore and verify-restore skip it with a note. Test: `npm run test:pooler`.
+the restore recreates its role, schema and `_supabase` database, and `bash scripts/pooler.sh on` starts it again. Test: `npm run test:pooler`.
 
 ## Rerun and upgrade
 
@@ -2135,15 +2087,14 @@ A rerun is the same `setup.sh --operator ...` command with the same inputs again
 regenerates nothing that already exists: identity, signing keys, database, stored files, the administrator and the provider
 lines are preserved (a different `--provider-env` file replaces only the MSG91 lines; the `--central-…` options set or
 replace only the [central sign-in](#central-sign-in) lines and its key file; `--gateway-port` replaces only
-`GATEWAY_HTTP_PORT`, and only while the containers are stopped). A rerun also adds what an older state lacks and never replaces
-what exists: the per-role database passwords and the backup key. Run it a second time right after installation and compare
+`GATEWAY_HTTP_PORT`, and only while the containers are stopped). A rerun never replaces the per-role database passwords or the backup key. Run it a second time right after installation and compare
 `public/instance.json` and the administrator record before and after.
 
 **Operators follow release tags (`vMAJOR.MINOR.PATCH`), not `main`.** `main` is where development happens, and a commit on it
 can carry changes that were never released. A release is a tag with a GitHub release note; a security fix is announced in a
 release note with "Security" in its title, and is supported for the current and the previous minor line ([SECURITY.md](../SECURITY.md)).
-Read the release note, then upgrade within one PostgreSQL major (an installation built before the PostgreSQL 17 release needs the
-[Baseline reload](#baseline-reload) once; one that runs PostgreSQL 17 needs the [Major PostgreSQL upgrade](#major-postgresql-upgrade) once):
+Read the release note, then upgrade within one PostgreSQL major (a move to a new PostgreSQL major is a manual step that
+`upgrade.sh` refuses; the release that brings it documents the steps, see [Major PostgreSQL upgrade](#major-postgresql-upgrade)):
 
 ```bash
 cd /path/to/installed/backend
@@ -2174,17 +2125,14 @@ verified backup plus its database dump plus 1 GiB, because the way back from the
 it (`scripts/upgrade-rehearse.sh`), prints `applying them took N s` (only the migrations are timed) and removes the container. The live database and its files are only read, so a
 `--dry-run` rehearses too. A migration that fails on your data refuses the upgrade before the backup and the checkout: the message names the
 file (for example `00000000000117_customer_name_rule.sql`) and the database's own error, and says "Nothing was changed". Do not retry the same
-command: the failure is in the data or in the release, and it repeats. Report the message with the release number; for the customer-name
-index, the query under "Before migration 117" in the changelog finds the names that clash. The rehearsal is of the newest verified backup, not
+command: the failure is in the data or in the release, and it repeats. Report the message with the release number. The rehearsal is of the newest verified backup, not
 of the moment: it prints that backup's name and age and warns when it is more than two days old. A backup only counts once it is verified and
 recorded: the nightly pass does that, and so does `upgrade.sh` for the backup it takes; to do it by hand run `bash scripts/backup.sh`, then
 `bash scripts/verify-restore.sh <the new folder under backups/>`, then `node scripts/watch.mjs record-verified <its name>`. If the copy cannot
 be restored, the refusal quotes the restore's own last message: the host (free disk space or memory, a database image that has to be pulled
 while the host is offline) is as likely a cause as the backup. With no verified backup on record it warns that it did not rehearse and the
 upgrade goes on (the migrations then run for the first time on the live database, after the checkout).
-Any refusal says "Nothing was changed". A release from before the preflight has none: `upgrade.sh` says so and goes on with its own checks. The
-`upgrade.sh` that reads a preflight is the one of the release you run now, so the move **to** the first release that has one is still made by
-the older script, and the preflight works from the move after it. The facility is closed to phones for the backup, the proof that it restores and
+Any refusal says "Nothing was changed". The facility is closed to phones for the backup, the proof that it restores and
 the setup of the release (*While it upgrades*, below). **Run it inside `tmux` or `screen` when you are connected over SSH:** a dropped connection stops it
 half way (the rerun below finishes it, but there is no reason to need that). Run it as the installation user, not with `sudo`.
 **It refuses, and changes nothing,** when: it runs as root, or the checkout belongs to another user; the checkout has uncommitted changes
@@ -2231,8 +2179,7 @@ release (`off`, which also runs the health check).
   checker raises `upgrade_interrupted` at once ([MONITORING.md](MONITORING.md)) and does not restart services meanwhile.
 - **By hand.** `bash scripts/maintenance.sh status` says whether it is on and what each gateway was started with (it works while an upgrade
   holds the lock); `on` and `off` take the lock. `off` recreates the gateways without the word and runs the health check; if the gateway does
-  not come up the marker is put back, so the API is closed or down and never half open. **The first move to a release that has this is made
-  by the `upgrade.sh` you run now, which does not close the API and does not check for sessions;** from the next upgrade on it does.
+  not come up the marker is put back, so the API is closed or down and never half open.
 
 *The setup arguments.* You do not repeat them: `setup.sh --operator` needs `--state-dir`, `--admin-phone` and `--admin-name`, and every other
 option keeps what the state holds on a rerun (identity, URLs, provider lines, central sign-in, gateway port, letterhead, signing keys).
@@ -2283,31 +2230,27 @@ connection leaves it too). A failed step prints the same facts, then both ways o
   nothing, and `<state>/images`, the signed copy of the images that a lost-host restore loads first, would still hold the new release's
   images: `bash scripts/build-images.sh --save` after the old release's setup writes the images that now run, and their build record, there
   again (it builds nothing). After a successful upgrade only the newest `pre-` set is kept (older tags are removed by exact name; `docker image prune` is never run);
-  remove the last one with `docker image rm <project>-<service>:pre-<release>` once the upgrade is accepted. Older releases' `setup.sh`
-  does not recreate `functions`: the command after it is for them. Add `--alert-webhook-file off` to the setup line when the facility has
+  remove the last one with `docker image rm <project>-<service>:pre-<release>` once the upgrade is accepted. Add `--alert-webhook-file off` to the setup line when the facility has
   no Slack webhook (the printed line does).
 
 Every run that gets past the checks adds a line to `$WAREHOUSE_STATE_DIR/config/upgrades.log` (UTC time, from, to, the old commit,
 the backup, `resumed` for a rerun, then `ok` or the step it failed at).
 
-*The first time.* A checkout from before `upgrade.sh` has no such file, and `git pull` would move it to `main`. Move it once with the
-manual sequence below, to the first release that contains `upgrade.sh`; use `bash upgrade.sh` from then on.
-
 <details>
-<summary>What upgrade.sh does (the manual sequence, for the first time or when you want each step by hand)</summary>
+<summary>What upgrade.sh does (the manual sequence, when you want each step by hand)</summary>
 
 ```bash
 cd /path/to/installed/backend
 export WAREHOUSE_STATE_DIR=/absolute/path/to/this/warehouse
 git status --short                     # must print nothing for tracked files
 git fetch --tags origin
-bash scripts/maintenance.sh on         # only on a release that has the script: closes the API to phones (pause fas-sync first); not on the first move
+bash scripts/maintenance.sh on         # closes the API to phones (pause fas-sync first)
 npm run db:backup                      # prints the backup directory
 npm run db:verify-restore -- "$WAREHOUSE_STATE_DIR/backups/warehouse-<utc>"
 (umask 022; git checkout --detach vX.Y.Z)
 bash setup.sh --operator --state-dir "$WAREHOUSE_STATE_DIR" --admin-phone 91XXXXXXXXXX --admin-name 'Warehouse Administrator' \
   --alert-webhook-file off             # the same inputs as the installation; leave the --alert-webhook-file line out when a Slack webhook is stored
-bash scripts/maintenance.sh off        # only if you ran `on`
+bash scripts/maintenance.sh off
 node scripts/doctor.mjs                # the public check; setup has just run the local one
 sudo bash scripts/backup-usb.sh setup --state "$WAREHOUSE_STATE_DIR"   # only if you use a USB backup drive
 ```
@@ -2327,8 +2270,7 @@ sudo bash scripts/backup-usb.sh setup --state "$WAREHOUSE_STATE_DIR"   # only if
    configuration, restarts the services whose definition changed, **recreates the `functions` container** and runs
    `node scripts/doctor.mjs --local`. The edge functions (`functions/`, including `functions/_shared/`) are bind-mounted into the
    `functions` container and the edge runtime keeps the modules it has loaded, so neither a checkout nor a start reloads them; forgetting
-   the recreate used to be the usual way to run new SQL under old function code. Setup does it on every run since the release that
-   moved it there; a move from an older release used to need `bash scripts/compose.sh up -d --force-recreate functions` by hand.
+   the recreate is the usual way to run new SQL under old function code. Setup does it on every run.
    The marker `config/maintenance` is still there, so the gateways that setup recreates come back closed, and `doctor --local` says it could not probe
    the API through them.
    Then `scripts/maintenance.sh off` of the new release opens the API and runs the health check.
@@ -2336,52 +2278,10 @@ sudo bash scripts/backup-usb.sh setup --state "$WAREHOUSE_STATE_DIR"   # only if
 8. A line in `upgrades.log`, the record deleted, and the `pre-` image tags of earlier upgrades removed.
 
 The last manual line keeps the USB choices of your earlier setup (`--no-encrypt` if you typed it, `--daily`, `--no-fresh-backup`, `--keep`); it prints them, so
-check that line. A setup from before encryption became the default is switched to encrypted archives by it, and says so; confirm the backup key
-copy first (`bash scripts/backup-key-escrow.sh show`, [Backup key](#backup-key)). Database migrations need no separate step: setup applies them. If setup prints a
+check that line. Database migrations need no separate step: setup applies them. If setup prints a
 `sudo bash scripts/watch-timer.sh install …` command, run it.
 
 </details>
-
-**What the nginx gateway release asks of you.** Nothing beyond this upgrade. The gateway used to be Kong; it is now plain nginx
-built from `docker/nginx` (`docs/CONTAINER_SECURITY.md`, "Gateway limits and routes"), so:
-
-- `setup.sh` builds the `gateway` image (it pulls the pinned nginx image and applies the Alpine updates: the host needs the
-  network once). Its `compose up --remove-orphans` removes the old `kong` container and starts `gateway` on the **same loopback
-  port**; the tunnel, its config and `cloudflared` stay as they are. The port check that `setup.sh` and `start.sh` make first
-  accepts the port while the installation's own `kong` container still holds it (any container of the installation's project
-  that publishes the port counts as its own; a process or another project's container on it is still refused; `upgrade.sh` runs
-  this setup with the stack up, so it relies on that). Expect the API
-  to be unanswered from the moment `kong` is removed, which is the first `compose up` of the run, until the last `up` of the run
-  starts `gateway`: the migrations, the role changes and Storage's start come in between, so it is seconds on an upgrade without
-  migrations and minutes on one with. Do the upgrade at a quiet hour. The service is named `gateway` now:
-  `bash scripts/compose.sh logs --tail 50 gateway`. A script of your own that names `kong` must change.
-- `compose.env` keeps working with `KONG_HTTP_PORT` until the next `setup.sh`, which renames the line to `GATEWAY_HTTP_PORT` in place with the same port (a file that already has `GATEWAY_HTTP_PORT` is left as it is; `--gateway-port` also removes an old line that is left beside it). To go back to an older checkout after that, put `KONG_HTTP_PORT=<port>` back (the `--restore-config` restore in the way back that `upgrade.sh` prints brings back the `compose.env` of the backup, with the old name): the older Compose file reads only that name.
-- The rate limits are a leaky bucket (a burst of 1800 for the REST route, then 30 a second; functions a burst of 100, then 100 a
-  minute) instead of a counter per clock minute. A facility that stays within the old limits on average stays within the new
-  ones; the exception is two bursts back to back across a minute boundary, which passed under the fixed window and are now
-  mostly refused.
-- After the upgrade is accepted, `docker image rm kong:3.9.4-ubuntu` frees about 380 MB; nothing uses the image any more.
-- **Going back to a release from before nginx** (a checkout or tag that still has Kong): run `bash stop.sh` first, with the nginx
-  checkout. The older release's `doctor` asks Compose for a container named `kong`, finds none, and sees the `gateway` container
-  holding the loopback port, so its `setup.sh` and `start.sh` stop with "Loopback gateway port ... is already in use" until
-  `stop.sh` has removed it; the older release's code cannot be changed (the way back that `upgrade.sh` prints when a step fails
-  already begins with `stop.sh`). Then check out the older release, put
-  `KONG_HTTP_PORT=<port>` in `config/compose.env` if `setup.sh` had renamed the line (it does on every run; the older Compose file reads only that
-  name), and run its `start.sh` (or `setup.sh`). The older release pulls `kong:3.9.4-ubuntu` again if you removed the image, so the
-  host needs the network; the API is down from `stop.sh` until then. This covers the gateway only: a database that the newer
-  release migrated is not changed back (restore the backup taken before the upgrade if the older release needs the older schema).
-
-**What the slimming release (migration 123) asks of you.**
-
-- The `db`, `storage` and `pdf-renderer` recipes changed, so setup rebuilds those three images; the first run is slower.
-- Setup (and a restore) rewrites an old default `PGRST_DB_SCHEMAS` (`public,storage` or `public,storage,graphql_public`) in
-  `compose.env` to `public` and recreates `rest`; a list you edited yourself is left alone. `/rest/v1/` then serves no OpenAPI
-  document and cannot reach the `storage` schema.
-- `get-public-config` can answer 503 between the code update (`git pull`) and migration 123, because the function it calls
-  (`get_public_config`) does not exist yet. Run `setup.sh` at once after the pull; do not leave the new code on the old schema.
-- Migration 123 refuses to run if a table or column it drops holds data. It stops with `Migration 123 would drop data: ...` and
-  changes nothing. Look at what it names, export what you need, empty those objects, and run `setup.sh` again. A database that
-  never held such data passes without a message.
 
 **Setup rebuilds the images whose recipes changed, or pulls the released ones.** Before it starts
 anything, `setup.sh` runs `scripts/build-images.sh --from-release`. That script compares each
@@ -2457,12 +2357,6 @@ unreadable by the containers. `setup.sh` restores the modes of every tracked
 file on each run, and `bash scripts/checkout-permissions.sh` does the same on
 its own, for example after a `git pull` or `git checkout` made without
 `umask 022`.
-
-**Migration 42 and tables of your own.** Migration 42 closes direct writes on the template's nineteen business tables and
-verifies only those; a table you added, with its grants and row policies, is left as it is. The migration stops with
-`authenticated still holds a direct write on: <table>` or
-`Unexpected write policy on a business table: <table>.<policy>` only when one of the nineteen tables carries an extra write
-policy; drop that policy or make it `FOR SELECT`, then rerun.
 
 The rerun applies only the migrations the ledger has not seen (append-only and
 checksum-verified; a changed applied file is refused) and recreates the
@@ -3155,8 +3049,7 @@ Differences:
   60 s before it refuses (verified: after `wsl --terminate` it printed "Waiting for the Docker daemon to answer (up to 60 s)..." and
   went on); if it still stops with "Docker did not answer within 60 s", check `systemctl status docker`.
 - Under WSL 3.0.3, WSL mounts full images read-only at `/usr/src/linux-headers-...-WSL2` and `/usr/lib/linux-tools/...`. The checker
-  skips read-only mounts, so it raises no `disk_low` alert for them (not yet observed on a WSL host); after an upgrade, an alert already
-  raised for one sends one "cleared" message.
+  skips read-only mounts, so it raises no `disk_low` alert for them (not yet observed on a WSL host).
 - Decide the public hostname before the first setup ([Setup](#setup)).
 - A shell started later needs the Node `PATH` and the state directory again: `export WAREHOUSE_STATE_DIR=...` in `~/.profile`, and
   `bash -lc` when a command is started from Windows.
@@ -3172,8 +3065,7 @@ stayed down for nearly 10 minutes after `wsl --shutdown`). The verified form is 
 
 The task is registered by `scripts/windows/register-tasks.ps1` from the checkout inside the distro: boot plus every 2 minutes,
 running whether or not anyone is signed in, as the Windows account that owns the distro (`SYSTEM` cannot see the distro). It is
-not verified yet that the script registers it correctly. The same task, registered by hand from the paste-in block of earlier
-versions of this guide, was verified and read back, and the script is written to register the same task: Running; RunLevel Highest; MultipleInstances IgnoreNew; StartWhenAvailable; both battery switches off
+not verified yet that the script registers it correctly. The same task, registered by hand, was verified and read back, and the script is written to register the same task: Running; RunLevel Highest; MultipleInstances IgnoreNew; StartWhenAvailable; both battery switches off
 (`DisallowStartIfOnBatteries` and `StopIfGoingOnBatteries` False); RestartCount 999 at 1 minute; no time limit; the boot trigger
 and the 2-minute repeating trigger enabled. Do not run the script while the tasks are disabled for planned work; it registers
 them enabled and starts them.

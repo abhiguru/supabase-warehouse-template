@@ -31,6 +31,7 @@ a file in that tag; the baseline `migrations/00000000000000_baseline.sql` is the
 - `docs/OPERATOR_INSTALL.md`, Windows (WSL2) section: a "Warehouse USB" scheduled task (`usbipd attach --wsl Ubuntu-24.04 --auto-attach --unplugged`,
   boot plus every 2 minutes) that attaches the USB backup drive to the distro again after a restart, with `backup-usb.sh setup --daily`;
   not verified yet. `docs/RELEASE_CHECKLIST.md` checks it after a reboot and after `wsl --shutdown`.
+- `docs/OPERATOR_INSTALL.md`, `docs/SENSORS.md`: the operator guide and the sensors guide are trimmed to the current release: notes for installations made before a release or migration are removed.
 
 ### Operator actions
 
