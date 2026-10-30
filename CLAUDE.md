@@ -2,6 +2,8 @@
 
 Guidance for Claude Code (and other contributors) working in this repository.
 
+To install this backend from scratch (an agent doing the install for an operator), follow the README's [Install with an AI agent](README.md#install-with-an-ai-agent).
+
 ## What this backend is for
 
 This is the backend that **one cold-storage facility runs on its own premises**. It serves
