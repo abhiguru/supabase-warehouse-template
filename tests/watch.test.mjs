@@ -11,6 +11,7 @@ import { join } from 'node:path';
 import { createHash, createHmac } from 'node:crypto';
 import { repo } from './backup-test-helpers.mjs';
 import * as W from '../scripts/watch.mjs';
+import { ADAPTERS } from '../scripts/notify.mjs';
 
 const HOUR = 3600 * 1000;
 const WEBHOOK = 'https://hooks.slack.com/services/T0AAAA/B0BBBB/abcDEF123456';
@@ -1280,7 +1281,7 @@ test('the state records failingRuns, firingSince and lastSent per alert', async 
     const a = h.state_().alerts.thing_bad;
     assert.deepEqual([a.failingRuns, a.firingSince, a.lastSent], [2, h.clock.t, h.clock.t]);
     const s = h.state_();
-    for (const key of ['lastRunAt', 'lastHeartbeat', 'lastDailyRun', 'cpu', 'firstRun']) assert.ok(key in s, key);
+    for (const key of ['lastRunAt', 'delivery', 'lastDailyRun', 'cpu', 'firstRun']) assert.ok(key in s, key);
     assert.ok(!('muteUntil' in s) && !('mutes' in s), 'mutes have their own file');
   } finally { clean(h); }
 });
@@ -1466,10 +1467,10 @@ test('no webhook: checks run and the state records alerts, nothing is posted, an
     h.advance(5 * 60000); await W.runOnce(h.deps, { checks, ...NO_JOBS });
     assert.equal(h.posts.filter(p => /FIRING/.test(p.text)).length, 0);
     assert.ok(h.state_().alerts.thing_bad.firingSince);
-    assert.equal(h.state_().lastHeartbeat, null);
+    assert.equal(h.state_().delivery['facility-slack'], undefined, 'no heartbeat without a channel');
     const out = [];
     assert.equal(await W.main(['test-message'], h.deps, t => out.push(t)), 1);
-    assert.match(out[0], /No Slack webhook/);
+    assert.match(out[0], /No alert channel is configured/);
     writeFileSync(join(h.state, 'config/slack-webhook-url'), `${WEBHOOK}\n`, { mode: 0o600 });
     h.advance(5 * 60000); await W.runOnce(h.deps, { checks, ...NO_JOBS });
     assert.equal(h.posts.filter(p => /FIRING/.test(p.text)).length, 1);
@@ -1723,7 +1724,8 @@ test('state validation: valid JSON with wrong types resets each bad field and sa
     const log = [];
     const data = W.loadState(h.state, h.clock.t, h.deps.readText, m => log.push(m));
     assert.equal(data.firstRun, h.clock.t);
-    assert.deepEqual([data.lastHeartbeat, data.cpu, data.busySince, data.dailyRunning], [null, null, null, null]);
+    assert.deepEqual([data.cpu, data.busySince, data.dailyRunning], [null, null, null]);
+    assert.deepEqual(data.delivery, {}, 'a bad lastHeartbeat is dropped, not migrated');
     assert.deepEqual(data.lastDailyRun, {});
     assert.deepEqual(Object.keys(data.containers), ['db']);
     assert.equal(data.alerts.a_bad.failingRuns, 0); assert.equal(data.alerts.a_bad.summary, ''); assert.equal(data.alerts.a_bad.firingSince, null);
@@ -1750,7 +1752,7 @@ test('Slack answers 500 then 200: nothing is marked sent after the 500, the erro
     h.advance(5 * 60000); h.postStatuses = [500];   // the alert post of this run fails
     await W.runOnce(h.deps, { checks, ...NO_JOBS });
     assert.equal(h.state_().alerts.thing_bad.lastSent, null, 'a 500 is not delivery');
-    assert.match(h.state_().lastPostError.message, /Slack answered HTTP 500/);
+    assert.match(h.state_().delivery['facility-slack'].lastError.message, /Slack answered HTTP 500/);
     const out = [];
     await W.main(['status'], h.deps, t => out.push(t));
     assert.match(out[0], /Last Slack post failed at .*HTTP 500/);
@@ -1759,7 +1761,7 @@ test('Slack answers 500 then 200: nothing is marked sent after the 500, the erro
     await W.runOnce(h.deps, { checks, ...NO_JOBS });
     assert.equal(h.posts.filter(p => /^\[FIRING\]/.test(p.text)).length, 1);
     assert.equal(h.state_().alerts.thing_bad.lastSent, h.clock.t);
-    assert.equal(h.state_().lastPostError, null);
+    assert.equal(h.state_().delivery['facility-slack'].lastError, null);
   } finally { clean(h); }
 });
 
@@ -1776,7 +1778,7 @@ test('the state is saved before the message is posted (and undone when the post 
     const alert = seen.find(x => /^\[FIRING\]/.test(x.text));
     assert.equal(alert.saved.alerts.thing_bad.lastSent, h.clock.t, 'lastSent was already on disk when Slack was called');
     const beat = seen.find(x => /^Monitoring is alive/.test(x.text));
-    assert.ok(beat.saved.lastHeartbeat !== null);
+    assert.ok(beat.saved.delivery['facility-slack'].lastHeartbeat !== null);
   } finally { clean(h); }
 });
 
@@ -3172,7 +3174,7 @@ test('test-message posts the test text; status lists alerts, the time zone and m
     assert.equal(await W.main(['mute', '15', 'not an id'], h.deps, t => out.push(t)), 1);
     out.length = 0;
     await W.main(['status'], h.deps, t => out.push(t));
-    assert.match(out[0], /Firing: a_bad/); assert.match(out[0], /Slack webhook: configured/);
+    assert.match(out[0], /Firing: a_bad/); assert.match(out[0], /Alert channel: Slack configured/);
     assert.match(out[0], /Time zone: \S+ \(daily jobs start at 02:30/);
     assert.match(out[0], /Muted until .*: disk_low:\/mnt\/my disk/);
     assert.ok(!out[0].includes('abcDEF123456'));
@@ -3248,7 +3250,7 @@ test('redaction covers both webhook URLs', () => {
   const out = W.redact(text, {}, [WEBHOOK, SENSOR_WEBHOOK]);
   assert.ok(!out.includes('abcDEF123456') && !out.includes('sensorSENSOR789'));
   assert.equal(W.redact(`x ${SENSOR_WEBHOOK}`, {}, WEBHOOK).includes('sensorSENSOR789'), false, 'the generic Slack pattern still covers an unlisted URL');
-  assert.ok(!W.formatAlerts({ start: [{ id: 'sensors_stale', summary: `bad ${SENSOR_WEBHOOK}`, detail: `at ${WEBHOOK}` }], repeat: [], clear: [] }, 'Acme', {}, [WEBHOOK, SENSOR_WEBHOOK]).includes('hooks.slack.com'));
+  assert.ok(!ADAPTERS.slack.render(W.formatAlerts({ start: [{ id: 'sensors_stale', summary: `bad ${SENSOR_WEBHOOK}`, detail: `at ${WEBHOOK}` }], repeat: [], clear: [] }, 'Acme', {}, [WEBHOOK, SENSOR_WEBHOOK])).includes('hooks.slack.com'));
 });
 
 test('test-message sensors posts to the sensor webhook only; status says whether one is stored', async () => {
@@ -3256,7 +3258,7 @@ test('test-message sensors posts to the sensor webhook only; status says whether
   try {
     const out = [];
     assert.equal(await W.main(['test-message', 'sensors'], h.deps, t => out.push(t)), 1);
-    assert.match(out[0], /No sensor Slack webhook is configured/);
+    assert.match(out[0], /No sensor alert channel is configured/);
     assert.equal(h.posts.length, 0);
     withSensorHook(h);
     out.length = 0;
@@ -3269,7 +3271,7 @@ test('test-message sensors posts to the sensor webhook only; status says whether
     assert.equal(h.posts[1].url, WEBHOOK, 'plain test-message still goes to the facility webhook');
     out.length = 0;
     await W.main(['status'], h.deps, t => out.push(t));
-    assert.match(out[0], /Sensor Slack webhook: configured/);
+    assert.match(out[0], /Sensor alert channel: Slack configured/);
   } finally { clean(h); }
 });
 
@@ -4202,51 +4204,68 @@ test('a facility failure and a sensor failure are kept apart; each is cleared on
   const h = harness();
   try {
     withSensorHook(h);
-    h.seed({ lastHeartbeat: T0 - 60000, lastSensorHeartbeat: T0 - 60000 });   // no heartbeat is due: only the alert posts count
+    h.seed({ delivery: { 'facility-slack': { lastError: null, lastHeartbeat: T0 - 60000 }, 'sensors-slack': { lastError: null, lastHeartbeat: T0 - 60000 } } });   // no heartbeat is due: only the alert posts count
     const checks = stub(immediate('sensors_stale'), immediate('service_down:db'));
     // Facility refused (500), sensor accepted: the facility error is kept, there is no sensor error.
     h.postStatuses = [500, 200];
     await W.runOnce(h.deps, { checks, ...NO_JOBS });
-    assert.match(h.state_().lastPostError.message, /HTTP 500/);
-    assert.equal(h.state_().lastSensorPostError, undefined);
+    assert.match(h.state_().delivery['facility-slack'].lastError.message, /HTTP 500/);
+    assert.equal(h.state_().delivery['sensors-slack'].lastError, null);
     // Facility retry accepted, then the sensor repeat refused: the facility error is cleared, the sensor error is set.
     h.advance(4 * HOUR + 5 * 60000);
     h.postStatuses = [200, 500];
     await W.runOnce(h.deps, { checks, ...NO_JOBS });
-    assert.equal(h.state_().lastPostError, null);
-    assert.match(h.state_().lastSensorPostError.message, /HTTP 500/);
+    assert.equal(h.state_().delivery['facility-slack'].lastError, null);
+    assert.match(h.state_().delivery['sensors-slack'].lastError.message, /HTTP 500/);
     // A run that posts to the facility webhook only (the sensor alert is muted) leaves the sensor error alone.
     writeFileSync(join(h.state, 'config/watch-mutes.json'), JSON.stringify({ all: null, ids: { sensors_stale: h.clock.t + 10 * HOUR } }));
     h.advance(5 * 60000);
     await W.runOnce(h.deps, { checks: stub(immediate('sensors_stale'), immediate('service_down:db'), immediate('thing_bad')), ...NO_JOBS });
     assert.ok(alertPosts(h).some(p => p.url === WEBHOOK && p.text.includes('thing_bad')), 'a facility post succeeded');
-    assert.match(h.state_().lastSensorPostError.message, /HTTP 500/, 'a facility success does not clear the sensor error');
+    assert.match(h.state_().delivery['sensors-slack'].lastError.message, /HTTP 500/, 'a facility success does not clear the sensor error');
     // The next successful sensor post clears it.
     rmSync(join(h.state, 'config/watch-mutes.json'));
     h.advance(5 * 60000);
     await W.runOnce(h.deps, { checks: stub(immediate('sensors_stale'), immediate('service_down:db'), immediate('thing_bad')), ...NO_JOBS });
-    assert.equal(h.state_().lastSensorPostError, undefined);
+    assert.equal(h.state_().delivery['sensors-slack'].lastError, null);
   } finally { clean(h); }
 });
 
-test('status shows both post errors, and the state loader keeps the optional sensor keys and drops malformed ones', async () => {
+test('status shows both post errors; old state files (lastPostError, lastSensorPostError, lastHeartbeat, lastSensorHeartbeat) are migrated into delivery, and malformed values are dropped', async () => {
   const h = harness();
   try {
     withSensorHook(h);
-    h.seed({ lastPostError: { at: T0, message: 'facility broke' }, lastSensorPostError: { at: T0, message: 'sensor broke' }, lastSensorHeartbeat: T0 - 1000 });
+    h.seed({ lastPostError: { at: T0, message: 'facility broke' }, lastSensorPostError: { at: T0, message: 'sensor broke' }, lastHeartbeat: T0 - 2000, lastSensorHeartbeat: T0 - 1000 });
     const loaded = W.loadState(h.state, T0, h.deps.readText, () => {});
-    assert.equal(loaded.lastSensorPostError.message, 'sensor broke');
-    assert.equal(loaded.lastSensorHeartbeat, T0 - 1000);
-    const bad = W.normalizeState({ ...W.freshState(T0), lastSensorPostError: 'x', lastSensorHeartbeat: 'y', alerts: { a: { via: 'moon' } } }, T0, () => {});
-    assert.equal(bad.lastSensorPostError, undefined);
-    assert.equal(bad.lastSensorHeartbeat, undefined);
-    assert.equal(bad.alerts.a.via, undefined);
-    assert.equal(W.normalizeState({ ...W.freshState(T0) }, T0).lastSensorPostError, undefined, 'an old state file stays compatible');
-    assert.equal(W.normalizeState({ ...W.freshState(T0), alerts: { a: { via: 'sensor' } } }, T0).alerts.a.via, 'sensor');
+    assert.deepEqual(loaded.delivery, {
+      'facility-slack': { lastError: { at: T0, message: 'facility broke' }, lastHeartbeat: T0 - 2000 },
+      'sensors-slack': { lastError: { at: T0, message: 'sensor broke' }, lastHeartbeat: T0 - 1000 },
+    });
+    for (const old of ['lastPostError', 'lastSensorPostError', 'lastHeartbeat', 'lastSensorHeartbeat']) assert.ok(!(old in loaded), `${old} is not kept`);
+    // A state file with none of the old keys (and none of the new) loads with an empty delivery.
+    const bare = W.freshState(T0); delete bare.delivery;
+    assert.deepEqual(W.normalizeState(bare, T0).delivery, {}, 'an old state file stays compatible');
+    // The new record wins over an old key; malformed values are reset and said so.
+    const log = [];
+    const mixed = W.normalizeState({ ...W.freshState(T0), lastSensorPostError: 'x', lastSensorHeartbeat: 'y', lastPostError: { at: 1, message: 'old' },
+      delivery: { 'facility-slack': { lastError: { at: 2, message: 'new' }, lastHeartbeat: null }, 'other-1': { lastError: 7 } }, alerts: { a: { via: 'moon' } } }, T0, m => log.push(m));
+    assert.deepEqual(mixed.delivery, { 'facility-slack': { lastError: { at: 2, message: 'new' }, lastHeartbeat: null }, 'other-1': { lastError: null, lastHeartbeat: null } });
+    assert.ok(log.some(m => m.includes('lastSensorPostError')) && log.some(m => m.includes('other-1')));
+    assert.equal(mixed.alerts.a.via, undefined);
+    assert.equal(W.normalizeState({ ...W.freshState(T0), alerts: { a: { via: 'sensor' } } }, T0).alerts.a.via, 'sensors', 'the old via value maps to the audience');
+    assert.equal(W.normalizeState({ ...W.freshState(T0), alerts: { a: { via: 'sensors' } } }, T0).alerts.a.via, 'sensors');
     const out = [];
     await W.main(['status'], h.deps, t => out.push(t));
     assert.match(out[0], /Last Slack post failed at .*: facility broke/);
     assert.match(out[0], /Last sensor Slack post failed at .*: sensor broke/);
+    assert.ok(!out[0].includes('abcDEF123456') && !out[0].includes('sensorSENSOR789'));
+    // The next run rewrites the state in the new shape.
+    await W.runOnce(h.deps, { checks: HEALTHY, ...NO_JOBS });
+    const saved = h.state_();
+    assert.ok(saved.delivery['facility-slack'] && saved.delivery['sensors-slack']);
+    // For one release the old keys are still written, mirrored from delivery (an old-code pass or a rollback keeps them).
+    assert.deepEqual(saved.lastPostError, saved.delivery['facility-slack'].lastError);
+    assert.equal(saved.lastHeartbeat, saved.delivery['facility-slack'].lastHeartbeat);
   } finally { clean(h); }
 });
 
@@ -4259,8 +4278,8 @@ test('the daily heartbeat is posted to both webhooks, each tracked on its own: a
     const beats = () => h.posts.filter(p => p.text.startsWith('Monitoring is alive'));
     assert.deepEqual(beats().map(p => p.url), [SENSOR_WEBHOOK], 'the sensor heartbeat went out although the facility one failed');
     assert.match(beats()[0].text, /^Monitoring is alive \(sensor alerts\)/);
-    assert.equal(h.state_().lastHeartbeat, null, 'the failed facility heartbeat is retried');
-    assert.equal(h.state_().lastSensorHeartbeat, h.clock.t);
+    assert.equal(h.state_().delivery['facility-slack'].lastHeartbeat, null, 'the failed facility heartbeat is retried');
+    assert.equal(h.state_().delivery['sensors-slack'].lastHeartbeat, h.clock.t);
     h.advance(5 * 60000);
     await W.runOnce(h.deps, { checks: HEALTHY, ...NO_JOBS });
     assert.deepEqual(beats().map(p => p.url), [SENSOR_WEBHOOK, WEBHOOK], 'only the facility one is retried');
@@ -4269,9 +4288,9 @@ test('the daily heartbeat is posted to both webhooks, each tracked on its own: a
     h.postStatuses = [200, 500];
     await W.runOnce(h.deps, { checks: HEALTHY, ...NO_JOBS });
     assert.equal(beats().length, 3);
-    assert.match(h.state_().lastSensorPostError.message, /HTTP 500/);
-    assert.equal(h.state_().lastPostError, null);
-    assert.equal(h.state_().lastHeartbeat, h.clock.t);
+    assert.match(h.state_().delivery['sensors-slack'].lastError.message, /HTTP 500/);
+    assert.equal(h.state_().delivery['facility-slack'].lastError, null);
+    assert.equal(h.state_().delivery['facility-slack'].lastHeartbeat, h.clock.t);
   } finally { clean(h); }
 });
 
@@ -4295,7 +4314,7 @@ test('an alert keeps the channel its start went to: repeat and clear follow it w
     // A new one starts on the sensor webhook, and the sensor webhook is then removed: the clear goes to the facility webhook.
     h.advance(5 * 60000);
     await W.runOnce(h.deps, { checks: stub(immediate('sensors_stale')), ...NO_JOBS });
-    assert.equal(h.state_().alerts.sensors_stale.via, 'sensor');
+    assert.equal(h.state_().alerts.sensors_stale.via, 'sensor', 'the file keeps the old value for one release');
     assert.equal(alertPosts(h).at(-1).url, SENSOR_WEBHOOK);
     rmSync(join(h.state, 'config/sensor-webhook-url'));
     h.advance(5 * 60000);
@@ -4308,4 +4327,211 @@ test('an alert keeps the channel its start went to: repeat and clear follow it w
     await W.runOnce(h.deps, { checks: stub(immediate('sensors_stale')), ...NO_JOBS });
     assert.equal(h.state_().alerts.sensors_stale.via, undefined);
   } finally { clean(h); }
+});
+
+// ---------------------------------------------------------------- delivery layer (scripts/notify.mjs)
+const logLines = h => {
+  try { return readFileSync(join(h.state, 'logs/alerts.jsonl'), 'utf8').trim().split('\n').filter(Boolean).map(l => JSON.parse(l)); } catch { return []; }
+};
+
+test('the Slack text of FIRING, STILL FIRING, CLEARED and the heartbeat is exactly what it always was', async () => {
+  const h = harness();
+  try {
+    const checks = stub(immediate('thing_bad', 'thing_bad is bad', 'look at it'));
+    await W.runOnce(h.deps, { checks, ...NO_JOBS });
+    const name = 'Acme Cold (warehouse-test)';
+    assert.equal(h.posts[0].text, `[FIRING] ${name}\n- thing_bad is bad: look at it`);
+    assert.equal(h.posts[1].text, `Monitoring is alive - ${name}\n1 alert(s) firing.`);
+    h.advance(4 * HOUR + 5 * 60000);
+    await W.runOnce(h.deps, { checks, ...NO_JOBS });
+    assert.equal(h.posts.at(-1).text, `[STILL FIRING] ${name}\n- thing_bad is bad: look at it`);
+    h.advance(5 * 60000);
+    await W.runOnce(h.deps, { checks: stub({ id: 'thing_bad', ok: true, summary: 'fine', detail: '' }), ...NO_JOBS });
+    assert.equal(h.posts.at(-1).text, `[CLEARED] ${name}\n- thing_bad is bad`);
+    // Two sections in one message are separated by an empty line, as before.
+    await W.runOnce(h.deps, { checks: stub(immediate('a_bad'), immediate('b_bad')), ...NO_JOBS });
+    h.advance(5 * 60000);
+    await W.runOnce(h.deps, { checks: stub(immediate('a_bad'), { id: 'b_bad', ok: true, summary: 'ok', detail: '' }, immediate('c_bad')), ...NO_JOBS });
+    assert.equal(h.posts.at(-1).text, `[FIRING] ${name}\n- c_bad is bad\n\n[CLEARED] ${name}\n- b_bad is bad`);
+  } finally { clean(h); }
+});
+
+test('every delivery attempt is recorded in logs/alerts.jsonl (mode 0600), with the result per target and no URL; a refused post is recorded as failed', async () => {
+  const h = harness();
+  try {
+    withSensorHook(h);
+    h.seed({ delivery: { 'facility-slack': { lastError: null, lastHeartbeat: T0 - 60000 }, 'sensors-slack': { lastError: null, lastHeartbeat: T0 - 60000 } } });
+    h.postStatuses = [200, 500];
+    await W.runOnce(h.deps, { checks: stub(immediate('sensors_stale'), immediate('service_down:db')), ...NO_JOBS });
+    const lines = logLines(h);
+    assert.equal(lines.length, 2);
+    assert.deepEqual(lines.map(l => [l.audience, l.kind, l.results.map(r => [r.target, r.ok, r.status])]),
+      [['facility', 'alerts', [['facility-slack', true, 200]]], ['sensors', 'alerts', [['sensors-slack', false, 500]]]]);
+    assert.deepEqual(lines[0].alerts, [{ id: 'service_down:db', change: 'FIRING', summary: 'service_down:db is bad' }]);
+    assert.equal(lines[1].results[0].error, 'Slack answered HTTP 500');
+    assert.equal(lines[0].t, new Date(h.clock.t).toISOString());
+    assert.equal(statSync(join(h.state, 'logs/alerts.jsonl')).mode & 0o777, 0o600);
+    const raw = readFileSync(join(h.state, 'logs/alerts.jsonl'), 'utf8');
+    assert.ok(!raw.includes('hooks.slack.com') && !raw.includes('abcDEF123456') && !raw.includes('sensorSENSOR789'));
+  } finally { clean(h); }
+});
+
+test('heartbeats, test messages and the cannot-save warning are recorded too; the record exists after a run with no channel', async () => {
+  const h = harness({ webhook: false });
+  try {
+    await W.runOnce(h.deps, { checks: HEALTHY, ...NO_JOBS });
+    assert.equal(existsSync(join(h.state, 'logs/alerts.jsonl')), true, 'created by the first run');
+    assert.deepEqual(logLines(h), [], 'nothing was attempted');
+    writeFileSync(join(h.state, 'config/slack-webhook-url'), `${WEBHOOK}\n`, { mode: 0o600 });
+    h.advance(5 * 60000);
+    await W.runOnce(h.deps, { checks: HEALTHY, ...NO_JOBS });
+    assert.deepEqual(logLines(h).map(l => l.kind), ['heartbeat']);
+    assert.equal(await W.main(['test-message'], h.deps, () => {}), 0);
+    assert.deepEqual(logLines(h).map(l => l.kind), ['heartbeat', 'test']);
+    assert.deepEqual(logLines(h)[1].results, [{ target: 'facility-slack', ok: true, status: 200 }]);
+  } finally { clean(h); }
+});
+
+test('a failing alert record never breaks delivery or the run: the post goes out, the state is saved, one warning is given', async () => {
+  const h = harness();
+  try {
+    writeFileSync(join(h.state, 'logs'), 'a file where the directory should be');
+    const warnings = [];
+    h.deps.log = m => warnings.push(m);
+    const checks = stub(immediate('thing_bad'));
+    await W.runOnce(h.deps, { checks, ...NO_JOBS });
+    assert.equal(h.posts.filter(p => /^\[FIRING\]/.test(p.text)).length, 1);
+    assert.equal(h.state_().alerts.thing_bad.lastSent, h.clock.t);
+    assert.equal(warnings.filter(m => /alert record/.test(m)).length, 1, 'warned once although the alert post and the heartbeat both tried to write it');
+    h.advance(24 * HOUR);
+    await W.runOnce(h.deps, { checks, ...NO_JOBS });
+    assert.equal(warnings.filter(m => /alert record/.test(m)).length, 2, 'one warning per run (each run is its own process), not one per post');
+  } finally { clean(h); }
+});
+
+test('history prints the record readably, honours --days, and refuses a bad argument', async () => {
+  const h = harness();
+  try {
+    const out = [];
+    assert.equal(await W.main(['history'], h.deps, t => out.push(t)), 0);
+    assert.match(out[0], /^No alert deliveries are recorded for the last 30 days\./);
+    await W.runOnce(h.deps, { checks: stub(immediate('thing_bad')), ...NO_JOBS });
+    out.length = 0;
+    assert.equal(await W.main(['history'], h.deps, t => out.push(t)), 0);
+    const lines = out[0].split('\n');
+    assert.equal(lines.length, 2);
+    assert.match(lines[0], new RegExp(`^${new Date(h.clock.t).toISOString()}  facility  alerts  FIRING thing_bad \\(thing_bad is bad\\)  ->  facility-slack delivered \\(HTTP 200\\)$`));
+    assert.match(lines[1], /facility {2}heartbeat {2}-> {2}facility-slack delivered/);
+    h.advance(3 * 24 * HOUR);
+    out.length = 0;
+    await W.main(['history', '--days', '2'], h.deps, t => out.push(t));
+    assert.match(out[0], /^No alert deliveries are recorded for the last 2 days\./);
+    out.length = 0;
+    await W.main(['history', '--days', '5'], h.deps, t => out.push(t));
+    assert.equal(out[0].split('\n').length, 2);
+    for (const args of [['--days'], ['--days', '0'], ['--days', 'x'], ['5']]) {
+      out.length = 0;
+      assert.equal(await W.main(['history', ...args], h.deps, t => out.push(t)), 1, args.join(' '));
+      assert.match(out[0], /history takes only --days N/);
+    }
+    assert.ok(!out.join('\n').includes('abcDEF123456'));
+  } finally { clean(h); }
+});
+
+test('status lists each channel by label and never its address; a failing target is named by audience', async () => {
+  const h = harness();
+  try {
+    const out = [];
+    await W.main(['status'], h.deps, t => out.push(t));
+    assert.match(out[0], /^Installation: .*\nAlert channel: Slack configured\nSensor alert channel: none \(sensor alerts go to the facility channel\)/);
+    assert.match(out[0], /Last heartbeat: never/);
+    withSensorHook(h);
+    h.seed({ delivery: { 'sensors-slack': { lastError: { at: T0, message: 'Slack answered HTTP 404' }, lastHeartbeat: T0 - 1000 }, 'gone-1': { lastError: { at: T0, message: 'x' }, lastHeartbeat: null } } });
+    out.length = 0;
+    await W.main(['status'], h.deps, t => out.push(t));
+    assert.match(out[0], /Sensor alert channel: Slack configured/);
+    assert.match(out[0], /Last sensor Slack post failed at .*: Slack answered HTTP 404/);
+    assert.ok(!out[0].includes('gone-1'), 'a record of an unknown target is not shown');
+    assert.ok(!/Last heartbeat \(/.test(out[0]), 'the status has only the one heartbeat line it always had');
+    assert.ok(!out[0].includes('hooks.slack.com'));
+  } finally { clean(h); }
+});
+
+test('test-message goes through the adapter and reports the HTTP answer; a failed post exits 1 without printing the address', async () => {
+  const h = harness();
+  try {
+    const out = [];
+    h.postStatuses = [404];
+    assert.equal(await W.main(['test-message'], h.deps, t => out.push(t)), 1);
+    assert.equal(out[0], 'Slack answered HTTP 404.');
+    h.postFails = true;
+    out.length = 0;
+    const errors = [];
+    assert.equal(await W.main(['test-message'], h.deps, t => out.push(t), t => errors.push(t)), 1);
+    assert.deepEqual(out, [], 'a network error is not on the normal output');
+    assert.deepEqual(errors, ['Watch: could not reach Slack'], 'standard error, as before the delivery layer');
+    assert.deepEqual(logLines(h).map(l => [l.kind, l.results[0].ok]), [['test', false], ['test', false]]);
+  } finally { clean(h); }
+});
+
+test('history: only a missing record means nothing recorded; an unreadable one is said and exits 1', async () => {
+  const h = harness();
+  try {
+    const out = [];
+    const errors = [];
+    mkdirSync(join(h.state, 'logs/alerts.jsonl'), { recursive: true });   // a directory where the file should be: EISDIR, not ENOENT
+    assert.equal(await W.main(['history'], h.deps, t => out.push(t), t => errors.push(t)), 1);
+    assert.deepEqual(out, []);
+    assert.equal(errors.length, 1);
+    assert.match(errors[0], /^cannot read .*logs\/alerts\.jsonl \(EISDIR\)$/);
+  } finally { clean(h); }
+});
+
+test('a state that cannot be saved is not sent to the sensor channel when that is the only channel (configure refuses that setup)', async () => {
+  const h = harness({ webhook: false });
+  try {
+    withSensorHook(h);
+    h.fsApi = { openSync: fs.openSync, writeSync: fs.writeSync, fsyncSync: fs.fsyncSync, closeSync: fs.closeSync, unlinkSync: fs.unlinkSync, renameSync: () => { throw new Error('read-only file system'); } };
+    h.clock.t = new Date(2026, 9, 19, 10, 0).getTime();
+    await assert.rejects(W.runOnce(h.deps, { checks: [], ...NO_JOBS }), /read-only file system/);
+    assert.equal(h.posts.length, 0, 'facility alerts never go to the sensor channel');
+  } finally { clean(h); }
+});
+
+test('the state file also carries the pre-delivery-layer keys, mirrored from delivery, in the shapes the old loader accepts', async () => {
+  const h = harness();
+  try {
+    withSensorHook(h);
+    h.seed({ delivery: { 'facility-slack': { lastError: { at: T0, message: 'facility broke' }, lastHeartbeat: T0 - 2000 }, 'sensors-slack': { lastError: null, lastHeartbeat: T0 - 1000 } } });
+    await W.runOnce(h.deps, { checks: stub(immediate('sensors_stale')), ...NO_JOBS });
+    const file = h.state_();
+    assert.deepEqual(file.lastPostError, { at: T0, message: 'facility broke' });
+    assert.equal(file.lastHeartbeat, T0 - 2000);
+    assert.equal(file.lastSensorHeartbeat, T0 - 1000);
+    assert.ok(!('lastSensorPostError' in file), 'the old loader rejects a null here, so it is not written');
+    assert.equal(file.alerts.sensors_stale.via, 'sensor', 'the old loader only knows facility and sensor');
+  } finally { clean(h); }
+  // What the old loader accepts: lastPostError null or {at,message}; lastHeartbeat a number or null; the sensor keys only when set.
+  const mirrored = W.withOldKeys({ delivery: { 'facility-slack': { lastError: null, lastHeartbeat: 5 }, 'sensors-slack': { lastError: { at: 7, message: 'sensor broke' }, lastHeartbeat: 6 } }, alerts: { a: { via: 'sensors' }, b: { via: 'facility' }, c: {} } });
+  assert.deepEqual([mirrored.lastPostError, mirrored.lastHeartbeat, mirrored.lastSensorPostError, mirrored.lastSensorHeartbeat], [null, 5, { at: 7, message: 'sensor broke' }, 6]);
+  assert.deepEqual([mirrored.alerts.a.via, mirrored.alerts.b.via, mirrored.alerts.c.via], ['sensor', 'facility', undefined]);
+  // An old-code pass drops `delivery` and keeps the old keys: loading what is left gives the same records and routing.
+  const { delivery, ...oldShape } = { ...W.freshState(T0), ...mirrored };
+  const back = W.normalizeState(oldShape, T0);
+  assert.deepEqual(back.delivery, { 'facility-slack': { lastError: null, lastHeartbeat: 5 }, 'sensors-slack': { lastError: { at: 7, message: 'sensor broke' }, lastHeartbeat: 6 } });
+  assert.equal(back.alerts.a.via, 'sensors');
+  const none = W.withOldKeys({ delivery: {}, alerts: {} });
+  assert.ok(!('lastSensorPostError' in none) && !('lastSensorHeartbeat' in none));
+  assert.deepEqual([none.lastPostError, none.lastHeartbeat], [null, null]);
+});
+
+test('a malformed field of a delivery entry is reset on its own and an old key still fills it', () => {
+  const log = [];
+  const loaded = W.normalizeState({ ...W.freshState(T0), lastHeartbeat: T0 - 5, lastPostError: { at: 9, message: 'old error' },
+    delivery: { 'facility-slack': { lastError: 'broken', lastHeartbeat: 'broken' } } }, T0, m => log.push(m));
+  assert.deepEqual(loaded.delivery['facility-slack'], { lastError: { at: 9, message: 'old error' }, lastHeartbeat: T0 - 5 });
+  assert.ok(log.some(m => m.includes('facility-slack')));
+  // A well-formed field of the same entry is kept and wins over the old key.
+  const half = W.normalizeState({ ...W.freshState(T0), lastHeartbeat: T0 - 5, delivery: { 'facility-slack': { lastError: 'broken', lastHeartbeat: T0 - 1 } } }, T0, () => {});
+  assert.deepEqual(half.delivery['facility-slack'], { lastError: null, lastHeartbeat: T0 - 1 });
 });

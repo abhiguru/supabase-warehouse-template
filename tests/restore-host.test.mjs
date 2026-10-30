@@ -813,7 +813,7 @@ test('restore-host prints the exact setup rerun when central sign-in names a key
     assert.ok(result.stdout.includes(`bash setup.sh --operator --state-dir ${f.state} --admin-phone 91XXXXXXXXXX --admin-name 'ADMIN NAME' \\\n`), 'setup rerun with the state');
     assert.ok(result.stdout.includes(`--central-issuer ${ISSUER} --central-jwks-file /absolute/path/to/association-jwks.json`), 'with the issuer the backup names');
     assert.doesNotMatch(result.stdout, /Restored the central sign-in key file/);
-    assert.match(result.stdout, /add --alert-webhook-file \/absolute\/path\/to\/webhook-url-file\s+to that same command, so it is one rerun and not two/);
+    assert.match(result.stdout, /add --alert-webhook-file \/absolute\/path\/to\/webhook-url-file\s+\(and, if sensors are on, --sensor-webhook-file \/absolute\/path\/to\/sensor-webhook-url-file\) to that same command, so it is one rerun and not two/);
     // The numbered steps stay in order whether or not this step is there.
     assert.deepEqual([...result.stdout.matchAll(/^ {2}(\d+)\. /gm)].map(m => Number(m[1])), [1, 2, 3, 4, 5, 6, 7, 8, 9]);
   } finally { clean(f); }

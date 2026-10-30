@@ -288,7 +288,7 @@ capability is off or the `functions` service was not restarted after
   the bridge: `bash scripts/compose.sh --profile sensors up -d --wait sensor-bridge` (the container does not re-read
   `compose.env` otherwise; add `--force-recreate` if nothing changed), or for a bridge run as its own Compose project
   `docker compose up -d --force-recreate` in the bridge's folder. "Silent" means the hub is online but the bridge has not posted
-  for it: read the bridge log. The check is a warning only (SENSORS.md, "Check that readings arrive"). After a router reboot allow
+  for it: read the bridge log. The check is a warning only (SENSORS.md, "Verify that readings arrive (required)"). After a router reboot allow
   about 15 to 25 minutes (with the 300 second poll) for the bridge to find a moved hub; one `sensors_stale` alert before that is
   normal. A line `event=hub_moved ... claimed=true` means a hub that had never been reached was claimed; if it is the wrong hub,
   undo it with `--forget-hub` (SENSORS.md, "Keep the hub addresses fixed").

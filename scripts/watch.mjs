@@ -2,7 +2,8 @@
 //
 //   node scripts/watch.mjs run                      one pass: checks, alerts, heartbeat (the systemd timer runs this every 5 minutes)
 //   node scripts/watch.mjs daily                    the daily backup, verification, pruning and retention (its own systemd timer runs this)
-//   node scripts/watch.mjs test-message [sensors]   post a test message to the facility's Slack webhook (sensors: the sensor-alert webhook)
+//   node scripts/watch.mjs test-message [sensors]   post a test message to the facility's alert channel (sensors: the sensor-alert channel)
+//   node scripts/watch.mjs history [--days N]       the local record of alert deliveries (logs/alerts.jsonl, default 30 days)
 //   node scripts/watch.mjs status                   what is failing, muted, and when the daily jobs last ran
 //   node scripts/watch.mjs mute MINUTES ["ALERT"]   silence all alerts, or one alert id, for MINUTES
 //   node scripts/watch.mjs unmute ["ALERT"]
@@ -57,7 +58,8 @@ import { LAN_SERVICE, describeAddresses, hostHasAddress, lanOrigin, lanSettings,
 import { redactServiceLog } from './service-diagnostics.mjs';
 import { usbBackupWarning } from './usb-backup-status.mjs';
 import { ageText, sensorCheck, sensorLimitSeconds } from './sensors-check.mjs';
-import { postSlackMessage, sensorTestMessage, storedSensorWebhook, storedWebhook, testMessage } from './alert-webhook.mjs';
+import { postSlackMessage, sensorTestMessage, testMessage } from './alert-webhook.mjs';
+import { ADAPTERS, AUDIENCES, TARGET_IDS, audienceOf, ALERT_LOG, createAlertLog, deliver, historyLine, loadTargets, pickAudience, readAlertLog, secretsOf, targetsOf } from './notify.mjs';
 
 const MIN = 60 * 1000;
 const HOUR = 60 * MIN;
@@ -118,10 +120,10 @@ export const LEGACY_DAILY_ALERT = 'daily_timer_legacy';
 export const legacyDailyAdvice = (root, state) => `Run: sudo bash ${join(root, 'scripts/watch-timer.sh')} install --state ${state}`;
 
 // ---------------------------------------------------------------- redaction
-// `webhook` is one URL, or a list of them (the facility's and the sensor webhook); null entries are skipped.
-export function redact(text, env = {}, webhook = null) {
+// `secrets` is one secret address, or a list of them (every target's, from the adapters); null entries are skipped.
+export function redact(text, env = {}, secrets = null) {
   let out = redactServiceLog(String(text ?? ''), env);
-  for (const url of [webhook].flat()) if (url) out = out.split(url).join('[REDACTED]');
+  for (const url of [secrets].flat()) if (url) out = out.split(url).join('[REDACTED]');
   return out.replace(/https:\/\/hooks\.slack\.com\/services\/[A-Za-z0-9/]+/g, '[REDACTED]');
 }
 const clip = (text, n = 300) => (text.length > n ? `${text.slice(0, n)}...` : text);
@@ -133,8 +135,8 @@ const numOrNull = v => v === null || isNum(v);
 export const statePath = state => join(state, 'config/watch-state.json');
 export const mutesPath = state => join(state, 'config/watch-mutes.json');
 export const freshState = now => ({
-  version: 1, firstRun: now, alerts: {}, containers: {}, cpu: null, lastRunAt: null, lastHeartbeat: null,
-  lastDailyRun: {}, dailyAttempt: null, dailyRunning: null, dailySkipped: null, busySince: null, lastPostError: null,
+  version: 1, firstRun: now, alerts: {}, containers: {}, cpu: null, lastRunAt: null,
+  lastDailyRun: {}, dailyAttempt: null, dailyRunning: null, dailySkipped: null, busySince: null, delivery: {},
   memoryNote: null, heal: {}, lastSmsCheck: null, stackRestarts: [],
   // Mutes live in their own file (loadMutes) and are filled in from it; they are never part of the run state.
   muteUntil: null, mutes: {},
@@ -154,8 +156,8 @@ function normalizeAlert(id, raw, log) {
     check: fix('check', text, ''), summary: fix('summary', text, ''), detail: fix('detail', text, ''),
   };
   if (!isObj(raw)) log(`alert "${id}" was not an object and was reset`);
-  // Optional: where the alert's start was sent ('facility' | 'sensor'), so its repeat and clear go to the same channel.
-  if (a.via === 'facility' || a.via === 'sensor') out.via = a.via;
+  // Optional: which audience the alert's start was sent to ('facility' | 'sensors'; 'sensor' in older state files), so its repeat and clear go to the same place.
+  if (audienceOf(a.via)) out.via = audienceOf(a.via);
   else if ('via' in a) log(`alert "${id}": field "via" had the wrong type and was reset`);
   return out;
 }
@@ -167,6 +169,39 @@ function normalizeContainer(service, raw, log) {
 }
 
 // Keeps every field that has the right type and resets the others (logging each reset through log).
+// Per-target delivery records: delivery: { <targetId>: { lastError: { at, message } | null, lastHeartbeat: ms | null } }.
+// State files from before the delivery layer keep the same facts under lastPostError and lastHeartbeat (the facility's
+// Slack webhook) and lastSensorPostError and lastSensorHeartbeat (the sensor webhook): they are moved under the stable
+// target ids, and the old keys are not written again. A record in `delivery` wins over an old key.
+const errorShape = v => v === null || (isObj(v) && isNum(v.at) && typeof v.message === 'string');
+function normalizeDelivery(raw, out, log) {
+  const record = id => (out.delivery[id] ??= { lastError: null, lastHeartbeat: null });
+  const valid = new Set();   // the delivery fields that were present and well-formed: they win over the old keys
+  if ('delivery' in raw && !isObj(raw.delivery)) log('state field "delivery" had the wrong type and was reset');
+  if (isObj(raw.delivery)) {
+    for (const [id, entry] of Object.entries(raw.delivery)) {
+      // A malformed field is reset on its own; the other field of the entry is kept, and an old key can still fill the reset one.
+      if (!isObj(entry)) { log(`state field "delivery" entry "${id}" had the wrong type and was reset`); continue; }
+      const kept = { lastError: null, lastHeartbeat: null };
+      let reset = false;
+      for (const [field, ok] of [['lastError', errorShape], ['lastHeartbeat', numOrNull]]) {
+        if (!(field in entry)) continue;
+        if (ok(entry[field])) { kept[field] = entry[field]; valid.add(`${id}/${field}`); } else reset = true;
+      }
+      if (reset) log(`state field "delivery" entry "${id}" had the wrong type and was reset`);
+      out.delivery[id] = kept;
+    }
+  }
+  const legacy = [['lastPostError', TARGET_IDS.facility, 'lastError', errorShape], ['lastHeartbeat', TARGET_IDS.facility, 'lastHeartbeat', numOrNull],
+    ['lastSensorPostError', TARGET_IDS.sensors, 'lastError', errorShape], ['lastSensorHeartbeat', TARGET_IDS.sensors, 'lastHeartbeat', numOrNull]];
+  for (const [key, id, field, ok] of legacy) {
+    if (!(key in raw)) continue;
+    if (!ok(raw[key])) { log(`state field "${key}" had the wrong type and was reset`); continue; }
+    if (raw[key] === null || valid.has(`${id}/${field}`)) continue;
+    record(id)[field] = raw[key];
+  }
+}
+
 export function normalizeState(raw, now, log = () => {}) {
   const out = freshState(now);
   if (!isObj(raw)) { log('the state file is not a JSON object; starting fresh'); return out; }
@@ -175,16 +210,12 @@ export function normalizeState(raw, now, log = () => {}) {
     if (ok(raw[key])) out[key] = raw[key]; else log(`state field "${key}" had the wrong type and was reset`);
   };
   take('firstRun', isNum);
-  for (const key of ['lastRunAt', 'lastHeartbeat', 'busySince']) take(key, numOrNull);
+  for (const key of ['lastRunAt', 'busySince']) take(key, numOrNull);
   take('cpu', v => v === null || (isObj(v) && isNum(v.total) && isNum(v.idle) && isNum(v.at)));
   take('dailyRunning', v => v === null || (isObj(v) && isNum(v.startedAt)));
   take('dailySkipped', v => v === null || (isObj(v) && isNum(v.at)));
   take('dailyAttempt', v => v === null || (isObj(v) && typeof v.date === 'string' && isNum(v.count) && numOrNull(v.lastAt) && typeof v.done === 'boolean'));
-  take('lastPostError', v => v === null || (isObj(v) && isNum(v.at) && typeof v.message === 'string'));
-  // Optional keys (absent in older state files, and until a sensor webhook posts): the sensor webhook's own failure and heartbeat.
-  const postError = v => v === null || (isObj(v) && isNum(v.at) && typeof v.message === 'string');
-  take('lastSensorPostError', v => v !== null && postError(v));
-  take('lastSensorHeartbeat', numOrNull);
+  normalizeDelivery(raw, out, log);
   take('memoryNote', v => v === null || typeof v === 'string');
   take('lastSmsCheck', numOrNull);
   take('stackRestarts', v => Array.isArray(v) && v.every(isNum));   // absent in older state files: the fresh default stays
@@ -260,6 +291,22 @@ export function withStateLock(state, fn, { waitMs = LIMITS.stateLockWaitMs, stal
   }
   try { return fn(); } finally { if (held) { try { unlinkSync(path); } catch { /* already taken over */ } } }
 }
+// For this release the state file also carries the keys of the checker before the delivery layer, mirrored from `delivery`
+// (lastPostError, lastHeartbeat, lastSensorPostError, lastSensorHeartbeat) and the old `via` values ('sensor' for the sensors
+// audience), so a rollback, or an old-code daily pass running while this one saves, keeps the heartbeat timing, the errors and
+// the alert routing. The loader prefers `delivery` and only reads these when it is missing. The mirror can go in a later release.
+export function withOldKeys(persisted) {
+  const facility = persisted.delivery?.[TARGET_IDS.facility];
+  const sensors = persisted.delivery?.[TARGET_IDS.sensors];
+  const out = {
+    ...persisted, lastPostError: facility?.lastError ?? null, lastHeartbeat: facility?.lastHeartbeat ?? null,
+    alerts: Object.fromEntries(Object.entries(persisted.alerts ?? {}).map(([id, a]) => [id, a.via === 'sensors' ? { ...a, via: 'sensor' } : a])),
+  };
+  // The old loader rejects a null lastSensorPostError, so the sensor keys are written only when they hold something.
+  if (sensors?.lastError) out.lastSensorPostError = sensors.lastError;
+  if (sensors?.lastHeartbeat != null) out.lastSensorHeartbeat = sensors.lastHeartbeat;
+  return out;
+}
 export const DAILY_KEYS = ['lastDailyRun', 'dailyAttempt', 'dailyRunning', 'dailySkipped'];
 export function saveState(state, data, api, { daily = false, readText = readFileOrNull, lock = {} } = {}) {
   const { muteUntil, mutes, ...persisted } = data;
@@ -271,7 +318,7 @@ export function saveState(state, data, api, { daily = false, readText = readFile
         for (const key of Object.keys(persisted)) if (DAILY_KEYS.includes(key) !== daily) persisted[key] = other[key];
       } catch { /* an unreadable file is replaced by ours */ }
     }
-    writeFileAtomic(statePath(state), `${JSON.stringify(persisted, null, 2)}\n`, api);
+    writeFileAtomic(statePath(state), `${JSON.stringify(withOldKeys(persisted), null, 2)}\n`, api);
   }, lock);
 }
 
@@ -339,18 +386,7 @@ export function defaultDeps(env = process.env) {
   };
 }
 
-// The facility's Slack webhook, kept by setup.sh as config/slack-webhook-url (mode 0600); an install that setup has
-// not rerun since the Alertmanager stack was removed still has it at the old path, which storedWebhook also reads.
-// Null when none is stored (--alert-webhook-file off).
-export function readWebhook(state) {
-  try { return storedWebhook(state); } catch { return null; }
-}
-
-// The separate Slack webhook for sensor alerts (config/sensor-webhook-url, mode 0600); null when none is stored.
-export function readSensorWebhook(state) {
-  try { return storedSensorWebhook(state); } catch { return null; }
-}
-// The alerts that go to the sensor webhook: the sensor readings and the sensor-bridge container's own faults.
+// The alerts that go to the sensors audience: the sensor readings and the sensor-bridge container's own faults.
 export const isSensorAlert = id => id === 'sensors_stale' || id === 'check_error:sensors_stale'
   || /^(service_down|container_restarts|container_oom|container_memory):sensor-bridge$/.test(id);
 
@@ -365,6 +401,10 @@ const INSPECT_FORMAT = [
 
 export function makeContext(deps, data) {
   const ctx = { ...deps, data, memo: {} };
+  // The alert channels of this installation (notify.mjs), read once; their secret addresses; the local record of deliveries.
+  ctx.targets = () => (ctx.memo.targets ??= loadTargets(deps.state));
+  ctx.secrets = () => secretsOf(ctx.targets());
+  ctx.alertLog = () => (ctx.memo.alertLog ??= deps.alertLog ?? createAlertLog(deps.state, { now: deps.now, warn: message => (deps.log ?? stderrLog)(message) }));
   ctx.env_ = () => (ctx.memo.env ??= (() => { try { return readEnv(join(deps.state, 'config/compose.env')); } catch { return {}; } })());
   ctx.compose = (args, opts) => deps.run('bash', [join(deps.root, 'scripts/compose.sh'), ...args], opts);
   // The services this installation's compose file runs by default (profile services are not expected).
@@ -1208,7 +1248,7 @@ export async function runChecks(ctx, checks = CHECKS) {
   const results = [];
   const ran = new Set();
   const env = ctx.env_();
-  const webhook = [readWebhook(ctx.state), readSensorWebhook(ctx.state)];
+  const webhook = ctx.secrets();
   for (const [name, fn] of checks) {
     try {
       const list = await fn(ctx);
@@ -1420,86 +1460,97 @@ export function describe(ctx) {
   try { company = JSON.parse(ctx.readText(join(ctx.state, 'public/instance.json')) ?? '{}').companyName ?? ''; } catch { /* no manifest */ }
   return company ? `${company} (${project})` : project || ctx.state;
 }
-export function formatAlerts({ start, repeat, clear }, name, env, webhook) {
-  const text = (value, n) => clip(redact(value, env, webhook), n);
+// The channel-neutral message for one audience (notify.mjs renders it for each channel; Slack gets the same text as always).
+export function formatAlerts({ start, repeat, clear }, name, env, secrets, audience = 'facility') {
+  const text = (value, n) => clip(redact(value, env, secrets), n);
   const line = a => `- ${text(a.summary, 200)}${a.detail ? `: ${text(a.detail, 300)}` : ''}`;
-  const parts = [];
-  if (start.length) parts.push(`[FIRING] ${name}\n${start.map(line).join('\n')}`);
-  if (repeat.length) parts.push(`[STILL FIRING] ${name}\n${repeat.map(line).join('\n')}`);
-  if (clear.length) parts.push(`[CLEARED] ${name}\n${clear.map(a => `- ${text(a.summary, 200)}`).join('\n')}`);
-  return parts.join('\n\n');
+  const sections = [];
+  const add = (heading, list, format) => {
+    if (list.length) sections.push({ heading, lines: list.map(format), items: list.map(a => ({ id: a.id, summary: text(a.summary, 200) })) });
+  };
+  add('FIRING', start, line);
+  add('STILL FIRING', repeat, line);
+  add('CLEARED', clear, a => `- ${text(a.summary, 200)}`);
+  return { audience, kind: 'alerts', name, sections };
 }
 
 // ---------------------------------------------------------------- posting
-// postSlackMessage resolves with the HTTP status whatever it is: only a 2xx counts as delivered.
-export async function postOk(ctx, webhook, text) {
-  const status = await ctx.post(webhook, text);
-  if (typeof status === 'number' && !(status >= 200 && status < 300)) throw new Error(`Slack answered HTTP ${status}`);
+export const deliveryOf = (data, id) => (data.delivery[id] ??= { lastError: null, lastHeartbeat: null });
+
+// Sends `message` to the targets in `list` through notify.mjs and writes the attempt to the local alert record
+// (logs/alerts.jsonl; no URL, and a failure to write it never gets here). Resolves with one result per target; errors are
+// redacted and clipped. Never throws.
+async function sendAndRecord(ctx, list, message) {
+  const raw = await deliver({ post: ctx.post }, list, message);
+  const env = ctx.env_();
+  const secrets = ctx.secrets();
+  const results = raw.map(r => ({ target: r.target, label: r.label, ok: r.ok === true, status: r.status, error: r.ok ? undefined : clip(redact(r.error ?? 'not delivered', env, secrets), 200) }));
+  const alerts = (message.sections ?? []).flatMap(s => (s.items ?? []).map(i => ({ id: i.id, change: s.heading, summary: i.summary })));
+  ctx.alertLog().append({
+    t: new Date(ctx.now()).toISOString(), audience: message.audience, kind: message.kind, ...(alerts.length ? { alerts } : {}),
+    results: results.map(r => ({ target: r.target, ok: r.ok, ...(r.status === undefined ? {} : { status: r.status }), ...(r.error ? { error: r.error } : {}) })),
+  });
+  return results;
 }
 
 // If the state cannot be saved, say so once an hour (a stateless rule: only the run that starts in the first 5
 // minutes of an hour), then stop the run.
-async function saveOrWarn(ctx, webhook) {
+async function saveOrWarn(ctx) {
   try { saveState(ctx.state, ctx.data, ctx.fsApi); } catch (error) {
-    if (webhook && new Date(ctx.now()).getMinutes() < 5) {
-      try { await postOk(ctx, webhook, redact(`[WATCH] cannot save its state: ${error.message}`, ctx.env_(), [webhook, ctx.sensorWebhook])); } catch { /* nowhere left to report */ }
+    const list = targetsOf(ctx.targets(), pickAudience(ctx.targets(), 'facility'));
+    if (list.length && new Date(ctx.now()).getMinutes() < 5) {
+      const text = redact(`[WATCH] cannot save its state: ${error.message}`, ctx.env_(), ctx.secrets());
+      try { await sendAndRecord(ctx, list, { audience: 'facility', kind: 'warning', name: describe(ctx), text }); } catch { /* nowhere left to report */ }
     }
     throw error;
   }
 }
 
-// Marks the message as sent and saves BEFORE posting, so a crash or a second process cannot post it twice; when the
-// post fails the marks are undone and saved again, and the failure is recorded for `status`.
-// `sensor` selects which failure is tracked: the facility webhook's posts set and clear lastPostError, the sensor webhook's
-// posts set and clear lastSensorPostError (absent until a sensor post fails), so one channel's failure never hides the other's.
-async function postThenKeep(ctx, webhook, text, apply, undo, sensor = false) {
+// Marks the message as sent and saves BEFORE sending, so a crash or a second process cannot send it twice; when no
+// target accepted it the marks are undone and saved again. Each target's own outcome is kept in data.delivery[<target id>]
+// (lastError is set by that target's failure and cleared only by its own success), so one channel's failure never hides
+// another's. With several targets for one audience the message counts as delivered when any of them took it (a retry would
+// repeat it to the others); the ones that failed still show their error.
+async function postThenKeep(ctx, list, message, apply, undo) {
   const now = ctx.now();
   apply();
-  await saveOrWarn(ctx, webhook);
-  try {
-    await postOk(ctx, webhook, text);
-    if (sensor) delete ctx.data.lastSensorPostError; else ctx.data.lastPostError = null;
-  } catch (error) {
-    undo();
-    const failure = { at: now, message: clip(redact(error.message, ctx.env_(), [webhook, ctx.sensorWebhook]), 200) };
-    if (sensor) ctx.data.lastSensorPostError = failure; else ctx.data.lastPostError = failure;
-    await saveOrWarn(ctx, webhook);
-  }
+  await saveOrWarn(ctx);
+  const results = await sendAndRecord(ctx, list, message);
+  if (!results.some(r => r.ok)) undo();
+  for (const r of results) deliveryOf(ctx.data, r.target).lastError = r.ok ? null : { at: now, message: r.error };
+  if (results.some(r => !r.ok)) await saveOrWarn(ctx);
 }
 
-// Sensor alerts (start, repeat and clear) go to the sensor webhook when one is stored, everything else to the facility
-// webhook. Without a sensor webhook the sensor alerts go to the facility webhook, so nothing is lost. An alert's start
-// records where it went (`via`); its repeat and clear go to the same place, even when the routing changed meanwhile
-// (a sensor webhook added or removed), unless that webhook is gone: then to the one that exists.
-function channelOf(ctx, alert, kind, webhook, sensorWebhook) {
+// Sensor alerts (start, repeat and clear) go to the sensors audience when it has a target, everything else to the
+// facility's. Without a sensors target the sensor alerts go to the facility's, so nothing is lost. An alert's start
+// records where it went (`via`, an audience); its repeat and clear go to the same place, even when the routing changed
+// meanwhile (a sensor channel added or removed), unless that audience is gone: then to the one that exists.
+function audienceFor(ctx, alert, kind) {
   const via = kind === 'start' ? undefined : ctx.data.alerts[alert.id]?.via;
-  let want = via ?? (isSensorAlert(alert.id) && sensorWebhook ? 'sensor' : 'facility');
-  if (want === 'sensor' && !sensorWebhook) want = 'facility';
-  if (want === 'facility' && !webhook && sensorWebhook) want = 'sensor';
-  return want;
+  return pickAudience(ctx.targets(), via ?? (isSensorAlert(alert.id) ? 'sensors' : 'facility'));
 }
-async function notify(ctx, webhook, plan, sensorWebhook = null) {
-  ctx.sensorWebhook = sensorWebhook;
-  const parts = { facility: { start: [], repeat: [], clear: [] }, sensor: { start: [], repeat: [], clear: [] } };
-  for (const kind of ['start', 'repeat', 'clear']) for (const a of plan[kind]) parts[channelOf(ctx, a, kind, webhook, sensorWebhook)][kind].push(a);
-  await notifyTo(ctx, webhook, parts.facility, 'facility');
-  await notifyTo(ctx, sensorWebhook, parts.sensor, 'sensor');
+async function notify(ctx, plan) {
+  const parts = { facility: { start: [], repeat: [], clear: [] }, sensors: { start: [], repeat: [], clear: [] } };
+  for (const kind of ['start', 'repeat', 'clear']) for (const a of plan[kind]) parts[audienceFor(ctx, a, kind)][kind].push(a);
+  await notifyTo(ctx, parts.facility, 'facility');
+  await notifyTo(ctx, parts.sensors, 'sensors');
 }
-async function notifyTo(ctx, webhook, plan, via) {
+async function notifyTo(ctx, plan, audience) {
   const { start, repeat, clear } = plan;
-  if ((!start.length && !repeat.length && !clear.length) || !webhook) return;
+  const list = targetsOf(ctx.targets(), audience);
+  if ((!start.length && !repeat.length && !clear.length) || !list.length) return;
   const { data } = ctx;
   const now = ctx.now();
-  const text = formatAlerts(plan, describe(ctx), ctx.env_(), [webhook, ctx.sensorWebhook]);
+  const message = formatAlerts(plan, describe(ctx), ctx.env_(), ctx.secrets(), audience);
   const sent = [...start, ...repeat].map(a => [a.id, data.alerts[a.id].lastSent, data.alerts[a.id].via]);
   const cleared = clear.map(a => [a.id, data.alerts[a.id]]);
-  await postThenKeep(ctx, webhook, text, () => {
-    for (const [id] of sent) { data.alerts[id].lastSent = now; data.alerts[id].via = via; }
+  await postThenKeep(ctx, list, message, () => {
+    for (const [id] of sent) { data.alerts[id].lastSent = now; data.alerts[id].via = audience; }
     for (const [id] of cleared) delete data.alerts[id];
   }, () => {
     for (const [id, before, viaBefore] of sent) if (data.alerts[id]) { data.alerts[id].lastSent = before; if (viaBefore === undefined) delete data.alerts[id].via; else data.alerts[id].via = viaBefore; }
     for (const [id, entry] of cleared) data.alerts[id] = entry;
-  }, via === 'sensor');
+  });
 }
 
 // ---------------------------------------------------------------- calendar rules
@@ -1514,29 +1565,30 @@ export function heartbeatDue(now, last, heartbeatAt = DEFAULT_HEARTBEAT_AT) {
   const m = parseTime(heartbeatAt, DEFAULT_HEARTBEAT_AT);
   return localDate(now) !== localDate(last) && minutesOfDay(now) >= Number(m[1]) * 60 + Number(m[2]);
 }
-// The facility webhook's heartbeat and, when a sensor webhook is stored, the sensor webhook's own (its last day tracked in
-// lastSensorHeartbeat, its failures in lastSensorPostError): neither blocks the other.
-async function heartbeat(ctx, webhook, sensorWebhook = null) {
+// One heartbeat per target and calendar day (delivery[<target id>].lastHeartbeat): a failing target does not block the others.
+async function heartbeat(ctx) {
   const { data } = ctx;
   const now = ctx.now();
   const firingOf = keep => Object.entries(data.alerts).filter(([id, a]) => a.firingSince && keep(id)).length;
-  if (webhook && heartbeatDue(now, data.lastHeartbeat, ctx.heartbeatAt)) {
-    const firing = firingOf(() => true);
-    const notes = [];
-    if (data.muteUntil && now < data.muteUntil) notes.push(`Alerts are muted until ${new Date(data.muteUntil).toISOString()}.`);
-    const mutedIds = Object.entries(data.mutes ?? {}).filter(([, until]) => now < until).map(([id]) => id);
-    if (mutedIds.length) notes.push(`Muted: ${mutedIds.join(', ')}.`);
-    if (notes.length) notes.push(`${listIds(NEVER_MUTED)} are never muted: they are posted anyway.`);
-    const muted = notes.length ? ` ${notes.join(' ')}` : '';
-    const text = redact(`Monitoring is alive - ${describe(ctx)}\n${firing ? `${firing} alert(s) firing.` : 'No alerts firing.'}${muted}`, ctx.env_(), [webhook, sensorWebhook]);
-    const before = data.lastHeartbeat;
-    await postThenKeep(ctx, webhook, text, () => { data.lastHeartbeat = now; }, () => { data.lastHeartbeat = before; });
-  }
-  if (sensorWebhook && heartbeatDue(now, data.lastSensorHeartbeat ?? null, ctx.heartbeatAt)) {
-    const firing = firingOf(isSensorAlert);
-    const text = redact(`Monitoring is alive (sensor alerts) - ${describe(ctx)}\n${firing ? `${firing} sensor alert(s) firing.` : 'No sensor alerts firing.'}`, ctx.env_(), [webhook, sensorWebhook]);
-    const before = data.lastSensorHeartbeat;
-    await postThenKeep(ctx, sensorWebhook, text, () => { data.lastSensorHeartbeat = now; }, () => { if (before === undefined) delete data.lastSensorHeartbeat; else data.lastSensorHeartbeat = before; }, true);
+  for (const target of ctx.targets()) {
+    const before = data.delivery[target.id]?.lastHeartbeat ?? null;
+    if (!heartbeatDue(now, before, ctx.heartbeatAt)) continue;
+    let text;
+    if (target.audience === 'sensors') {
+      const firing = firingOf(isSensorAlert);
+      text = `Monitoring is alive (sensor alerts) - ${describe(ctx)}\n${firing ? `${firing} sensor alert(s) firing.` : 'No sensor alerts firing.'}`;
+    } else {
+      const firing = firingOf(() => true);
+      const notes = [];
+      if (data.muteUntil && now < data.muteUntil) notes.push(`Alerts are muted until ${new Date(data.muteUntil).toISOString()}.`);
+      const mutedIds = Object.entries(data.mutes ?? {}).filter(([, until]) => now < until).map(([id]) => id);
+      if (mutedIds.length) notes.push(`Muted: ${mutedIds.join(', ')}.`);
+      if (notes.length) notes.push(`${listIds(NEVER_MUTED)} are never muted: they are posted anyway.`);
+      const muted = notes.length ? ` ${notes.join(' ')}` : '';
+      text = `Monitoring is alive - ${describe(ctx)}\n${firing ? `${firing} alert(s) firing.` : 'No alerts firing.'}${muted}`;
+    }
+    const message = { audience: target.audience, kind: 'heartbeat', name: describe(ctx), text: redact(text, ctx.env_(), ctx.secrets()) };
+    await postThenKeep(ctx, [target], message, () => { deliveryOf(data, target.id).lastHeartbeat = now; }, () => { deliveryOf(data, target.id).lastHeartbeat = before; });
   }
 }
 
@@ -1746,10 +1798,10 @@ function keptNote(prune) {
 }
 
 // Records one finished pass; returns whether today's backup is done (made and verified).
-function recordDaily(ctx, data, outcome, attempt, webhook) {
+function recordDaily(ctx, data, outcome, attempt, secrets) {
   const now = ctx.now();
   const env = ctx.env_();
-  const clean = text => redact(text, env, webhook);
+  const clean = text => redact(text, env, secrets);
   const date = localDate(now);
   const { backup, verify } = outcome;
   const name = backup.dir ? backup.dir.split('/').pop() : '';
@@ -1779,7 +1831,7 @@ function recordDaily(ctx, data, outcome, attempt, webhook) {
   return backupOk;
 }
 
-export async function runDaily(ctx, data, healthy, runner = dailyRunner, webhook = null) {
+export async function runDaily(ctx, data, healthy, runner = dailyRunner, secrets = null) {
   const now = ctx.now();
   if (data.dailyRunning) {
     if (now >= data.dailyRunning.startedAt && now - data.dailyRunning.startedAt < LIMITS.jobStaleMs) return;
@@ -1803,10 +1855,10 @@ export async function runDaily(ctx, data, healthy, runner = dailyRunner, webhook
     outcome = { backup: { result: 'failed', message: `the daily run crashed: ${error.message}` }, verify: { result: 'skipped' }, prune: { result: 'skipped' }, retention: { result: 'skipped', message: 'retention not run: the daily run crashed' } };
   }
   data.dailyRunning = null;
-  if (outcome.skipped) { data.dailySkipped = { at: now, reason: redact(outcome.skipped, ctx.env_(), webhook) }; saveState(ctx.state, data, ctx.fsApi, { daily: true }); return; }
+  if (outcome.skipped) { data.dailySkipped = { at: now, reason: redact(outcome.skipped, ctx.env_(), secrets) }; saveState(ctx.state, data, ctx.fsApi, { daily: true }); return; }
   data.dailySkipped = null;
   attempt.count += 1; attempt.lastAt = now;
-  attempt.done = recordDaily(ctx, data, outcome, attempt.count, webhook);
+  attempt.done = recordDaily(ctx, data, outcome, attempt.count, secrets);
   saveState(ctx.state, data, ctx.fsApi, { daily: true });
 }
 
@@ -1870,9 +1922,6 @@ export async function runOnce(deps, { checks = CHECKS, heal = selfHeal } = {}) {
   Object.assign(data, loadMutes(deps.state, deps.readText));
   const ctx = makeContext(deps, data);
   ctx.startingGrace = true;   // only this run tolerates a young "starting" container (see checkServices)
-  const webhook = readWebhook(deps.state);
-  const sensorWebhook = readSensorWebhook(deps.state);
-  ctx.sensorWebhook = sensorWebhook;
   // A checker unit from before the split still carries the daily time: the backup then runs below, inside this run.
   const legacy = Boolean(deps.env?.WAREHOUSE_WATCH_DAILY_AT);
   let stuck = false;
@@ -1912,14 +1961,15 @@ export async function runOnce(deps, { checks = CHECKS, heal = selfHeal } = {}) {
   ran.add('daily_timer');   // every run, so the alert clears once the unit is replaced
   data.lastRunAt = now;
   const plan = evaluate(data, results, ran, now);
-  await notify(ctx, webhook, plan, sensorWebhook);
-  await heartbeat(ctx, webhook, sensorWebhook);
+  await notify(ctx, plan);
+  await heartbeat(ctx);
   saveState(deps.state, data, deps.fsApi);
+  ctx.alertLog().ensure();   // the record exists after the first run, whether or not a channel is set
   await pingExternalHeartbeat(ctx);
   // The old unit's pass, as it always ran (the old unit allows it 4 hours): after the checks, the alert and the ping, so none
   // of them waits for it and a crash of the pass loses nothing already saved.
   if (legacy && !stuck && !passHolds) {
-    await runDaily(ctx, data, dailyHealthy(results), dailyRunner, webhook);
+    await runDaily(ctx, data, dailyHealthy(results), dailyRunner, ctx.secrets());
     saveState(deps.state, data, deps.fsApi, { daily: true });
   }
   return { results, plan, data };
@@ -1931,22 +1981,22 @@ export const DAILY_GATE_CHECKS = [['database', checkDatabase], ['services', chec
 export async function runDailyCommand(deps, { checks = DAILY_GATE_CHECKS, daily = dailyRunner } = {}) {
   const data = loadState(deps.state, deps.now(), deps.readText, deps.log);
   const ctx = makeContext(deps, data);
-  const webhook = readWebhook(deps.state);
   // This unit never runs twice at once (systemd does not start an active oneshot), so a pass the state calls running while
   // nothing holds the operator lock was cut off (a power cut, a killed unit): clear the mark now instead of after 4 hours,
   // or the day's backup waits for the next trigger after that.
   if (data.dailyRunning && !lockIsHeld(ctx)) data.dailyRunning = null;
-  await runDaily(ctx, data, async () => dailyHealthy((await runChecks(ctx, checks)).results), daily, webhook);
+  await runDaily(ctx, data, async () => dailyHealthy((await runChecks(ctx, checks)).results), daily, ctx.secrets());
   saveState(deps.state, data, deps.fsApi, { daily: true });
   return { data };
 }
 
 // ---------------------------------------------------------------- commands
-const USAGE = `Usage: node scripts/watch.mjs run | daily | health [--wait SECONDS] | test-message [sensors] | status | mute MINUTES ["ALERT ID"] | unmute ["ALERT ID"]
+const USAGE = `Usage: node scripts/watch.mjs run | daily | health [--wait SECONDS] | test-message [sensors] | history [--days N] | status | mute MINUTES ["ALERT ID"] | unmute ["ALERT ID"]
   run           one pass of the checks (the systemd timer runs this every 5 minutes); it makes no backup, except under an old checker unit that sets WAREHOUSE_WATCH_DAILY_AT (daily_timer_legacy)
   daily         the daily backup, verification, pruning and retention, inside the window after --daily-at (its own timer runs this)
   health        the operator health check now: services, database, gateway, get_public_config RPC probe, PDF renderer (exit 1 on a fault; --wait: seconds to wait for the gateway, default 90)
-  test-message  post a test message to the facility's Slack webhook (test-message sensors: to the separate sensor-alert webhook)
+  test-message  post a test message to the facility's alert channel (test-message sensors: to the separate sensor-alert channel)
+  history       the local record of alert deliveries (logs/alerts.jsonl, 12 months): when, which alerts, which channel, delivered or failed; --days N (default 30)
   status        failing alerts, mutes, the daily jobs and the time zone
   mute          silence all alerts (or one alert id, quoted when it has spaces) for MINUTES; backup_missing and backup_failed are never muted
   unmute        end the mute (all, or one alert id)
@@ -1957,10 +2007,15 @@ newest 7 backups of this installation in $STATE/backups (backups made by hand th
 newest one that passed its verify; pruning and retention run even when the day's backup or verify failed.
 Needs WAREHOUSE_STATE_DIR. Install the timer with: sudo bash scripts/watch-timer.sh install`;
 
-function statusLines(ctx, webhook, now) {
+// "Slack" (the labels of the audience's targets), or null when it has none. Never the address.
+const channelsText = (ctx, audience) => {
+  const labels = targetsOf(ctx.targets(), audience).map(t => `${ADAPTERS[t.type].label} configured`);
+  return labels.length ? labels.join(', ') : null;
+};
+function statusLines(ctx, now) {
   const { data } = ctx;
-  const lines = [`Installation: ${describe(ctx)}`, `Slack webhook: ${webhook ? 'configured' : 'none (alerts are recorded, not posted)'}`,
-    `Sensor Slack webhook: ${readSensorWebhook(ctx.state) ? 'configured' : 'none (sensor alerts go to the facility webhook)'}`];
+  const lines = [`Installation: ${describe(ctx)}`, `Alert channel: ${channelsText(ctx, 'facility') ?? 'none (alerts are recorded, not posted)'}`,
+    `Sensor alert channel: ${channelsText(ctx, 'sensors') ?? 'none (sensor alerts go to the facility channel)'}`];
   let external;
   try { external = readHeartbeatUrl(ctx.state); } catch { external = { problem: 'cannot be read' }; }
   lines.push(`External heartbeat: ${external.problem ? `not sent (${external.problem})` : external.url ? 'configured (pinged at the end of each run)' : 'none (config/heartbeat-url)'}`);
@@ -1991,9 +2046,12 @@ function statusLines(ctx, webhook, now) {
   if (attempt) lines.push(`Daily pass ${attempt.date}: ${attempt.count} of ${LIMITS.dailyAttempts} attempts${attempt.done ? ', done' : ''}`);
   if (data.dailySkipped) lines.push(`Daily pass last skipped at ${new Date(data.dailySkipped.at).toISOString()}: ${data.dailySkipped.reason}`);
   if (data.memoryNote) lines.push(`Note: ${data.memoryNote}`);
-  if (data.lastPostError) lines.push(`Last Slack post failed at ${new Date(data.lastPostError.at).toISOString()}: ${data.lastPostError.message}`);
-  if (data.lastSensorPostError) lines.push(`Last sensor Slack post failed at ${new Date(data.lastSensorPostError.at).toISOString()}: ${data.lastSensorPostError.message}`);
-  lines.push(`Last heartbeat: ${data.lastHeartbeat ? new Date(data.lastHeartbeat).toISOString() : 'never'}`);
+  // The same wording as before the delivery layer: "Last Slack post failed" (facility) and "Last sensor Slack post failed".
+  for (const audience of AUDIENCES) {
+    const failed = data.delivery[TARGET_IDS[audience]]?.lastError;
+    if (failed) lines.push(`Last ${audience === 'sensors' ? 'sensor ' : ''}${ADAPTERS.slack.label} post failed at ${new Date(failed.at).toISOString()}: ${failed.message}`);
+  }
+  lines.push(`Last heartbeat: ${data.delivery[TARGET_IDS.facility]?.lastHeartbeat ? new Date(data.delivery[TARGET_IDS.facility].lastHeartbeat).toISOString() : 'never'}`);
   return lines;
 }
 
@@ -2044,23 +2102,30 @@ export async function main(argv, deps = defaultDeps(), out = text => console.log
     out(`recorded ${name} as verified`);
     return 0;
   }
-  const ctx = makeContext(deps, Object.assign(loadState(deps.state, now, deps.readText), loadMutes(deps.state, deps.readText)));
-  const webhook = readWebhook(deps.state);
-  if (command === 'test-message' && args[0] === 'sensors') {
-    const sensorWebhook = readSensorWebhook(deps.state);
-    if (!sensorWebhook) { out('No sensor Slack webhook is configured for this installation; nothing was sent (sensor alerts go to the facility webhook).'); return 1; }
-    const status = await ctx.post(sensorWebhook, sensorTestMessage(describe(ctx)));
-    out(`Slack answered HTTP ${status}.`);
-    return status >= 200 && status < 300 ? 0 : 1;
+  if (command === 'history') {
+    if (args.length && !(args.length === 2 && args[0] === '--days' && /^\d{1,4}$/.test(args[1]) && Number(args[1]) > 0)) { out('history takes only --days N (1 to 9999).'); return 1; }
+    const days = args.length ? Number(args[1]) : 30;
+    let entries;
+    try { entries = readAlertLog(deps.state, { days, now }); } catch (error) { err(`cannot read ${join(deps.state, ALERT_LOG)} (${error?.code ?? 'error'})`); return 1; }
+    out(entries.length ? entries.map(historyLine).join('\n') : `No alert deliveries are recorded for the last ${days} day${days === 1 ? '' : 's'}.`);
+    return 0;
   }
+  const ctx = makeContext(deps, Object.assign(loadState(deps.state, now, deps.readText), loadMutes(deps.state, deps.readText)));
   if (command === 'test-message') {
-    if (!webhook) { out('No Slack webhook is configured for this installation; nothing was sent.'); return 1; }
-    const status = await ctx.post(webhook, testMessage(describe(ctx)));
-    out(`Slack answered HTTP ${status}.`);
-    return status >= 200 && status < 300 ? 0 : 1;
+    const sensors = args[0] === 'sensors';
+    const list = targetsOf(ctx.targets(), sensors ? 'sensors' : 'facility');
+    if (!list.length) {
+      out(sensors ? 'No sensor alert channel is configured for this installation; nothing was sent (sensor alerts go to the facility channel).' : 'No alert channel is configured for this installation; nothing was sent.');
+      return 1;
+    }
+    const text = (sensors ? sensorTestMessage : testMessage)(describe(ctx));
+    const results = await sendAndRecord(ctx, list, { audience: sensors ? 'sensors' : 'facility', kind: 'test', name: describe(ctx), text });
+    // As before the delivery layer: an answer is said on the normal output, a network error on standard error as "Watch: ...".
+    for (const r of results) { if (r.status === undefined) err(`Watch: ${r.error}`); else out(`${r.label} answered HTTP ${r.status}.`); }
+    return results.every(r => r.ok) ? 0 : 1;
   }
   const data = ctx.data;
-  if (command === 'status') { out(statusLines(ctx, webhook, now).join('\n')); return 0; }
+  if (command === 'status') { out(statusLines(ctx, now).join('\n')); return 0; }
   if (command === 'mute') {
     const minutes = Number(args[0]);
     if (!Number.isFinite(minutes) || minutes <= 0 || minutes > 60 * 24 * 14) { out('mute needs MINUTES (1 to 20160).'); return 1; }

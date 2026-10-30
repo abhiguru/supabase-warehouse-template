@@ -377,7 +377,7 @@ test('setup and the edge function apply the same key set rules', () => {
 
 test('setup.sh passes the central options on and applies the issuer to the database after the auth settings', () => {
   const setup = readFileSync(new URL('../setup.sh', import.meta.url), 'utf8');
-  assert.match(setup, /--admin-name\|--central-issuer\|--central-jwks-url\|--central-jwks-file\|--central-local-code\|--alert-webhook-file\|--letterhead-file\|--gateway-port\)/);
+  assert.match(setup, /--admin-name\|--central-issuer\|--central-jwks-url\|--central-jwks-file\|--central-local-code\|--alert-webhook-file\|--sensor-webhook-file\|--letterhead-file\|--gateway-port\)/);
   const auth = setup.indexOf('scripts/configure-auth.sql');
   const central = setup.indexOf('scripts/configure-central.sql');
   assert.ok(auth > 0 && central > auth && central < setup.indexOf('scripts/configure-sms.sql'));
@@ -1043,6 +1043,41 @@ test('--sensor-webhook-file stores, keeps and removes config/sensor-webhook-url 
     assert.equal(existsSync(join(state, 'config/slack-webhook-url')), true);
     assert.equal(configure(root, { stateDir: state, sensorWebhookFile: 'off', ...hooks }).sensorWebhook, undefined, 'nothing to remove');
     assert.equal(parseConfigureArgs(['--state-dir', state, '--sensor-webhook-file', 'off']).sensorWebhookFile, 'off');
+  } finally { rmSync(scratch, { recursive: true, force: true }); }
+});
+
+test('a sensor webhook needs a facility webhook: refused alone, allowed with it, and the facility one cannot go off beneath it', () => {
+  const scratch = mkdtempSync(join(tmpdir(), 'warehouse-config-sensor-needs-facility-'));
+  const root = join(scratch, 'checkout');
+  const providerEnv = join(scratch, 'provider.env');
+  try {
+    mkdirSync(root);
+    copyFileSync(new URL('../.env.example', import.meta.url), join(root, '.env.example'));
+    writeFileSync(providerEnv, 'SMS_PROVIDER=msg91\nMSG91_AUTH_KEY=provider-key\nMSG91_TEMPLATE_ID=flow-id\nMSG91_PE_ID=pe-id\nMSG91_SENDER_ID=WHOUSE\n', { mode: 0o600 });
+    const hooks = { portFree: () => true, containersRunning: () => false };
+    const facilityFile = join(scratch, 'facility.txt');
+    const sensorFile = join(scratch, 'sensor.txt');
+    writeFileSync(facilityFile, 'https://hooks.slack.com/services/' + 'T0000000/B0000000/facilityfacilityfacility\n', { mode: 0o600 });
+    writeFileSync(sensorFile, 'https://hooks.slack.com/services/' + 'T0000000/B0000001/sensorsensorsensorsensor\n', { mode: 0o600 });
+    const state = join(scratch, 'state');
+    const base = { apiUrl: 'https://api.example.com', company: 'Acme Stores', providerEnv, stateDir: state, ...hooks };
+    // New installation, sensor webhook alone: nothing is created.
+    assert.throws(() => configure(root, { ...base, sensorWebhookFile: sensorFile }), /--sensor-webhook-file needs a facility Slack webhook.*Give --alert-webhook-file first/);
+    assert.equal(existsSync(state), false, 'a refusal changes nothing');
+    // Installed with no facility webhook: still refused.
+    configure(root, { ...base, alertWebhookFile: 'off' });
+    assert.throws(() => configure(root, { stateDir: state, sensorWebhookFile: sensorFile, ...hooks }), /needs a facility Slack webhook/);
+    assert.equal(existsSync(join(state, 'config/sensor-webhook-url')), false);
+    // Given in the same run, both are stored.
+    assert.equal(configure(root, { stateDir: state, alertWebhookFile: facilityFile, sensorWebhookFile: sensorFile, ...hooks }).sensorWebhook, true);
+    // Facility off while the sensor one stays: refused, nothing removed.
+    assert.throws(() => configure(root, { stateDir: state, alertWebhookFile: 'off', ...hooks }), /--alert-webhook-file off would leave a stored sensor webhook.*--sensor-webhook-file off too/);
+    assert.equal(existsSync(join(state, 'config/slack-webhook-url')), true);
+    assert.equal(existsSync(join(state, 'config/sensor-webhook-url')), true);
+    // Both off together is fine.
+    const both = configure(root, { stateDir: state, alertWebhookFile: 'off', sensorWebhookFile: 'off', ...hooks });
+    assert.equal(both.webhook, null);
+    assert.equal(both.sensorWebhook, null);
   } finally { rmSync(scratch, { recursive: true, force: true }); }
 });
 

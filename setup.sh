@@ -184,7 +184,10 @@ bash "$ROOT/scripts/build-images.sh" --replace-optional || echo 'Warning: a runn
 # every run (a few seconds; --no-deps leaves the other services alone) so that the code on disk is the code that runs. Doing it
 # here, not in upgrade.sh, means the release being moved to decides how, and a hand-made upgrade gets it too.
 bash "$ROOT/scripts/compose.sh" up -d --force-recreate --no-deps --wait --wait-timeout 180 functions
+# The sensor-webhook advice is printed once, at the end (sensor-notice), not also by this run.
+export WAREHOUSE_SETUP_SENSOR_NOTICE=yes
 node "$ROOT/scripts/doctor.mjs" --local
+unset WAREHOUSE_SETUP_SENSOR_NOTICE
 # The monitoring checker (scripts/watch.mjs: checks every 5 minutes, Slack alerts) and the daily backup and retention run
 # from systemd timers (two: the checker's and the daily one). Installing a unit needs root, which setup never uses: like the
 # tunnel service and the USB backup, the operator runs the printed command. They also run without a Slack webhook

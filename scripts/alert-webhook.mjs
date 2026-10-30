@@ -282,6 +282,8 @@ if (isMain(import.meta.url)) {
         try {
           const read = text => readHidden(text, { keepRaw: true });
           const ask = async text => { cooked(); try { return await readLine(text); } finally { tty.setRawMode(true); } };
+          // The test message uses postSlackMessage, the sender notify.mjs's Slack adapter also uses. This file must not import
+          // notify.mjs (it imports this one): a top-level await on that cycle never settles.
           writeWebhookFile(out, await obtainWebhook({ company, read, ask, write }));
         } finally { cooked(); }
         write('Slack webhook accepted; setup stores it in the state (mode 0600).\n');

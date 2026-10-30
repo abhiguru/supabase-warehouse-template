@@ -277,20 +277,57 @@ a mute is active.
 node scripts/watch.mjs status          # what is firing, muted, the daily jobs and whether a pass is running, whether the API is closed (maintenance mode), the time zone, the last Slack failure
 node scripts/watch.mjs run             # one pass of the checks now (what the 5-minute timer does)
 node scripts/watch.mjs daily           # the daily pass, if the window is open and today's is not done (what the daily timer does)
-node scripts/watch.mjs test-message    # post a test message to the stored webhook
-node scripts/watch.mjs test-message sensors   # the same for the separate sensor webhook
+node scripts/watch.mjs test-message    # post a test message to the facility's alert channel
+node scripts/watch.mjs test-message sensors   # the same for the separate sensor-alert channel
+node scripts/watch.mjs history [--days N]     # the local record of alert deliveries (default 30 days)
 ```
 
 The window of `daily` is computed from `WAREHOUSE_WATCH_DAILY_AT`, which only the unit sets: to run the pass now with the installed
 time, use `sudo systemctl start --no-block <project>-daily.service` and read it with `journalctl -u <project>-daily.service`.
 
-`test-message` prints the HTTP status Slack answered and exits 0 only for a 2xx. Keep the evidence that a real message
+`test-message` prints the HTTP status the channel answered and exits 0 only for a 2xx. Keep the evidence that a real message
 arrived before relying on alerts.
 
 ## Alert delivery
 
-Each facility creates its own Slack incoming webhook (Slack: Apps, Incoming Webhooks) and gives the URL to whoever
-installs it. `setup.sh --operator` needs it:
+Alerts leave the checker through one delivery layer (`scripts/notify.mjs`). The checker builds a channel-neutral message
+(who it is for, the alerts and their state) and the layer sends it to every **target** of that audience. A target is one
+configured channel; its id is stable (`facility-slack`, `sensors-slack`), and the checker state keeps each target's last
+error and last heartbeat under that id (`delivery` in `config/watch-state.json`; state files from before the layer, with
+`lastPostError`, `lastSensorPostError`, `lastHeartbeat` and `lastSensorHeartbeat`, are read and rewritten in the new shape
+by the next run; for one release the file also keeps those old keys, mirrored from `delivery`, so a rollback or an older daily pass keeps the heartbeat timing and the errors). One target failing never blocks another. Delivery runs on this host, not in the database or a function,
+because an alert has to go out exactly when those are down. The sign-in SMS is a separate path and is not touched.
+
+**Slack is the only channel today.** Nothing about the options, the files or the message text changed with the layer.
+
+**The local record.** Slack is the feed, not the record: its free plan hides messages older than 90 days. Every delivery
+attempt (alerts, the daily heartbeat, test messages and the "cannot save its state" warning) is also appended to
+`logs/alerts.jsonl` in the state: one JSON line with the time, the audience, the kind, the alerts (id, FIRING / STILL FIRING /
+CLEARED, summary) and, per target id, whether it was delivered (HTTP status) or why not. A line never holds a webhook URL.
+The file and its folder are private (0600 / 0700). It is kept 12 months and at about 2 MiB: when it gets larger, or its oldest
+line is older than 12 months, the oldest lines are dropped (the file is rewritten through a temporary file and a rename).
+It is not part of a backup, like the checker's other state (`watch-state.json`). If it cannot be written the checker warns once
+per run and carries on: the record never stops a delivery. Read it with:
+
+```bash
+node scripts/watch.mjs history              # the last 30 days
+node scripts/watch.mjs history --days 365
+```
+
+**Adding a channel later** (nothing of it exists yet): one adapter in `scripts/notify.mjs` (`label`, `validate`, `secrets`,
+`render`, `send`), its own setup option and file next to `config/slack-webhook-url`, and one line in `loadTargets()` that turns
+the file into a target with its own stable id. The checker, `status`, `history` and the doctor need no change.
+
+### Slack
+
+Each facility creates its own Slack **app** and enables its **Incoming Webhooks** (api.slack.com/apps, then Incoming Webhooks,
+Add New Webhook to Workspace). Do not use a legacy incoming webhook (the old "Incoming WebHooks" custom integration) or a
+Workflow Builder webhook: legacy webhooks are deprecated and Workflow Builder hooks need a different payload. Setup cannot tell
+a legacy webhook URL from an app one (both are `https://hooks.slack.com/services/...`), so this is up to whoever creates it. The app counts
+toward the free plan's limit on apps; one app can serve both channels (add one webhook for the facility channel and one for the
+sensor channel to it). The free plan also hides messages older than 90 days, which is what the local record above is for.
+
+Give the URL to whoever installs the facility. `setup.sh --operator` needs it:
 
 - **On a terminal**, without `--alert-webhook-file`, setup asks for the URL (nothing is echoed; a URL that is not
   `https://hooks.slack.com/services/...` is refused, three tries), posts a test message **before anything is stored**,
@@ -300,7 +337,7 @@ installs it. `setup.sh --operator` needs it:
   checkout, one line). Create it without the URL entering the shell history: `install -m 600 /dev/null FILE` and an editor.
 - **Without a terminal and without the option**, setup refuses.
 - **`--alert-webhook-file off`** is for a non-production install: setup warns, removes any stored URL, and the checker
-  records alerts without posting them. `npm run doctor` warns `No Slack webhook` on every run.
+  records alerts without posting them. `npm run doctor` warns `No Slack webhook` on every run (no alert channel).
 
 The URL is stored at `config/slack-webhook-url` in the state (mode 0600; never in git, a log, an environment variable or a
 command line). The URL is not in a backup, so after `db:restore-host` run setup again to give it back (the sensor webhook below as well). It is a secret
@@ -321,14 +358,14 @@ not in a backup, and `node scripts/watch.mjs test-message sensors` tests it.
 - **Heartbeat.** The daily "Monitoring is alive" message goes to the facility webhook as before and, when a sensor webhook is stored, also
   to the sensor webhook (a short "Monitoring is alive (sensor alerts)" message), so a silent sensor channel can be told from a broken one.
   Each webhook's heartbeat is tracked on its own: one failing does not block the other.
-- **Fallback.** With no sensor webhook stored, the sensor alerts go to the facility webhook as before, so nothing is lost.
+- **Fallback.** With no sensor webhook stored, the sensor alerts go to the facility webhook as before, so nothing is lost. The reverse never happens: facility alerts never go to the sensor channel, so `setup.sh` refuses `--sensor-webhook-file` when no facility webhook is stored or given in the same run (give `--alert-webhook-file` first), and refuses `--alert-webhook-file off` while a sensor webhook is stored unless `--sensor-webhook-file off` is given too.
 - **Changing the routing while an alert is firing.** The checker records where an alert's start was sent; its repeats and its clear go
   to the same webhook, so the message that opened an alert in one channel is closed in that channel. Adding or removing the sensor
   webhook therefore takes effect for alerts that start afterwards; if the webhook an alert started on is removed, its later messages go to
   the other one.
-- **Failed posts.** A failed post to the facility webhook is kept as `lastPostError` in the checker state, a failed post to the sensor
-  webhook separately as `lastSensorPostError`; each is cleared only by a successful post to its own webhook. `node scripts/watch.mjs status`
-  shows both.
+- **Failed posts.** A failed post to the facility webhook is kept as `delivery["facility-slack"].lastError` in the checker state, a failed
+  post to the sensor webhook separately as `delivery["sensors-slack"].lastError`; each is cleared only by a successful post to its own
+  webhook. `node scripts/watch.mjs status` shows both, and `watch.mjs history` shows every attempt.
 - **Doctor.** `node scripts/doctor.mjs` warns (never fails) when the facility webhook is stored, sensors are on and no sensor webhook is
   stored ("Sensors are on and Slack alerts are on, but no separate sensor webhook is set: sensor alerts go to the facility channel."), or the
   file does not hold a valid Slack webhook ("the sensor webhook file is not a valid Slack webhook"). It also warns when both files hold the same

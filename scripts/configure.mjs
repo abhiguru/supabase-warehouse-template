@@ -284,6 +284,15 @@ export function configure(root, { stateDir, apiUrl, appUrl, company, providerEnv
   const hadWebhook = [WEBHOOK_FILE, LEGACY_WEBHOOK_FILE].some(file => lstatSync(join(state, file), { throwIfNoEntry: false }));
   const hadSensorWebhook = Boolean(lstatSync(join(state, SENSOR_WEBHOOK_FILE), { throwIfNoEntry: false }));
   const sensorWebhookReport = typeof sensorWebhook === 'string' ? true : sensorWebhook === null && hadSensorWebhook ? null : undefined;
+  // The sensor webhook is an addition to the facility one: alerts for the facility never go to the sensor channel, so a sensor
+  // webhook with no facility webhook left after this run would leave the facility's alerts without a place to go.
+  const facilityAfter = typeof webhook === 'string' || (webhook === undefined && hadWebhook);
+  const sensorAfter = typeof sensorWebhook === 'string' || (sensorWebhook === undefined && hadSensorWebhook);
+  if (sensorAfter && !facilityAfter) {
+    throw new Error(typeof sensorWebhook === 'string'
+      ? '--sensor-webhook-file needs a facility Slack webhook: the sensor webhook is an addition to the facility one, not a replacement. Give --alert-webhook-file first (or in the same run).'
+      : '--alert-webhook-file off would leave a stored sensor webhook with no facility webhook: the sensor webhook is an addition to the facility one. Give --sensor-webhook-file off too, or keep the facility webhook.');
+  }
   const webhookReport = typeof webhook === 'string' ? true : webhook === null && hadWebhook ? null : undefined;
   if (state === checkout || state.startsWith(checkout + sep)) throw new Error('State directory must be outside the checkout.');
   const parent = realpathSync(resolve(state, '..'));

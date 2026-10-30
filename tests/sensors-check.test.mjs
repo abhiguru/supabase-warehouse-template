@@ -35,7 +35,7 @@ test('sensors: a hub is named host (hub_id) when they differ, by its id without 
 
 test('sensors: hubs that report but an old reading is a warning that says to wait after a start', () => {
   const [text] = sensorProblems({ run: db({ hubs: [hub('192.0.2.10', true, 30)], newest_age_s: 3 * 3600 }), bridge: 'running' });
-  assert.match(text, /hubs report, but newest reading 3 hours ago \(limit 16 minutes\); just started\? run the doctor again in 15 minutes/);
+  assert.match(text, /hubs report, but newest reading 3 hours ago \(limit 16 minutes\); just started\? run the doctor again in 16 minutes/);
 });
 
 test('sensors: no reading stored yet warns (a null age is not 0); a future-dated reading is not an error', () => {

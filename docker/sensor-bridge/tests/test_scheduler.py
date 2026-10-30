@@ -590,7 +590,7 @@ class SweepSafetyTest(unittest.TestCase):
         h = NetHarness(net, ["10.0.0.10"], SENSOR_BRIDGE_SCAN="off")
         h.run(0, 30)
         net.hubs["10.0.0.10"] = x
-        h.run(31, 60)
+        h.run(31, 70)  # the next poll is due at 60 s; ticks run every 5 s from 31, so 60 itself is never ticked
         self.assertEqual(h.runners[0].hub_id, "HUB-X")
 
     def test_a_stored_move_is_ignored_when_the_sweep_is_off(self):

@@ -1,7 +1,7 @@
 // The doctor's sensor check (`node scripts/doctor.mjs`, also --local): when the `sensors` capability is on, readings must reach the
 // database. A bridge container can be "healthy" while it polls hub addresses that no longer exist (hubs get new DHCP addresses), so
 // nothing but the data says whether sensors work. Every result is a WARNING, never a failure: a hub outage must not stop a setup,
-// start, upgrade or restore (they end with `doctor --local`). docs/SENSORS.md ("Check that readings arrive") describes it.
+// start, upgrade or restore (they end with `doctor --local`). docs/SENSORS.md ("Verify that readings arrive (required)") describes it.
 
 // With the default SENSOR_BRIDGE_HEARTBEAT_SECONDS=300 every sensor gets a stored row (change or heartbeat) about every 5 minutes, and
 // each hub row is refreshed by every post. The limit is three of those intervals plus one post interval (the queue is sent every
@@ -83,7 +83,7 @@ export function sensorFindings({ run, bridge = null, limitSeconds = DEFAULT_SENS
     else add(`Sensors: hub ${hubName(hub)} offline for ${ageText(Number(hub.change_age_s))}; ${newestText} (${limit}). ${SEE}`, `hub ${hubName(hub)} offline for ${ageText(Number(hub.change_age_s))}`);
   }
   if (readingStale && !hubFault) {
-    add(`Sensors: hubs report, but ${newestText} (${limit}); just started? run the doctor again in 15 minutes. ${SEE}`, newestText);
+    add(`Sensors: hubs report, but ${newestText} (${limit}); just started? run the doctor again in ${Math.ceil(limitSeconds / 60)} minutes. ${SEE}`, newestText);
   }
   return problems;
 }

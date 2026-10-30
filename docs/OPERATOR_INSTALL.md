@@ -273,8 +273,7 @@ Run it after every install, after a move of the checkout, and after `db:restore-
 is missing, and `npm run doctor` warns when the timer is not active or the checker has not run in 15 minutes. The timer is
 installed even with `--alert-webhook-file off`: the checks and the daily backup still run, only the Slack posts are off.
 
-Alerts go to the facility's own Slack channel, so setup needs its incoming-webhook URL (the owner creates it in
-Slack: Apps, Incoming Webhooks). Give `--alert-webhook-file /absolute/path` (a private file, mode 0600, one line), or
+Alerts go to the facility's own Slack channel (through the checker's delivery layer, which also keeps a local record of every delivery in `logs/alerts.jsonl`, read with `node scripts/watch.mjs history`; [MONITORING.md](MONITORING.md#alert-delivery)), so setup needs its incoming-webhook URL (the owner creates a Slack app at api.slack.com/apps and adds an incoming webhook to it; not a legacy webhook or a Workflow Builder one). Give `--alert-webhook-file /absolute/path` (a private file, mode 0600, one line), or
 let setup ask for it on a terminal; without a terminal and without the option setup refuses.
 `--alert-webhook-file off` is for a non-production install. The prompt, the test message, the stored file, the daily
 "Monitoring is alive" message and muting before a planned stop are in [MONITORING.md](MONITORING.md).

@@ -1,4 +1,4 @@
-import { accessSync, constants, existsSync, lstatSync, statfsSync, realpathSync, readFileSync } from 'node:fs';
+import { accessSync, constants, existsSync, lstatSync, statSync, statfsSync, realpathSync, readFileSync } from 'node:fs';
 import { userInfo } from 'node:os';
 import { join, resolve, sep } from 'node:path';
 import { createConnection } from 'node:net';
@@ -13,7 +13,8 @@ import { isMain } from './is-main.mjs';
 import { usbBackupWarning } from './usb-backup-status.mjs';
 import { interruptedUpgradeWarning } from './upgrade-record.mjs';
 import { storedSensorWebhook, storedWebhook } from './alert-webhook.mjs';
-import { defaultDeps, legacyDailyAdvice, maintenanceMarked, runHealth, statePath, stoppedByOperator } from './watch.mjs';
+import { defaultDeps, legacyDailyAdvice, loadState, maintenanceMarked, runHealth, statePath, stoppedByOperator } from './watch.mjs';
+import { ADAPTERS, TARGET_IDS } from './notify.mjs';
 import { sensorReport } from './sensors-check.mjs';
 import { lanChecks } from './lan.mjs';
 import { lanAddressLine, lanSettings } from './lan-common.mjs';
@@ -40,10 +41,11 @@ export const NO_WEBHOOK_WARNING = 'No Slack webhook: alerts are recorded on this
 export const INVALID_SENSOR_WEBHOOK_WARNING = 'Sensors are on and Slack alerts are on, but the sensor webhook file (config/sensor-webhook-url) is not a valid Slack webhook: sensor alerts go to the facility channel. Set a valid one with setup.sh --sensor-webhook-file ... (docs/MONITORING.md).';
 const SENSOR_POST_FAILURE_WINDOW_MS = 24 * 60 * 60 * 1000;
 const sensorWebhookFileExists = state => Boolean(lstatSync(join(state, 'config/sensor-webhook-url'), { throwIfNoEntry: false })?.isFile());
-// The checker's record of its latest failed sensor-webhook post ({ at, message }), or null.
+// The checker's record of its latest failed delivery to the sensor channel ({ at, message }), or null. Read through the
+// checker's own loader, so a state file from before the delivery layer (lastSensorPostError) is understood too.
 function sensorPostFailure(state) {
   try {
-    const failed = JSON.parse(readFileSync(statePath(state), 'utf8'))?.lastSensorPostError;
+    const failed = loadState(state, 0, undefined, () => {}).delivery[TARGET_IDS.sensors]?.lastError;
     return failed && Number.isFinite(failed.at) && typeof failed.message === 'string' ? failed : null;
   } catch { return null; }
 }
@@ -58,10 +60,25 @@ function sensorsOn(state) {
 // backup timer is not active (or the checker unit is the old one that still makes the backup inside its own run), no Slack
 // webhook is stored, the operator stopped the stack (stop.sh) and has not started it again. `timerActive(unit)` and `now` are
 // injectable for tests.
+// The owner of <state>/config (the state owner), as names where the system can resolve them, else the numeric ids.
+// Falls back to the current user when the folder cannot be read.
+export function stateOwner(state) {
+  let uid, gid;
+  try { ({ uid, gid } = statSync(join(state, 'config'))); } catch { const me = userInfo(); uid = me.uid; gid = me.gid; }
+  const name = (cmd, args) => { const r = spawnSync(cmd, args, { encoding: 'utf8' }); return r.status === 0 && r.stdout.trim() ? r.stdout.trim() : null; };
+  return {
+    user: name('id', ['-un', String(uid)]) ?? String(uid),
+    group: name('getent', ['group', String(gid)])?.split(':')[0] ?? String(gid),
+  };
+}
+
 export function checkerWarnings(state, {
   now = Date.now(),
   timerActive = unit => spawnSync('systemctl', ['is-active', '--quiet', unit], { timeout: 10000 }).status === 0,
   serviceText = unit => { try { return readFileSync(join(unitDir(), unit.replace(/\.timer$/, '.service')), 'utf8'); } catch { return null; } },
+  // setup.sh prints the same advice, with the exact command, at its end (alert-webhook.mjs sensor-notice), so its doctor run leaves it out.
+  skipSensorWebhookAdvice = false,
+  canWrite = path => { try { accessSync(path, constants.W_OK); return true; } catch (error) { return error?.code === 'ENOENT'; } },
 } = {}) {
   const out = [];
   const unit = timerUnit(state);
@@ -89,13 +106,22 @@ export function checkerWarnings(state, {
   if (!facilityWebhook) out.push(NO_WEBHOOK_WARNING);
   else if (sensorsOn(state)) {
     const sensorWebhook = storedSensorWebhook(state);
-    if (!sensorWebhook) out.push(sensorWebhookFileExists(state) ? INVALID_SENSOR_WEBHOOK_WARNING : NO_SENSOR_WEBHOOK_WARNING);
+    if (!sensorWebhook) {
+      if (sensorWebhookFileExists(state)) out.push(INVALID_SENSOR_WEBHOOK_WARNING);
+      else if (!skipSensorWebhookAdvice) out.push(NO_SENSOR_WEBHOOK_WARNING);
+    }
     else {
       if (sensorWebhook === facilityWebhook) out.push(SAME_SENSOR_WEBHOOK_WARNING);
-      // The checker clears lastSensorPostError on its next successful sensor post, so a recent one means the latest post failed.
+      // The checker clears the sensor target's lastError on its next successful delivery to it, so a recent one means the latest post failed.
       const failed = sensorPostFailure(state);
-      if (failed && now - failed.at < SENSOR_POST_FAILURE_WINDOW_MS) out.push(`The last post to the sensor Slack webhook failed ${Math.max(0, Math.round((now - failed.at) / 60000))} minutes ago (${failed.message}): sensor alerts may not be reaching the channel. Test it with node scripts/watch.mjs test-message sensors (docs/MONITORING.md).`);
+      if (failed && now - failed.at < SENSOR_POST_FAILURE_WINDOW_MS) out.push(`The last post to the sensor ${ADAPTERS.slack.label} webhook failed ${Math.max(0, Math.round((now - failed.at) / 60000))} minutes ago (${failed.message}): sensor alerts may not be reaching the channel. Test it with node scripts/watch.mjs test-message sensors (docs/MONITORING.md).`);
     }
+  }
+  // The alert record (logs/alerts.jsonl) is written by the checker and the daily pass as the operator user; a root-owned copy
+  // (made by a sudo run of watch.mjs) would make every write fail quietly.
+  const owner = stateOwner(state);
+  for (const path of [join(state, 'logs'), join(state, 'logs/alerts.jsonl')]) {
+    if (!canWrite(path)) out.push(`${path} is not writable by this user (probably created by a run with sudo): the alert record cannot be written. Fix it with: sudo chown -R ${owner.user}:${owner.group} ${join(state, 'logs')}`);
   }
   return out;
 }
@@ -294,7 +320,7 @@ export async function doctor({ hostPreflight = false, preflight = false, local =
   const usb = usbBackupWarning(state);
   // The monitoring checker (scripts/watch.mjs) is run by a systemd timer that an operator installs with sudo
   // (scripts/watch-timer.sh); doctor warns when it is missing, silent, or has nowhere to post.
-  const checker = checkerWarnings(state);
+  const checker = checkerWarnings(state, { skipSensorWebhookAdvice: process.env.WAREHOUSE_SETUP_SENSOR_NOTICE === 'yes' });
   // The numbering rules the facility's GRN, dispatch and invoice numbers follow (docs/OPERATOR_INSTALL.md, "Document numbers"); information only.
   const inDb = args => probe('bash', [resolve(root, 'scripts/compose.sh'), 'exec', '-T', 'db', ...args]);
   const numbering = numberingLine(inDb);
