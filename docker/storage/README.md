@@ -114,3 +114,11 @@ GHSA-4qv8-2p9j-2685 and GHSA-f72v-6w45-q472 (moderate), in both the root 7.30.0 
 copy stays valid for `^8.7.0`), `fast-uri` 3.1.9 and 4.2.3, `ip-address` 10.7.4, `fastify` `^5.12.6`
 (locks 5.12.7). The lock was regenerated as above with npm 11.12.1 and changed only those packages;
 `npm audit --omit=dev` reports 0 vulnerabilities, and the image builds with its lockfile and `npm ls` guards.
+
+2026-10-30: three advisories on `systeminformation`, which the OpenTelemetry host-metrics packages and platformatic pull in:
+[GHSA-3f7j-7jwc-fxfj](https://github.com/advisories/GHSA-3f7j-7jwc-fxfj) (HIGH),
+[GHSA-7648-jmwf-vw7j](https://github.com/advisories/GHSA-7648-jmwf-vw7j) (moderate) and
+[GHSA-4vjg-vx72-qq4g](https://github.com/advisories/GHSA-4vjg-vx72-qq4g) (low). Raised: `systeminformation` 5.33.0 to 5.33.19, within
+every parent's caret range, so no override was needed. The lock was updated with npm 11.12.1
+(`npx -y npm@11.12.1 update systeminformation --package-lock-only --ignore-scripts --lockfile-version 2`) and only those two lock
+entries changed; `npm audit --omit=dev` reports 0 vulnerabilities, and the image builds with its lockfile and `npm ls` guards.
