@@ -9,9 +9,17 @@ permissions:
   contents: read
 
 jobs:
+  # Where a job runs is the repository variable CI_RUNNER, as in ci.yml (a JSON value for runs-on, for example
+  # ["self-hosted","linux","x64","my-label"]; without it, a GitHub-hosted runner). No fork guard is needed here: a tag is pushed only by a
+  # maintainer, and a fork's tag runs in the fork, with the fork's own variables. A self-hosted runner keeps its state between jobs, so the
+  # images job removes what it built and leaves the registry (docs/DEVELOPER_HANDOFF.md, "A self-hosted runner for `operator-install`").
   release:
-    runs-on: ubuntu-latest
+    runs-on: ${{ fromJSON(vars.CI_RUNNER || '"ubuntu-latest"') }}
     steps:
+      - name: Fresh Docker config for this run
+        run: |
+          install -d -m 700 "$RUNNER_TEMP/docker-config"
+          echo "DOCKER_CONFIG=$RUNNER_TEMP/docker-config" >> "$GITHUB_ENV"
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           persist-credentials: false
@@ -81,18 +89,31 @@ jobs:
   # login comes after the build and the scan, so no step that builds or scans logs in, but the job's token (write access to the
   # repository's contents and packages) is held by the runner from the first step to the last, so the build, the scan, the Trivy
   # binary and the repository's scripts all run in a job that holds it. That is accepted: a read-only job for the build and the scan, handing the
-  # images to this one as an artifact, would store several GB per run, and what runs here is pinned (actions by commit, Trivy by
-  # checksum) or is this repository's own tagged code. The job has no other secret. A failure anywhere fails the run before the list
-  # is attached, and a facility then builds as it always did.
+  # images to this one as an artifact, would store several GB per run. The job has no other secret. A failure anywhere fails the run
+  # before the list is attached, and a facility then builds as it always did.
+  # Where it runs: with CI_RUNNER set, on the shared self-hosted runner that also runs pull-request code, Dependabot's included. Each run
+  # gets a fresh Docker config and Trivy cache in its temp folder, which does not protect against a compromise of the runner account
+  # (the docker group is root-equivalent) or of the VM. The owner accepted that risk on 2026-10-30 (docs/DEVELOPER_HANDOFF.md,
+  # "A self-hosted runner for `operator-install`"). To build on GitHub-hosted runners instead, delete the CI_RUNNER variable.
   publish-images:
     needs: release
     # A fork has no right to this registry namespace; its tags are still validated by the job above.
     if: github.repository == 'abhiguru/supabase-warehouse-template'
-    runs-on: ubuntu-latest
+    runs-on: ${{ fromJSON(vars.CI_RUNNER || '"ubuntu-latest"') }}
     permissions:
       contents: write
       packages: write
     steps:
+      - name: Fresh Docker config and Trivy cache for this run
+        # No inherited credential helper or credential store, no switched buildx builder, no Trivy cache from an earlier job.
+        run: |
+          install -d -m 700 "$RUNNER_TEMP/docker-config" "$RUNNER_TEMP/trivy-cache"
+          echo "DOCKER_CONFIG=$RUNNER_TEMP/docker-config" >> "$GITHUB_ENV"
+          echo "TRIVY_CACHE_DIR=$RUNNER_TEMP/trivy-cache" >> "$GITHUB_ENV"
+      - name: Tools this job needs on the runner
+        run: |
+          for t in jq gh curl sha256sum; do command -v "$t" >/dev/null || { echo "::error::$t is not installed on this runner"; exit 1; }; done
+          docker buildx version
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           persist-credentials: false
@@ -142,6 +163,8 @@ jobs:
         # The release checklist's scan (docs/CONTAINER_SECURITY.md, "Exception ledger and the image scan"): a HIGH or CRITICAL row that
         # no valid entry of docker/image-exceptions.json covers, an expired entry or a failed scan fails this step, so nothing below
         # runs and nothing is published.
+        env:
+          WAREHOUSE_SCAN_REPORT_DIR: ${{ runner.temp }}/image-scan
         run: npm run scan:images
       - name: Log in to ghcr.io
         env:
@@ -163,7 +186,9 @@ jobs:
         # github.com/abhiguru?tab=packages to Public (docs/RELEASE_CHECKLIST.md), then run this workflow again.
         run: |
           docker logout ghcr.io
-          for ref in $(jq -r '.images[].ref' "$RUNNER_TEMP/release-images.json"); do
+          refs="$(jq -r '.images[].ref' "$RUNNER_TEMP/release-images.json")"
+          [[ -n "$refs" ]] || { echo "::error::release-images.json lists no image."; exit 1; }
+          for ref in $refs; do
             docker manifest inspect "$ref" > /dev/null || { echo "::error::$ref cannot be read without credentials: make the package public (docs/RELEASE_CHECKLIST.md, 'Image publication')."; exit 1; }
             echo "Readable without credentials: $ref"
           done
@@ -181,3 +206,21 @@ jobs:
               --notes "Draft made by the release workflow for the image list. Replace this note, then publish the release."
           fi
           gh release upload "$GITHUB_REF_NAME" "$RUNNER_TEMP/release-images.json" --repo "$GITHUB_REPOSITORY" --clobber
+      - name: Remove this job's images and log out of ghcr.io
+        if: always()
+        # The runner keeps its state between jobs (a hosted one is a new machine every time): the registry login, and the images this job
+        # built and tagged, which are removed by their exact names (never a prune: the base images and the build cache of other jobs stay).
+        # Nothing here fails the job when there is nothing to remove or a removal fails (a warning); docker logout also succeeds when no login was made.
+        run: |
+          docker logout ghcr.io
+          if [[ -n "${WAREHOUSE_STATE_DIR:-}" && -d "$WAREHOUSE_STATE_DIR" ]]; then
+            registry=ghcr.io/abhiguru/supabase-warehouse-template
+            image_tag="${GITHUB_REF_NAME//+/_}"
+            recipes="$(bash scripts/compose.sh --profile '*' config --format json | node scripts/image-recipes.mjs fingerprints)" || { echo "::warning::could not list the image recipes; nothing removed"; recipes=''; }
+            while IFS=$'\t' read -r service _ image; do
+              [[ -n "$service" ]] || continue
+              for name in "$registry/$service:$image_tag" "$image"; do
+                if docker image inspect "$name" > /dev/null 2>&1; then docker image rm "$name" > /dev/null || echo "::warning::Could not remove $name"; fi
+              done
+            done <<< "$recipes"
+          fi
