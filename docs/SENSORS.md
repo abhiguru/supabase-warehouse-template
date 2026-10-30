@@ -87,7 +87,7 @@ and no `apikey` header is needed). Body at most 256 KiB and 500 readings:
 ```json
 {
   "bridge": { "id": "sensor-bridge", "version": "1.0.0" },
-  "hub": { "id": "<hub device id>", "host": "192.168.1.74", "online": true, "firmware": "1.2.3" },
+  "hub": { "id": "<hub device id>", "host": "192.0.2.74", "online": true, "firmware": "1.2.3" },
   "readings": [
     { "external_id": "<40 hex>", "name": "TH2", "model": "T310", "kind": "change",
       "temperature": 3.4, "humidity": 61, "measured_at": "2026-10-13T08:15:30Z",
@@ -164,7 +164,7 @@ configuration changed, and `stop.sh` stops it with everything else.
 
    | Variable | Value |
    | --- | --- |
-   | `SENSOR_BRIDGE_HUBS` | hub addresses, comma-separated: `192.168.1.74,192.168.1.79` |
+   | `SENSOR_BRIDGE_HUBS` | hub addresses, comma-separated: `192.0.2.74,192.0.2.79` |
    | `TAPO_USERNAME`, `TAPO_PASSWORD` | the Tapo account the hubs were set up with |
    | `SENSOR_INGEST_KEY` | the key from step 1 |
    | `SENSOR_BRIDGE_ID` | optional name shown in `sensor_hubs.bridge_id` (default `sensor-bridge`) |
@@ -198,7 +198,16 @@ configuration changed, and `stop.sh` stops it with everything else.
    bash scripts/compose.sh restart functions
    ```
 
-6. **Take a backup:** `npm run db:backup`. `db:restore` refuses a backup whose
+6. **Check that readings arrive.** Wait about 20 minutes, then run
+   `node scripts/doctor.mjs --local`. While the capability is on it warns, for example
+   `Sensors: hub 192.0.2.10 offline for 5 days; newest reading 5 days ago (limit 16 minutes)`, when
+   no hub has reported, a hub is offline (the warning says for how long) or silent (online, but the bridge has not posted for it),
+   or no reading is newer than the limit. The limit is three times the larger of `SENSOR_BRIDGE_HEARTBEAT_SECONDS` and
+   `SENSOR_BRIDGE_POLL_SECONDS` plus `SENSOR_BRIDGE_POST_SECONDS`: 16 minutes with the defaults (300, 300, 60). When
+   `SENSOR_BRIDGE_HUBS` is set in `compose.env` it also warns that no `sensor-bridge` container exists (an existing container that
+   is stopped or unhealthy is reported by the health check). It is a warning only and never stops a setup or upgrade. The cause
+   is usually a hub whose address changed ([Troubleshooting](TROUBLESHOOTING.md#sensors-show-no-data)).
+7. **Take a backup:** `npm run db:backup`. `db:restore` refuses a backup whose
    `instance.json` or `compose.env` differs from the state, so a backup taken
    before steps 2 and 5 can be restored only with `db:restore-host` (or with
    `--restore-config`, which brings back the old configuration).
@@ -247,6 +256,11 @@ two bridges would each send their own observation times.
    The queue and change detector live in the volume `sensor-bridge_data`;
    `docker compose down` keeps it, `down -v` deletes it with anything not yet
    delivered. `docker/sensor-bridge/README.md` describes every setting.
+
+   The doctor judges this bridge by the data alone: keep `SENSOR_BRIDGE_HUBS` empty in the installation's `compose.env` (the
+   container is checked only for the profile way above, where a missing one would otherwise be a false alarm). The doctor reads
+   the limit from `compose.env`: copy a raised `SENSOR_BRIDGE_HEARTBEAT_SECONDS`, `_POLL_SECONDS` or `_POST_SECONDS` there too, or
+   accept the 16 minute limit.
 
 ## What is in a backup
 

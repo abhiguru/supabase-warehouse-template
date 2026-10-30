@@ -14,6 +14,7 @@ import { usbBackupWarning } from './usb-backup-status.mjs';
 import { interruptedUpgradeWarning } from './upgrade-record.mjs';
 import { storedWebhook } from './alert-webhook.mjs';
 import { defaultDeps, legacyDailyAdvice, maintenanceMarked, runHealth, statePath, stoppedByOperator } from './watch.mjs';
+import { sensorReport } from './sensors-check.mjs';
 import { lanChecks } from './lan.mjs';
 import { lanAddressLine, lanSettings } from './lan-common.mjs';
 
@@ -269,7 +270,11 @@ export async function doctor({ hostPreflight = false, preflight = false, local =
   const inDb = args => probe('bash', [resolve(root, 'scripts/compose.sh'), 'exec', '-T', 'db', ...args]);
   const numbering = numberingLine(inDb);
   const numberingWarnings = numberingProblems(inDb).map(text => `\nWarning: ${text}`).join('');
-  const note = [upgradeWarning, usb, ...checker].filter(Boolean).map(text => `\nWarning: ${text}`).join('') + lanNote + numberingWarnings + (numbering ? `\n${numbering}` : '');
+  // Sensors are optional. When the capability is on, readings must reach the database; every fault is a warning (scripts/sensors-check.mjs).
+  const sensorWarnings = manifest?.capabilities?.sensors === true
+    ? sensorReport({ env, db: inDb, compose: args => probe('bash', [resolve(root, 'scripts/compose.sh'), ...args]) }).map(text => `\nWarning: ${text}`).join('')
+    : '';
+  const note = [upgradeWarning, usb, ...checker].filter(Boolean).map(text => `\nWarning: ${text}`).join('') + lanNote + numberingWarnings + sensorWarnings + (numbering ? `\n${numbering}` : '');
   if (local) return `Local operator services and gateway are healthy.${note}`;
   if (maintenance) throw new Error('Maintenance mode is on (config/maintenance): the API answers 503 "upgrading" to phones on purpose, so the external check cannot pass. Open it with: bash scripts/maintenance.sh off');
   const response = await fetch(`${origin}/functions/v1/get-public-config`, { signal: AbortSignal.timeout(15000), redirect: 'error' });

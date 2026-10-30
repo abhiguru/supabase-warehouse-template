@@ -277,6 +277,21 @@ capability is off or the `functions` service was not restarted after
   keeps its queue and tries again every 5 minutes.
 - **`event=post_failed` with 503:** migration 74 is not applied, or the function runtime or the database
   is down (`node scripts/doctor.mjs --local`). The queue keeps the readings.
+- **`node scripts/doctor.mjs --local` warns `Sensors: hub ... offline for ...` or `silent`:** the capability is on but no reading
+  arrives. A bridge container that is "healthy" can still poll addresses that no longer exist: hubs get new DHCP addresses, and
+  the bridge keeps reporting such a hub offline (so "offline for 5 days" is the time since it went offline). Compare
+  `SENSOR_BRIDGE_HUBS` in `config/compose.env` with the hub's address in the router, give the hub a DHCP reservation, then recreate
+  the bridge: `bash scripts/compose.sh --profile sensors up -d --wait sensor-bridge` (the container does not re-read
+  `compose.env` otherwise; add `--force-recreate` if nothing changed), or for a bridge run as its own Compose project
+  `docker compose up -d --force-recreate` in the bridge's folder. "Silent" means the hub is online but the bridge has not posted
+  for it: read the bridge log. The check is a warning only (SENSORS.md, "Check that readings arrive").
+- **The doctor keeps warning about a hub that is gone:** a hub removed from `SENSOR_BRIDGE_HUBS`, or a ghost row whose `hub_id` is
+  the address that did not answer, is never refreshed again. Remove the row (the sensors and their latest values stay, their
+  hub link becomes empty: `ON DELETE SET NULL`):
+
+  ```bash
+  bash scripts/compose.sh exec -T db psql -U supabase_admin -d postgres -c "DELETE FROM public.sensor_hubs WHERE hub_id = '192.0.2.10'"
+  ```
 - **`event=hub_error` or `hub_offline` for a hub:** check from the host that its address answers (`ping`,
   and that it has a DHCP reservation); a Docker network whose subnet overlaps the LAN (`docker network
   inspect`) hides it from containers. A wrong Tapo password shows as a login failure for that hub only.
