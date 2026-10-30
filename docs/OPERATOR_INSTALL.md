@@ -2478,10 +2478,10 @@ with `db:verify-restore`, the monitoring and boot units, a Cloudflare tunnel cre
 installed as a service (the external doctor, run on the host, healthy), a reboot with nobody signed in, recovery after
 `wsl --shutdown`, `wsl --terminate` and a host reboot, disabling and enabling the keep-alive task for planned work, a WSL update
 (with the task disabled), and a USB backup drive passed into the distro with `usbipd-win` (enrolled, and one automatic run
-copied and verified). What was **not** verified: `sudo` asking for a password, Windows 11, the Home edition, mirrored
+copied and verified), and the sensor bridge's `--once --dump` check against Tapo H200 hubs ([Sensors (Windows)](#sensors-windows)). What was **not** verified: `sudo` asking for a password, Windows 11, the Home edition, mirrored
 networking, that the `.wslconfig` memory limit takes effect, recovery after a WSL update with the task enabled, the version after
 `wsl --update`, a real Windows Update reboot, a graceful stop when Windows shuts down, an automatic re-attach of the USB drive (the Warehouse USB task), registering either task with `scripts/windows/register-tasks.ps1` (the keep-alive task was verified from the pasted block it replaces, and the script is written to register the same task), a physical re-plug of the
-drive, a USB run that also takes a fresh backup, printing, and the sensor bridge ([Sensors (Windows)](#sensors-windows)).
+drive, a USB run that also takes a fresh backup, printing, and the sensor bridge running continuously and posting readings ([Sensors (Windows)](#sensors-windows)).
 
 ### Prerequisites
 
@@ -2713,14 +2713,19 @@ restart in step 4 of this list, not `sudo reboot` (not verified yet).
 
 The optional sensor bridge ([SENSORS.md](SENSORS.md#run-it-as-a-profile-of-the-installation)) runs inside the distro like the
 rest of the stack. The hub addresses in `SENSOR_BRIDGE_HUBS` must be reachable from inside the distro; under WSL's default NAT
-networking outgoing connections to the LAN normally work, and mirrored networking is not verified (as in
+networking outgoing connections to the LAN normally work (verified below), and mirrored networking is not verified (as in
 [Ingress and the LAN](#ingress-and-the-lan)). Before you start the bridge, set `SENSOR_BRIDGE_HUBS`, `TAPO_USERNAME` and
 `TAPO_PASSWORD` as in step 2 of that section (the ingest key is not needed for this check), then run:
 
 [Ubuntu] `bash scripts/compose.sh --profile sensors run --rm sensor-bridge --once --dump`
 
 The check passes when it prints the sensors of each hub with no `"error"` entry and exits 0; an unreachable hub is printed as
-`{"host": ..., "error": ...}` and the command exits 1. Not verified yet on Windows.
+`{"host": ..., "error": ...}` and the command exits 1.
+
+Verified, on Windows 10 Pro 22H2 with WSL's default NAT networking: this check reached three Tapo H200 hubs (firmware 1.7.7) from
+inside the distro and from a container on the stack's default network, listed all four T310 sensors of the three hubs (one of them offline at its hub, listed without an error) and exited 0.
+**Not verified**: the bridge running continuously (`up`) and posting readings to the ingest function, mirrored networking, and
+Windows 11.
 
 ### Backups off the host (Windows)
 
