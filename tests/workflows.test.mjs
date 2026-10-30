@@ -57,6 +57,27 @@ test('no workflow names a self-hosted runner; CI jobs take their runner from a r
   for (const line of ciRunsOn) {
     assert.match(line, /^ {4}runs-on: \$\{\{ github\.event\.pull_request\.head\.repo\.fork && 'ubuntu-latest' \|\| fromJSON\(vars\.(?:CI_RUNNER|OPERATOR_INSTALL_RUNNER) \|\| '"ubuntu-latest"'\) \}\}$/, line.trim());
   }
+  // The release workflow takes its runner from the same CI_RUNNER variable (no fork guard: only maintainers push tags), and its images
+  // job, which logs in to the registry and builds on a runner that keeps state, ends with a step that always runs: log out, then remove
+  // the images it made by exact name (no prune).
+  const releaseText = readFileSync(new URL('../.github/workflows/release.yml', import.meta.url), 'utf8');
+  const releaseRunsOn = releaseText.split('\n').filter(line => /^ {4}runs-on:/.test(line));
+  assert.equal(releaseRunsOn.length, 2);
+  for (const line of releaseRunsOn) assert.equal(line, "    runs-on: ${{ fromJSON(vars.CI_RUNNER || '\"ubuntu-latest\"') }}");
+  const cleanup = releaseText.split('\n      - name: Remove this job\'s images and log out of ghcr.io\n')[1];
+  assert.ok(cleanup, 'the cleanup step exists, last in the images job');
+  assert.match(cleanup, /^        if: always\(\)\n/);
+  assert.match(cleanup, /\n {10}docker logout ghcr\.io\n/);
+  assert.match(cleanup, /docker image rm "\$name"/);
+  assert.doesNotMatch(cleanup.replace(/^ *#.*$/gm, ''), /prune|rmi -f|image rm -f|--force/, 'images go by exact name, never by a prune');
+  assert.match(releaseText, /install -d -m 700 "\$RUNNER_TEMP\/docker-config" "\$RUNNER_TEMP\/trivy-cache"/);
+  assert.match(releaseText, /echo "DOCKER_CONFIG=\$RUNNER_TEMP\/docker-config" >> "\$GITHUB_ENV"/);
+  assert.match(releaseText, /echo "TRIVY_CACHE_DIR=\$RUNNER_TEMP\/trivy-cache" >> "\$GITHUB_ENV"/);
+  const images = releaseText.slice(releaseText.indexOf('\n  publish-images:\n'));
+  assert.ok(images.indexOf('DOCKER_CONFIG=') < images.indexOf('docker login'), 'the fresh Docker config comes before the login');
+  assert.match(images, /for t in jq gh curl sha256sum; do command -v "\$t"/);
+  assert.match(images, /\n {10}docker buildx version\n/);
+  assert.ok(images.indexOf('docker buildx version') < images.indexOf('actions/checkout'), 'the tool check runs first');
 });
 
 test('every Dependabot ignore entry names the update types it ignores', () => {
@@ -507,11 +528,12 @@ test('release.yml publishes the release images in a job of their own: build, sca
   // The steps, in order: state for the scan, the look for a pre-release of this commit, Trivy, scan (build + scan), login, push (or, for a
   // final tag on the commit of its pre-release, the re-tag), anonymous check, attach.
   const names = [...publish.matchAll(/\n      - (?:name: ([^\n]+)|uses: ([^\n@ ]+))/g)].map(match => match[1] ?? match[2]);
-  assert.deepEqual(names, ['actions/checkout', 'actions/setup-node', 'Throwaway operator state for the build and the scan',
+  assert.deepEqual(names, ['Fresh Docker config and Trivy cache for this run', 'Tools this job needs on the runner', 'actions/checkout', 'actions/setup-node', 'Throwaway operator state for the build and the scan',
     'Reuse the images of the pre-release at this commit, if there is one', 'Install Trivy 0.76.0',
     'Build every image without the cache and scan it', 'Log in to ghcr.io', 'Push the images that were scanned and write release-images.json',
     'Re-tag the images of the pre-release and write release-images.json',
-    'Check that the images pull without credentials', 'Attach release-images.json to the GitHub Release']);
+    'Check that the images pull without credentials', 'Attach release-images.json to the GitHub Release',
+    "Remove this job's images and log out of ghcr.io"]);
   const step = name => `\n${publish.split(`\n      - name: ${name}\n`)[1].split(/\n      - /)[0]}`;
   // The scan is the repository's gate (npm run scan:images = scripts/scan-images.sh: a row no valid exception covers, an expired exception
   // or a failed scan exits 1, tests/image-scan.test.mjs), run as a plain step: its failure stops the job before any login or push.

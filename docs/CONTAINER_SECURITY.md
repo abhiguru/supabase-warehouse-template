@@ -452,6 +452,8 @@ file or an image, builds the image from the same recipe on its own host, as befo
 and is not the scanned one. The scan of the release is then the check of the recipe, and the weekly base-image and dependency checks and each
 release's own scan stay the check of what a rebuild gets.
 
+**Where the release images are built.** With the repository variable `CI_RUNNER` set, the release images are built and pushed (`packages: write`) on the shared self-hosted runner that also runs pull-request code, Dependabot's included. Each run uses a fresh Docker config and Trivy cache in its temp folder; this does not protect against a compromise of the runner account (the `docker` group is root-equivalent) or of the VM, and a compromised runner could publish images of its own. The owner accepted that risk on 2026-10-30. Deleting the `CI_RUNNER` variable builds on GitHub-hosted runners instead ([DEVELOPER_HANDOFF.md](DEVELOPER_HANDOFF.md#a-self-hosted-runner-for-operator-install)).
+
 **Release-day packages.** A published image keeps the operating-system packages of the day it was built, and nothing rescans a published
 digest. A facility that installs an old tag later gets older packages than a build on its host would, and a final release re-tags the images of
 its candidate, so its packages are those of the candidate's day. What is new is found by the weekly base-image and dependency checks and by the

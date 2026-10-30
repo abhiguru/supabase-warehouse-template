@@ -2424,6 +2424,10 @@ that brings a new major documents the steps, the way back and the disk it needs,
 is needed on an installation that already runs the release's major. The procedure for 17 to 18 is in this guide as it stands on main at
 commit `b45ae0b` (`git show b45ae0b:docs/OPERATOR_INSTALL.md`).
 
+**v0.7.0 (from v0.6.1: PostgreSQL 15 to 18 and a new baseline).** There is no supported move: v0.6.1 has no `upgrade.sh`, and v0.7.0
+refuses a v0.6.1 database and its backups ([Baseline reload](#baseline-reload), which also points to an old, unsupported data-only conversion). Install v0.7.0 afresh in a new state directory; the way
+back is the old installation, left as it is until the new one is in use; the disk needed is that of a second installation.
+
 ### Collation changes
 
 Text indexes (customer names, document numbers, the search fields) store strings in the order the C library of the **database image**

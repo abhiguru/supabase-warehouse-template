@@ -8,6 +8,14 @@ file used to carry for earlier installations are in git: `git show b45ae0b:CHANG
 
 ## Unreleased
 
+## v0.7.0 (2026-10-30)
+
+**PostgreSQL 15 to 18, and one baseline migration.**
+v0.6.1 ran `supabase/postgres:15.8.1.135` with migrations 0 to 98; this release runs `postgres:18.6-trixie`, and
+`migrations/00000000000000_baseline.sql` replaces `00000000000000_initial_schema.sql` to `00000000000110_invoice_form_materialized.sql`
+(110 files, no 50; 99 to 110 were never released; every name: `git ls-tree --name-only migrations-pre-baseline migrations/`).
+v0.6.1 has no `upgrade.sh`, and this release's would refuse it anyway (the PostgreSQL major differs and the migration ledger does not match): see "Operator actions".
+
 ### Added
 
 - `scripts/notify.mjs`: alerts leave the checker through one channel-neutral delivery layer (adapters, targets with stable ids, per-target state `delivery` in `config/watch-state.json`; the old `lastPostError` and `lastHeartbeat` keys move into `delivery`; sensor failures are tracked in `delivery` per channel). Slack is still the only channel; the options and files are the same, and some wording changed: `watch.mjs status` shows the alert channels (the line "Slack webhook: ..." is replaced by channel lines), `test-message` and its help say "alert channel" instead of "Slack webhook" (including the "nothing was sent" message when none is configured); the alert, heartbeat and failed-post texts are otherwise as before. For one release the state file also still writes all the mirrored old keys (`lastPostError`, `lastHeartbeat`, and `lastSensorPostError` / `lastSensorHeartbeat` when set; and the old `via` values) from `delivery`, and reads state written by a pre-release build, as pre-release and rollback compatibility, so a rollback to such a build or an older daily pass keeps working; the mirror can go in a later release. Every delivery attempt is also kept in `logs/alerts.jsonl` (mode 0600, 12 months, no URLs), read with `node scripts/watch.mjs history [--days N]`.
@@ -43,8 +51,14 @@ file used to carry for earlier installations are in git: `git show b45ae0b:CHANG
 
 ### Operator actions
 
-None for a new installation from this release: there is no earlier installation to bring forward, and an installation of v0.6.1 or earlier is not
-upgraded; install afresh.
+1. PostgreSQL 15 to 18 and a new baseline: an installation of v0.6.1 or earlier cannot be upgraded (v0.6.1 has no `upgrade.sh`, and
+   this release refuses its database and its backups; see [Major PostgreSQL upgrade](docs/OPERATOR_INSTALL.md#major-postgresql-upgrade)).
+   Install afresh in a new state directory, following [docs/OPERATOR_INSTALL.md](docs/OPERATOR_INSTALL.md) from the top; the old
+   installation's data does not come along.
+2. `scripts/watch-timer.sh` is new and `scripts/backup-usb.sh` was rewritten since v0.6.1: `sudo bash scripts/watch-timer.sh install --state "$WAREHOUSE_STATE_DIR"`
+   and, for a USB backup drive, `sudo bash scripts/backup-usb.sh setup --state "$WAREHOUSE_STATE_DIR" --enroll /dev/sdX1` (after the guide's backup-key steps)
+   ([USB backup drive](docs/OPERATOR_INSTALL.md#usb-backup-drive)). An installation made from `main` after the baseline that moves with
+   `bash upgrade.sh v0.7.0` runs the same two commands without `--enroll`.
 
 ### Changed
 
@@ -504,7 +518,7 @@ The app needs no change (it never reads the refresh token's lifetime; the one an
   break-glass code is read, a live SMS code with an open break-glass code, service accounts and deleted profiles, and the refusal of
   ranges wider than /8 or /32.
 
-### Earlier in this release (not yet tagged)
+### Earlier in this release
 
 - **PostgreSQL 18.** `postgres:18.6-trixie` by index digest (was 17.11); no migration changes. A PostgreSQL 17 data directory does
   not open in 18: use the Major PostgreSQL upgrade. `PGDATA` is set to `/var/lib/postgresql/data`; the version guards read the
@@ -512,7 +526,7 @@ The app needs no change (it never reads the refresh token's lifetime; the one an
   of the upgrade; `restore.sh` runs `vacuumdb --all --analyze-in-stages`. Data checksums are on for new clusters.
 - **PostgreSQL 17 on the official image and one baseline migration.** `migrations/00000000000000_baseline.sql` (sha256
   `fcd627d11323af7ef35f101dd0827dff55adee3970cb420355e33a6b007b6ed8`) is an exact squash of migrations 0 to 110; the next
-  migration was 111 (it is 125 now: 123 is this round, 124 is reserved). One superuser, `supabase_admin`; the agreed roles are
+  migration was 111 (the next is 128). One superuser, `supabase_admin`; the agreed roles are
   `anon`, `authenticated`, `service_role`, `authenticator`, `supabase_storage_admin` and (optional pooler) `pgbouncer`. Version
   preflight and ledger guard refuse older installations before anything changes; backups record `database_image=` and a
   pre-baseline backup restores only with the tag.
@@ -533,7 +547,7 @@ The app needs no change (it never reads the refresh token's lifetime; the one an
     date rules, orders kept in step with dispatch edits, no invoice while stock remains, GRN history in `audit_log`;
   - 122 push review: lower-after-raise gives back what the order lent, a save of lines alone moves the version token.
 
-### Fixed
+### Fixed (earlier in this release)
 
 - **Setup waits for the Docker daemon before refusing.** Right after a cold start of the host or of a WSL distro (or a Linux reboot),
   `setup.sh` and `doctor` stopped with "Missing or unavailable prerequisite: docker" because the daemon was not answering yet. When the
