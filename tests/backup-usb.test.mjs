@@ -248,6 +248,7 @@ test('setup is root-only through sudo and installs the helper, units, rule and c
     assert.match(conf, /^FRESH_BACKUP=yes$/m);
     const unit = readFileSync(join(f.etc, 'systemd/system/warehouse-usb-backup@.service'), 'utf8');
     assert.match(unit, /^User=installer$/m);
+    assert.match(unit, /^After=docker\.service \S+-stack\.service$/m);
     assert.match(unit, new RegExp(`^ExecStartPre=\\+${helper} mount %I$`, 'm'));
     assert.match(unit, new RegExp(`^ExecStart=/bin/bash ${f.root}/scripts/backup-usb.sh run --device %I$`, 'm'));
     assert.match(unit, new RegExp(`^ExecStopPost=\\+${helper} unmount %I$`, 'm'));

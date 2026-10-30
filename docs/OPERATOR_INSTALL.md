@@ -1624,8 +1624,8 @@ that imitates it receives nothing.
    set up with readable archives and never reruns it keeps writing them: `status`, `npm run doctor` and the checker's `usb_backup`
    alert say so until it does. `sudo bash scripts/backup-usb.sh uninstall` removes everything it installed and never
    touches a drive.
-2. From then on: plug the drive in and wait (on a Windows host, plug it in and then attach it to the distro with `usbipd attach`:
-   [Backups off the host](#backups-off-the-host-windows)). The run takes minutes at first and longer as the photos grow (it reads the backup,
+2. From then on: plug the drive in and wait (on a Windows host with the Warehouse USB task, plug it into the same port and wait (not verified yet);
+   without the task, attach it with `usbipd attach`: [Backups off the host](#backups-off-the-host-windows)). The run takes minutes at first and longer as the photos grow (it reads the backup,
    writes and reads back one archive, and checks every archive it keeps); when the drive disappears from the file manager
    (or `lsblk` shows no mount point for it), it is unmounted and safe to remove. Do not unplug during a copy; an
    interrupted archive is left as a `.partial` file that the next run removes, together with any checksum or signature file
@@ -3028,7 +3028,7 @@ installed as a service (the external doctor, run on the host, healthy), a reboot
 (with the task disabled), and a USB backup drive passed into the distro with `usbipd-win` (enrolled, and one automatic run
 copied and verified). What was **not** verified: `sudo` asking for a password, Windows 11, the Home edition, mirrored
 networking, that the `.wslconfig` memory limit takes effect, recovery after a WSL update with the task enabled, the version after
-`wsl --update`, a real Windows Update reboot, a graceful stop when Windows shuts down, an automatic re-attach of the USB drive, a physical re-plug of the
+`wsl --update`, a real Windows Update reboot, a graceful stop when Windows shuts down, an automatic re-attach of the USB drive (the Warehouse USB task), a physical re-plug of the
 drive, a USB run that also takes a fresh backup, and printing.
 
 ### Prerequisites
@@ -3189,8 +3189,8 @@ Do not type the password into the command line (`-Password (Read-Host ...)` show
 - The task shows **Running** all the time, and the 2-minute repeat ends with `LastTaskResult` 2147946720 (0x800710E0) because it
   finds the first instance still running. That is expected and not a fault.
 - After the Windows account's password changes, update the task, or it stops starting (not verified yet):
-  `Set-ScheduledTask -TaskName 'Warehouse WSL' -User $c.UserName -Password $c.GetNetworkCredential().Password` with a new
-  `$c` from `Get-Credential`. `Register-ScheduledTask` fails on an existing name unless you add `-Force`.
+  update both tasks: `Set-ScheduledTask -TaskName 'Warehouse WSL' -User $c.UserName -Password $c.GetNetworkCredential().Password` with a new
+  `$c` from `Get-Credential`, and the same for `'Warehouse USB'`. `Register-ScheduledTask` fails on an existing name unless you add `-Force`.
 - Recovery times measured with the verified task (single samples per run, plus or minus 20 seconds): the public address answered
   again about 40 seconds to 2 minutes after `wsl --shutdown`, about 85 seconds after `wsl --terminate`, and about 70 to 90
   seconds after a host reboot with nobody signed in.
@@ -3222,13 +3222,16 @@ modes passing.
 
 1. [Ubuntu] `export WAREHOUSE_STATE_DIR=...`, then `bash stop.sh`.
 2. [Ubuntu] Silence the checker for the window: `node scripts/watch.mjs mute <minutes>`.
-3. [PS-admin] `Disable-ScheduledTask 'Warehouse WSL'`, so the distro is not started again in the middle of the work.
+3. [PS-admin] `Disable-ScheduledTask 'Warehouse WSL'`, so the distro is not started again in the middle of the work. If the
+   [Warehouse USB task](#backups-off-the-host-windows) exists, also `Disable-ScheduledTask 'Warehouse USB'`.
 4. Do the work: update WSL (`wsl --update`), Windows, `wsl --shutdown`, restart.
 5. [PS-admin] `Enable-ScheduledTask 'Warehouse WSL'`, then `Start-ScheduledTask 'Warehouse WSL'`.
 6. [Ubuntu] `bash start.sh`, then `node scripts/watch.mjs unmute` and the doctor in both modes.
+7. [PS-admin] If the Warehouse USB task exists, `Enable-ScheduledTask 'Warehouse USB'` now that both doctor modes pass; its repeating
+   trigger attaches the drive within 2 minutes, and that starts a USB run.
 
 A task left disabled keeps the facility down after the next restart of Windows. `Disable-ScheduledTask` does not stop the
-keep-alive that is already running, so the distro stays up until the next `wsl --shutdown`, WSL update or restart of Windows.
+keep-alive or the USB loop that is already running, so the distro stays up until the next `wsl --shutdown`, WSL update or restart of Windows.
 While the work is going on, the public address answers 530 when the tunnel or the distro is down, and 502 when the tunnel is up
 but the stack is stopped (for example after `stop.sh`); both are normal.
 
@@ -3239,10 +3242,10 @@ restart in step 4 of this list, not `sudo reboot` (not verified yet).
 
 ### Backups off the host (Windows)
 
-**A Windows host meets the off-host backup requirement only while the operator attaches the USB drive to the distro after every
-restart, and that blocks an unattended go-live for a real facility.** The USB drive is the off-host copy
-([PRODUCTION_DEPENDENCIES.md](PRODUCTION_DEPENDENCIES.md)), and `backup-usb.sh` writes only to an enrolled USB drive that the
-distro can see. On this route the drive is passed into the distro with `usbipd-win` on Windows.
+**A Windows host meets the off-host backup requirement only while the USB drive is attached to the distro, and the attach is lost
+whenever the distro stops. The "Warehouse USB" task below is meant to attach it again by itself; it is not verified yet.** The USB
+drive is the off-host copy ([PRODUCTION_DEPENDENCIES.md](PRODUCTION_DEPENDENCIES.md)), and `backup-usb.sh` writes only to an enrolled
+USB drive that the distro can see. On this route the drive is passed into the distro with `usbipd-win` on Windows.
 
 Verified on WSL 3.0.3 with usbipd-win 5.3.0: the distro's kernel has exFAT, the udev rule fires inside the distro when the drive
 is attached, the drive was enrolled, and an automatic run copied the newest verified backup and the saved images to the drive,
@@ -3251,22 +3254,56 @@ read them back and passed the restore verification of the copy. The attach was t
 with a `sudo` password (the test host used passwordless `sudo`).
 
 Install usbipd-win once: download the signed MSI from its GitHub releases and run it from an elevated PowerShell,
-[PS-admin] `msiexec /i <msi> /qn /norestart`. The `usbipd` command is found only in sessions opened after the install. Then:
+[PS-admin] `msiexec /i <msi> /qn /norestart`. The `usbipd` command is found only in sessions opened after the install. Then, in
+this order:
 
-- [PS-admin] `usbipd list`, to find the drive's bus id.
-- [PS-admin] `usbipd bind --busid <id>`, once; the bind persists.
-- [PS] `usbipd attach --wsl --busid <id>`, every time the drive has to reach the distro (run from an elevated PowerShell in the test;
-  the usbipd-win documentation says an ordinary one is enough). Inside the distro, `lsblk` shows the
-  drive as `usb` and `exfat`, and USB backup continues as written in [USB backup drive](#usb-backup-drive).
+1. [PS-admin] `usbipd list`, to find the drive's bus id.
+2. [PS-admin] `usbipd bind --busid <id>`, once; the bind persists.
+3. Register the keep-alive task first ([above](#keep-the-distro-running-and-start-it-at-boot)), then the "Warehouse USB" task
+   (not verified yet). [PS-admin], in a console on the host. The task runs as the Windows account that owns the distro. First find the full
+   path of the tool with `(Get-Command usbipd).Source`; the default install is the path below. Put your bus id from step 1 in place
+   of `<busid>`:
 
-The usbipd-win documentation says the bus id changes when the stick moves to another port; that was not tested here.
+   ```powershell
+   $c = Get-Credential -UserName "$env:COMPUTERNAME\<windows-user>" -Message 'Windows account that owns the distro'
+   $a = New-ScheduledTaskAction -Execute 'C:\Program Files\usbipd-win\usbipd.exe' -Argument 'attach --wsl Ubuntu-24.04 --busid <busid> --auto-attach --unplugged'
+   $t = @((New-ScheduledTaskTrigger -AtStartup), (New-ScheduledTaskTrigger -Once -At (Get-Date) -RepetitionInterval (New-TimeSpan -Minutes 2)))
+   $s = New-ScheduledTaskSettingsSet -ExecutionTimeLimit ([TimeSpan]::Zero) -MultipleInstances IgnoreNew -StartWhenAvailable -AllowStartIfOnBatteries -DontStopIfGoingOnBatteries
+   Register-ScheduledTask -TaskName 'Warehouse USB' -Action $a -Trigger $t -Settings $s -User $c.UserName -Password $c.GetNetworkCredential().Password -RunLevel Highest
+   ```
 
-**The attach does not survive a restart.** After a host reboot the drive was listed as Shared, not Attached (verified); the
-drive is also expected to detach whenever the distro stops (`wsl --shutdown`, a WSL update; not read back in the test). Every plug-in on Windows needs
-a `usbipd attach` as well, so "plug the drive in and wait" does not apply there. There is no automatic re-attach: none is built
-or tested, so do not rely on one. Until one exists and is verified, a Windows host meets the off-host requirement only if the
-operator attaches the drive after every restart. If nobody does, the `usb_backup` alert and `npm run doctor` warn once the last
-copy is over 7 days old (the default of `WAREHOUSE_USB_BACKUP_MAX_AGE_DAYS`). Printing over USB has the same limits
+   It is shaped like the keep-alive task for a reason. `--auto-attach` keeps running and attaches the stick again whenever it comes
+   back, but it refuses to start while the distro is down and ends when WSL stops (from the usbipd-win source; not tested here);
+   the repeating trigger starts it again after every `wsl --shutdown`, WSL update or restart, and `IgnoreNew` keeps one copy running.
+   A repeat while the distro is down ends with `LastTaskResult` 1, which is expected. The loop holds a distro session, so it also keeps
+   the distro up. `--wsl Ubuntu-24.04` ties the loop to the warehouse distro, like the keep-alive's `-d Ubuntu-24.04`. `--unplugged` lets it start while the
+   stick is out. The bus id belongs to the USB port, not to the stick: keep the stick in the same port (the usbipd-win
+   documentation says the id changes with the port; not tested here). If you must move it: [PS-admin] `Stop-ScheduledTask 'Warehouse USB'`,
+   repeat steps 1 and 2 for the new bus id, register the task again with `-Force` added to `Register-ScheduledTask` (with a new `$c`),
+   then `Start-ScheduledTask 'Warehouse USB'`. To remove the task: [PS-admin]
+   `Stop-ScheduledTask 'Warehouse USB'; Unregister-ScheduledTask 'Warehouse USB' -Confirm:$false`, then `usbipd detach --busid <id>`.
+   Like the keep-alive task, it shows Running all the time, and a repeat that finds it running is expected, not a fault.
+   Read it back with `Get-ScheduledTask 'Warehouse USB' | Get-ScheduledTaskInfo` and
+   `Get-ScheduledTask 'Warehouse USB' | Select -ExpandProperty Settings`, then `usbipd list`: with the stick in, its state
+   should be **Attached**. Whether the task works while nobody is signed in is not verified yet.
+4. [Ubuntu] Inside the distro, `lsblk` shows the drive as `usb` and `exfat`. Then set up USB backup as written in
+   [USB backup drive](#usb-backup-drive), with `--daily` now that the drive stays attached:
+   `sudo bash scripts/backup-usb.sh setup --state "$WAREHOUSE_STATE_DIR" --daily --enroll /dev/sdX1`. Every re-attach (after a
+   restart, a WSL update or a re-plug) also starts a USB run through the udev rule, as a plug-in does on Linux.
+   Setup copies nothing to a drive that is already attached. Make the first copy with [PS] `usbipd detach --busid <id>`: the task's loop
+   attaches it again within seconds and the run starts (the usbipd-win behaviour; not tested here). Check with
+   `bash scripts/backup-usb.sh status`. After a restart a USB run may start within a few minutes and hold the operator lock: wait for it
+   (`journalctl -f -u 'warehouse-usb-backup@*'`) before `start.sh`, `setup.sh` or `upgrade.sh`.
+
+Fallback, if the task is not registered or does not work: [PS] `usbipd attach --wsl --busid <id>` by hand, every time the drive
+has to reach the distro (run from an elevated PowerShell in the test; the usbipd-win documentation says an ordinary one is enough).
+
+**Without the task the attach does not survive a restart.** After a host reboot the drive was listed as Shared, not Attached
+(verified); it is also expected to detach whenever the distro stops (`wsl --shutdown`, a WSL update; not read back in the test), and
+every plug-in on Windows needs an attach too. The "Warehouse USB" task is the answer to that, but it has not been run through a
+reboot or a `wsl --shutdown` yet. Until it is verified, check `usbipd list` for "Attached" after every restart and use the manual
+attach if it says "Shared". If nobody does, the `usb_backup` alert and `npm run doctor` warn once the last copy is over 7 days old
+(the default of `WAREHOUSE_USB_BACKUP_MAX_AGE_DAYS`). Printing over USB has the same limits
 ([PRINTING.md](PRINTING.md)), and is not verified on this route. Copying files to a Windows drive through `/mnt/<drive>` loses the
 extended attributes and ownership that a restore needs from the stored photos, so it is not a substitute.
 
@@ -3286,6 +3323,8 @@ Before the facility goes live, on this host, with nobody signed in to Windows:
    this host only). If any step does not behave as written, stop and report it; do not go live.
 4. Check the keep-alive task after it is registered: it shows Running, with the two triggers.
 5. A USB backup drive, enrolled and copying a verified backup, and still working after the same restart, is required for a real facility.
-   On Windows the drive has to be attached again after every restart ([Backups off the host](#backups-off-the-host-windows)); this
-   fails unattended, so a Windows host does not yet pass acceptance unless the operator attaches the drive after each restart.
+   On Windows this is met with the Warehouse USB task (not verified yet): after the same restart `usbipd list` shows the drive
+   Attached and `bash scripts/backup-usb.sh status` shows a successful run after the restart, without anyone attaching it
+   ([Backups off the host](#backups-off-the-host-windows)). If it shows Shared, this host does not pass: report it; a manual
+   `usbipd attach` is only a stopgap, not acceptance.
    Printing, where the facility uses it, is not verified on this route either.

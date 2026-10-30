@@ -239,7 +239,7 @@ kept_setting() {
 }
 
 cmd_setup() {
-  local state='' enroll='' daily='' fresh='' encrypt='' keep='' uid gid user group old legacy encrypt_set switched='' stored_encrypt escrow=unknown
+  local stack project state='' enroll='' daily='' fresh='' encrypt='' keep='' uid gid user group old legacy encrypt_set switched='' stored_encrypt escrow=unknown
   while (($#)); do
     case "$1" in
       --state) (($# > 1)) || usage; state="$2"; shift 2 ;;
@@ -262,6 +262,10 @@ cmd_setup() {
   [[ -n "$state" ]] || die 'setup needs --state /absolute/path/to/the/warehouse/state.'
   safe_path "$state" 'The state directory'; safe_path "$ROOT" 'The checkout'
   [[ "$(realpath -m "$state")" == "$state" && -d "$state" && -f "$state/config/compose.env" ]] || die "$state is not an installed operator state (no symlinks, needs config/compose.env)."
+  # Ordered after the stack's boot unit, named as scripts/watch-timer.sh names it (<project>-stack; the same hash name when the project is unreadable).
+  project="$(sed -n 's/^WAREHOUSE_PROJECT_NAME=//p' "$state/config/compose.env" 2>/dev/null | head -n 1)"
+  if [[ "$project" =~ ^[A-Za-z0-9][A-Za-z0-9_-]{0,63}$ ]]; then stack="$project-stack"
+  else stack="warehouse-h$(printf '%s' "$state" | sha256sum | cut -c1-12)-stack"; fi
   [[ "$(stat -c %u -- "$state")" == "$uid" ]] || die "$state is not owned by $user."
   [[ "$(stat -c %u -- "$ROOT")" == "$uid" ]] || die "The checkout $ROOT is not owned by $user."
   # The helper copy runs as root, so its source must not be writable by anyone but its owner.
@@ -309,7 +313,7 @@ cmd_setup() {
 [Unit]
 Description=Warehouse backup to USB drive %I
 Wants=docker.service
-After=docker.service
+After=docker.service $stack.service
 
 [Service]
 Type=oneshot
