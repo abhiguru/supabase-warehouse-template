@@ -1605,7 +1605,7 @@ that imitates it receives nothing.
    (`status` warns when they do not): the unit has a 6-hour time limit for a run and carries a keep count other than 3 if you chose one;
    both reach an installation only through this rerun. `sudo bash scripts/backup-usb.sh uninstall` removes everything it installed and never
    touches a drive.
-2. From then on: plug the drive in and wait (on a Windows host with the Warehouse USB task, plug it into the same port and wait (not verified yet);
+2. From then on: plug the drive in and wait (on a Windows host with the Warehouse USB task, plug it into the same port and wait;
    without the task, attach it with `usbipd attach`: [Backups off the host](#backups-off-the-host-windows)). The run takes minutes at first and longer as the photos grow (it reads the backup,
    writes and reads back one archive, and checks every archive it keeps); when the drive disappears from the file manager
    (or `lsblk` shows no mount point for it), it is unmounted and safe to remove. Do not unplug during a copy; an
@@ -2478,10 +2478,18 @@ with `db:verify-restore`, the monitoring and boot units, a Cloudflare tunnel cre
 installed as a service (the external doctor, run on the host, healthy), a reboot with nobody signed in, recovery after
 `wsl --shutdown`, `wsl --terminate` and a host reboot, disabling and enabling the keep-alive task for planned work, a WSL update
 (with the task disabled), and a USB backup drive passed into the distro with `usbipd-win` (enrolled, and one automatic run
-copied and verified), and the sensor bridge's `--once --dump` check against Tapo H200 hubs ([Sensors (Windows)](#sensors-windows)). What was **not** verified: `sudo` asking for a password, Windows 11, the Home edition, mirrored
+copied and verified), and the sensor bridge's `--once --dump` check against Tapo H200 hubs ([Sensors (Windows)](#sensors-windows)).
+
+Also verified, with both tasks registered by `scripts/windows/register-tasks.ps1` (Windows 10 Pro 22H2): after `Restart-Computer`
+and after `wsl --shutdown`, with no one touching anything, the distro came back by itself (about 1 minute), `usbipd-win` attached
+the USB drive again within about 1 minute of that, the USB backup unit ran after the stack unit and succeeded, and the monitoring
+checker raised no false alert. A console session was signed in again after the restart (Windows auto logon, apparently), so the
+test did not show the tasks working with nobody signed in. The tasks store the account's password and should not depend on a
+signed-in session, but that was **not tested** with auto logon off.
+What was **not** verified: `sudo` asking for a password, Windows 11, the Home edition, mirrored
 networking, that the `.wslconfig` memory limit takes effect, recovery after a WSL update with the task enabled, the version after
-`wsl --update`, a real Windows Update reboot, a graceful stop when Windows shuts down, an automatic re-attach of the USB drive (the Warehouse USB task), registering either task with `scripts/windows/register-tasks.ps1` (the keep-alive task was verified from the pasted block it replaces, and the script is written to register the same task), a physical re-plug of the
-drive, a USB run that also takes a fresh backup, printing, and the sensor bridge running continuously and posting readings ([Sensors (Windows)](#sensors-windows)).
+`wsl --update`, a real Windows Update reboot, a graceful stop when Windows shuts down, a restart with the tasks registered by the script and no
+console session signed in at all, a physical re-plug of the drive, a USB run that also takes a fresh backup, printing, and the sensor bridge running continuously and posting readings ([Sensors (Windows)](#sensors-windows)).
 
 ### Prerequisites
 
@@ -2553,8 +2561,10 @@ Notes for typing commands into the distro from Windows:
 - `wsl` starts in the Windows working directory, so a `git clone` typed without `cd ~` lands on the Windows disk. Open a shell
   with `wsl -d Ubuntu-24.04 --cd ~`, or `cd ~` first.
 - `wsl -l -v` prints UTF-16: captured into a file or a pipe it contains null bytes.
-- A command run as `wsl -d Ubuntu-24.04 -- bash -c "node ..."` is not a login shell and does not read `~/.profile`, where the
-  Node `PATH` is set, so it finds no `node`. Use `bash -lc '...'`, in the keep-alive task and in scripts too.
+- A command run as `wsl -d Ubuntu-24.04 -- bash -c "node ..."` is not a login shell and does not read `~/.profile`, so it finds
+  no `node` and no `WAREHOUSE_STATE_DIR`. Run such commands (your own scripts or jobs started from Windows) as
+  `wsl.exe -d Ubuntu-24.04 -u warehouse -- bash -lc '<command>'`. The tasks that `register-tasks.ps1` creates run no warehouse
+  command and need no login shell.
 - A multi-line step such as the `printf ... | sudo tee` lines of this guide is mangled by nested quoting (for example `ssh`
   into Windows, then `wsl`): the file is silently not written. Work in a shell inside the distro, or put the steps in a script.
 - Prove that the distro itself restarted with `ps -o lstart= -p 1`; `uptime -s` does not change after `wsl --terminate`.
@@ -2609,8 +2619,18 @@ Differences:
 - Under WSL 3.0.3, WSL mounts full images read-only at `/usr/src/linux-headers-...-WSL2` and `/usr/lib/linux-tools/...`. The checker
   skips read-only mounts, so it raises no `disk_low` alert for them (not yet observed on a WSL host).
 - Decide the public hostname before the first setup ([Setup](#setup)).
-- A shell started later needs the Node `PATH` and the state directory again: `export WAREHOUSE_STATE_DIR=...` in `~/.profile`, and
-  `bash -lc` when a command is started from Windows.
+- Put the Node `PATH` and `export WAREHOUSE_STATE_DIR=...` in `~/.profile`: the Ubuntu terminal is a login shell and reads it
+  (for commands started from Windows see [the notes above](#wsl-and-ubuntu-2404-with-systemd)).
+
+- The clock: `systemd-timesyncd` keeps the distro's clock right by NTP (`timedatectl` shows `NTP service: active`). After the
+  distro starts, or after the Windows host has been asleep or busy, the clock can be off by several seconds and `timedatectl`
+  can show `System clock synchronized: no`; `clock_unsynced` has fired on a WSL2 host this way (clock about 13 s ahead). The
+  checker raises it when `NTPSynchronized` is `no` or the clock is more than 10 s from the public address's clock, and alerts
+  after two checker runs in a row ([MONITORING.md](MONITORING.md)). Check `timedatectl status`, `timedatectl timesync-status`
+  (a small `Offset` and a recent server mean it is working) and `systemctl status systemd-timesyncd`. If it stays `no`, run
+  `sudo timedatectl set-ntp true` and `sudo systemctl restart systemd-timesyncd`, and check that the host can reach its time
+  servers (UDP 123 not blocked). This was **not** tried on a Windows host while the alert was firing (the clock was
+  synchronised, offset under 1 s, when looked at afterwards).
 
 ### Keep the distro running and start it at boot
 
@@ -2623,14 +2643,16 @@ stayed down for nearly 10 minutes after `wsl --shutdown`). The verified form is 
 
 The task is registered by `scripts/windows/register-tasks.ps1` from the checkout inside the distro: boot plus every 2 minutes,
 running whether or not anyone is signed in, as the Windows account that owns the distro (`SYSTEM` cannot see the distro). It is
-not verified yet that the script registers it correctly. The same task, registered by hand, was verified and read back, and the script is written to register the same task: Running; RunLevel Highest; MultipleInstances IgnoreNew; StartWhenAvailable; both battery switches off
+verified that tasks registered by the script bring the distro back after a host restart and after `wsl --shutdown`
+([Windows host (Ubuntu in WSL2)](#windows-host-ubuntu-in-wsl2)). Read back after the script ran (verified, including
+`-Force` replacing existing tasks and `-BusId` registering both): Running; RunLevel Highest; MultipleInstances IgnoreNew; StartWhenAvailable; both battery switches off
 (`DisallowStartIfOnBatteries` and `StopIfGoingOnBatteries` False); RestartCount 999 at 1 minute; no time limit; the boot trigger
 and the 2-minute repeating trigger enabled. Do not run the script while the tasks are disabled for planned work; it registers
 them enabled and starts them.
 
 [PS-admin], in a console on the host (the script asks for the password with `Get-Credential`, which may not prompt over a remote
 session). Run it from an elevated PowerShell of the Windows account that owns the distro (the account that ran `wsl --install`).
-The prompt is filled in with that account; type its password. The script refuses if the account typed at the prompt is not the one running it. Use the checkout path of this guide (`~/backend` for the user
+The prompt is filled in with that account; type its password. The script refuses if the account typed at the prompt is not the one running it (not tested). Use the checkout path of this guide (`~/backend` for the user
 `warehouse`):
 
 ```powershell
@@ -2639,7 +2661,8 @@ powershell -NoProfile -ExecutionPolicy Bypass -File \\wsl.localhost\Ubuntu-24.04
 
 - `-ExecutionPolicy Bypass` applies to this one command only; it does not change the machine's policy. It also avoids the
   "not digitally signed" refusal that a script read from a network path can meet under `RemoteSigned`. The `\\wsl.localhost`
-  command above is itself not verified yet. If `\\wsl.localhost` is not found, use `\\wsl$\Ubuntu-24.04\...` for the same path.
+  command above is verified (Windows 10 22H2, elevated PowerShell, with `-Force -BusId`). If the path is not found right after the
+  distro starts, try again a few seconds later. If `\\wsl.localhost` is still not found, use `\\wsl$\Ubuntu-24.04\...` for the same path.
   If the script still does not start from there, copy it to your own temp folder and run it from there (not verified on
   Windows 10 22H2):
   `Copy-Item \\wsl$\Ubuntu-24.04\home\warehouse\backend\scripts\windows\register-tasks.ps1 $env:TEMP\`, then
@@ -2647,15 +2670,16 @@ powershell -NoProfile -ExecutionPolicy Bypass -File \\wsl.localhost\Ubuntu-24.04
   not `C:\Temp`: a folder that other users can write to is unsafe for a script that runs elevated. An execution policy set by
   Group Policy overrides `-ExecutionPolicy Bypass`.
 - Parameters: `-Distro` (default `Ubuntu-24.04`), `-BusId` (also registers the USB task, see
-  [Backups off the host](#backups-off-the-host-windows)), `-UsbOnly`, and `-Force` (replace tasks that exist; without it the
+  [Backups off the host](#backups-off-the-host-windows)), `-UsbOnly`, and `-Force` (replace tasks that exist (verified); without it the
   script refuses). The script checks that it is elevated and that the distro exists before it changes anything, asks once for the
   password, never stores or prints it, starts the task, and reads it back: State, LastRunTime, LastTaskResult, the triggers
   (with the repeat duration; empty means no end), MultipleInstances, the battery switches, RunLevel, the user and logon type, the
   restart settings, time limit, StartWhenAvailable and the action. Check that the task shows Running with the boot trigger and the 2-minute
   repeating trigger.
-- The task shows **Running** all the time, and the 2-minute repeat ends with `LastTaskResult` 2147946720 (0x800710E0) because it
-  finds the first instance still running. That is expected and not a fault.
-- After the Windows account's password changes, update the tasks, or they stop starting (not verified yet): run the script
+- The task shows **Running** all the time (`LastTaskResult` 267009, 0x41301, means running now), and the 2-minute repeat ends with
+  2147946720 (0x800710E0) because it finds the first instance still running. Both are expected and not a fault; the script
+  prints the same note.
+- After the Windows account's password changes, update the tasks, or they stop starting (a password change was not tested; the rerun with `-Force` itself is verified): run the script
   again with `-Force`, with the stick plugged in (add `-BusId <id>` if the USB task exists; the bus id is in
   `(Get-ScheduledTask 'Warehouse USB').Actions.Arguments`). Alternatively, for each task:
   `Set-ScheduledTask -TaskName 'Warehouse WSL' -User $c.UserName -Password $c.GetNetworkCredential().Password` with a new
@@ -2730,7 +2754,7 @@ Windows 11.
 ### Backups off the host (Windows)
 
 **A Windows host meets the off-host backup requirement only while the USB drive is attached to the distro, and the attach is lost
-whenever the distro stops. The "Warehouse USB" task below is meant to attach it again by itself; it is not verified yet.** The USB
+whenever the distro stops. The "Warehouse USB" task below attaches it again by itself (verified after a host restart and after `wsl --shutdown`).** The USB
 drive is the off-host copy ([PRODUCTION_DEPENDENCIES.md](PRODUCTION_DEPENDENCIES.md)), and `backup-usb.sh` writes only to an enrolled
 USB drive that the distro can see. On this route the drive is passed into the distro with `usbipd-win` on Windows.
 
@@ -2747,7 +2771,7 @@ this order:
 1. [PS-admin] `usbipd list`, to find the drive's bus id.
 2. [PS-admin] `usbipd bind --busid <id>`, once; the bind persists.
 3. Register the keep-alive task first ([above](#keep-the-distro-running-and-start-it-at-boot)), then the "Warehouse USB" task
-   (not verified yet). [PS-admin], in a console on the host, after `usbipd bind`, with the bus id from step 1 (the command is
+   [PS-admin], in a console on the host, after `usbipd bind`, with the bus id from step 1 (the command is
    the one of the keep-alive section with `-UsbOnly -BusId`; the task runs as the Windows account that owns the distro, and the
    script finds `usbipd.exe` itself and refuses a bus id that is not shared):
 
@@ -2766,7 +2790,7 @@ this order:
    `Stop-ScheduledTask 'Warehouse USB'; Unregister-ScheduledTask 'Warehouse USB' -Confirm:$false`, then `usbipd detach --busid <id>`.
    Like the keep-alive task, it shows Running all the time, and a repeat that finds it running is expected, not a fault.
    The script reads the task back and prints `usbipd list` for the bus id; with the stick in, its state
-   should be **Attached** within 2 minutes once the distro is up. Whether the task works while nobody is signed in is not verified yet.
+   should be **Attached** within 2 minutes once the distro is up. It re-attached the drive after a host restart and after `wsl --shutdown`; whether it does so with no console session signed in is not verified.
 4. [Ubuntu] Inside the distro, `lsblk` shows the drive as `usb` and `exfat`. Then set up USB backup as written in
    [USB backup drive](#usb-backup-drive), with `--daily` now that the drive stays attached:
    `sudo bash scripts/backup-usb.sh setup --state "$WAREHOUSE_STATE_DIR" --daily --enroll /dev/sdX1`. Every re-attach (after a
@@ -2781,9 +2805,8 @@ has to reach the distro (run from an elevated PowerShell in the test; the usbipd
 
 **Without the task the attach does not survive a restart.** After a host reboot the drive was listed as Shared, not Attached
 (verified); it is also expected to detach whenever the distro stops (`wsl --shutdown`, a WSL update; not read back in the test), and
-every plug-in on Windows needs an attach too. The "Warehouse USB" task is the answer to that, but it has not been run through a
-reboot or a `wsl --shutdown` yet. Until it is verified, check `usbipd list` for "Attached" after every restart and use the manual
-attach if it says "Shared". If nobody does, the `usb_backup` alert and `npm run doctor` warn once the last copy is over 7 days old
+every plug-in on Windows needs an attach too. The "Warehouse USB" task is the answer to that: it was run through a host restart and a
+`wsl --shutdown`. Still check `usbipd list` for "Attached" after every restart and use the manual attach if it says "Shared". If nobody does, the `usb_backup` alert and `npm run doctor` warn once the last copy is over 7 days old
 (the default of `WAREHOUSE_USB_BACKUP_MAX_AGE_DAYS`). Printing over USB has the same limits
 ([PRINTING.md](PRINTING.md)), and is not verified on this route. Copying files to a Windows drive through `/mnt/<drive>` loses the
 extended attributes and ownership that a restore needs from the stored photos, so it is not a substitute.
@@ -2804,7 +2827,7 @@ Before the facility goes live, on this host, with nobody signed in to Windows:
    this host only). If any step does not behave as written, stop and report it; do not go live.
 4. Check the keep-alive task after it is registered: it shows Running, with the two triggers.
 5. A USB backup drive, enrolled and copying a verified backup, and still working after the same restart, is required for a real facility.
-   On Windows this is met with the Warehouse USB task (not verified yet): after the same restart `usbipd list` shows the drive
+   On Windows this is met with the Warehouse USB task: after the same restart `usbipd list` shows the drive
    Attached and `bash scripts/backup-usb.sh status` shows a successful run after the restart, without anyone attaching it
    ([Backups off the host](#backups-off-the-host-windows)). If it shows Shared, this host does not pass: report it; a manual
    `usbipd attach` is only a stopgap, not acceptance.

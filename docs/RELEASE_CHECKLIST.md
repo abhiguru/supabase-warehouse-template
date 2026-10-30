@@ -172,14 +172,15 @@ record the result and the evidence named (command output or a timed log) in the 
 - [ ] Both tasks registered with `scripts/windows/register-tasks.ps1` (with `-BusId` for the USB task); record the script's read-back output.
 - [ ] The keep-alive task read back (`Get-ScheduledTask 'Warehouse WSL' | Get-ScheduledTaskInfo` and its settings): Running, both
       triggers, `IgnoreNew`, battery switches off.
-- [ ] Recovery after a reboot with nobody signed in, and after `wsl --shutdown`; record seconds until the first 200 for each.
+- [ ] Recovery after a reboot with nobody signed in (Windows auto logon off; check with `quser` or the Security log for no interactive logon), and after `wsl --shutdown`; record seconds until the first 200 for each.
 - [ ] The planned-work order of the guide end to end, including `Disable-ScheduledTask`, `Enable-ScheduledTask` and both doctor
       modes at the end; record any step that did not behave as written.
 - [ ] USB: the "Warehouse USB" task registered, `usbipd list` shows the stick "Attached", enrol, and one automatic run; record the
       run's journal summary and that the copy was verified.
-- [ ] The stick is "Attached" again in `usbipd list` after a reboot with nobody signed in, and after `wsl --shutdown`, and a USB run
+- [ ] The stick is "Attached" again in `usbipd list` after a reboot with nobody signed in (Windows auto logon off; check with `quser` or the Security log for no interactive logon), and after `wsl --shutdown`, and a USB run
       after each restart succeeded (`backup-usb.sh status`); record the seconds it took.
-- [ ] Known gaps noted in the release note, if still open: the Warehouse USB re-attach, if not yet verified by the items above.
+- [ ] Known gaps noted in the release note, if still open: a restart with no console session signed in (Windows auto logon off)
+      with the tasks registered by the script.
 
 ## Release note
 
