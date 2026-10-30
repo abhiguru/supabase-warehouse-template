@@ -205,7 +205,9 @@ configuration changed, and `stop.sh` stops it with everything else.
    or no reading is newer than the limit. The limit is three times the larger of `SENSOR_BRIDGE_HEARTBEAT_SECONDS` and
    `SENSOR_BRIDGE_POLL_SECONDS` plus `SENSOR_BRIDGE_POST_SECONDS`: 16 minutes with the defaults (300, 300, 60). When
    `SENSOR_BRIDGE_HUBS` is set in `compose.env` it also warns that no `sensor-bridge` container exists (an existing container that
-   is stopped or unhealthy is reported by the health check). It is a warning only and never stops a setup or upgrade. The cause
+   is stopped or unhealthy is reported by the health check). It is a warning only and never stops a setup or upgrade. The 5-minute
+   checker judges the same things and sends the alert `sensors_stale` to Slack (after two failing runs in a row, not in the first
+   16 minutes after a start), so a bridge that polls dead addresses is noticed without anyone running the doctor. The cause
    is usually a hub whose address changed ([Troubleshooting](TROUBLESHOOTING.md#sensors-show-no-data)).
 7. **Take a backup:** `npm run db:backup`. `db:restore` refuses a backup whose
    `instance.json` or `compose.env` differs from the state, so a backup taken
@@ -274,7 +276,8 @@ volume when one is left (it holds no database state).
 
 ## Troubleshooting
 
-See [TROUBLESHOOTING.md](TROUBLESHOOTING.md#sensors-show-no-data).
+See [TROUBLESHOOTING.md](TROUBLESHOOTING.md#sensors-show-no-data). The Slack alert `sensors_stale` (docs/MONITORING.md) and the
+warning of `node scripts/doctor.mjs --local` have the same causes; the doctor names each fault and the command to read the bridge log.
 
 ## Licence
 

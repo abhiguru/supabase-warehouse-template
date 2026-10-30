@@ -45,25 +45,30 @@ const hubName = hub => (hub.host && hub.host !== hub.hub_id ? `${hub.host} (${hu
 // Compose could not be asked (then it is not judged). Only "does not exist" is judged here; an existing exited or unhealthy
 // container is reported by the health check (scripts/watch.mjs, OPTIONAL_SERVICES). A bridge run as its own Compose project
 // (docs/SENSORS.md) leaves SENSOR_BRIDGE_HUBS empty here and is judged by the data alone.
-// `run` takes the psql arguments after `compose.sh exec -T db`. Returns the warnings (an empty list when all is well).
-export function sensorProblems({ run, bridge = null, limitSeconds = DEFAULT_SENSOR_LIMIT_S }) {
+// `run` takes the psql arguments after `compose.sh exec -T db`. Returns the findings, each { text, short }: `text` is the doctor's
+// whole warning, `short` the same fault in a few words without the commands (the 5-minute checker's alert summary; scripts/watch.mjs,
+// checkSensors). An empty list means all is well. `settling` (the checker, right after a start) judges only the container: no
+// database is asked, because readings need up to the limit to arrive after the stack or the bridge has started.
+export function sensorFindings({ run, bridge = null, limitSeconds = DEFAULT_SENSOR_LIMIT_S, settling = false }) {
   const limit = `limit ${ageText(limitSeconds)}`;
   const problems = [];
+  const add = (text, short) => problems.push({ text, short });
   if (bridge === '') {
-    problems.push(`Sensors: SENSOR_BRIDGE_HUBS is set in config/compose.env but no sensor-bridge container exists, so no readings arrive. Start it with: ${START}. (A bridge run as its own Compose project needs SENSOR_BRIDGE_HUBS empty here.) ${SEE}`);
+    add(`Sensors: SENSOR_BRIDGE_HUBS is set in config/compose.env but no sensor-bridge container exists, so no readings arrive. Start it with: ${START}. (A bridge run as its own Compose project needs SENSOR_BRIDGE_HUBS empty here.) ${SEE}`, 'no sensor-bridge container exists');
   }
+  if (settling) return problems;
   const answer = run(['psql', '-X', '-qAt', '-v', 'ON_ERROR_STOP=1', '-U', 'supabase_admin', '-d', 'postgres', '-c', SENSORS_SQL]);
   let found;
   try { found = answer.ok ? JSON.parse(answer.output.trim()) : null; } catch { found = null; }
   if (!found || !Array.isArray(found.hubs)) {
-    problems.push(`Sensors: could not read sensor_hubs and sensor_readings from the database, so whether readings arrive is not known. Run node scripts/doctor.mjs --local again. ${SEE}`);
+    problems.push(`Sensors: could not read sensor_hubs and sensor_readings from the database, so whether readings arrive is not known. Run node scripts/doctor.mjs --local again. ${SEE}`, 'the sensor tables could not be read from the database');
     return problems;
   }
   const newest = found.newest_age_s == null ? null : Math.max(0, Number(found.newest_age_s));
   const newestText = newest == null ? 'no reading stored yet' : `newest reading ${ageText(newest)} ago`;
   const readingStale = newest == null || newest > limitSeconds;
   if (!found.hubs.length) {
-    problems.push(`Sensors: the capability is on but no hub has ever reported (sensor_hubs is empty); ${newestText} (${limit}). Check SENSOR_BRIDGE_HUBS and the key in config/compose.env, and the bridge log: ${LOGS_HINT}. ${SEE}`);
+    add(`Sensors: the capability is on but no hub has ever reported (sensor_hubs is empty); ${newestText} (${limit}). Check SENSOR_BRIDGE_HUBS and the key in config/compose.env, and the bridge log: ${LOGS_HINT}. ${SEE}`, `no hub has ever reported; ${newestText}`);
     return problems;
   }
   let hubFault = false;
@@ -73,21 +78,30 @@ export function sensorProblems({ run, bridge = null, limitSeconds = DEFAULT_SENS
     hubFault = true;
     // An unreachable hub is re-sent offline with every heartbeat, so its last_seen_at stays fresh; how long it has been offline is
     // last_change_at. An online hub that is not refreshed has not been posted for at all.
-    problems.push(hub.online
-      ? `Sensors: hub ${hubName(hub)} silent, last report ${ageText(Number(hub.age_s))} ago; the bridge has not posted for it, check the bridge log: ${LOGS_HINT}; ${newestText} (${limit}). ${SEE}`
-      : `Sensors: hub ${hubName(hub)} offline for ${ageText(Number(hub.change_age_s))}; ${newestText} (${limit}). ${SEE}`);
+    if (hub.online) add(`Sensors: hub ${hubName(hub)} silent, last report ${ageText(Number(hub.age_s))} ago; the bridge has not posted for it, check the bridge log: ${LOGS_HINT}; ${newestText} (${limit}). ${SEE}`,
+      `hub ${hubName(hub)} silent, last report ${ageText(Number(hub.age_s))} ago`);
+    else add(`Sensors: hub ${hubName(hub)} offline for ${ageText(Number(hub.change_age_s))}; ${newestText} (${limit}). ${SEE}`, `hub ${hubName(hub)} offline for ${ageText(Number(hub.change_age_s))}`);
   }
   if (readingStale && !hubFault) {
-    problems.push(`Sensors: hubs report, but ${newestText} (${limit}); just started? run the doctor again in 15 minutes. ${SEE}`);
+    add(`Sensors: hubs report, but ${newestText} (${limit}); just started? run the doctor again in 15 minutes. ${SEE}`, newestText);
   }
   return problems;
 }
+export const sensorProblems = args => sensorFindings(args).map(f => f.text);
 
-// The doctor's whole sensor check. `env` is config/compose.env; `db` runs a command in the db container; `compose` runs Compose
-// with the given arguments. The container is asked about only when SENSOR_BRIDGE_HUBS is set.
-export function sensorReport({ env, db, compose }) {
+// The whole sensor check, as findings (see sensorFindings). `env` is config/compose.env; `db` runs a command in the db container;
+// `compose` runs Compose with the given arguments. The container is asked about only when SENSOR_BRIDGE_HUBS is set. Both the doctor
+// and the 5-minute checker call this, so they judge by one query, one limit and one set of rules. The limit in seconds
+// is in the result for the caller's wording.
+export function sensorCheck({ env, db, compose, settling = false }) {
   const hubsSet = String(env.SENSOR_BRIDGE_HUBS ?? '').trim() !== '';
-  return sensorProblems({ run: db, bridge: hubsSet ? bridgeState(compose) : null, limitSeconds: sensorLimitSeconds(env) });
+  const limitSeconds = sensorLimitSeconds(env);
+  return { limitSeconds, findings: sensorFindings({ run: db, bridge: hubsSet ? bridgeState(compose) : null, limitSeconds, settling }) };
+}
+
+// The doctor's warnings (texts only).
+export function sensorReport({ env, db, compose }) {
+  return sensorCheck({ env, db, compose }).findings.map(f => f.text);
 }
 
 // The state of the sensor-bridge container as Compose reports it ('' when none exists, null when Compose could not be asked).

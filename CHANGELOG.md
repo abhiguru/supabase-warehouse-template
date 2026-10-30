@@ -10,7 +10,7 @@ file used to carry for earlier installations are in git: `git show 835b036:CHANG
 
 ### Added
 
-- `node scripts/doctor.mjs` warns, while the `sensors` capability is on, when readings do not reach the database: no hub row, a hub offline (for how long) or not reported for the limit, no reading newer than the limit (3 x the larger of `SENSOR_BRIDGE_HEARTBEAT_SECONDS` and `_POLL_SECONDS`, plus `_POST_SECONDS`: 16 minutes by default), or `SENSOR_BRIDGE_HUBS` set with no `sensor-bridge` container. A warning only; `scripts/sensors-check.mjs`, `docs/SENSORS.md`.
+- `node scripts/doctor.mjs` warns, while the `sensors` capability is on, when readings do not reach the database: no hub row, a hub offline (for how long) or not reported for the limit, no reading newer than the limit (3 x the larger of `SENSOR_BRIDGE_HEARTBEAT_SECONDS` and `_POLL_SECONDS`, plus `_POST_SECONDS`: 16 minutes by default), or `SENSOR_BRIDGE_HUBS` set with no `sensor-bridge` container. A warning only; `scripts/sensors-check.mjs`, `docs/SENSORS.md`. The 5-minute checker judges the same things and sends the alert `sensors_stale` (two failing runs in a row; not judged for the first 16 minutes after the database or the bridge started); `docs/MONITORING.md`.
 - `scripts/windows/register-tasks.ps1`: registers the Windows (WSL2) tasks "Warehouse WSL" and, with `-BusId`, "Warehouse USB" from an elevated PowerShell, replacing the two paste-in blocks of `docs/OPERATOR_INSTALL.md`; not verified yet.
 - `bash scripts/tunnel.sh create [--name NAME]`: one guided step for a locally managed tunnel. It runs `cloudflared tunnel login`
   (a link to open on any machine), refuses a tunnel name that already exists, creates the tunnel, routes the installation's hostname

@@ -3971,3 +3971,75 @@ test('watch-timer.sh hint prints the install command when a unit carries another
     }
   } finally { rmSync(f.scratch, { recursive: true, force: true }); }
 });
+
+// ---------------------------------------------------------------- sensors_stale
+test('sensors_stale: capability off -> nothing to judge; fresh data passes; stale data fails; two runs fire; a passing run clears; shared SQL', async () => {
+  const h = harness();
+  try {
+    const sensors = on => writeFileSync(join(h.state, 'public/instance.json'), JSON.stringify({ schemaVersion: 1, instanceId: 'iid-1', companyName: 'Acme Cold', canonicalOrigin: 'https://acme.example.test', capabilities: { sensors: on } }));
+    const answer = json => { h.runs['-c SELECT json_build_object'] = ok(`${JSON.stringify(json)}\n`); };
+    const fresh = { hubs: [{ hub_id: '192.0.2.10', host: '192.0.2.10', online: true, age_s: 40, change_age_s: 40 }], newest_age_s: 60 };
+    const dead = { hubs: [{ hub_id: '192.0.2.10', host: '192.0.2.10', online: false, age_s: 30, change_age_s: 5 * 86400 }], newest_age_s: 7200 };
+    sensors(false); answer(dead);
+    assert.deepEqual(W.checkSensors(h.ctx()), [], 'capability off: no result (a standing alert clears)');
+    assert.ok(!h.calls.some(c => c.includes('json_build_object')), 'and the database is not asked');
+    sensors(true); answer(fresh);
+    let r = W.checkSensors(h.ctx());
+    assert.equal(r.length, 1); assert.equal(r[0].id, 'sensors_stale'); assert.equal(r[0].ok, true);
+    answer(dead);
+    r = W.checkSensors(h.ctx())[0];
+    assert.equal(r.ok, false);
+    assert.equal(r.summary, 'Sensors: hub 192.0.2.10 offline for 5 days (limit 16 minutes)');
+    assert.match(r.detail, /docs\/SENSORS\.md, Troubleshooting/);
+    const { SENSORS_SQL } = await import('../scripts/sensors-check.mjs');
+    assert.ok(h.calls.at(-1).includes(SENSORS_SQL), 'the exact SQL text of the doctor');
+    assert.match(h.calls.at(-1), /statement_timeout=10000/);
+    // two failing runs in a row alert, a passing run clears
+    const data = h.ctx().data;
+    const step = async () => { const { results, ran } = await W.runChecks(Object.assign(h.ctx(), { data }), W.CHECKS.filter(([n]) => n === 'sensors_stale')); return W.evaluate(data, results, ran, h.clock.t); };
+    let out = await step(); assert.equal(out.start.length, 0, 'one failing run is not an alert');
+    h.advance(5 * 60 * 1000);
+    out = await step(); assert.deepEqual(out.start.map(a => a.id), ['sensors_stale']);
+    data.alerts.sensors_stale.lastSent = h.clock.t;
+    answer(fresh); h.advance(5 * 60 * 1000);
+    out = await step(); assert.deepEqual(out.clear.map(a => a.id), ['sensors_stale']);
+    assert.ok(W.CHECKS.some(([name, fn]) => name === 'sensors_stale' && fn === W.checkSensors));
+  } finally { clean(h); }
+});
+
+test('sensors_stale: database down -> null (postgres_down speaks); an unreadable answer is one finding, no crash', () => {
+  const h = harness();
+  try {
+    writeFileSync(join(h.state, 'public/instance.json'), JSON.stringify({ capabilities: { sensors: true } }));
+    h.runs.pg_isready = bad();
+    assert.equal(W.checkSensors(h.ctx()), null);
+    h.runs.pg_isready = ok(); h.runs['-c SELECT json_build_object'] = bad('connection refused');
+    const r = W.checkSensors(h.ctx());
+    assert.equal(r.length, 1); assert.equal(r[0].ok, false);
+    assert.match(r[0].summary, /the sensor tables could not be read from the database/);
+    h.runs['-c SELECT json_build_object'] = ok('not json\n');
+    assert.equal(W.checkSensors(h.ctx())[0].ok, false);
+  } finally { clean(h); }
+});
+
+test('sensors_stale: restart grace -> readings are not judged while the db or bridge container is younger than the limit; a missing bridge container still is', () => {
+  const h = harness();
+  try {
+    writeFileSync(join(h.state, 'public/instance.json'), JSON.stringify({ capabilities: { sensors: true } }));
+    h.runs['-c SELECT json_build_object'] = ok(`${JSON.stringify({ hubs: [], newest_age_s: null })}\n`);
+    const started = Date.parse('2026-10-18T00:00:00Z');   // the fake containers' StartedAt
+    h.clock.t = started + 5 * 60 * 1000;
+    let r = W.checkSensors(h.ctx())[0];
+    assert.equal(r.ok, true); assert.match(r.summary, /started less than 16 minutes ago/);
+    assert.ok(!h.calls.some(c => c.includes('json_build_object')), 'no database question while settling');
+    h.clock.t = started + 17 * 60 * 1000;
+    r = W.checkSensors(h.ctx())[0];
+    assert.equal(r.ok, false); assert.match(r.summary, /no hub has ever reported/);
+    // SENSOR_BRIDGE_HUBS set and no container: told even while settling
+    writeFileSync(join(h.state, 'config/compose.env'), 'SENSOR_BRIDGE_HUBS=192.0.2.10\nPOSTGRES_PASSWORD=supersecretpassword123\n', { mode: 0o600 });
+    h.runs['--profile sensors ps -a --format json sensor-bridge'] = ok('');
+    h.clock.t = started + 5 * 60 * 1000;
+    r = W.checkSensors(h.ctx())[0];
+    assert.equal(r.ok, false); assert.match(r.summary, /no sensor-bridge container exists/);
+  } finally { clean(h); }
+});

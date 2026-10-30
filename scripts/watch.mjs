@@ -56,6 +56,7 @@ import { centralKeyFault, gatewayPortText, letterheadProblem, readEnv, root as c
 import { LAN_SERVICE, describeAddresses, hostHasAddress, lanOrigin, lanSettings, probeLanKeys, readHostInterfaces } from './lan-common.mjs';
 import { redactServiceLog } from './service-diagnostics.mjs';
 import { usbBackupWarning } from './usb-backup-status.mjs';
+import { ageText, sensorCheck, sensorLimitSeconds } from './sensors-check.mjs';
 import { postSlackMessage, storedWebhook, testMessage } from './alert-webhook.mjs';
 
 const MIN = 60 * 1000;
@@ -1129,6 +1130,45 @@ export function checkRootCopies(ctx) {
     `They run as root or at boot from an earlier release's recipe. Run: ${fixes.join(' ; ')}`, { repeatHours: HOST_DRIFT_REPEAT_HOURS })];
 }
 
+// ---------------------------------------------------------------- sensors
+// The `sensors` capability (public/instance.json) needs readings in the database: a bridge container can be healthy while it polls
+// hub addresses that no longer exist, so only the data says whether sensors work (scripts/sensors-check.mjs, which the doctor also
+// uses: one query, one limit, one set of rules). One alert, sensors_stale, whatever the fault; its summary names each one. Silent
+// (an empty list, so a standing alert clears) while the capability is off.
+//   Container: a missing sensor-bridge container (SENSOR_BRIDGE_HUBS set, none exists) is told here, because service_down judges only
+//   containers that exist. An existing container that is exited or unhealthy is service_down:sensor-bridge's; its stale data is told
+//   here as well (a different fault: the data), which is why the two alerts may fire together.
+//   Settling: after a host restart or a bridge start the first readings need up to the limit (3 x the larger poll or heartbeat
+//   interval + the post interval, 16 minutes by default) and the alert already needs two failing runs (10 minutes), so while the
+//   db or the sensor-bridge container has run for less than the limit the readings are not judged (the check passes, only a missing
+//   container is told). A crash-looping bridge never gets past this, which is right: container_restarts and service_down say so.
+//   A bridge run as its own Compose project is not in this project's containers; the db container's age is then the grace.
+//   Database: not responding is postgres_down's alone (null: the alert stays as it is); a query that fails is the finding "could not
+//   read the sensor tables", the same text as the doctor's.
+export function checkSensors(ctx) {
+  let manifest = null;
+  try { manifest = JSON.parse(ctx.readText(join(ctx.state, 'public/instance.json')) ?? 'null'); } catch { /* no manifest: not on */ }
+  if (manifest?.capabilities?.sensors !== true) return [];
+  if (!databaseReady(ctx)) return null;
+  const env = ctx.env_();
+  const limitMs = sensorLimitSeconds(env) * 1000;
+  const now = ctx.now();
+  const settling = ctx.containers().some(c => ['db', 'sensor-bridge'].includes(c.service) && c.status === 'running'
+    && now - Date.parse(c.startedAt) > -MIN && now - Date.parse(c.startedAt) < limitMs);
+  const asResult = r => ({ ok: r.status === 0, output: String(r.stdout ?? '') });
+  const { limitSeconds, findings } = sensorCheck({
+    env, settling,
+    db: args => asResult(ctx.compose(['exec', '-T', '-e', 'PGOPTIONS=-c statement_timeout=10000', 'db', ...args])),
+    compose: args => asResult(ctx.compose(args)),
+  });
+  const limit = ageText(limitSeconds);
+  if (!findings.length) {
+    return [result('sensors_stale', 'sensors_stale', true, settling ? `Sensors: started less than ${limit} ago, readings are not judged yet` : 'Sensors: readings arrive')];
+  }
+  return [result('sensors_stale', 'sensors_stale', false, `Sensors: ${findings.map(f => f.short).join('; ')} (limit ${limit})`,
+    'See docs/SENSORS.md, Troubleshooting. node scripts/doctor.mjs --local names each fault with the command to read the bridge log.')];
+}
+
 export const CHECKS = [
   ['cpu', checkCpu], ['memory', checkMemory], ['disk', checkDisks], ['database', checkDatabase],
   ['services', checkServices], ['container_oom', checkContainerOom], ['container_restarts', checkContainerRestarts],
@@ -1136,7 +1176,7 @@ export const CHECKS = [
   ['container_memory', checkContainerMemory], ['api_local', checkApiLocal], ['api_public', checkApiPublic], ['api_lan', checkApiLan],
   ['api_logs', checkApiLogs], ['pdf_renderer', checkPdfRenderer], ['central_key', checkCentralKey], ['letterhead', checkLetterhead], ['backups', checkBackups],
   ['restore_space', checkRestoreSpace], ['upgrade', checkUpgrade], ['sms_delivery', checkSmsDelivery], ['break_glass', checkBreakGlass], ['clock', checkClock],
-  ['cloudflared', checkCloudflared], ['host_node', checkHostNode], ['root_copies', checkRootCopies],
+  ['cloudflared', checkCloudflared], ['host_node', checkHostNode], ['root_copies', checkRootCopies], ['sensors_stale', checkSensors],
 ];
 
 // Runs every check; a throwing check becomes one failing result carrying its (redacted) error text.
