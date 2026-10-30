@@ -91,6 +91,18 @@ export const LIMITS = {
   healUnhealthyRuns: 3, healGapMs: HOUR, healMaxPerDay: 6,
   // The state file's lock: how long a save waits for the other process, and when a lock file left by a crash is taken over.
   stateLockWaitMs: 10000, stateLockStaleMs: MIN,
+  // The 5-minute checker (not health, doctor or the daily gate) does not fail a container whose health is still "starting" for this
+  // long after its StartedAt, unless it restarted in the last hour. The slowest healthchecks in docker/docker-compose.yml (functions,
+  // cups, sensor-bridge, pdf-renderer: interval 30 s, timeout 10 s, 3 retries, start_period 30-60 s) turn "starting" into "unhealthy"
+  // after at most start_period + one interval + 3 x (interval + timeout) = about 190-200 s, so 4 minutes covers every start that
+  // ends healthy or unhealthy by itself; one still "starting" after that is stuck and fails as before. Faster checks (gateway,
+  // storage, db: 5-10 s interval) finish well inside it.
+  startingGraceMs: 4 * MIN,
+  // Containers that all got a new StartedAt within this span of each other are one whole-stack restart (host or distro restart,
+  // start.sh): it is not counted as container restarts but as one stack restart (stack_restarts). Compose and the restart policy
+  // start every container within a minute or two. A container that starts later than the run that saw the rest, but within this span
+  // of that restart's recorded time, belongs to it as well (a start in stages, or a slot between two parts).
+  stackRestartSpanMs: 5 * MIN,
 };
 export const OPTIONAL_SERVICES = ['supavisor', 'cups', 'sensor-bridge'];
 export const BACKUP_DIR_PATTERN = /^warehouse-\d{8}T\d{6}Z$/;
@@ -121,7 +133,7 @@ export const mutesPath = state => join(state, 'config/watch-mutes.json');
 export const freshState = now => ({
   version: 1, firstRun: now, alerts: {}, containers: {}, cpu: null, lastRunAt: null, lastHeartbeat: null,
   lastDailyRun: {}, dailyAttempt: null, dailyRunning: null, dailySkipped: null, busySince: null, lastPostError: null,
-  memoryNote: null, heal: {}, lastSmsCheck: null,
+  memoryNote: null, heal: {}, lastSmsCheck: null, stackRestarts: [],
   // Mutes live in their own file (loadMutes) and are filled in from it; they are never part of the run state.
   muteUntil: null, mutes: {},
 });
@@ -166,6 +178,7 @@ export function normalizeState(raw, now, log = () => {}) {
   take('lastPostError', v => v === null || (isObj(v) && isNum(v.at) && typeof v.message === 'string'));
   take('memoryNote', v => v === null || typeof v === 'string');
   take('lastSmsCheck', numOrNull);
+  take('stackRestarts', v => Array.isArray(v) && v.every(isNum));   // absent in older state files: the fresh default stays
   take('heal', v => isObj(v) && Object.values(v).every(x => isObj(x) && isNum(x.unhealthyRuns) && numOrNull(x.lastAt) && typeof x.lastAction === 'string'
     && (x.actions === undefined || (Array.isArray(x.actions) && x.actions.every(isNum)))));
   take('lastDailyRun', v => isObj(v) && Object.values(v).every(x => isObj(x) && typeof x.date === 'string' && typeof x.result === 'string'));
@@ -497,7 +510,8 @@ function memoryFromStats(ctx, containers) {
   return ctx.memo.stats;
 }
 
-function trackOne(ctx, c, now) {
+// covered: true when this container's new start is part of a whole-stack restart (see track).
+function trackOne(ctx, c, now, covered = false) {
   const prev = ctx.data.containers[c.service];
   const st = prev ?? { restartCount: c.restartCount, startedAt: c.startedAt, events: [], oomKill: null, lastOom: null, oomStart: null, lastOomEvent: null };
   st.events = (st.events ?? []).filter(t => now - t < HOUR);
@@ -505,7 +519,7 @@ function trackOne(ctx, c, now) {
   const renewed = Boolean(prev) && (prev.id !== c.id || prev.startedAt !== c.startedAt);
   if (prev) {
     if (c.restartCount > prev.restartCount) for (let i = 0; i < c.restartCount - prev.restartCount; i++) st.events.push(now);
-    else if (c.startedAt !== prev.startedAt) st.events.push(now);
+    else if (c.startedAt !== prev.startedAt && !covered) st.events.push(now);
   }
   if (renewed) st.oomKill = null;
   st.id = c.id; st.restartCount = c.restartCount; st.startedAt = c.startedAt;
@@ -535,11 +549,38 @@ function trackOne(ctx, c, now) {
   return { c, st, memoryRatio, noCgroup: dir === null };
 }
 
+// The time (ms, the newest StartedAt) of the whole-stack restart this run sees, else null. A whole-stack restart is: at least two
+// running containers with a stored history, every one of them with a new StartedAt, those StartedAt values within stackRestartSpanMs
+// of each other, and (when the expected default-profile services are known) more than half of those services running, so a stack of
+// which most is exited or missing is not called a restart. A container whose RestartCount went up is left out of the span (it is
+// counted through its counter whatever else happens, so a crash loop cannot hide a stack restart or be hidden by one); a single
+// container or a subset restarting is not a whole-stack restart.
+export function wholeStackRestart(containers, stored, expected = null) {
+  const running = containers.filter(c => c.status === 'running' && stored[c.service]);
+  const changed = running.filter(c => c.startedAt !== stored[c.service].startedAt);
+  if (changed.length < 2 || changed.length !== running.length) return null;
+  if (expected && expected.length && containers.filter(c => c.status === 'running' && expected.includes(c.service)).length * 2 <= expected.length) return null;
+  const times = changed.filter(c => !(c.restartCount > stored[c.service].restartCount)).map(c => Date.parse(c.startedAt));
+  if (times.length < 2 || times.some(Number.isNaN)) return null;
+  return Math.max(...times) - Math.min(...times) <= LIMITS.stackRestartSpanMs ? Math.max(...times) : null;
+}
+export const isWholeStackRestart = (...args) => wholeStackRestart(...args) !== null;
+
 // One pass over the containers shared by the three container checks; keeps per-service history in the state.
 function track(ctx) {
   if (ctx.memo.tracked) return ctx.memo.tracked;
   const now = ctx.now();
-  const out = ctx.containers().map(c => trackOne(ctx, c, now));
+  const containers = ctx.containers();
+  let expected = null;
+  try { expected = ctx.expectedServices(); } catch { /* the services check reports it; the majority rule is then skipped */ }
+  // Whole-stack restarts are kept as a list of times (pruned to the last hour like a container's events) for stack_restarts.
+  const stack = (ctx.data.stackRestarts = (Array.isArray(ctx.data.stackRestarts) ? ctx.data.stackRestarts : []).filter(t => isNum(t) && now - t < HOUR));
+  const at = wholeStackRestart(containers, ctx.data.containers, expected);
+  if (at !== null) stack.push(Math.min(at, now));
+  const last = stack.length ? Math.max(...stack) : null;
+  // A start is covered when this run sees the whole stack restart, or when it lies within the span of the last recorded one.
+  const covered = c => at !== null || (last !== null && Math.abs(Date.parse(c.startedAt) - last) <= LIMITS.stackRestartSpanMs);
+  const out = containers.map(c => trackOne(ctx, c, now, covered(c)));
   // cgroup v1 or rootless Docker: the cgroup files cannot be read, so ask Docker for the memory share.
   const blind = out.filter(t => t.noCgroup);
   ctx.memo.memoryUnavailable = false;
@@ -557,6 +598,12 @@ export const checkContainerOom = ctx => track(ctx).map(({ c, st }) => {
 });
 export const checkContainerRestarts = ctx => track(ctx).map(({ c, st }) => result('container_restarts', `container_restarts:${c.service}`,
   !(st.events.length > LIMITS.restartsPerHour), `Container ${c.service} restarted ${st.events.length} times in the last hour (limit ${LIMITS.restartsPerHour})`));
+export function checkStackRestarts(ctx) {
+  track(ctx);
+  const n = ctx.data.stackRestarts.length;
+  return [result('stack_restarts', 'stack_restarts', !(n > LIMITS.restartsPerHour),
+    `The whole stack restarted ${n} times in the last hour (limit ${LIMITS.restartsPerHour})`, 'The host, WSL or Docker keeps restarting.')];
+}
 export function checkContainerMemory(ctx) {
   const tracked = track(ctx);
   const out = tracked.filter(t => t.memoryRatio !== null).map(({ c, memoryRatio }) => result('container_memory', `container_memory:${c.service}`,
@@ -577,8 +624,19 @@ export function checkServices(ctx) {
   return wanted.map(name => {
     const c = by.get(name);
     const state = c ? `${c.status}${c.health ? ` ${c.health}` : ''}` : 'missing';
-    const ok = Boolean(c) && c.status === 'running' && !['unhealthy', 'starting'].includes(c.health);
-    return result('services', `service_down:${name}`, ok, `Service ${name} is ${state}`, '', { running: c?.status === 'running' });
+    // "starting" is normal for a while after a (re)start; the checker runs seconds after a boot when its timer slot was missed.
+    // Only the 5-minute checker sets ctx.startingGrace; health, doctor and the daily gate keep counting "starting" as failing. No
+    // grace for a container that restarted in the last hour (a crash loop restarts before its healthcheck can fail), nor for a start
+    // time far in the future (the clock moved back; a little skew is allowed).
+    const age = c ? ctx.now() - Date.parse(c.startedAt) : NaN;
+    const starting = c?.health === 'starting';
+    const inWindow = age > -MIN && age < LIMITS.startingGraceMs;
+    const restarted = ctx.startingGrace && starting && inWindow && (track(ctx).find(t => t.c.service === name)?.st.events.length ?? 0) > 0;
+    const young = Boolean(ctx.startingGrace) && starting && inWindow && !restarted;
+    const ok = Boolean(c) && c.status === 'running' && (young || !['unhealthy', 'starting'].includes(c.health));
+    let detail = '';
+    if (ctx.startingGrace && starting && !young) detail = restarted ? 'It restarted in the last hour, so the start-up grace period does not apply.' : `Still starting more than ${LIMITS.startingGraceMs / MIN} minutes after it started.`;
+    return result('services', `service_down:${name}`, ok, `Service ${name} is ${state}`, detail, { running: c?.status === 'running' });
   });
 }
 
@@ -1074,6 +1132,7 @@ export function checkRootCopies(ctx) {
 export const CHECKS = [
   ['cpu', checkCpu], ['memory', checkMemory], ['disk', checkDisks], ['database', checkDatabase],
   ['services', checkServices], ['container_oom', checkContainerOom], ['container_restarts', checkContainerRestarts],
+  ['stack_restarts', checkStackRestarts],
   ['container_memory', checkContainerMemory], ['api_local', checkApiLocal], ['api_public', checkApiPublic], ['api_lan', checkApiLan],
   ['api_logs', checkApiLogs], ['pdf_renderer', checkPdfRenderer], ['central_key', checkCentralKey], ['letterhead', checkLetterhead], ['backups', checkBackups],
   ['restore_space', checkRestoreSpace], ['upgrade', checkUpgrade], ['sms_delivery', checkSmsDelivery], ['break_glass', checkBreakGlass], ['clock', checkClock],
@@ -1715,6 +1774,7 @@ export async function runOnce(deps, { checks = CHECKS, heal = selfHeal } = {}) {
   const data = loadState(deps.state, now, deps.readText, deps.log);
   Object.assign(data, loadMutes(deps.state, deps.readText));
   const ctx = makeContext(deps, data);
+  ctx.startingGrace = true;   // only this run tolerates a young "starting" container (see checkServices)
   const webhook = readWebhook(deps.state);
   // A checker unit from before the split still carries the daily time: the backup then runs below, inside this run.
   const legacy = Boolean(deps.env?.WAREHOUSE_WATCH_DAILY_AT);

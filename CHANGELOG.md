@@ -21,6 +21,7 @@ file used to carry for earlier installations are in git: `git show 835b036:CHANG
 
 - `scripts/watch.mjs`: the disk check skips read-only mounts (the stack cannot fill them), which removes the false
   `disk_low` alert for the full read-only image WSL2 mounts under `/usr/src`. A read-only mount does not hide a read-write mount of the same device.
+- `scripts/watch.mjs`: no false `service_down` or `container_restarts` alerts after a host or distro restart. The 5-minute checker tolerates a health state of "starting" for 4 minutes after the container's start (not for a container that restarted in the last hour; `health`, `doctor --local` and the daily gate are unchanged), and a restart of the whole stack (every running container started again within 5 minutes; usually that is one start of the stack, also from `start.sh`) is not counted per container. One new alert, `stack_restarts`, fires when the whole stack restarted more than 3 times in an hour; one container or a subset restarting still counts as before.
 
 ### Documentation
 

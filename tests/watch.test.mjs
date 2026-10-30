@@ -192,6 +192,208 @@ test('containers: more than 3 restarts in an hour fails; the history ages out', 
   } finally { clean(h); }
 });
 
+// Sets the StartedAt (an ISO string) and optionally the RestartCount of named services in what `docker inspect` answers.
+const withStarts = (h, starts, counts = {}) => {
+  const base = h.fakeRun;
+  h.fakeRun = (command, args) => {
+    const r = base(command, args);
+    if (command === 'docker' && args[0] === 'inspect') {
+      return ok(r.stdout.split('\n').map(line => {
+        const p = line.split('|');
+        if (starts[p[1]] !== undefined) p[6] = starts[p[1]];
+        if (counts[p[1]] !== undefined) p[4] = String(counts[p[1]]);
+        return p.join('|');
+      }).join('\n'));
+    }
+    return r;
+  };
+};
+const iso = ms => new Date(ms).toISOString();
+
+test('containers: a whole-stack restart (every container, StartedAt close together) is not counted; one container or a subset still is', () => {
+  const h = harness();
+  try {
+    const data = W.freshState(h.clock.t);
+    const run = () => { const ctx = W.makeContext(h.deps, data); W.checkContainerRestarts(ctx); return data.containers.rest.events.length; };
+    assert.equal(run(), 0, 'first run: baseline only');
+    for (let i = 1; i <= 4; i++) {
+      h.advance(5 * 60000);
+      withStarts(h, Object.fromEntries(SERVICES.map((s, k) => [s, iso(h.clock.t - 60000 + k * 10000)])));
+      assert.equal(run(), 0, `host restart ${i}: no event`);
+      assert.equal(find(W.checkContainerRestarts(W.makeContext(h.deps, data)), 'container_restarts:rest').ok, true);
+    }
+    h.advance(5 * 60000); withStarts(h, { rest: iso(h.clock.t - 1000) });
+    assert.equal(run(), 1, 'one container restarting counts');
+    h.advance(5 * 60000); withStarts(h, { rest: iso(h.clock.t - 1000), gateway: iso(h.clock.t - 1000), db: iso(h.clock.t - 1000) });
+    assert.equal(run(), 2, 'a subset restarting counts');
+  } finally { clean(h); }
+});
+
+test('containers: StartedAt values far apart are not one whole-stack restart; a crash-looping container still counts through its RestartCount', () => {
+  const h = harness();
+  try {
+    const data = W.freshState(h.clock.t);
+    const run = () => { const ctx = W.makeContext(h.deps, data); W.checkContainerRestarts(ctx); return data.containers.rest.events.length; };
+    run();
+    h.advance(5 * 60000);
+    withStarts(h, Object.fromEntries(SERVICES.map((s, k) => [s, iso(h.clock.t - 60000 + k * 1000)])));
+    assert.equal(run(), 0, 'a restart of the whole stack is not counted (the old code counted one event per container)');
+    h.advance(10 * 60000);
+    withStarts(h, Object.fromEntries(SERVICES.map((s, k) => [s, iso(h.clock.t - (k === 0 ? 3600000 : 60000))])));
+    assert.equal(run(), 1, 'one hour apart: every container counts');
+    h.advance(10 * 60000);
+    withStarts(h, Object.fromEntries(SERVICES.map(s => [s, iso(h.clock.t - 30000)])), { rest: 2 });
+    assert.equal(run(), 3, 'whole-stack restart: the start is not counted, the 2 counter increments are');
+  } finally { clean(h); }
+});
+
+test('services: starting is tolerated for 4 minutes after StartedAt; later, unhealthy, exited and a bad StartedAt fail', () => {
+  const judged = (state, startedAgoMs) => {
+    const h = harness();
+    try {
+      h.stateOf = { storage: state };
+      withStarts(h, { storage: typeof startedAgoMs === 'string' ? startedAgoMs : iso(h.clock.t - startedAgoMs) });
+      const ctx = h.ctx();
+      ctx.startingGrace = true;
+      return find(W.checkServices(ctx), 'service_down:storage');
+    } finally { clean(h); }
+  };
+  assert.equal(judged('running|starting', 10000).ok, true, '10 s after the start');
+  const late = judged('running|starting', 4 * 60000 + 1000);
+  assert.equal(late.ok, false, 'after the grace period');
+  assert.match(late.detail, /Still starting more than 4 minutes/);
+  assert.equal(judged('running|starting', 3.5 * 60000).ok, true, 'a start of 3.5 minutes ago is still inside the grace period');
+  assert.equal(judged('running|starting', -30000).ok, true, 'a little clock skew (StartedAt 30 s ahead) is tolerated');
+  assert.equal(judged('running|starting', -5 * 60000).ok, false, 'a StartedAt 5 minutes in the future (the clock moved back) gets no grace');
+  assert.equal(judged('running|unhealthy', 10000).ok, false, 'unhealthy fails inside the grace period');
+  assert.equal(judged('exited|', 10000).ok, false, 'exited fails');
+  assert.equal(judged('running|starting', 'garbage').ok, false, 'unreadable StartedAt: no grace');
+});
+
+test('services: the grace is only the 5-minute checker\'s: runHealth and a context without it still count "starting" as failing', async () => {
+  const h = harness();
+  try {
+    healthy(h);
+    h.stateOf = { storage: 'running|starting' };
+    withStarts(h, { storage: iso(h.clock.t - 10000) });
+    assert.equal(find(W.checkServices(h.ctx()), 'service_down:storage').ok, false, 'a plain context has no grace');
+    const report = await W.runHealth(h.deps, { waitMs: 0 });
+    assert.equal(report.ok, false);
+    assert.ok(report.lines.some(line => !line.ok && /Service storage is running starting/.test(line.text)), JSON.stringify(report.lines));
+    const gate = find(W.checkServices(W.makeContext(h.deps, W.freshState(h.clock.t))), 'service_down:storage');
+    assert.equal(gate.ok, false, 'the daily gate builds a plain context');
+  } finally { clean(h); }
+});
+
+test('services: a container that restarted in the last hour gets no grace', () => {
+  const h = harness();
+  try {
+    const data = W.freshState(h.clock.t);
+    W.checkContainerRestarts(W.makeContext(h.deps, data));   // baseline
+    h.advance(5 * 60000);
+    h.stateOf = { storage: 'running|starting' };
+    withStarts(h, { storage: iso(h.clock.t - 10000) }, { storage: 1 });   // its own counter went up: a restart event
+    const ctx = W.makeContext(h.deps, data);
+    ctx.startingGrace = true;
+    const r = find(W.checkServices(ctx), 'service_down:storage');
+    assert.equal(r.ok, false);
+    assert.match(r.detail, /restarted in the last hour/);
+    // The same start without a restart event is inside the grace period.
+    const fresh = W.makeContext(h.deps, W.freshState(h.clock.t));
+    fresh.startingGrace = true;
+    assert.equal(find(W.checkServices(fresh), 'service_down:storage').ok, true);
+  } finally { clean(h); }
+});
+
+test('containers: an exited container and a container seen for the first time do not block the detection of a whole-stack restart', () => {
+  const h = harness();
+  try {
+    const data = W.freshState(h.clock.t);
+    const run = () => { W.checkContainerRestarts(W.makeContext(h.deps, data)); return data.containers.rest.events.length; };
+    h.stateOf = { 'pdf-renderer': 'exited|' };
+    h.services = SERVICES.filter(s => s !== 'functions');
+    run();
+    h.advance(5 * 60000);
+    h.services = [...SERVICES];   // functions appears for the first time
+    withStarts(h, Object.fromEntries(SERVICES.filter(s => s !== 'pdf-renderer').map((s, k) => [s, iso(h.clock.t - 60000 + k * 1000)])));
+    assert.equal(run(), 0, 'the exited container keeps its old StartedAt and the new one has no history: still a whole-stack restart');
+    assert.equal(data.stackRestarts.length, 1);
+  } finally { clean(h); }
+});
+
+test('containers: a restart split over two runs (a container starting later than the rest) is one stack restart, not a restart of that container', () => {
+  const h = harness();
+  try {
+    const data = W.freshState(h.clock.t);
+    const run = () => W.checkContainerRestarts(W.makeContext(h.deps, data));
+    h.stateOf = { 'pdf-renderer': 'exited|' };
+    run();
+    h.advance(5 * 60000);
+    withStarts(h, Object.fromEntries(SERVICES.filter(s => s !== 'pdf-renderer').map((s, k) => [s, iso(h.clock.t - 60000 + k * 1000)])));
+    run();
+    assert.equal(data.stackRestarts.length, 1);
+    h.advance(5 * 60000);
+    h.stateOf = {};
+    withStarts(h, { 'pdf-renderer': iso(h.clock.t - 3 * 60000) });   // 2 minutes after the others, found by the next run
+    run();
+    assert.equal(data.containers['pdf-renderer'].events.length, 0, 'part of the recorded stack restart');
+    h.advance(30 * 60000);
+    withStarts(h, { 'pdf-renderer': iso(h.clock.t - 1000) });
+    run();
+    assert.equal(data.containers['pdf-renderer'].events.length, 1, 'a later start of that container alone counts');
+  } finally { clean(h); }
+});
+
+test('containers: wholeStackRestart on a StartedAt that is not a date, a counter-incremented container outside the span, and a stack that is mostly exited', () => {
+  const stored = { a: { startedAt: '2026-01-01T00:00:00Z', restartCount: 0 }, b: { startedAt: '2026-01-01T00:00:00Z', restartCount: 0 }, c: { startedAt: '2026-01-01T00:00:00Z', restartCount: 0 } };
+  const run = (service, startedAt, restartCount = 0, status = 'running') => ({ service, status, startedAt, restartCount });
+  const t = '2026-01-02T00:00:00Z';
+  const good = [run('a', t), run('b', '2026-01-02T00:01:00Z')];
+  assert.equal(W.isWholeStackRestart(good, stored), true, 'control');
+  assert.equal(W.isWholeStackRestart([run('a', 'garbage'), run('b', 'also garbage')], stored), false, 'NaN times are never a restart');
+  assert.equal(W.isWholeStackRestart([run('a', t), run('b', 'garbage')], stored), false);
+  // c restarted by its own counter, long after the others: it is left out of the span, so the other two still make the restart.
+  assert.equal(W.isWholeStackRestart([...good, run('c', '2026-01-03T00:00:00Z', 1)], stored), true);
+  assert.equal(W.isWholeStackRestart([run('a', t), run('b', '2026-01-03T00:00:00Z'), run('c', '2026-01-04T00:00:00Z', 1)], stored), false, 'the others are a day apart');
+  // Of 4 expected services only 2 run: most of the stack is down, not restarted.
+  const expected = ['a', 'b', 'x', 'y'];
+  assert.equal(W.isWholeStackRestart([...good, run('x', t, 0, 'exited'), run('y', t, 0, 'exited')], stored, expected), false);
+  assert.equal(W.isWholeStackRestart([...good, run('x', t, 0, 'running'), run('y', t, 0, 'exited')], stored, expected), true);
+});
+
+test('containers: stack_restarts fires above 3 whole-stack restarts in an hour and not at 3; the history ages out', () => {
+  const h = harness();
+  try {
+    const data = W.freshState(h.clock.t);
+    const run = () => find(W.checkStackRestarts(W.makeContext(h.deps, data)), 'stack_restarts');
+    assert.equal(run().ok, true);
+    const restart = () => { h.advance(5 * 60000); withStarts(h, Object.fromEntries(SERVICES.map((s, k) => [s, iso(h.clock.t - 60000 + k * 1000)]))); return run(); };
+    for (let i = 1; i <= 3; i++) assert.equal(restart().ok, true, `${i} restarts`);
+    const r = restart();
+    assert.equal(r.ok, false, '4 restarts in 20 minutes');
+    assert.match(r.summary, /restarted 4 times in the last hour \(limit 3\)/);
+    assert.equal(find(W.checkContainerRestarts(W.makeContext(h.deps, data)), 'container_restarts:rest').ok, true, 'no per-container alert');
+    h.advance(61 * 60000);
+    assert.equal(run().ok, true, 'older than an hour');
+  } finally { clean(h); }
+});
+
+test('state: a state file from before stackRestarts loads with an empty list; a wrong type is reset', () => {
+  const h = harness();
+  try {
+    const old = W.freshState(T0 - HOUR);
+    delete old.stackRestarts;
+    writeFileSync(join(h.state, 'config/watch-state.json'), JSON.stringify(old));
+    assert.deepEqual(W.loadState(h.state, T0, h.deps.readText, () => {}).stackRestarts, []);
+    writeFileSync(join(h.state, 'config/watch-state.json'), JSON.stringify({ ...old, stackRestarts: [T0 - 1000] }));
+    assert.deepEqual(W.loadState(h.state, T0, h.deps.readText, () => {}).stackRestarts, [T0 - 1000]);
+    const logs = [];
+    writeFileSync(join(h.state, 'config/watch-state.json'), JSON.stringify({ ...old, stackRestarts: 'x' }));
+    assert.deepEqual(W.loadState(h.state, T0, h.deps.readText, m => logs.push(m)).stackRestarts, []);
+    assert.ok(logs.some(m => /stackRestarts/.test(m)));
+  } finally { clean(h); }
+});
+
 test('containers: an OOM kill since the last run fires at once and is held for an hour', () => {
   const h = harness();
   try {

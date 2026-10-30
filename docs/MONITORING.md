@@ -72,10 +72,11 @@ An alert fires after two failing runs in a row (10 minutes), except the event al
 | `db_long_transaction` | The oldest open transaction is older than 300 s |
 | `db_cache_hit_low` | The cache hit ratio is below 90%, judged only once at least 10,000 blocks were read since the last restart |
 | `db_dead_tuples_high` | More than 100,000 dead tuples (consider `VACUUM`) |
-| `service_down:<name>` | A service of the default profile is not running, or is unhealthy; the optional `supavisor`, `cups` and `sensor-bridge` only while their container exists (`supavisor` only after `pooler.sh on`); `service_down:gateway-lan` only while the LAN fallback is on (`COMPOSE_PROFILES` lists `lan`) |
+| `service_down:<name>` | A service of the default profile is not running, or is unhealthy, or has been "starting" for more than 4 minutes. The 5-minute checker does not judge a container whose health is "starting" within 4 minutes of its start (so a run right after a host restart does not alert), unless that container restarted in the last hour (a crash loop gets no grace); `health`, `doctor --local` and the daily gate always count "starting" as failing. The optional `supavisor`, `cups` and `sensor-bridge` only while their container exists (`supavisor` only after `pooler.sh on`); `service_down:gateway-lan` only while the LAN fallback is on (`COMPOSE_PROFILES` lists `lan`) |
 | `service_healed:<name>` | The checker started or restarted that service itself, or has done so 6 times in 24 hours and stopped (see "Self-healing"; at once; stays for an hour, or while it is stopped trying) |
 | `container_oom:<name>` | A container was killed for lack of memory (at once; stays for an hour) |
-| `container_restarts:<name>` | More than 3 restarts in the last hour |
+| `container_restarts:<name>` | More than 3 restarts in the last hour. A restart of the whole stack (a host or WSL distro restart, or a start of the stack: every running container gets a new start time, all within 5 minutes of each other, and more than half of the default-profile services run) is not counted here but in `stack_restarts`; a container that starts late but within 5 minutes of the last recorded stack restart is part of it. One container or a subset restarting is counted, and a container's own restart counter always is |
+| `stack_restarts` | The whole stack restarted more than 3 times in the last hour (the host, WSL or Docker keeps restarting); one alert for the stack, not one per container |
 | `container_memory:<name>` | A container uses 90% or more of its memory limit |
 | `api_down` | The gateway does not answer `get-public-config` on this host |
 | `public_https_down` | The public HTTPS address does not answer, or answers as another installation |
