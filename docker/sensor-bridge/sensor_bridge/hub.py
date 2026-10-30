@@ -176,6 +176,14 @@ class KasaHub:
         await self.close()
         self._device = await self._call(go)
 
+    async def identify(self) -> str:
+        """Log in and return the hub's id, then disconnect. Raises HubError when it is not a hub of this account."""
+        try:
+            await self.connect()
+            return hub_id_of(self._device, self.host)
+        finally:
+            await self.close()
+
     async def poll(self) -> HubSnapshot:
         if self._device is None:
             raise HubError("not connected")

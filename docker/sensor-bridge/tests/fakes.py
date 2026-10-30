@@ -117,3 +117,59 @@ class Clock:
 
     def __call__(self) -> float:
         return self.now
+
+
+class Door:
+    """The client for one address of a FakeNetwork: it talks to whichever hub sits there now."""
+
+    def __init__(self, net: "FakeNetwork", host: str):
+        self.net, self.host, self.connected = net, host, False
+
+    def _hub(self, what: str) -> FakeHub:
+        hub = self.net.hubs.get(self.host)
+        if hub is None:
+            raise HubError(f"{what} failed: TimeoutError")
+        return hub
+
+    async def connect(self) -> None:
+        await self._hub("connect").connect()
+        self.connected = True
+
+    async def identify(self) -> str:
+        hub = self._hub("connect")
+        hub._check("connect")
+        return hub.hub_id
+
+    async def poll(self) -> HubSnapshot:
+        hub = self._hub("poll")
+        hub.connected = self.connected
+        return await hub.poll()
+
+    async def reboot(self) -> None:
+        await self._hub("reboot").reboot()
+
+    async def close(self) -> None:
+        self.connected = False
+
+
+class FakeNetwork:
+    """Addresses and the hubs sitting on them. Other addresses time out; `tcp` says which answer on 443."""
+
+    def __init__(self, **placed: FakeHub):
+        self.hubs: dict[str, FakeHub] = {}
+        self.extra_open: set[str] = set()  # answers on 443 but is not a hub (a router)
+        self.tcp_calls: list[str] = []
+        for host, hub in placed.items():
+            self.hubs[host.replace("_", ".")] = hub
+
+    def move(self, hub: FakeHub, host: str) -> None:
+        for h in [h for h, x in self.hubs.items() if x is hub]:
+            del self.hubs[h]
+        self.hubs[host] = hub
+
+    def factory(self, host: str) -> Door:
+        return Door(self, host)
+
+    async def tcp(self, host: str) -> bool:
+        self.tcp_calls.append(host)
+        return host in self.hubs or host in self.extra_open

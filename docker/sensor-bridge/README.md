@@ -70,6 +70,20 @@ future or older than 30 days.
 | OFFLINE | 3 failures in a row | `online=false` sent; reconnect with the same backoff; `online=true` sent when it works |
 | REBOOTING | rebooted on `SENSOR_BRIDGE_REBOOT_CRON` | reconnect after 2 min; failures in the first 5 min do not count |
 
+### A hub that moves to another address
+
+Reserve each hub's address on the router (docs/SENSORS.md in the stack); if one moves anyway, the
+bridge finds it. While a hub is OFFLINE, at most every `SENSOR_BRIDGE_RELOCATE_SECONDS`, the bridge sweeps
+`SENSOR_BRIDGE_SCAN`: a TCP connect to port 443 of every address (32 at a time, 1 s each), then a login with
+the Tapo account at each address that answers (8 at a time) to read the hub id. One sweep runs at a time and
+its result (kept 60 s) serves every hub that moved together. A hub is matched by the id the bridge learned; a
+hub that was never reached claims a hub that logs in and that no other hub entry follows. On a match the log
+says `event=hub_moved hub=<id> old=<address> new=<address>` (`claimed=true` for a claim), the move is stored in
+the state volume (`host_of:<id>`, so a restart keeps it) and the backend's hub row follows the new address. The
+queued readings are kept. Two hubs that swapped addresses are sorted out the same way. A configured address
+that now answers with a hub another entry follows is treated as a failed poll. The sweep only sends TCP
+connects and the login; it uses no broadcast, so it works in Docker's bridge network and under WSL2.
+
 ### Delivery
 
 | Answer | What the bridge does |
@@ -96,6 +110,8 @@ than 29 days are dropped from the queue, and it never holds more than 200,000.
 | `SENSOR_BRIDGE_HEARTBEAT_SECONDS` | `300` | 60 to 86400 |
 | `SENSOR_BRIDGE_MAX_BATCH` | `200` | readings per request, 1 to 500 |
 | `SENSOR_BRIDGE_REBOOT_CRON` | (off) | reboot every hub on this schedule, five cron fields **in UTC**, minute and hour as single numbers; `30 21 * * 6` is Sunday 03:00 in India |
+| `SENSOR_BRIDGE_SCAN` | the /24 of each hub address | where to look for a hub that moved to another address: comma-separated private (RFC 1918) CIDR networks of /22 or smaller, or `off`; hubs given by name or at a non-private address add nothing |
+| `SENSOR_BRIDGE_RELOCATE_SECONDS` | `600` | an OFFLINE hub triggers a sweep at most this often, 60 to 86400 |
 | `SENSOR_BRIDGE_QUEUE_PATH` | `/data/bridge.sqlite3` | queue and sent-state |
 | `SENSOR_BRIDGE_HEALTH_PATH` | `/data/health.json` | rewritten every second, whatever the poll interval |
 | `SENSOR_BRIDGE_HEALTH_MAX_AGE` | `120` | seconds; the HEALTHCHECK fails beyond it |

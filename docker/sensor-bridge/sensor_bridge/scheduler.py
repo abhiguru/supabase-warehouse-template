@@ -9,6 +9,8 @@ Per hub:
   OFFLINE --connect+poll ok--> POLLING (online=true queued)
   POLLING --reboot cron matches--> reboot, REBOOTING: reconnect after 2 min, retried at most a
           minute apart; failures in the first 5 min do not count
+OFFLINE --relocate interval elapsed--> the locator sweeps for the hub's id; when found at another
+          address the runner switches to it (event=hub_moved) and reconnects at once
 Every heartbeat interval the hub status is queued again (online or not), so the backend
 sees the bridge even when no sensor changes and a hub is unreachable.
 """
@@ -21,6 +23,7 @@ import time
 
 from . import __version__, health
 from .hub import HubError, HubSnapshot
+from .locate import Locator
 from .poster import Delivery
 from .queue import Queue
 from .state import ChangeDetector
@@ -40,24 +43,58 @@ def iso(now: float) -> str:
 
 
 class HubRunner:
-    def __init__(self, host: str, client, detector: ChangeDetector, queue: Queue, config):
-        self.host, self.client, self.detector, self.queue, self.config = host, client, detector, queue, config
+    def __init__(self, host: str, client, detector: ChangeDetector, queue: Queue, config,
+                 locator: Locator | None = None, hub_factory=None):
+        self.configured = self.host = host  # `configured` is the address in SENSOR_BRIDGE_HUBS; `host` the current one
+        self.client, self.detector, self.queue, self.config = client, detector, queue, config
+        self.locator, self.hub_factory = locator, hub_factory
+        self.relocate_at = 0.0
         self.state = DISCONNECTED
         self.failures = 0
         self.next_at = 0.0
         self.connect_wait = 0
         self.rebooted_at: float | None = None
         self.hub_status_at: float | None = None
-        self.hub_id = detector.get(f"hub_id:{host}") or host
+        self.learned_id: str | None = detector.get(f"hub_id:{host}")
+        self._restore_move()
+        if self.learned_id:  # state written before hubs were keyed by id used the address
+            self.queue.rekey(self.configured, self.learned_id)
         self.firmware: str | None = None
         self.last_error = ""
         self.offline_sensors: set[str] = set()  # sensors logged offline, to log each change once
+
+    @property
+    def hub_id(self) -> str:
+        """The hub's own id once learned; until then its address (that is what the backend shows)."""
+        return self.learned_id or self.host
+
+    @property
+    def hub_key(self) -> str:
+        return self.learned_id or self.host
+
+    @property
+    def polling(self) -> bool:
+        return self.state == POLLING
+
+    def _restore_move(self) -> None:
+        """After a restart, start at the address the hub was last found at (if the configuration is unchanged)."""
+        saved = (self.detector.get(f"host_of:{self.learned_id}") or "").split() if self.learned_id else []
+        if len(saved) == 2 and saved[0] == self.configured and saved[1] != self.host and self.hub_factory:
+            self.host, self.client = saved[1], self.hub_factory(saved[1])
+
+    def _learn(self, hub_id: str) -> None:
+        old_key = self.hub_key
+        self.learned_id = hub_id
+        self.detector.set(f"hub_id:{self.configured}", hub_id)
+        if self.host != self.configured:
+            self.detector.set(f"host_of:{hub_id}", f"{self.configured} {self.host}")
+        self.queue.rekey(old_key, hub_id)
 
     def hub_payload(self, online: bool) -> dict:
         return {"id": self.hub_id, "host": self.host, "online": online, "firmware": self.firmware}
 
     def _queue_hub(self, online: bool, now: float, force: bool = False) -> None:
-        if self.queue.set_hub(self.host, self.hub_payload(online), force) or force:
+        if self.queue.set_hub(self.hub_key, self.hub_payload(online), force) or force:
             self.hub_status_at = now
 
     async def step(self, now: float) -> None:
@@ -65,6 +102,8 @@ class HubRunner:
             self._queue_hub(self.state != OFFLINE, now, force=True)
             if self.state == OFFLINE:
                 log.info("event=offline_heartbeat hub=%s host=%s", self.hub_id, self.host)
+        if self.state == OFFLINE and await self._relocate(now):
+            return
         if now < self.next_at:
             return
         if self.state == POLLING and self._reboot_due(now):
@@ -74,10 +113,39 @@ class HubRunner:
             if self.state != POLLING:
                 await self.client.connect()
             snapshot = await self.client.poll()
+            self._check_identity(snapshot)
         except HubError as exc:
             await self._failed(now, exc)
             return
         self._polled(now, snapshot)
+
+    def _check_identity(self, snap: HubSnapshot) -> None:
+        """A hub another runner follows is not ours (two hubs swapped addresses): treat it as a failed poll."""
+        if self.locator and self.locator.enabled and snap.hub_id != self.learned_id \
+                and snap.hub_id in self.locator.followed_by_others(self):
+            raise HubError("another hub answers at this address")
+
+    async def _relocate(self, now: float) -> bool:
+        """Ask the locator where the hub is; True when the runner moved (it then reconnects at once)."""
+        loc = self.locator
+        if not (loc and loc.enabled) or now < self.relocate_at or loc.busy:
+            return False
+        self.relocate_at = now + self.config.relocate_seconds
+        found = await loc.find(self, now)
+        if found is None or found.host == self.host:
+            return False
+        old = self.host
+        was_learned = self.learned_id
+        self._learn(found.hub_id)  # before the address changes, so a claimed hub's queue is re-keyed from the old one
+        self.host = found.host
+        self.detector.set(f"host_of:{found.hub_id}", f"{self.configured} {found.host}")
+        if self.hub_factory:
+            await self.client.close()
+            self.client = self.hub_factory(found.host)
+        self.state, self.failures, self.connect_wait, self.next_at = DISCONNECTED, 0, 0, now
+        log.info("event=hub_moved hub=%s old=%s new=%s%s", found.hub_id, old, found.host,
+                 "" if was_learned else " claimed=true")
+        return True
 
     def _polled(self, now: float, snap: HubSnapshot) -> None:
         if self.state != POLLING:
@@ -85,9 +153,10 @@ class HubRunner:
                      snap.hub_id, self.host, snap.model, snap.firmware, len(snap.children), self.state)
         self.state, self.failures, self.connect_wait, self.rebooted_at = POLLING, 0, 0, None
         self.next_at = now + self.config.poll_seconds
-        if snap.hub_id != self.hub_id:
-            self.hub_id = snap.hub_id
-            self.detector.set(f"hub_id:{self.host}", snap.hub_id)
+        if snap.hub_id != self.learned_id:
+            if self.learned_id:
+                log.info("event=hub_replaced old=%s new=%s host=%s", self.learned_id, snap.hub_id, self.host)
+            self._learn(snap.hub_id)
         self.firmware = snap.firmware
         self._queue_hub(True, now)
         measured_at, readings = iso(now), []
@@ -104,7 +173,7 @@ class HubRunner:
                     "battery_low": child.battery_low, "battery_percent": child.battery_percent,
                     "signal_level": child.signal_level, "report_interval_s": child.report_interval_s, "kind": kind,
                 })
-        self.queue.put(self.host, readings, now)  # commits the detector's records with the readings
+        self.queue.put(self.hub_key, readings, now)  # commits the detector's records with the readings
         if readings:
             log.info("event=readings hub=%s sensors=%d changes=%d heartbeats=%d", self.hub_id, len(snap.children),
                      sum(r["kind"] == "change" for r in readings), sum(r["kind"] == "heartbeat" for r in readings))
@@ -144,10 +213,12 @@ class HubRunner:
 
     def _reboot_due(self, now: float) -> bool:
         cron = self.config.reboot_cron
-        return bool(cron and cron.matches(now) and self.detector.get(f"reboot:{self.host}") != str(int(now // 60)))
+        minute = str(int(now // 60))
+        done = (self.detector.get(f"reboot:{self.hub_key}"), self.detector.get(f"reboot:{self.host}"))
+        return bool(cron and cron.matches(now) and minute not in done)
 
     async def _reboot(self, now: float) -> None:
-        self.detector.set(f"reboot:{self.host}", str(int(now // 60)))  # first, so a crash cannot repeat it
+        self.detector.set(f"reboot:{self.hub_key}", str(int(now // 60)))  # first, so a crash cannot repeat it
         log.info("event=hub_reboot hub=%s host=%s", self.hub_id, self.host)
         try:
             await self.client.reboot()
@@ -160,7 +231,7 @@ class HubRunner:
         self.next_at = now + REBOOT_WAIT
 
     def status(self) -> dict:
-        return {"hub_id": self.hub_id, "state": self.state, "failures": self.failures, "last_error": self.last_error}
+        return {"hub_id": self.hub_id, "host": self.host, "state": self.state, "failures": self.failures, "last_error": self.last_error}
 
 
 class Bridge:

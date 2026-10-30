@@ -381,3 +381,143 @@ class BridgeTest(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+class NetHarness:
+    """Several runners on a FakeNetwork, with the sweep switched on for 10.0.0.0/24."""
+
+    def __init__(self, net: FakeNetwork, hosts: list[str], db=None, poster: FakePoster | None = None, **settings):
+        from sensor_bridge.locate import Locator
+
+        settings = {"SENSOR_BRIDGE_HUBS": ",".join(hosts), "SENSOR_BRIDGE_POLL_SECONDS": "30",
+                    "SENSOR_BRIDGE_HEARTBEAT_SECONDS": "900", **settings}
+        self.config = config(**settings)
+        self.net, self.clock = net, Clock()
+        self.db = db or open_db(":memory:")
+        self.queue = Queue(self.db)
+        self.detector = ChangeDetector(self.db, self.config.heartbeat_seconds)
+
+        async def probe(host):
+            return await net.factory(host).identify()
+
+        self.locator = Locator(self.config.scan, probe, net.tcp)
+        self.runners = [HubRunner(h, net.factory(h), self.detector, self.queue, self.config, self.locator, net.factory)
+                        for h in hosts]
+        self.locator.runners = self.runners
+        self.poster = poster or FakePoster()
+        delivery = Delivery(self.queue, self.poster, self.config.bridge_id, self.config.max_batch, run_inline)
+        self.bridge = Bridge(self.runners, delivery, self.queue, self.clock)
+
+    def run(self, start: float, end: float, every: float = 5) -> None:
+        async def go():
+            at = start
+            while at <= end:
+                self.clock.now = T0 + at
+                await self.bridge.tick()
+                at += every
+        asyncio.run(go())
+
+    def last_hub_post(self, hub_id: str) -> dict:
+        return [p["hub"] for p in self.poster.payloads if p["hub"]["id"] == hub_id][-1]
+
+
+class RelocateTest(unittest.TestCase):
+    def test_a_hub_that_changed_address_is_found_and_reported_with_the_new_host(self):
+        hub = FakeHub(hub_id="HUB-A", children=[child(1)])
+        net = FakeNetwork(**{"10_0_0_10": hub})
+        h = NetHarness(net, ["10.0.0.10"])
+        h.run(0, 30)
+        self.assertEqual(h.last_hub_post("HUB-A")["host"], "10.0.0.10")
+        net.move(hub, "10.0.0.34")
+        with self.assertLogs("sensor_bridge", "INFO") as logs:
+            h.run(31, 300)
+        self.assertIn("event=hub_moved hub=HUB-A old=10.0.0.10 new=10.0.0.34", "\n".join(logs.output))
+        runner = h.runners[0]
+        self.assertEqual((runner.host, runner.state), ("10.0.0.34", POLLING))
+        self.assertEqual(h.last_hub_post("HUB-A"), {"id": "HUB-A", "host": "10.0.0.34", "online": True,
+                                                    "firmware": "1.4.0"})
+        self.assertEqual(h.detector.get("host_of:HUB-A"), "10.0.0.10 10.0.0.34")
+
+    def test_the_move_survives_a_restart_and_the_outbox_is_kept(self):
+        hub = FakeHub(hub_id="HUB-A", children=[child(1)])
+        net = FakeNetwork(**{"10_0_0_10": hub})
+        with tempfile.TemporaryDirectory() as tmp:
+            path = os.path.join(tmp, "b.sqlite3")
+            first = NetHarness(net, ["10.0.0.10"], db=open_db(path), poster=FakePoster(500, 500, 500, 500, 500, 500))
+            first.run(0, 30)
+            net.move(hub, "10.0.0.34")
+            first.run(31, 300)
+            self.assertGreater(first.queue.size(), 0, "the backend is down: readings wait in the outbox")
+            queued = first.queue.size()
+            first.db.close()
+            second = NetHarness(net, ["10.0.0.10"], db=open_db(path))
+            self.assertEqual(second.runners[0].host, "10.0.0.34", "starts at the last known address")
+            self.assertEqual(second.queue.size(), queued)
+            second.run(400, 430)
+            self.assertEqual(second.runners[0].state, POLLING)
+            second.db.close()
+
+    def test_a_changed_configuration_ignores_the_stored_move(self):
+        hub = FakeHub(hub_id="HUB-A", children=[child(1)])
+        net = FakeNetwork(**{"10_0_0_10": hub})
+        h = NetHarness(net, ["10.0.0.10"])
+        h.run(0, 30)
+        net.move(hub, "10.0.0.34")
+        h.run(31, 300)
+        again = NetHarness(net, ["10.0.0.34"], db=h.db)
+        self.assertEqual(again.runners[0].host, "10.0.0.34")
+        other = NetHarness(net, ["10.0.0.77"], db=h.db)
+        self.assertEqual(other.runners[0].host, "10.0.0.77")
+
+    def test_two_hubs_that_swapped_addresses_end_up_on_each_others_address(self):
+        a, b = FakeHub(hub_id="HUB-A", children=[child(1)]), FakeHub(hub_id="HUB-B", children=[child(2)])
+        net = FakeNetwork(**{"10_0_0_10": a, "10_0_0_11": b})
+        h = NetHarness(net, ["10.0.0.10", "10.0.0.11"])
+        h.run(0, 30)
+        net.hubs["10.0.0.10"], net.hubs["10.0.0.11"] = b, a
+        h.run(31, 400)
+        self.assertEqual([(r.hub_id, r.host, r.state) for r in h.runners],
+                         [("HUB-A", "10.0.0.11", POLLING), ("HUB-B", "10.0.0.10", POLLING)])
+        self.assertEqual(h.last_hub_post("HUB-A")["host"], "10.0.0.11")
+        self.assertEqual(h.last_hub_post("HUB-B")["host"], "10.0.0.10")
+
+    def test_without_a_sweep_a_swap_is_adopted_as_before(self):
+        a, b = FakeHub(hub_id="HUB-A", children=[child(1)]), FakeHub(hub_id="HUB-B", children=[child(2)])
+        net = FakeNetwork(**{"10_0_0_10": a, "10_0_0_11": b})
+        h = NetHarness(net, ["10.0.0.10", "10.0.0.11"], SENSOR_BRIDGE_SCAN="off")
+        h.run(0, 30)
+        net.hubs["10.0.0.10"], net.hubs["10.0.0.11"] = b, a
+        h.run(31, 100)
+        self.assertEqual([(r.hub_id, r.host) for r in h.runners], [("HUB-B", "10.0.0.10"), ("HUB-A", "10.0.0.11")])
+
+    def test_a_never_reached_hub_is_claimed_when_it_appears_and_keeps_one_owner(self):
+        net = FakeNetwork(**{"10_0_0_10": FakeHub(hub_id="HUB-A", children=[child(1)])})
+        h = NetHarness(net, ["10.0.0.10", "10.0.0.58"])
+        h.run(0, 60)
+        late = FakeHub(hub_id="HUB-C", children=[child(3)])
+        self.assertEqual(h.runners[1].state, OFFLINE)
+        self.assertEqual(h.last_hub_post("10.0.0.58")["online"], False, "reported under its address until found")
+        net.hubs["10.0.0.200"] = late
+        with self.assertLogs("sensor_bridge", "INFO") as logs:
+            h.run(61, 900)
+        self.assertIn("event=hub_moved hub=HUB-C old=10.0.0.58 new=10.0.0.200 claimed=true", "\n".join(logs.output))
+        self.assertEqual([(r.hub_id, r.host) for r in h.runners], [("HUB-A", "10.0.0.10"), ("HUB-C", "10.0.0.200")])
+        self.assertEqual(h.last_hub_post("HUB-C")["online"], True)
+        self.assertEqual(h.detector.get("hub_id:10.0.0.58"), "HUB-C")
+
+    def test_a_hub_that_appears_at_the_configured_address_is_simply_connected(self):
+        net = FakeNetwork(**{"10_0_0_10": FakeHub(hub_id="HUB-A")})
+        h = NetHarness(net, ["10.0.0.10", "10.0.0.58"])
+        h.run(0, 30)
+        net.hubs["10.0.0.58"] = FakeHub(hub_id="HUB-C", children=[child(3)])
+        h.run(31, 100)
+        self.assertEqual([(r.hub_id, r.host) for r in h.runners], [("HUB-A", "10.0.0.10"), ("HUB-C", "10.0.0.58")])
+
+    def test_relocation_waits_for_the_interval_between_sweeps(self):
+        net = FakeNetwork(**{"10_0_0_10": FakeHub(hub_id="HUB-A", children=[child(1)])})
+        h = NetHarness(net, ["10.0.0.10"], SENSOR_BRIDGE_RELOCATE_SECONDS="600")
+        h.run(0, 30)
+        net.hubs.clear()
+        h.run(31, 1500)
+        sweeps = len(net.tcp_calls) // 254
+        self.assertEqual(sweeps, 3, "first when OFFLINE, then every 600 s")

@@ -165,3 +165,16 @@ class QueueTest(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+class RekeyTest(unittest.TestCase):
+    def test_rekey_moves_readings_and_drops_the_old_status(self):
+        queue = Queue(open_db(":memory:"))
+        queue.set_hub("10.0.0.5", {"id": "10.0.0.5"})
+        queue.put("10.0.0.5", [{"external_id": "S1", "measured_at": "2026-10-03T04:00:00Z"}], 1.0)
+        queue.rekey("10.0.0.5", "HUBID")
+        self.assertEqual(queue.pending_hubs(), ["HUBID"])
+        self.assertEqual(queue.take("10.0.0.5", 10)[0], None)
+        self.assertEqual(len(queue.take("HUBID", 10)[2]), 1)
+        queue.rekey("HUBID", "HUBID")  # same key: nothing happens
+        self.assertEqual(queue.size(), 1)

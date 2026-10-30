@@ -13,6 +13,7 @@ import time
 
 from . import __version__
 from .config import EX_CONFIG, Config, ConfigError, load
+from .locate import Locator
 from .poster import Delivery, HttpPoster
 from .queue import Queue, open_db
 from .scheduler import Bridge, HubRunner
@@ -57,7 +58,13 @@ def kasa_factory(config: Config):
 def build(config: Config, hub_factory, poster=None, clock=time.time) -> Bridge:
     db = open_db(config.queue_path)
     queue, detector = Queue(db), ChangeDetector(db, config.heartbeat_seconds)
-    runners = [HubRunner(h, hub_factory(h), detector, queue, config) for h in config.hubs]
+
+    async def probe(host: str) -> str:
+        return await hub_factory(host).identify()
+
+    locator = Locator(config.scan, probe)
+    runners = [HubRunner(h, hub_factory(h), detector, queue, config, locator, hub_factory) for h in config.hubs]
+    locator.runners = runners
     delivery = Delivery(queue, poster or HttpPoster(config.ingest_url, config.ingest_key), config.bridge_id,
                         config.max_batch)
     return Bridge(runners, delivery, queue, clock, config.health_path)
