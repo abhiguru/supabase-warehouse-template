@@ -200,3 +200,42 @@ BEGIN
   EXECUTE v_def;
 END
 $patch$;
+
+-- Section 4: find_storage_price, the one function that answers "which default rate applies to this item on this day" for the invoice
+-- form, the invoice recalculation, get_grn_item_rates and the "every line has a rate" check of the GRN rate sheet (apply_grn_rates):
+-- an item's first default rate also covers every earlier day, so a GRN dated before the item was priced is not "missing a rate" and
+-- nothing has to be back-filled. Only the default rate (no customer) of the item's first start day is extended, and only to days
+-- before it; a customer's own rate never reaches back, a later change starts on its own day. No signature change.
+DO $patch$
+DECLARE
+  v_def text;
+  v_old constant text[] := ARRAY[
+    $m$      AND isp.effective_from <= p_dispatch_date
+      AND (isp.effective_to IS NULL OR p_dispatch_date <= isp.effective_to)
+$m$
+  ];
+  v_new constant text[] := ARRAY[
+    $m$      AND (
+          (isp.effective_from <= p_dispatch_date
+           AND (isp.effective_to IS NULL OR p_dispatch_date <= isp.effective_to))
+          -- Migration 129: the item's first default rate (its earliest start day, all its bands) also covers the days before it.
+          OR (isp.customer_id IS NULL AND p_dispatch_date < isp.effective_from
+              AND isp.effective_from = (SELECT min(f.effective_from) FROM item_storage_prices f
+                                         WHERE f.item_id = isp.item_id AND f.price_type = isp.price_type AND f.customer_id IS NULL))
+      )
+$m$
+  ];
+  v_count integer;
+  i integer;
+BEGIN
+  v_def := pg_get_functiondef('public.find_storage_price(uuid, uuid, integer, date, text)'::regprocedure);
+  FOR i IN 1 .. array_length(v_old, 1) LOOP
+    v_count := (length(v_def) - length(replace(v_def, v_old[i], ''))) / length(v_old[i]);
+    IF v_count <> 1 THEN
+      RAISE EXCEPTION 'find_storage_price: expected marker % once, found % times', i, v_count;
+    END IF;
+    v_def := replace(v_def, v_old[i], v_new[i]);
+  END LOOP;
+  EXECUTE v_def;
+END
+$patch$;

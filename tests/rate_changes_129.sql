@@ -4,6 +4,8 @@
 --   2. request keys: replace_item_rates and set_standard_rate answer a resend of the same key with the first answer and write
 --      nothing; a refusal and a dry run are not stored; another user or another start day is a real call; get_submission_result
 --      finds the answer.
+--   3. find_storage_price: an item's first default rate also covers every earlier day (a GRN dated before it is not missing a rate);
+--      a later change and a customer's own rate start on their own day.
 -- Fictional data; runs only in migrations.sh's disposable, network-disabled database.
 \set ON_ERROR_STOP on
 BEGIN;
@@ -202,4 +204,59 @@ SELECT pg_temp.r9_call(format('SELECT public.set_standard_rate(p_tiers=>%L::json
 RESET ROLE;
 SELECT pg_temp.r9_assert(:'dry'::jsonb#>>'{data,dry_run}'='true' AND :'real_save'::jsonb#>>'{data,dry_run}'='false' AND :'real_save'::jsonb->>'success'='true',
  'a dry run stores nothing under the key: '||:'dry'||:'real_save');
+-- ---------------------------------------------------------------------------
+-- 3. An item's first rate also covers every earlier day
+-- ---------------------------------------------------------------------------
+SELECT warehouse_security.business_date(now())-300 AS d_m300, warehouse_security.business_date(now())-50 AS d_m50, warehouse_security.business_date(now())-40 AS d_m40 \gset
+-- Section 2 saved a standard rate, which a new item would be priced from: clear it, so that these items start with no rate.
+DELETE FROM public.standard_rate_tiers;
+SELECT set_config('request.jwt.claims',:'admin_claims',true);
+SET LOCAL ROLE authenticated;
+SELECT public.create_item('Rate129 Fennel','Bag')->>'success' AS fennel_made, public.create_item('Rate129 Unpriced','Bag')->>'success' AS unpriced_made,
+       public.create_customer('Rate129 North Orchard','9666666611')->>'success' AS north_made \gset
+RESET ROLE;
+SELECT id AS fennel FROM public.items WHERE name='Rate129 Fennel' \gset
+SELECT id AS unpriced FROM public.items WHERE name='Rate129 Unpriced' \gset
+SELECT id AS north FROM public.customers WHERE name='Rate129 North Orchard' \gset
+SELECT pg_temp.r9_assert(:'fennel_made'='true' AND :'unpriced_made'='true' AND :'north_made'='true','fixture: items and a customer');
+-- A GRN of the item dated 300 days ago, checked for rates ([] = check only): before the item has any rate it is RATE_MISSING.
+CREATE FUNCTION pg_temp.r9_grn(p_no text, p_item uuid, p_name text, p_day date, p_customer uuid) RETURNS jsonb LANGUAGE sql AS $$
+  SELECT pg_temp.r9_call(format($q$SELECT public.save_grn(p_gr_no=>%L,p_date=>%L::timestamptz,p_customer_id=>%L::uuid,p_customer_name=>'Rate129 North Orchard',
+    p_pricing_mode=>'MONTHLY',p_rates=>'[]'::jsonb,p_items=>jsonb_build_array(jsonb_build_object('item_id',%L::uuid,'item_name',%L,'packaging','Bag','qty',5,'weight',10)))$q$,
+    p_no,p_day::text||'T12:00:00Z',p_customer,p_item,p_name)) $$;
+SELECT set_config('request.jwt.claims',:'admin_claims',true);
+SET LOCAL ROLE authenticated;
+SELECT pg_temp.r9_grn('R129A',:'fennel'::uuid,'Rate129 Fennel',:'d_m300'::date,:'north'::uuid) AS grn_before \gset
+RESET ROLE;
+SELECT pg_temp.r9_assert(:'grn_before'::jsonb->>'error_code'='RATE_MISSING' AND (SELECT count(*)=0 FROM public.goodsreceived WHERE gr_no='R129A'),
+ 'twin: an item with no rate at all still makes a GRN RATE_MISSING: '||:'grn_before');
+SELECT set_config('request.jwt.claims',:'admin_claims',true);
+SET LOCAL ROLE authenticated;
+SELECT pg_temp.r9_replace(:'fennel'::uuid,:'d_m200'::date,pg_temp.r9_band(6)) AS f1,
+       pg_temp.r9_replace(:'fennel'::uuid,:'d_m100'::date,pg_temp.r9_band(7)) AS f2,
+       pg_temp.r9_call(format('SELECT public.replace_item_rates(p_item_id=>%L,p_customer_id=>%L,p_price_type=>%L,p_starts_on=>%L,p_bands=>%L::jsonb)',
+         :'fennel',:'north','monthly',:'d_m50',jsonb_build_array(jsonb_build_object('weight_min',0,'weight_max',100,'unit_price',4,'labour_rate',1,'tax_percent',5)))) AS f_cust \gset
+RESET ROLE;
+SELECT pg_temp.r9_assert(:'f1'::jsonb->>'success'='true' AND :'f2'::jsonb->>'success'='true' AND :'f_cust'::jsonb->>'success'='true','fixture: 6.00 from 200 days ago, 7.00 from 100 days ago, 4.00 for North from 50 days ago: '||:'f_cust');
+SELECT pg_temp.r9_assert(pg_temp.r9_rent(:'fennel'::uuid,50,:'d_m300'::date)='6.00' AND pg_temp.r9_rent(:'fennel'::uuid,50,(:'d_m200'::date-1))='6.00'
+ AND pg_temp.r9_rent(:'fennel'::uuid,50,:'d_m200'::date)='6.00' AND pg_temp.r9_rent(:'fennel'::uuid,50,:'d_m150'::date)='6.00',
+ 'before and on its first day the first rate applies (6.00)');
+SELECT pg_temp.r9_assert(pg_temp.r9_rent(:'fennel'::uuid,50,:'d_m100'::date)='7.00' AND pg_temp.r9_rent(:'fennel'::uuid,50,(:'d_m100'::date-1))='6.00'
+ AND pg_temp.r9_rent(:'fennel'::uuid,50,:'today'::date)='7.00','a later change starts on its own day only (7.00 from 100 days ago, 6.00 the day before)');
+SELECT pg_temp.r9_assert(pg_temp.r9_rent(:'unpriced'::uuid,50,:'d_m300'::date)='none' AND pg_temp.r9_rent(:'unpriced'::uuid,50,:'today'::date)='none',
+ 'twin: an item with no rate has none on any day');
+SELECT pg_temp.r9_assert((SELECT f.unit_price::text FROM public.find_storage_price(:'fennel'::uuid,:'north'::uuid,50,:'d_m300'::date,'monthly') f)='6.00'
+ AND (SELECT f.unit_price::text FROM public.find_storage_price(:'fennel'::uuid,:'north'::uuid,50,:'d_m40'::date,'monthly') f)='4.00'
+ AND (SELECT f.unit_price::text FROM public.find_storage_price(:'fennel'::uuid,:'north'::uuid,50,:'d_m100'::date,'monthly') f)='7.00',
+ 'a customer''s own rate does not reach back: North gets the default before its day (6.00, 7.00) and its own 4.00 after');
+SELECT pg_temp.r9_assert(NOT EXISTS (SELECT 1 FROM public.find_storage_price(:'fennel'::uuid,NULL,50,:'d_m300'::date,'one_time') f WHERE f.id IS NOT NULL),
+ 'twin: the monthly rate does not cover a one-time lookup');
+-- The GRN of 300 days ago now needs no rate to be added, and no rate row was written for it.
+SELECT set_config('request.jwt.claims',:'admin_claims',true);
+SET LOCAL ROLE authenticated;
+SELECT pg_temp.r9_grn('R129A',:'fennel'::uuid,'Rate129 Fennel',:'d_m300'::date,:'north'::uuid) AS grn_after \gset
+RESET ROLE;
+SELECT pg_temp.r9_assert(:'grn_after'::jsonb->>'success'='true' AND (SELECT count(*)=1 FROM public.goodsreceived WHERE gr_no='R129A')
+ AND pg_temp.r9_rows(:'fennel'::uuid,NULL,'monthly')=format('0-100@6.00 %s..%s | 0-100@7.00 %s..open',:'d_m200',(:'d_m100'::date-1)::text,:'d_m100'),
+ 'a GRN dated before the first rate is saved with no missing rate, and the item''s rows are untouched: '||:'grn_after'||pg_temp.r9_rows(:'fennel'::uuid,NULL,'monthly'));
 ROLLBACK;
