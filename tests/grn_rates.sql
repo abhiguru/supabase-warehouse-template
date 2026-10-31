@@ -389,6 +389,17 @@ SELECT pg_temp.gr_upd(:'rater_claims'::jsonb,'GRN-INV2',jsonb_build_array(pg_tem
 SELECT pg_temp.gr_upd(:'rater_claims'::jsonb,'GRN-INV2','[]') AS inv2_none \gset
 SELECT pg_temp.gr_assert(:'inv2_diff'::jsonb->>'error_code'='GRN_INVOICED' AND :'inv2_none'::jsonb->>'error_code'='GRN_INVOICED'
  AND pg_temp.gr_own('GRN-INV2')='GR Cherry 0-10@4.00/1.00/5 monthly','a different or an empty set on an invoiced GRN is still GRN_INVOICED: '||:'inv2_diff'||:'inv2_none');
+-- Migration 129: an invoiced GRN does not change the item's rates either: a customer or an everyone entry is GRN_INVOICED, also beside the
+-- stored set, and nothing is written. (The same entries on a GRN that is not invoiced are saved by the tests above and below.)
+SELECT pg_temp.gr_rows(pg_temp.gr_item('GR Cherry'),:'orchard'::uuid) AS inv2_cust_before, pg_temp.gr_rows(pg_temp.gr_item('GR Cherry'),NULL) AS inv2_all_before \gset
+SELECT pg_temp.gr_upd(:'rater_claims'::jsonb,'GRN-INV2',jsonb_build_array(pg_temp.gr_rate('grn','GR Cherry',0,10,4,1,5),pg_temp.gr_rate('everyone','GR Cherry',0,50,7,1,5))) AS inv2_every \gset
+SELECT pg_temp.gr_upd(:'rater_claims'::jsonb,'GRN-INV2',jsonb_build_array(pg_temp.gr_rate('customer','GR Cherry',0,50,7,1,5))) AS inv2_cust \gset
+SELECT pg_temp.gr_assert(:'inv2_every'::jsonb->>'success'='false' AND :'inv2_every'::jsonb->>'error_code'='GRN_INVOICED' AND :'inv2_every'::jsonb#>>'{data,scope}'='everyone'
+ AND :'inv2_every'::jsonb#>>'{data,index}'='1'
+ AND :'inv2_cust'::jsonb->>'error_code'='GRN_INVOICED' AND :'inv2_cust'::jsonb#>>'{data,scope}'='customer' AND :'inv2_cust'::jsonb#>>'{data,index}'='0'
+ AND pg_temp.gr_rows(pg_temp.gr_item('GR Cherry'),:'orchard'::uuid)=:'inv2_cust_before' AND pg_temp.gr_rows(pg_temp.gr_item('GR Cherry'),NULL)=:'inv2_all_before'
+ AND pg_temp.gr_own('GRN-INV2')='GR Cherry 0-10@4.00/1.00/5 monthly',
+ 'customer and everyone entries for an invoiced GRN are GRN_INVOICED and write nothing: '||:'inv2_every'||:'inv2_cust');
 
 -- ---------------------------------------------------------------------------
 -- 6b. The GRN's own rates are updated in place (C8), listed in order (C8), cleaned up (C4)

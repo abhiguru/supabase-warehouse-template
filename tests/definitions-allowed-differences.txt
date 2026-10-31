@@ -26,3 +26,7 @@ A ^function\|warehouse_security\.authorize_rpc\(
 B ^function\|warehouse_security\.authorize_rpc\(
 A ^function\|public\.update_dispatch_smart\(
 B ^function\|public\.update_dispatch_smart\(
+#
+# Migration 129 (2026-10-31): apply_grn_rates refuses a customer or everyone entry for an invoiced GRN (GRN_INVOICED).
+A ^function\|warehouse_security\.apply_grn_rates\(
+B ^function\|warehouse_security\.apply_grn_rates\(
