@@ -323,6 +323,10 @@ and `save_invoice_internal` rolls the whole block back and answers it (nothing i
 | `LINE_ON_ORDER` | `update_grn` | `line_id`, `item_name`, `customer_name` | {item} is on {customer}'s order. Remove it from the order first. |
 | `LINE_DISPATCHED_BEFORE` | `update_grn` | `line_id`, `item_name` | {item} was dispatched before, so this line can't be removed. |
 | `TOTAL_CHANGED` | `save_invoice(uuid,jsonb,jsonb[])`, `update_invoice` | `current_total`, `expected_total`, `lines` (`[{disp_trl_id, duration, no_of_days}]` as the server recomputed them) | The total is now {current}, not {expected}. Review the figures and save again. |
+| `INVOICE_DATE_FUTURE` | `save_invoice(uuid,jsonb,jsonb[])`, `update_invoice` (only when the invoice day changes) | `date`, `today` (India days, `YYYY-MM-DD`) | An invoice can't be dated in the future. Today is {today}. |
+| `INVOICE_BEFORE_DISPATCH` | `save_invoice(uuid,jsonb,jsonb[])`, `update_invoice` (only when the invoice day or the set of lines changes) | `invoice_date`, `dispatch_no`, `dispatch_date` (the latest dispatch of the lines; days as `YYYY-MM-DD`) | The invoice date {invoice_date} is before dispatch {no} ({dispatch_date}). |
+| `DISCOUNT_TOTAL_ZERO` | `save_invoice(uuid,jsonb,jsonb[])`, `update_invoice` | `discount`, `total_before_discount` | A discount can't take the total to zero. To charge nothing, set the charge to 0 and give a reason. |
+| `RATES_CHANGED` | `save_invoice(uuid,jsonb,jsonb[])`, `update_invoice` | `lines`: `[{disp_trl_id, fields, looked_up, current}]`, `fields` the names (`charge`, `labour_rate`, `tax`) that differ, `looked_up` as sent, `current = {charge, labour_rate, tax}` as the form would look them up now | The rates changed since you opened this invoice. Check the new figures. |
 
 `invoice_no` is the integer invoice number of the live invoice (the first by financial year and number); the app writes it in its own
 form. Order RPCs still answer `{success:false, message, error:{code:'ORDER_NOT_OPEN'}}` when the order is not open; the new order
@@ -696,7 +700,7 @@ and `remove_customer_assignment` return a boolean and raise an exception whose m
 `SERVICE_ACCOUNT_READ_ONLY`. Days are India
 days (`warehouse_security.business_date(now())`), not UTC days.
 
-#### `replace_item_rates(p_item_id uuid, p_customer_id uuid, p_price_type text, p_starts_on date, p_bands jsonb, p_replace_later boolean DEFAULT false, p_mode text DEFAULT 'change', p_move_from date DEFAULT NULL, p_seen_rows uuid[] DEFAULT NULL)`
+#### `replace_item_rates(p_item_id uuid, p_customer_id uuid, p_price_type text, p_starts_on date, p_bands jsonb, p_replace_later boolean DEFAULT false, p_mode text DEFAULT 'change', p_move_from date DEFAULT NULL, p_seen_rows uuid[] DEFAULT NULL, p_request_key text DEFAULT NULL)`
 
 Changes one scope (item, customer or NULL for the default rate, price type) "from a date" in one
 transaction (a refusal after the first write undoes all of them). A band is
@@ -708,7 +712,9 @@ must start at 0 and follow on without gaps; customer bands may have gaps. Roles:
 - `p_mode = 'change'` (default): rows in force on `p_starts_on` end the day before, rows starting on
   that day that are already in force are deleted, the bands are added from that day. A rate
   planned (not begun) to start on that day or later is refused with `LATER_RATES_EXIST` unless
-  `p_replace_later` is true, which deletes it. Exception: new bands (not a stop) that start on a
+  `p_replace_later` is true, which deletes it. Since migration 129 a rate that starts after `p_starts_on` is a later rate whether it has
+  begun or is only planned (before, a begun one was deleted without a word); each entry of `data.later` is
+  `{effective_from, weight_min, weight_max, unit_price, begun}`, `begun` true when it started on or before today. Exception: new bands (not a stop) that start on a
   planned rate's own start day replace it when its id is listed in `p_seen_rows`.
   `p_bands = []` stops the rate. If every row in force that day shares one last day E and no row
   starts later, the new rows keep that stop (`effective_to = E`); `data.kept_end` is E, else null.
@@ -725,6 +731,10 @@ must start at 0 and follow on without gaps; customer bands may have gaps. Roles:
   end, move or delete that is not listed was changed by someone else: the answer is `STALE_RATES`
   (`data.ids` = the unseen ids) and nothing is written. NULL skips the check. Moving or undoing a
   planned rate that carried a scheduled stop gives the stop back to the rows it reopens.
+- `p_request_key` (optional, migration 129): a client-made key for this save. The first successful answer is stored for 7 days under the
+  caller; a resend with the same key for the same item, customer, price type and start day returns that answer as it was (`data` and all),
+  before any other check, and writes nothing; `get_submission_result(p_key)` finds it (`{found: true, response}`). A refusal is not stored,
+  another user's key is not replayed, no key behaves as before.
 - Staff (before migration 90; now refused by the guard): `p_starts_on` today or later, and for a move both `p_move_from` and `p_starts_on` after
   today (`PAST_DATE_NOT_ALLOWED`); rows of the scope that start on `p_starts_on` when that day is
   today give `RATE_IN_FORCE_MANAGER_ONLY` (a rate that began today is for administrators and
@@ -802,7 +812,7 @@ Roles: admin, supervisor (staff are refused by the guard since migration 90). An
 `{ success: true, data: { tiers: [tier, ...] (by weight_min; [] when never saved), updated_at, updated_by_name } }`
 (`updated_at` and `updated_by_name` are null when never saved).
 
-#### `set_standard_rate(p_tiers jsonb, p_expected_updated_at timestamptz DEFAULT NULL, p_dry_run boolean DEFAULT false)`
+#### `set_standard_rate(p_tiers jsonb, p_expected_updated_at timestamptz DEFAULT NULL, p_dry_run boolean DEFAULT false, p_request_key text DEFAULT NULL)`
 
 Roles: admin, supervisor. Staff and customers are refused by the guard (SQLSTATE 42501) whatever tiers they
 send; `STANDARD_RATE_MANAGER_ONLY`, which migration 85 answered to staff from the body, is unreachable since
@@ -907,6 +917,8 @@ rows). `create_item_storage_price` has no window, as before.
   `replace_item_rates` (item, customer or `default`, price type) before they read the scope, so writers of one
   scope take turns and the later one sees the earlier one's rows (`BANDS_OVERLAP` for an overlap).
   `find_storage_price` breaks a last tie by row id (a fixed tie-break, the lower row id).
+  Since migration 129 an item's first default rate (its earliest start day, every band of it) also covers every earlier day in `find_storage_price`, so a GRN
+  or an invoice dated before the item was priced finds it; a later change and a customer's own rate start on their own day.
 
 ## GRNs
 
@@ -949,7 +961,8 @@ before anything is written; without `p_rates` a staff call works as before.
      item's line weights (a line without weight counts as 0 kg) -> `RATE_NOT_FOR_GRN` (`data.index`,
      `data.item_id`; not checked for the `grn` entries of an invoiced GRN, whose stored set may no longer fit
      a changed line); two GRN-only bands of one item that share a weight -> `BANDS_OVERLAP`.
-  2. `customer` (the GRN's business) and `everyone` (the default rate) entries change the item's rate
+  2. `customer` (the GRN's business) and `everyone` (the default rate) entries are refused for an invoiced GRN (`GRN_INVOICED`,
+     `data.index` and `data.scope` of the first such entry, before anything else is read; migration 129); otherwise they change the item's rate
      of the GRN's price type from the GRN's India day, any day (the staff past-day rule
      of `replace_item_rates` does not apply here; staff cannot send `p_rates` since migration 90). For the rows of that scope that share a weight and a
      day with the days from the GRN day to `to`: a row of a different band -> `BANDS_OVERLAP`
@@ -1226,6 +1239,22 @@ History: migrations 100, 102, 109, 120 and 121.
 `save_invoice(uuid,jsonb,jsonb[])` (through `save_invoice_internal`) and `update_invoice` (and the one-argument `save_invoice(jsonb)` until 123): before any write, any stock
 in any lot of the GRN the request names is `GRN_HAS_STOCK`. An existing invoice of a GRN that now holds stock is refused on its next edit
 too. `update_grn`: a line without `id` while the GRN is invoiced is `GRN_INVOICED`.
+
+### Invoice date, discount and looked-up rates (migration 129)
+
+`save_invoice(uuid,jsonb,jsonb[])` and `update_invoice`, checked before any write except the discount (after `recalculate_invoice_header`):
+
+- **Dates** (India days): an invoice day after today is `INVOICE_DATE_FUTURE`; an invoice day before the latest dispatch day of its lines is
+  `INVOICE_BEFORE_DISPATCH` (the same day is fine). `update_invoice` checks the future rule only when the invoice day changes, and the dispatch
+  rule when the invoice day or the set of `disp_trl_id` lines changes, so a stored invoice that breaks either rule can still be edited for
+  other reasons. Stored rows are never changed by these rules.
+- **Discount**: when the recalculated total is exactly 0 although the lines charge something (subtotal plus tax above 0) and the discount is
+  above 0, `DISCOUNT_TOTAL_ZERO`. A discount above the amount keeps its own refusal (`Discount exceeds the invoice amount`, no `reason`).
+  The way to bill nothing is a charge of 0 with its reason.
+- **Looked-up rates**: a line of `p_invoice_items` may carry `looked_up` = `{charge, labour_rate, tax}` (the figures the form looked up when
+  it opened) and `typed` = `true` (all three typed by hand) or a list of the names `charge`, `labour_rate`, `tax` typed by hand. Each
+  figure not typed is compared (two decimals) with what the invoice form looks up now (`build_invoice_form_lines`: the GRN's own rate, else the item's);
+  the lines that differ are refused together as `RATES_CHANGED`. No `looked_up` on any line (an older app): no check.
 
 ### Invoice total (D18)
 

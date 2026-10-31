@@ -1,4 +1,23 @@
--- Migration 129: rate and invoice checks. The header below is completed as the sections are added; each section says what it does.
+-- Migration 129: rate saves that cannot be lost or doubled, rates that never drop a begun rate silently, an item's first rate for
+-- earlier days, and the invoice date, discount and rate checks.
+--
+--  * replace_item_rates and set_standard_rate take p_request_key (text, default NULL). A save that carries a key stores its first answer
+--    for seven days under the user; a resend of the same key returns that answer and writes nothing, and get_submission_result finds it.
+--    The signatures grow by one defaulted parameter, so the old ones are dropped first (PostgREST would see two overloads).
+--  * replace_item_rates, change mode: a rate that starts after p_starts_on is refused with LATER_RATES_EXIST whether it has begun or is
+--    only planned, unless p_replace_later is true (before, a begun later rate was deleted without a word). data.later[].begun says which.
+--  * find_storage_price, the single source of "which default rate applies to this item on this day" (invoice form, recalculation,
+--    get_grn_item_rates, the missing-rates check of the GRN rate sheet): an item's first default rate also covers every earlier day.
+--  * save_invoice (through save_invoice_internal) and update_invoice, no signature change; the new inputs are keys of the invoice data
+--    and of the lines, so an older app that sends none of them keeps working:
+--      - INVOICE_DATE_FUTURE: an invoice day after today (India); update_invoice checks it only when the invoice day changes;
+--      - INVOICE_BEFORE_DISPATCH: an invoice dated before the latest dispatch of its lines; update_invoice checks it only when the
+--        invoice day or the set of lines changes;
+--      - DISCOUNT_TOTAL_ZERO: a discount that takes a charged invoice to exactly 0;
+--      - RATES_CHANGED: lines that carry `looked_up` (and `typed` for figures typed by hand) whose lookup changed since.
+--    They are raised as 'rate_fail' like TOTAL_CHANGED: the handler rolls the block back and answers them (success false, error_code
+--    WH409, reason = the code). Helpers: warehouse_security.check_invoice_dates, check_discount_total, check_invoice_rates.
+-- The refusal of customer and everyone rate entries for an invoiced GRN (GRN_INVOICED) is in migrations/definitions/apply_grn_rates.sql.
 
 -- Section 1: replace_item_rates.
 --  * Change mode: a rate that starts after the start day is a later rate whether it has begun or is only planned, so it is refused

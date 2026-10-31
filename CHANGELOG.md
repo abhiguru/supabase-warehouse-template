@@ -8,6 +8,16 @@ file used to carry for earlier installations are in git: `git show b45ae0b:CHANG
 
 ## Unreleased
 
+### Changed
+
+- Migration 129: `replace_item_rates` and `set_standard_rate` take an optional `p_request_key` (a resend returns the first answer);
+  a rate change from an earlier date is refused (`LATER_RATES_EXIST`) when a later rate has already begun, unless `p_replace_later`;
+  an item's first default rate also covers earlier days (`find_storage_price`); `apply_grn_rates` refuses customer and everyone
+  entries for an invoiced GRN (`GRN_INVOICED`); `save_invoice` and `update_invoice` refuse an invoice dated in the future
+  (`INVOICE_DATE_FUTURE`) or before the latest dispatch of its lines (`INVOICE_BEFORE_DISPATCH`), a discount that takes a charged
+  invoice to zero (`DISCOUNT_TOTAL_ZERO`) and lines whose looked-up rate changed since the form opened (`RATES_CHANGED`). Details:
+  `docs/API_CONTRACT.md`.
+
 ## v0.7.0 (2026-10-30)
 
 **PostgreSQL 15 to 18, and one baseline migration.**
