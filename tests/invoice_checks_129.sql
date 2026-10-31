@@ -2,6 +2,7 @@
 --   A. an invoice is not dated before the latest dispatch of its lines (INVOICE_BEFORE_DISPATCH); an edit is checked only when the
 --      date or the set of lines changes
 --   B. an invoice is not dated in the future (India day): INVOICE_DATE_FUTURE with today's date; stored future dates are not touched
+--   C. a discount may not take a charged invoice to exactly 0 (DISCOUNT_TOTAL_ZERO), on save and on update
 -- Fictional data; runs only in migrations.sh's disposable, network-disabled database.
 \set ON_ERROR_STOP on
 BEGIN;
@@ -205,4 +206,56 @@ RESET ROLE;
 SELECT pg_temp.i9_assert(:'b_upd_keep'::jsonb->>'success'='true' AND pg_temp.i9_stored(:'inv_2'::uuid) LIKE :'tomorrow'||'|129002|%|kept|1'
  AND :'b_upd_move'::jsonb->>'reason'='INVOICE_DATE_FUTURE' AND :'b_upd_move'::jsonb->>'date'=(:'tomorrow'::date+1)::text,
  'update: a stored future date stays as it is when the edit leaves the date alone, and moving it is checked: '||:'b_upd_keep'||:'b_upd_move');
+-- ===========================================================================
+-- C. A discount may not take a charged invoice to exactly 0
+-- ===========================================================================
+SELECT set_config('request.jwt.claims',:'admin_claims',true);
+SET LOCAL ROLE authenticated;
+SELECT pg_temp.i9_make('IV3',10,'2026-04-01','DC1','2026-05-02',:'ca'::uuid,:'potatoes'::uuid,:'admin_profile'::uuid) AS made_3 \gset
+SELECT pg_temp.i9_make('IV4',10,'2026-04-01','DC2','2026-05-02',:'ca'::uuid,:'potatoes'::uuid,:'admin_profile'::uuid) AS made_4 \gset
+RESET ROLE;
+SELECT jsonb_build_array(:'made_3'::jsonb->'line') AS lines_3, jsonb_build_array(:'made_4'::jsonb->'line') AS lines_4 \gset
+SELECT set_config('request.jwt.claims',:'admin_claims',true);
+SET LOCAL ROLE authenticated;
+SELECT pg_temp.i9_save(pg_temp.i9_head(:'made_3'::jsonb,:'ca'::uuid,129003,'2026-06-20'),:'lines_3'::jsonb) AS c_base \gset
+RESET ROLE;
+SELECT pg_temp.i9_assert(:'c_base'::jsonb->>'success'='true','set-up: an invoice without a discount: '||:'c_base');
+SELECT (:'c_base'::jsonb->>'invoice_id')::uuid AS inv_3 \gset
+SELECT total AS total_3 FROM public.invoice WHERE id=:'inv_3'::uuid \gset
+SELECT pg_temp.i9_assert(:'total_3'::numeric>1,'set-up: the invoice has a total to discount: '||:'total_3');
+SELECT pg_temp.i9_stored(:'inv_3'::uuid) AS stored_3 \gset
+-- Update: a discount equal to the total is refused, with the figures; the invoice is unchanged.
+SELECT set_config('request.jwt.claims',:'admin_claims',true);
+SET LOCAL ROLE authenticated;
+SELECT pg_temp.i9_update(:'inv_3'::uuid,pg_temp.i9_head(:'made_3'::jsonb,:'ca'::uuid,129003,'2026-06-20',jsonb_build_object('discount',:'total_3'::numeric,'discount_reason','Test discount')),:'lines_3'::jsonb) AS c_upd_zero,
+       pg_temp.i9_update(:'inv_3'::uuid,pg_temp.i9_head(:'made_3'::jsonb,:'ca'::uuid,129003,'2026-06-20',jsonb_build_object('discount',:'total_3'::numeric+5,'discount_reason','Test discount')),:'lines_3'::jsonb) AS c_upd_over \gset
+RESET ROLE;
+SELECT pg_temp.i9_assert(:'c_upd_zero'::jsonb->>'success'='false' AND :'c_upd_zero'::jsonb->>'reason'='DISCOUNT_TOTAL_ZERO' AND :'c_upd_zero'::jsonb->>'error_code'='WH409'
+ AND (:'c_upd_zero'::jsonb->>'discount')::numeric=:'total_3'::numeric AND (:'c_upd_zero'::jsonb->>'total_before_discount')::numeric=:'total_3'::numeric
+ AND pg_temp.i9_stored(:'inv_3'::uuid)=:'stored_3',
+ 'update: a discount that takes the total to 0 is refused with the figures, and the invoice is unchanged: '||:'c_upd_zero'||pg_temp.i9_stored(:'inv_3'::uuid));
+SELECT pg_temp.i9_assert(:'c_upd_over'::jsonb->>'success'='false' AND :'c_upd_over'::jsonb->>'error'='Discount exceeds the invoice amount' AND :'c_upd_over'::jsonb->>'reason' IS NULL,
+ 'twin: a discount above the total keeps its own refusal: '||:'c_upd_over');
+-- The twin: one rupee less leaves a total of 1.
+SELECT set_config('request.jwt.claims',:'admin_claims',true);
+SET LOCAL ROLE authenticated;
+SELECT pg_temp.i9_update(:'inv_3'::uuid,pg_temp.i9_head(:'made_3'::jsonb,:'ca'::uuid,129003,'2026-06-20',jsonb_build_object('discount',:'total_3'::numeric-1,'discount_reason','Test discount')),:'lines_3'::jsonb) AS c_upd_one \gset
+RESET ROLE;
+SELECT pg_temp.i9_assert(:'c_upd_one'::jsonb->>'success'='true' AND (SELECT total=1 AND discount=:'total_3'::numeric-1 FROM public.invoice WHERE id=:'inv_3'::uuid),
+ 'update: a discount of the total less 1 is saved and leaves a total of 1: '||:'c_upd_one');
+-- Save: the same refusal for a new invoice (same GRN set-up, so the same total), and nothing is written.
+SELECT set_config('request.jwt.claims',:'admin_claims',true);
+SET LOCAL ROLE authenticated;
+SELECT pg_temp.i9_save(pg_temp.i9_head(:'made_4'::jsonb,:'ca'::uuid,129004,'2026-06-20',jsonb_build_object('discount',:'total_3'::numeric,'discount_reason','Test discount')),:'lines_4'::jsonb) AS c_save_zero \gset
+RESET ROLE;
+SELECT pg_temp.i9_assert(:'c_save_zero'::jsonb->>'reason'='DISCOUNT_TOTAL_ZERO' AND (:'c_save_zero'::jsonb->>'discount')::numeric=:'total_3'::numeric
+ AND (:'c_save_zero'::jsonb->>'total_before_discount')::numeric=:'total_3'::numeric
+ AND (SELECT count(*)=0 FROM public.invoice WHERE gr_id=(:'made_4'::jsonb->>'grn_id')::uuid) AND (SELECT NOT invoiced FROM public.goodsreceived WHERE id=(:'made_4'::jsonb->>'grn_id')::uuid),
+ 'save: a discount that takes the total to 0 is refused and nothing is written: '||:'c_save_zero');
+SELECT set_config('request.jwt.claims',:'admin_claims',true);
+SET LOCAL ROLE authenticated;
+SELECT pg_temp.i9_save(pg_temp.i9_head(:'made_4'::jsonb,:'ca'::uuid,129004,'2026-06-20',jsonb_build_object('discount',:'total_3'::numeric-1,'discount_reason','Test discount')),:'lines_4'::jsonb) AS c_save_one \gset
+RESET ROLE;
+SELECT pg_temp.i9_assert(:'c_save_one'::jsonb->>'success'='true' AND (SELECT total=1 FROM public.invoice WHERE gr_id=(:'made_4'::jsonb->>'grn_id')::uuid),
+ 'save: a discount of the total less 1 is saved: '||:'c_save_one');
 ROLLBACK;

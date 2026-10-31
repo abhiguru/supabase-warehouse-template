@@ -295,17 +295,40 @@ $$;
 ALTER FUNCTION warehouse_security.check_invoice_dates(uuid, timestamp with time zone, uuid[]) OWNER TO supabase_admin;
 REVOKE ALL ON FUNCTION warehouse_security.check_invoice_dates(uuid, timestamp with time zone, uuid[]) FROM PUBLIC;
 
+-- D8: a discount may not take a charged invoice to exactly 0. p_totals is what recalculate_invoice_header just answered. The way to
+-- bill nothing is a charge of 0 with its reason. An invoice with nothing to charge is not "charged": a discount larger than that
+-- already fails in recalculate_invoice_header.
+CREATE FUNCTION warehouse_security.check_discount_total(p_totals jsonb) RETURNS void
+    LANGUAGE plpgsql
+    SET search_path TO 'pg_catalog', 'public'
+    AS $$
+DECLARE v_discount numeric := COALESCE((p_totals->>'discount')::numeric, 0);
+        v_before numeric := ceil(COALESCE((p_totals->>'subtotal')::numeric, 0) + COALESCE((p_totals->>'tax')::numeric, 0));
+BEGIN
+  IF v_discount > 0 AND COALESCE((p_totals->>'grand_total')::numeric, 0) = 0 AND v_before > 0 THEN
+    RAISE EXCEPTION 'rate_fail' USING ERRCODE = 'P0001', DETAIL = warehouse_security.refuse('DISCOUNT_TOTAL_ZERO',
+      'A discount can''t take the total to zero. To charge nothing, set the charge to 0 and give a reason.',
+      jsonb_build_object('discount', v_discount, 'total_before_discount', v_before))::text;
+  END IF;
+END;
+$$;
+
+ALTER FUNCTION warehouse_security.check_discount_total(jsonb) OWNER TO supabase_admin;
+REVOKE ALL ON FUNCTION warehouse_security.check_discount_total(jsonb) FROM PUBLIC;
+
 DO $patch$
 DECLARE
   v_def text;
   v_old constant text[] := ARRAY[
-    $m$PERFORM warehouse_security.claim_invoice_lines(NULL, v_new_gr_id,$m$
+    $m$PERFORM warehouse_security.claim_invoice_lines(NULL, v_new_gr_id,$m$,
+    $m$PERFORM warehouse_security.recalculate_invoice_header(v_final_invoice_id);$m$
   ];
   v_new constant text[] := ARRAY[
     $m$-- Migration 129: the date rules, before anything is written.
     PERFORM warehouse_security.check_invoice_dates(p_invoice_id, v_invoice_date, ARRAY(SELECT (item->>'disp_trl_id')::uuid FROM unnest(p_invoice_items) AS item));
 
-    PERFORM warehouse_security.claim_invoice_lines(NULL, v_new_gr_id,$m$
+    PERFORM warehouse_security.claim_invoice_lines(NULL, v_new_gr_id,$m$,
+    $m$PERFORM warehouse_security.check_discount_total(warehouse_security.recalculate_invoice_header(v_final_invoice_id));$m$
   ];
   v_count integer;
   i integer;
@@ -326,13 +349,15 @@ DO $patch$
 DECLARE
   v_def text;
   v_old constant text[] := ARRAY[
-    $m$PERFORM warehouse_security.claim_invoice_lines(p_invoice_id, v_new_gr_id,$m$
+    $m$PERFORM warehouse_security.claim_invoice_lines(p_invoice_id, v_new_gr_id,$m$,
+    $m$PERFORM warehouse_security.recalculate_invoice_header(p_invoice_id);$m$
   ];
   v_new constant text[] := ARRAY[
     $m$-- Migration 129: the date rules, only for what the edit changes, before anything is written.
     PERFORM warehouse_security.check_invoice_dates(p_invoice_id, (p_invoice_data->>'inv_date')::timestamptz, ARRAY(SELECT (item->>'disp_trl_id')::uuid FROM unnest(p_invoice_items) AS item));
 
-    PERFORM warehouse_security.claim_invoice_lines(p_invoice_id, v_new_gr_id,$m$
+    PERFORM warehouse_security.claim_invoice_lines(p_invoice_id, v_new_gr_id,$m$,
+    $m$PERFORM warehouse_security.check_discount_total(warehouse_security.recalculate_invoice_header(p_invoice_id));$m$
   ];
   v_count integer;
   i integer;
