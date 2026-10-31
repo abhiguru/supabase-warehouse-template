@@ -269,6 +269,13 @@ BEGIN
     END IF;
   END IF;
 
+  -- D10: an invoice is not dated in the future (today in India). Stored invoices that already are stay as they are.
+  IF v_date_changed AND v_day > v_today THEN
+    RAISE EXCEPTION 'rate_fail' USING ERRCODE = 'P0001', DETAIL = warehouse_security.refuse('INVOICE_DATE_FUTURE',
+      format('An invoice can''t be dated in the future. Today is %s.', to_char(v_today, 'YYYY-MM-DD')),
+      jsonb_build_object('date', to_char(v_day, 'YYYY-MM-DD'), 'today', to_char(v_today, 'YYYY-MM-DD')))::text;
+  END IF;
+
   -- An invoice is not dated before the latest dispatch of its lines. The dispatch named is the latest one (by day, then number).
   IF v_date_changed OR v_lines_changed THEN
     SELECT d.disp_no, warehouse_security.business_date(d.disp_date) INTO v_disp_no, v_disp_day

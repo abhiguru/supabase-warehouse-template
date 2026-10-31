@@ -1,6 +1,7 @@
 -- Migration 129, invoices (save_invoice and update_invoice):
 --   A. an invoice is not dated before the latest dispatch of its lines (INVOICE_BEFORE_DISPATCH); an edit is checked only when the
 --      date or the set of lines changes
+--   B. an invoice is not dated in the future (India day): INVOICE_DATE_FUTURE with today's date; stored future dates are not touched
 -- Fictional data; runs only in migrations.sh's disposable, network-disabled database.
 \set ON_ERROR_STOP on
 BEGIN;
@@ -157,4 +158,51 @@ SELECT pg_temp.i9_helper(format('SELECT warehouse_security.check_invoice_dates(%
 SELECT pg_temp.i9_assert(:'h_same'::jsonb='{"ok":true}'::jsonb AND :'h_changed'::jsonb->>'reason'='INVOICE_BEFORE_DISPATCH' AND :'h_changed'::jsonb->>'dispatch_no'='DA2'
  AND :'h_changed_ok'::jsonb='{"ok":true}'::jsonb,
  'a changed set of lines is checked against the dispatches of the new set, the same set is not: '||:'h_same'||:'h_changed'||:'h_changed_ok');
+-- ===========================================================================
+-- B. An invoice is not dated in the future
+-- ===========================================================================
+SELECT set_config('request.jwt.claims',:'admin_claims',true);
+SET LOCAL ROLE authenticated;
+SELECT pg_temp.i9_make('IV2',10,'2026-04-01','DB1','2026-05-02',:'ca'::uuid,:'potatoes'::uuid,:'admin_profile'::uuid) AS made_2 \gset
+RESET ROLE;
+SELECT jsonb_build_array(:'made_2'::jsonb->'line') AS lines_2 \gset
+SELECT set_config('request.jwt.claims',:'admin_claims',true);
+SET LOCAL ROLE authenticated;
+SELECT pg_temp.i9_save(pg_temp.i9_head(:'made_2'::jsonb,:'ca'::uuid,129002,:'tomorrow'),:'lines_2'::jsonb) AS b_future \gset
+RESET ROLE;
+SELECT pg_temp.i9_assert(:'b_future'::jsonb->>'success'='false' AND :'b_future'::jsonb->>'reason'='INVOICE_DATE_FUTURE' AND :'b_future'::jsonb->>'error_code'='WH409'
+ AND :'b_future'::jsonb->>'date'=:'tomorrow' AND :'b_future'::jsonb->>'today'=:'today'
+ AND :'b_future'::jsonb->>'message'=format('An invoice can''t be dated in the future. Today is %s.',:'today')
+ AND (SELECT count(*)=0 FROM public.invoice WHERE gr_id=(:'made_2'::jsonb->>'grn_id')::uuid) AND (SELECT NOT invoiced FROM public.goodsreceived WHERE id=(:'made_2'::jsonb->>'grn_id')::uuid),
+ 'save: tomorrow (India) is refused with today''s date, and nothing is written: '||:'b_future');
+-- The twin: today (India) is saved.
+SELECT set_config('request.jwt.claims',:'admin_claims',true);
+SET LOCAL ROLE authenticated;
+SELECT pg_temp.i9_save(pg_temp.i9_head(:'made_2'::jsonb,:'ca'::uuid,129002,:'today'),:'lines_2'::jsonb) AS b_today \gset
+RESET ROLE;
+SELECT pg_temp.i9_assert(:'b_today'::jsonb->>'success'='true','save: today is saved: '||:'b_today');
+SELECT (:'b_today'::jsonb->>'invoice_id')::uuid AS inv_2 \gset
+-- update_invoice: moving the date to tomorrow is refused, to yesterday is saved.
+SELECT pg_temp.i9_stored(:'inv_2'::uuid) AS stored_2 \gset
+SELECT set_config('request.jwt.claims',:'admin_claims',true);
+SET LOCAL ROLE authenticated;
+SELECT pg_temp.i9_update(:'inv_2'::uuid,pg_temp.i9_head(:'made_2'::jsonb,:'ca'::uuid,129002,:'tomorrow'),:'lines_2'::jsonb) AS b_upd_future \gset
+RESET ROLE;
+SELECT pg_temp.i9_assert(:'b_upd_future'::jsonb->>'reason'='INVOICE_DATE_FUTURE' AND :'b_upd_future'::jsonb->>'date'=:'tomorrow' AND :'b_upd_future'::jsonb->>'today'=:'today'
+ AND pg_temp.i9_stored(:'inv_2'::uuid)=:'stored_2','update: a date in the future is refused and the invoice is unchanged: '||:'b_upd_future');
+SELECT set_config('request.jwt.claims',:'admin_claims',true);
+SET LOCAL ROLE authenticated;
+SELECT pg_temp.i9_update(:'inv_2'::uuid,pg_temp.i9_head(:'made_2'::jsonb,:'ca'::uuid,129002,:'yesterday'),:'lines_2'::jsonb) AS b_upd_past \gset
+RESET ROLE;
+SELECT pg_temp.i9_assert(:'b_upd_past'::jsonb->>'success'='true' AND pg_temp.i9_stored(:'inv_2'::uuid) LIKE :'yesterday'||'|129002|%','update: yesterday is saved: '||:'b_upd_past');
+-- A stored invoice that is dated in the future (made before this rule) is not touched by an edit that leaves its date alone; moving its date is checked.
+UPDATE public.invoice SET inv_date=(:'tomorrow'||'T12:00:00Z')::timestamptz WHERE id=:'inv_2'::uuid;
+SELECT set_config('request.jwt.claims',:'admin_claims',true);
+SET LOCAL ROLE authenticated;
+SELECT pg_temp.i9_update(:'inv_2'::uuid,pg_temp.i9_head(:'made_2'::jsonb,:'ca'::uuid,129002,:'tomorrow'||'T12:00:00Z',jsonb_build_object('notes','kept','inv_fin_year',warehouse_security.financial_year(:'yesterday'::date))),:'lines_2'::jsonb) AS b_upd_keep,
+       pg_temp.i9_update(:'inv_2'::uuid,pg_temp.i9_head(:'made_2'::jsonb,:'ca'::uuid,129002,(:'tomorrow'::date+1)::text,jsonb_build_object('inv_fin_year',warehouse_security.financial_year(:'tomorrow'::date+1))),:'lines_2'::jsonb) AS b_upd_move \gset
+RESET ROLE;
+SELECT pg_temp.i9_assert(:'b_upd_keep'::jsonb->>'success'='true' AND pg_temp.i9_stored(:'inv_2'::uuid) LIKE :'tomorrow'||'|129002|%|kept|1'
+ AND :'b_upd_move'::jsonb->>'reason'='INVOICE_DATE_FUTURE' AND :'b_upd_move'::jsonb->>'date'=(:'tomorrow'::date+1)::text,
+ 'update: a stored future date stays as it is when the edit leaves the date alone, and moving it is checked: '||:'b_upd_keep'||:'b_upd_move');
 ROLLBACK;
