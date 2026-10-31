@@ -1,6 +1,9 @@
 -- Migration 129, rates:
 --   1. replace_item_rates, change mode: a later rate that has begun is refused (LATER_RATES_EXIST, begun = true) like a planned one,
 --      unless p_replace_later; a change with nothing after it is saved.
+--   2. request keys: replace_item_rates and set_standard_rate answer a resend of the same key with the first answer and write
+--      nothing; a refusal and a dry run are not stored; another user or another start day is a real call; get_submission_result
+--      finds the answer.
 -- Fictional data; runs only in migrations.sh's disposable, network-disabled database.
 \set ON_ERROR_STOP on
 BEGIN;
@@ -116,4 +119,87 @@ RESET ROLE;
 SELECT pg_temp.r9_assert(:'plain'::jsonb->>'success'='true'
  AND pg_temp.r9_rows(:'onion'::uuid,NULL,'monthly')=format('0-100@6.00 %s..%s | 0-100@8.00 %s..%s | 0-100@9.00 %s..open',:'d_m200',(:'d_m150'::date-1)::text,:'d_m150',(:'today'::date-1)::text,:'today'),
  'a change with no later rate needs no flag: '||pg_temp.r9_rows(:'onion'::uuid,NULL,'monthly'));
+-- ---------------------------------------------------------------------------
+-- 2. Request keys
+-- ---------------------------------------------------------------------------
+SELECT set_config('request.jwt.claims',:'admin_claims',true);
+SET LOCAL ROLE authenticated;
+SELECT public.create_item('Rate129 Cumin','Bag')->>'success' AS cumin_made \gset
+RESET ROLE;
+SELECT id AS cumin FROM public.items WHERE name='Rate129 Cumin' \gset
+SELECT pg_temp.r9_assert(:'cumin_made'='true' AND (SELECT count(*) FROM pg_proc WHERE proname='replace_item_rates' AND pronamespace='public'::regnamespace)=1
+ AND (SELECT count(*) FROM pg_proc WHERE proname='set_standard_rate' AND pronamespace='public'::regnamespace)=1,
+ 'one overload of each rate function (the old signatures are gone)');
+SELECT set_config('request.jwt.claims',:'admin_claims',true);
+SET LOCAL ROLE authenticated;
+SELECT pg_temp.r9_replace(:'cumin'::uuid,:'d_m200'::date,pg_temp.r9_band(3)) AS k0,
+       pg_temp.r9_replace(:'cumin'::uuid,:'today'::date,pg_temp.r9_band(4),false,'r9-key-one') AS k1 \gset
+RESET ROLE;
+SELECT pg_temp.r9_assert(:'k0'::jsonb->>'success'='true' AND :'k1'::jsonb->>'success'='true','set-up and the first keyed save: '||:'k1');
+-- Someone else changes the rate afterwards; the resend of the first save must not undo that.
+SELECT set_config('request.jwt.claims',:'supervisor_claims',true);
+SET LOCAL ROLE authenticated;
+SELECT pg_temp.r9_replace(:'cumin'::uuid,:'today'::date,pg_temp.r9_band(5)) AS k_other \gset
+RESET ROLE;
+SELECT pg_temp.r9_rows(:'cumin'::uuid,NULL,'monthly') AS cumin_k2, (SELECT count(*) FROM public.item_price_history) AS hist_k2 \gset
+SELECT pg_temp.r9_assert(:'k_other'::jsonb->>'success'='true' AND :'cumin_k2' LIKE '%0-100@5.00 '||:'today'||'..open','set-up: the supervisor changed the rate to 5.00: '||:'cumin_k2');
+SELECT set_config('request.jwt.claims',:'admin_claims',true);
+SET LOCAL ROLE authenticated;
+SELECT pg_temp.r9_replace(:'cumin'::uuid,:'today'::date,pg_temp.r9_band(4),false,'r9-key-one') AS k1_resend \gset
+SELECT public.get_submission_result('r9-key-one') AS k1_found \gset
+SELECT public.get_submission_result('r9-key-never-used') AS k_none \gset
+RESET ROLE;
+SELECT pg_temp.r9_assert(:'k1_resend'::jsonb=:'k1'::jsonb,'a resend of the same key returns the first answer as it was: '||:'k1_resend');
+SELECT pg_temp.r9_assert(pg_temp.r9_rows(:'cumin'::uuid,NULL,'monthly')=:'cumin_k2' AND (SELECT count(*) FROM public.item_price_history)=:'hist_k2'::bigint,
+ 'the resend wrote nothing: '||pg_temp.r9_rows(:'cumin'::uuid,NULL,'monthly'));
+SELECT pg_temp.r9_assert(:'k1_found'::jsonb->>'found'='true' AND (:'k1_found'::jsonb->'response')=:'k1'::jsonb AND :'k_none'::jsonb->>'found'='false',
+ 'get_submission_result finds the stored answer and nothing for an unknown key: '||:'k1_found');
+-- Twins. No key: a real save. The same key for another start day: a real save. Another user's key: not replayed.
+SELECT set_config('request.jwt.claims',:'admin_claims',true);
+SET LOCAL ROLE authenticated;
+SELECT pg_temp.r9_replace(:'cumin'::uuid,:'today'::date,pg_temp.r9_band(4)) AS no_key,
+       pg_temp.r9_replace(:'cumin'::uuid,:'d30'::date,pg_temp.r9_band(7),false,'r9-key-one') AS key_other_day \gset
+RESET ROLE;
+SELECT pg_temp.r9_assert(:'no_key'::jsonb->>'success'='true' AND :'no_key'::jsonb<>:'k1'::jsonb
+ AND :'key_other_day'::jsonb->>'success'='true' AND (:'key_other_day'::jsonb#>>'{data,starts_on}')=:'d30',
+ 'twins: no key saves, and the same key for another start day saves: '||:'no_key'||:'key_other_day');
+SELECT set_config('request.jwt.claims',:'supervisor_claims',true);
+SET LOCAL ROLE authenticated;
+SELECT pg_temp.r9_replace(:'cumin'::uuid,:'d30'::date,pg_temp.r9_band(8),true,'r9-key-one') AS other_user, public.get_submission_result('r9-key-one') AS other_user_found \gset
+RESET ROLE;
+SELECT pg_temp.r9_assert(:'other_user'::jsonb->>'success'='true' AND (:'other_user'::jsonb#>>'{data,added,0,unit_price}')::numeric=8 AND :'other_user_found'::jsonb->>'found'='false',
+ 'another user''s call with the key is a real call and sees no stored answer of the other user: '||:'other_user'||:'other_user_found');
+-- A refusal is not stored: the same key works once the cause is gone.
+SELECT set_config('request.jwt.claims',:'admin_claims',true);
+SET LOCAL ROLE authenticated;
+SELECT pg_temp.r9_replace(:'cumin'::uuid,:'today'::date,'[]'::jsonb||jsonb_build_array(jsonb_build_object('weight_min',0,'weight_max',100,'unit_price',-1,'labour_rate',2.5,'tax_percent',5)),false,'r9-key-two') AS refused,
+       public.get_submission_result('r9-key-two') AS refused_found \gset
+SELECT pg_temp.r9_replace(:'cumin'::uuid,:'today'::date,pg_temp.r9_band(2),true,'r9-key-two') AS retried \gset
+RESET ROLE;
+SELECT pg_temp.r9_assert(:'refused'::jsonb->>'success'='false' AND :'refused_found'::jsonb->>'found'='false' AND :'retried'::jsonb->>'success'='true',
+ 'a refusal is not stored under the key; the retry is a real save: '||:'refused'||:'retried');
+
+-- set_standard_rate
+SELECT jsonb_build_array(jsonb_build_object('weight_min',0,'weight_max',100,'unit_price',3,'labour_rate',1,'tax_percent',5)) AS std_a,
+       jsonb_build_array(jsonb_build_object('weight_min',0,'weight_max',100,'unit_price',9,'labour_rate',1,'tax_percent',5)) AS std_b \gset
+SELECT set_config('request.jwt.claims',:'admin_claims',true);
+SET LOCAL ROLE authenticated;
+SELECT pg_temp.r9_call(format('SELECT public.set_standard_rate(p_tiers=>%L::jsonb,p_request_key=>%L)',:'std_a','r9-std-one')) AS s1,
+       pg_temp.r9_call(format('SELECT public.set_standard_rate(p_tiers=>%L::jsonb)',:'std_b')) AS s_other \gset
+SELECT pg_temp.r9_call(format('SELECT public.set_standard_rate(p_tiers=>%L::jsonb,p_request_key=>%L)',:'std_a','r9-std-one')) AS s1_resend,
+       public.get_submission_result('r9-std-one') AS s1_found,
+       public.get_standard_rate() AS std_now \gset
+RESET ROLE;
+SELECT pg_temp.r9_assert(:'s1'::jsonb->>'success'='true' AND :'s_other'::jsonb->>'success'='true','set-up: standard rate saved with a key, then changed without: '||:'s1'||:'s_other');
+SELECT pg_temp.r9_assert(:'s1_resend'::jsonb=:'s1'::jsonb AND (:'std_now'::jsonb#>>'{data,tiers,0,unit_price}')::numeric=9
+ AND :'s1_found'::jsonb->>'found'='true' AND (:'s1_found'::jsonb->'response')=:'s1'::jsonb,
+ 'the standard rate: a resend returns the first answer, writes nothing (9.00 stays) and is found by get_submission_result: '||:'s1_resend'||:'std_now');
+-- A dry run with a key is a real (counting) call and stores nothing; the same key then saves for real.
+SELECT set_config('request.jwt.claims',:'admin_claims',true);
+SET LOCAL ROLE authenticated;
+SELECT pg_temp.r9_call(format('SELECT public.set_standard_rate(p_tiers=>%L::jsonb,p_dry_run=>true,p_request_key=>%L)',:'std_a','r9-std-two')) AS dry,
+       pg_temp.r9_call(format('SELECT public.set_standard_rate(p_tiers=>%L::jsonb,p_request_key=>%L)',:'std_a','r9-std-two')) AS real_save \gset
+RESET ROLE;
+SELECT pg_temp.r9_assert(:'dry'::jsonb#>>'{data,dry_run}'='true' AND :'real_save'::jsonb#>>'{data,dry_run}'='false' AND :'real_save'::jsonb->>'success'='true',
+ 'a dry run stores nothing under the key: '||:'dry'||:'real_save');
 ROLLBACK;
