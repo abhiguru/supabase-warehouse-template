@@ -239,3 +239,105 @@ BEGIN
   EXECUTE v_def;
 END
 $patch$;
+
+-- Section 5: invoice checks. They are raised as 'rate_fail' (like TOTAL_CHANGED): the handler of the function rolls the block back and
+-- answers the refusal, which is built by warehouse_security.refuse (success false, error_code WH409, reason = the code, the fields).
+-- The new inputs are keys of the invoice data and of the lines, so no signature changes and an older app keeps working: it sends none
+-- of them, and what it does send is judged by the same rules as every other client.
+
+-- The date rules. p_invoice_id is the invoice being edited (NULL or an id that does not exist yet: a new invoice, everything is
+-- checked). For an existing invoice the rules look at what the edit changes, so that an old invoice can still be edited for other
+-- reasons: the future-date rule only when the invoice day changes, the dispatch rule when the day or the set of lines changes.
+-- Days are India days (business_date), as the dispatch rules are.
+CREATE FUNCTION warehouse_security.check_invoice_dates(p_invoice_id uuid, p_invoice_date timestamptz, p_lines uuid[]) RETURNS void
+    LANGUAGE plpgsql
+    SET search_path TO 'pg_catalog', 'public'
+    AS $$
+DECLARE
+  v_day date; v_today date := warehouse_security.business_date(now()); v_stored_day date;
+  v_date_changed boolean := true; v_lines_changed boolean := true;
+  v_disp_no text; v_disp_day date;
+BEGIN
+  IF p_invoice_date IS NULL THEN RETURN; END IF;
+  v_day := warehouse_security.business_date(p_invoice_date);
+  IF p_invoice_id IS NOT NULL THEN
+    SELECT warehouse_security.business_date(i.inv_date) INTO v_stored_day FROM public.invoice i WHERE i.id = p_invoice_id;
+    IF FOUND THEN
+      v_date_changed := v_day IS DISTINCT FROM v_stored_day;
+      v_lines_changed := ARRAY(SELECT it.disp_trl_id FROM public.invoice_trl it WHERE it.invoice_id = p_invoice_id ORDER BY it.disp_trl_id)
+                         IS DISTINCT FROM ARRAY(SELECT DISTINCT l FROM unnest(p_lines) l ORDER BY l);
+    END IF;
+  END IF;
+
+  -- An invoice is not dated before the latest dispatch of its lines. The dispatch named is the latest one (by day, then number).
+  IF v_date_changed OR v_lines_changed THEN
+    SELECT d.disp_no, warehouse_security.business_date(d.disp_date) INTO v_disp_no, v_disp_day
+      FROM public.dispatch_trl dt JOIN public.dispatch d ON d.id = dt.disp_id
+     WHERE dt.id = ANY (p_lines)
+     ORDER BY warehouse_security.business_date(d.disp_date) DESC, d.disp_no DESC LIMIT 1;
+    IF v_disp_day > v_day THEN
+      RAISE EXCEPTION 'rate_fail' USING ERRCODE = 'P0001', DETAIL = warehouse_security.refuse('INVOICE_BEFORE_DISPATCH',
+        format('The invoice date %s is before dispatch %s (%s).', to_char(v_day, 'YYYY-MM-DD'), v_disp_no, to_char(v_disp_day, 'YYYY-MM-DD')),
+        jsonb_build_object('invoice_date', to_char(v_day, 'YYYY-MM-DD'), 'dispatch_no', v_disp_no,
+                           'dispatch_date', to_char(v_disp_day, 'YYYY-MM-DD')))::text;
+    END IF;
+  END IF;
+END;
+$$;
+
+ALTER FUNCTION warehouse_security.check_invoice_dates(uuid, timestamp with time zone, uuid[]) OWNER TO supabase_admin;
+REVOKE ALL ON FUNCTION warehouse_security.check_invoice_dates(uuid, timestamp with time zone, uuid[]) FROM PUBLIC;
+
+DO $patch$
+DECLARE
+  v_def text;
+  v_old constant text[] := ARRAY[
+    $m$PERFORM warehouse_security.claim_invoice_lines(NULL, v_new_gr_id,$m$
+  ];
+  v_new constant text[] := ARRAY[
+    $m$-- Migration 129: the date rules, before anything is written.
+    PERFORM warehouse_security.check_invoice_dates(p_invoice_id, v_invoice_date, ARRAY(SELECT (item->>'disp_trl_id')::uuid FROM unnest(p_invoice_items) AS item));
+
+    PERFORM warehouse_security.claim_invoice_lines(NULL, v_new_gr_id,$m$
+  ];
+  v_count integer;
+  i integer;
+BEGIN
+  v_def := pg_get_functiondef('public.save_invoice_internal(uuid, jsonb, jsonb[])'::regprocedure);
+  FOR i IN 1 .. array_length(v_old, 1) LOOP
+    v_count := (length(v_def) - length(replace(v_def, v_old[i], ''))) / length(v_old[i]);
+    IF v_count <> 1 THEN
+      RAISE EXCEPTION 'save_invoice_internal: expected marker % once, found % times', i, v_count;
+    END IF;
+    v_def := replace(v_def, v_old[i], v_new[i]);
+  END LOOP;
+  EXECUTE v_def;
+END
+$patch$;
+
+DO $patch$
+DECLARE
+  v_def text;
+  v_old constant text[] := ARRAY[
+    $m$PERFORM warehouse_security.claim_invoice_lines(p_invoice_id, v_new_gr_id,$m$
+  ];
+  v_new constant text[] := ARRAY[
+    $m$-- Migration 129: the date rules, only for what the edit changes, before anything is written.
+    PERFORM warehouse_security.check_invoice_dates(p_invoice_id, (p_invoice_data->>'inv_date')::timestamptz, ARRAY(SELECT (item->>'disp_trl_id')::uuid FROM unnest(p_invoice_items) AS item));
+
+    PERFORM warehouse_security.claim_invoice_lines(p_invoice_id, v_new_gr_id,$m$
+  ];
+  v_count integer;
+  i integer;
+BEGIN
+  v_def := pg_get_functiondef('public.update_invoice(uuid, jsonb, jsonb[])'::regprocedure);
+  FOR i IN 1 .. array_length(v_old, 1) LOOP
+    v_count := (length(v_def) - length(replace(v_def, v_old[i], ''))) / length(v_old[i]);
+    IF v_count <> 1 THEN
+      RAISE EXCEPTION 'update_invoice: expected marker % once, found % times', i, v_count;
+    END IF;
+    v_def := replace(v_def, v_old[i], v_new[i]);
+  END LOOP;
+  EXECUTE v_def;
+END
+$patch$;
