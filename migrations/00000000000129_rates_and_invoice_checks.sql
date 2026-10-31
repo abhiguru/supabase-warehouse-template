@@ -316,6 +316,57 @@ $$;
 ALTER FUNCTION warehouse_security.check_discount_total(jsonb) OWNER TO supabase_admin;
 REVOKE ALL ON FUNCTION warehouse_security.check_discount_total(jsonb) FROM PUBLIC;
 
+-- D12: the figures the form looked up. A line may carry `looked_up` = {charge, labour_rate, tax} (what the form showed when it
+-- opened) and, for figures the person typed by hand, `typed` = true (all three) or a list of the field names. Every other figure of
+-- such a line is compared with what the invoice form would look up now (build_invoice_form_lines, the one lookup the form uses); the
+-- lines that differ are refused together, with the old and the new figures. No `looked_up` on any line: no check (an older app).
+CREATE FUNCTION warehouse_security.check_invoice_rates(p_gr_id uuid, p_duration_mode text, p_items jsonb[]) RETURNS void
+    LANGUAGE plpgsql
+    SET search_path TO 'pg_catalog', 'public'
+    AS $$
+DECLARE v_form jsonb; v_changed jsonb;
+BEGIN
+  IF NOT EXISTS (SELECT 1 FROM unnest(p_items) i WHERE jsonb_typeof(i->'looked_up') = 'object') THEN
+    RETURN;
+  END IF;
+  v_form := public.build_invoice_form_lines(p_gr_id, p_duration_mode);
+  IF v_form->>'success' IS DISTINCT FROM 'true' THEN
+    RETURN;
+  END IF;
+  SELECT jsonb_agg(jsonb_build_object('disp_trl_id', x.id, 'fields', to_jsonb(x.fields), 'looked_up', x.sent,
+                                      'current', jsonb_build_object('charge', x.cur_charge, 'labour_rate', x.cur_labour, 'tax', x.cur_tax))
+                   ORDER BY x.ord)
+    INTO v_changed
+    FROM (
+      SELECT y.*, array_remove(ARRAY[
+               CASE WHEN NOT y.t_charge AND round(NULLIF(y.sent->>'charge', '')::numeric, 2) IS DISTINCT FROM round(y.cur_charge, 2) THEN 'charge' END,
+               CASE WHEN NOT y.t_labour AND round(NULLIF(y.sent->>'labour_rate', '')::numeric, 2) IS DISTINCT FROM round(y.cur_labour, 2) THEN 'labour_rate' END,
+               CASE WHEN NOT y.t_tax AND round(NULLIF(y.sent->>'tax', '')::numeric, 2) IS DISTINCT FROM round(y.cur_tax, 2) THEN 'tax' END
+             ], NULL) AS fields
+        FROM (
+          SELECT t.ord, (t.item->>'disp_trl_id')::uuid AS id, t.item->'looked_up' AS sent,
+                 COALESCE(t.item->'typed' = 'true'::jsonb OR (jsonb_typeof(t.item->'typed') = 'array' AND t.item->'typed' ? 'charge'), false) AS t_charge,
+                 COALESCE(t.item->'typed' = 'true'::jsonb OR (jsonb_typeof(t.item->'typed') = 'array' AND t.item->'typed' ? 'labour_rate'), false) AS t_labour,
+                 COALESCE(t.item->'typed' = 'true'::jsonb OR (jsonb_typeof(t.item->'typed') = 'array' AND t.item->'typed' ? 'tax'), false) AS t_tax,
+                 f.cur_charge, f.cur_labour, f.cur_tax
+            FROM unnest(p_items) WITH ORDINALITY t(item, ord)
+            JOIN LATERAL (
+              SELECT (e->>'unit_price')::numeric AS cur_charge, (e->>'labour_rate')::numeric AS cur_labour, (e->>'tax_percent')::numeric AS cur_tax
+                FROM jsonb_array_elements(v_form->'items') e
+               WHERE e->>'dispatches_items_id' = t.item->>'disp_trl_id' LIMIT 1) f ON true
+           WHERE jsonb_typeof(t.item->'looked_up') = 'object') y
+    ) x
+   WHERE cardinality(x.fields) > 0;
+  IF v_changed IS NOT NULL THEN
+    RAISE EXCEPTION 'rate_fail' USING ERRCODE = 'P0001', DETAIL = warehouse_security.refuse('RATES_CHANGED',
+      'The rates changed since you opened this invoice. Check the new figures.', jsonb_build_object('lines', v_changed))::text;
+  END IF;
+END;
+$$;
+
+ALTER FUNCTION warehouse_security.check_invoice_rates(uuid, text, jsonb[]) OWNER TO supabase_admin;
+REVOKE ALL ON FUNCTION warehouse_security.check_invoice_rates(uuid, text, jsonb[]) FROM PUBLIC;
+
 DO $patch$
 DECLARE
   v_def text;
@@ -326,6 +377,8 @@ DECLARE
   v_new constant text[] := ARRAY[
     $m$-- Migration 129: the date rules, before anything is written.
     PERFORM warehouse_security.check_invoice_dates(p_invoice_id, v_invoice_date, ARRAY(SELECT (item->>'disp_trl_id')::uuid FROM unnest(p_invoice_items) AS item));
+    -- Migration 129: lines that carry the figures the form looked up are compared with the lookup now.
+    PERFORM warehouse_security.check_invoice_rates(v_new_gr_id, v_duration_mode, p_invoice_items);
 
     PERFORM warehouse_security.claim_invoice_lines(NULL, v_new_gr_id,$m$,
     $m$PERFORM warehouse_security.check_discount_total(warehouse_security.recalculate_invoice_header(v_final_invoice_id));$m$
@@ -355,6 +408,8 @@ DECLARE
   v_new constant text[] := ARRAY[
     $m$-- Migration 129: the date rules, only for what the edit changes, before anything is written.
     PERFORM warehouse_security.check_invoice_dates(p_invoice_id, (p_invoice_data->>'inv_date')::timestamptz, ARRAY(SELECT (item->>'disp_trl_id')::uuid FROM unnest(p_invoice_items) AS item));
+    -- Migration 129: lines that carry the figures the form looked up are compared with the lookup now.
+    PERFORM warehouse_security.check_invoice_rates(v_new_gr_id, v_duration_mode, p_invoice_items);
 
     PERFORM warehouse_security.claim_invoice_lines(p_invoice_id, v_new_gr_id,$m$,
     $m$PERFORM warehouse_security.check_discount_total(warehouse_security.recalculate_invoice_header(p_invoice_id));$m$

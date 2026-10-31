@@ -3,6 +3,8 @@
 --      date or the set of lines changes
 --   B. an invoice is not dated in the future (India day): INVOICE_DATE_FUTURE with today's date; stored future dates are not touched
 --   C. a discount may not take a charged invoice to exactly 0 (DISCOUNT_TOTAL_ZERO), on save and on update
+--   D. lines that carry the figures the form looked up are refused when the lookup changed since (RATES_CHANGED), except the
+--      figures typed by hand; no looked_up (an older app) is not checked
 -- Fictional data; runs only in migrations.sh's disposable, network-disabled database.
 \set ON_ERROR_STOP on
 BEGIN;
@@ -258,4 +260,85 @@ SELECT pg_temp.i9_save(pg_temp.i9_head(:'made_4'::jsonb,:'ca'::uuid,129004,'2026
 RESET ROLE;
 SELECT pg_temp.i9_assert(:'c_save_one'::jsonb->>'success'='true' AND (SELECT total=1 FROM public.invoice WHERE gr_id=(:'made_4'::jsonb->>'grn_id')::uuid),
  'save: a discount of the total less 1 is saved: '||:'c_save_one');
+-- ===========================================================================
+-- D. The rates changed since the form opened
+-- ===========================================================================
+-- Potatoes: 6.00 rent, 2.50 labour, 5 tax from 2026-01-01. Four GRNs of 10 bags dated 2026-04-01, dispatched on 2026-05-02.
+SELECT set_config('request.jwt.claims',:'admin_claims',true);
+SET LOCAL ROLE authenticated;
+SELECT pg_temp.i9_call(format('SELECT public.replace_item_rates(p_item_id=>%L,p_customer_id=>NULL,p_price_type=>%L,p_starts_on=>%L,p_bands=>%L::jsonb)',
+  :'potatoes','monthly','2026-01-01',jsonb_build_array(jsonb_build_object('weight_min',0,'weight_max',100,'unit_price',6,'labour_rate',2.5,'tax_percent',5)))) AS d_rate1 \gset
+SELECT pg_temp.i9_make('IV5',10,'2026-04-01','DE1','2026-05-02',:'ca'::uuid,:'potatoes'::uuid,:'admin_profile'::uuid) AS made_5 \gset
+SELECT pg_temp.i9_make('IV6',10,'2026-04-01','DE2','2026-05-02',:'ca'::uuid,:'potatoes'::uuid,:'admin_profile'::uuid) AS made_6 \gset
+SELECT pg_temp.i9_make('IV7',10,'2026-04-01','DE3','2026-05-02',:'ca'::uuid,:'potatoes'::uuid,:'admin_profile'::uuid) AS made_7 \gset
+SELECT pg_temp.i9_make('IV8',10,'2026-04-01','DE4','2026-05-02',:'ca'::uuid,:'potatoes'::uuid,:'admin_profile'::uuid) AS made_8 \gset
+RESET ROLE;
+SELECT pg_temp.i9_assert(:'d_rate1'::jsonb->>'success'='true','set-up: the potato rate: '||:'d_rate1');
+-- What the form looks up for IV5 now: the figures the app would send as looked_up.
+SELECT (e->>'unit_price')::numeric AS lu_charge, (e->>'labour_rate')::numeric AS lu_labour, (e->>'tax_percent')::numeric AS lu_tax
+  FROM jsonb_array_elements(public.build_invoice_form_lines((:'made_5'::jsonb->>'grn_id')::uuid,'legacy')->'items') e \gset
+SELECT pg_temp.i9_assert(:'lu_charge'::numeric=6 AND :'lu_labour'::numeric=2.5 AND :'lu_tax'::numeric=5,'the form looks up 6.00 / 2.50 / 5: '||:'lu_charge'||'/'||:'lu_labour'||'/'||:'lu_tax');
+-- The rate changes to 7.00 / 3.00 / 5 from 2026-03-01, after the form was opened.
+SELECT set_config('request.jwt.claims',:'admin_claims',true);
+SET LOCAL ROLE authenticated;
+SELECT pg_temp.i9_call(format('SELECT public.replace_item_rates(p_item_id=>%L,p_customer_id=>NULL,p_price_type=>%L,p_starts_on=>%L,p_bands=>%L::jsonb)',
+  :'potatoes','monthly','2026-03-01',jsonb_build_array(jsonb_build_object('weight_min',0,'weight_max',100,'unit_price',7,'labour_rate',3,'tax_percent',5)))) AS d_rate2 \gset
+RESET ROLE;
+SELECT pg_temp.i9_assert(:'d_rate2'::jsonb->>'success'='true','set-up: the rate changed: '||:'d_rate2');
+-- A line as the app sends it: the figure it saves, what it looked up, and which figures were typed by hand (omitted when none).
+CREATE FUNCTION pg_temp.i9_ln(p_made jsonb, p_charge numeric, p_looked jsonb, p_typed jsonb DEFAULT NULL) RETURNS jsonb LANGUAGE sql AS $$
+  SELECT jsonb_build_array((p_made->'line') || jsonb_build_object('charge',p_charge)
+    || CASE WHEN p_looked IS NULL THEN '{}'::jsonb ELSE jsonb_build_object('looked_up',p_looked) END
+    || CASE WHEN p_typed IS NULL THEN '{}'::jsonb ELSE jsonb_build_object('typed',p_typed) END) $$;
+SELECT '{"charge":6,"labour_rate":2.5,"tax":5}'::jsonb AS stale, '{"charge":7,"labour_rate":3,"tax":5}'::jsonb AS fresh \gset
+-- Stale figures, nothing typed: refused with the changed figures of the line; nothing written.
+SELECT set_config('request.jwt.claims',:'admin_claims',true);
+SET LOCAL ROLE authenticated;
+SELECT pg_temp.i9_save(pg_temp.i9_head(:'made_5'::jsonb,:'ca'::uuid,129005,'2026-06-20'),pg_temp.i9_ln(:'made_5'::jsonb,6,:'stale'::jsonb)) AS d_stale \gset
+RESET ROLE;
+SELECT pg_temp.i9_assert(:'d_stale'::jsonb->>'success'='false' AND :'d_stale'::jsonb->>'reason'='RATES_CHANGED' AND :'d_stale'::jsonb->>'error_code'='WH409'
+ AND jsonb_array_length(:'d_stale'::jsonb->'lines')=1 AND :'d_stale'::jsonb#>>'{lines,0,disp_trl_id}'=(:'made_5'::jsonb#>>'{line,disp_trl_id}')
+ AND :'d_stale'::jsonb#>'{lines,0,fields}'='["charge","labour_rate"]'::jsonb
+ AND (:'d_stale'::jsonb#>>'{lines,0,looked_up,charge}')::numeric=6 AND (:'d_stale'::jsonb#>>'{lines,0,current,charge}')::numeric=7
+ AND (:'d_stale'::jsonb#>>'{lines,0,current,labour_rate}')::numeric=3 AND (:'d_stale'::jsonb#>>'{lines,0,current,tax}')::numeric=5
+ AND (SELECT count(*)=0 FROM public.invoice WHERE gr_id=(:'made_5'::jsonb->>'grn_id')::uuid) AND (SELECT NOT invoiced FROM public.goodsreceived WHERE id=(:'made_5'::jsonb->>'grn_id')::uuid),
+ 'save: a figure that changed since the form looked it up is refused with the old and the new figures, and nothing is written: '||:'d_stale');
+-- The twin: the same GRN with the current figures looked up is saved.
+SELECT set_config('request.jwt.claims',:'admin_claims',true);
+SET LOCAL ROLE authenticated;
+SELECT pg_temp.i9_save(pg_temp.i9_head(:'made_5'::jsonb,:'ca'::uuid,129005,'2026-06-20'),pg_temp.i9_ln(:'made_5'::jsonb,7,:'fresh'::jsonb)) AS d_fresh \gset
+RESET ROLE;
+SELECT pg_temp.i9_assert(:'d_fresh'::jsonb->>'success'='true','save: the looked-up figures still match, so the invoice is saved: '||:'d_fresh');
+-- Typed by hand: all three (true), or only some of them (a list).
+SELECT set_config('request.jwt.claims',:'admin_claims',true);
+SET LOCAL ROLE authenticated;
+SELECT pg_temp.i9_save(pg_temp.i9_head(:'made_6'::jsonb,:'ca'::uuid,129006,'2026-06-20'),pg_temp.i9_ln(:'made_6'::jsonb,6,:'stale'::jsonb,'true'::jsonb)) AS d_typed_all,
+       pg_temp.i9_save(pg_temp.i9_head(:'made_7'::jsonb,:'ca'::uuid,129007,'2026-06-20'),pg_temp.i9_ln(:'made_7'::jsonb,6,:'stale'::jsonb,'["charge"]'::jsonb)) AS d_typed_part \gset
+RESET ROLE;
+SELECT pg_temp.i9_assert(:'d_typed_all'::jsonb->>'success'='true' AND (SELECT sum(t.charge)=6 FROM public.invoice_trl t JOIN public.invoice i ON i.id=t.invoice_id WHERE i.gr_id=(:'made_6'::jsonb->>'grn_id')::uuid),
+ 'save: figures typed by hand are not compared, whatever the lookup says: '||:'d_typed_all');
+SELECT pg_temp.i9_assert(:'d_typed_part'::jsonb->>'reason'='RATES_CHANGED' AND :'d_typed_part'::jsonb#>'{lines,0,fields}'='["labour_rate"]'::jsonb,
+ 'save: a typed charge is not compared but a looked-up labour rate still is: '||:'d_typed_part');
+SELECT set_config('request.jwt.claims',:'admin_claims',true);
+SET LOCAL ROLE authenticated;
+SELECT pg_temp.i9_save(pg_temp.i9_head(:'made_7'::jsonb,:'ca'::uuid,129007,'2026-06-20'),pg_temp.i9_ln(:'made_7'::jsonb,6,:'stale'::jsonb,'["charge","labour_rate"]'::jsonb)) AS d_typed_two \gset
+RESET ROLE;
+SELECT pg_temp.i9_assert(:'d_typed_two'::jsonb->>'success'='true','save: charge and labour rate typed, tax unchanged: saved: '||:'d_typed_two');
+-- An older app sends no looked_up: not checked.
+SELECT set_config('request.jwt.claims',:'admin_claims',true);
+SET LOCAL ROLE authenticated;
+SELECT pg_temp.i9_save(pg_temp.i9_head(:'made_8'::jsonb,:'ca'::uuid,129008,'2026-06-20'),pg_temp.i9_ln(:'made_8'::jsonb,6,NULL)) AS d_old_app \gset
+RESET ROLE;
+SELECT pg_temp.i9_assert(:'d_old_app'::jsonb->>'success'='true','save: a line without looked_up is not checked: '||:'d_old_app');
+SELECT (:'d_old_app'::jsonb->>'invoice_id')::uuid AS inv_8 \gset
+-- update_invoice compares the same way, and writes nothing on a refusal.
+SELECT pg_temp.i9_stored(:'inv_8'::uuid) AS stored_8 \gset
+SELECT set_config('request.jwt.claims',:'admin_claims',true);
+SET LOCAL ROLE authenticated;
+SELECT pg_temp.i9_update(:'inv_8'::uuid,pg_temp.i9_head(:'made_8'::jsonb,:'ca'::uuid,129008,'2026-06-20',jsonb_build_object('notes','edited')),pg_temp.i9_ln(:'made_8'::jsonb,6,:'stale'::jsonb)) AS d_upd_stale,
+       pg_temp.i9_update(:'inv_8'::uuid,pg_temp.i9_head(:'made_8'::jsonb,:'ca'::uuid,129008,'2026-06-20',jsonb_build_object('notes','edited')),pg_temp.i9_ln(:'made_8'::jsonb,7,:'fresh'::jsonb)) AS d_upd_fresh \gset
+RESET ROLE;
+SELECT pg_temp.i9_assert(:'d_upd_stale'::jsonb->>'reason'='RATES_CHANGED' AND :'d_upd_stale'::jsonb#>'{lines,0,fields}'='["charge","labour_rate"]'::jsonb
+ AND :'d_upd_fresh'::jsonb->>'success'='true' AND pg_temp.i9_stored(:'inv_8'::uuid) LIKE '%|edited|1',
+ 'update: stale looked-up figures are refused, current ones are saved: '||:'d_upd_stale'||:'d_upd_fresh');
 ROLLBACK;
