@@ -864,6 +864,8 @@ jobs:
             grep -q '^result=ok$' "$WAREHOUSE_STATE_DIR/config/upgrade-last"
             node scripts/upgrade-record.mjs rollback --last > "$RUNNER_TEMP/rollback-last.txt"
             grep -qx '  bash scripts/maintenance.sh on' "$RUNNER_TEMP/rollback-last.txt"
+          else
+            echo "::notice title=rollback --last not exercised::The upgrade.sh of the starting point does not write upgrade-last (a release from before it); the drill checks it once the starting point has it."
           fi
           test ! -e "$WAREHOUSE_STATE_DIR/config/maintenance"
           if [ "$freeze" = yes ]; then
