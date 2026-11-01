@@ -244,7 +244,7 @@ test('rollbackLines with last: a warning that names the loss and prefers the nex
     const last = readUpgradeRecord(w.state, 'config/upgrade-last');
     assert.equal(last.finished, '2026-10-26T11:30:00Z');
     assert.equal(last.maintenanceKnown, true);
-    const lines = rollbackLines(last, { last: true });
+    const lines = rollbackLines(last, { last: true, saveCommand: false });
     assert.match(lines[0], /^To go back to v0\.6\.0 \(a{40}\) after the upgrade to v0\.7\.0 that finished at 2026-10-26T11:30:00Z, run these in the checkout, in this order\. WARNING: everything the facility recorded after the backup \(taken 2026-10-26 10:00:00 UTC\) is lost/);
     assert.match(lines[0], /every receipt, dispatch, invoice and order entered since is NOT in the backup/);
     assert.match(lines[0], /last resort: when the problem can be fixed by a patch release of v0\.7\.0, wait for that and upgrade to it instead\./);
@@ -257,7 +257,11 @@ test('rollbackLines with last: a warning that names the loss and prefers the nex
     ]);
     assert.equal(commands.at(-1), `  rm -f '${w.state}/config/upgrade-in-progress' '${w.state}/config/upgrade-last'`, 'the last line ends the report of an interrupted upgrade that the first line made');
     // Without the saved images on the host: no restore or save line, and the headline says setup builds.
-    const gone = rollbackLines(last, { last: true, imagesGone: true });
+    // With the diagnostics save command: after the API is closed and before the restore empties the logs.
+    const saved = rollbackLines(last, { last: true, saveCommand: true }).filter(line => /^ {2}\S/.test(line));
+    const at = saved.findIndex(line => /service-diagnostics\.mjs save rollback/.test(line));
+    assert.ok(saved.findIndex(line => /maintenance\.sh on/.test(line)) < at && at < saved.findIndex(line => /git checkout --detach/.test(line)));
+    const gone = rollbackLines(last, { last: true, imagesGone: true, saveCommand: false });
     assert.ok(!gone.join('\n').includes('pre-images.sh') && !gone.join('\n').includes('build-images.sh --save'));
     assert.match(gone[0], /images of v0\.6\.0 that the upgrade saved are no longer on this host, so the old release's setup builds its images again/);
     // The plain list of an interrupted upgrade is unchanged by the new option.
