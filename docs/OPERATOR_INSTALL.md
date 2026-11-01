@@ -55,6 +55,12 @@ Sections: [host prerequisites](#host-prerequisites),
   `doctor --host-preflight` (run by `setup.sh`) prints a warning and carries on: below 4 vCPU, 7.5 GiB of memory (an 8 GiB machine
   reports about 7.7) or 55 GiB of disk in total on the state's filesystem. A hard disk instead of an SSD is not detected; the
   database and the backups are slow on one.
+- **Full-disk encryption is recommended** (LUKS on Ubuntu, chosen in the installer's storage step; it cannot be added later without
+  reinstalling). The database, the photos, the signing keys and the backup key are on that disk, and a host is stolen, repaired or
+  discarded more often than it is attacked. `doctor` warns when no encrypted (`crypt`) device is under `/`, and says nothing when
+  it cannot tell, or on a Windows host (below: BitLocker). The cost: a host that reboots by itself, for example after a power
+  cut, waits for the passphrase unless the disk is set to unlock at boot (TPM-based unlock), so decide that before relying on an
+  unattended restart.
 - At least 10 GiB free on a persistent filesystem for the installation, plus capacity for the data. `setup.sh` refuses
   to start below 10 GiB. `start.sh` and `doctor` only warn below 10 GiB and refuse below 2 GiB, so a disk that has filled
   up since the install does not keep the facility down after a power cut ([Disk full](TROUBLESHOOTING.md#disk-full)).
@@ -2574,6 +2580,10 @@ console session signed in at all, a physical re-plug of the drive, a USB run tha
 - Windows 10 22H2 (verified) or Windows 11 (not verified yet), Pro or Enterprise, x64. Windows 10 22H2 is out of Microsoft's
   support. The Home edition is not verified. This route has the Cloudflare tunnel only, with no LAN fallback
   ([Ingress and the LAN](#ingress-and-the-lan)).
+- **Full-disk encryption is recommended**: BitLocker (Pro, Enterprise) or device encryption (Home) on the drive that holds the
+  distro's virtual disk, because the whole installation, its keys included, is one file on it. `doctor` cannot see this from
+  inside Ubuntu and stays silent. Check from PowerShell [PS-admin]: `manage-bde -status C:` should say `Protection On`
+  (and `Conversion Status: Fully Encrypted`). Keep the recovery key away from this machine.
 - Hardware virtualisation on in the firmware. When Windows is itself a virtual machine, nested virtualisation (VT-x/EPT or the
   equivalent) must be switched on for that machine: WSL2 does not start without it. Check from PowerShell:
 

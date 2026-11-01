@@ -187,6 +187,31 @@ export function memTotalBytes(text) {
   return m ? Number(m[1]) * 1024 : NaN;
 }
 
+// Full-disk encryption (docs/OPERATOR_INSTALL.md, "Host prerequisites"): the facility's data, its backup key and its signing keys sit
+// on this disk, and a stolen or discarded host exposes them. The root filesystem is encrypted when a `crypt` (dm-crypt/LUKS) device is
+// in the chain beneath it. Silent when either command fails or the root is not a block device: the check must never be a false alarm.
+// Not run under WSL (the disk is a file on a Windows drive: BitLocker there, checked by hand). `run(command, args)` returns
+// { status, stdout }; tests inject it.
+export const NO_ENCRYPTION_WARNING = 'the root filesystem of this host is not on an encrypted disk (no dm-crypt/LUKS device under it). Anyone who takes or discards the disk can read the database, the photos, the signing keys and the backup key. Full-disk encryption is recommended for a real facility (docs/OPERATOR_INSTALL.md, "Host prerequisites"); it can only be added at install time or by reinstalling the host.';
+const defaultRun = (command, args) => spawnSync(command, args, { encoding: 'utf8', timeout: 10000 });
+export function diskEncryptionWarning({ run = defaultRun } = {}) {
+  let source;
+  try {
+    const found = run('findmnt', ['-no', 'SOURCE', '/']);
+    if (found.status !== 0) return null;
+    source = String(found.stdout ?? '').trim().split('\n')[0].replace(/\[.*\]$/, '');
+  } catch { return null; }
+  if (!source.startsWith('/dev/')) return null;
+  let types;
+  try {
+    const chain = run('lsblk', ['-s', '-n', '-o', 'TYPE', source]);
+    if (chain.status !== 0) return null;
+    types = String(chain.stdout ?? '').split('\n').map(line => line.trim()).filter(Boolean);
+  } catch { return null; }
+  if (!types.length) return null;
+  return types.includes('crypt') ? null : NO_ENCRYPTION_WARNING;
+}
+
 export const listening = port => new Promise(resolve => {
   const socket = createConnection({ host: '127.0.0.1', port });
   const done = value => { socket.destroy(); resolve(value); };
@@ -344,6 +369,10 @@ export async function doctor({ hostPreflight = false, preflight = false, local =
   const wsl = wslDriveCheck({ hostPreflight, composeEnv });
   if (wsl.error) throw new Error(wsl.error);
   if (wsl.warning) console.error(`Warning: ${wsl.warning}`);
+  if (!isWslHost(process.env, path => readFileSync(path, 'utf8'))) {
+    const encryption = diskEncryptionWarning();
+    if (encryption) console.error(`Warning: ${encryption}`);
+  }
   if (hostPreflight) {
     let memoryBytes = NaN;
     try { memoryBytes = memTotalBytes(readFileSync(process.env.WAREHOUSE_MEMINFO_FILE || '/proc/meminfo', 'utf8')); } catch { /* unreadable: no warning */ }

@@ -15,7 +15,7 @@ test('operator configuration requires canonical HTTPS origins and supported Node
 import { mkdtempSync, mkdirSync, writeFileSync, chmodSync, rmSync, utimesSync } from 'node:fs';
 import { tmpdir, userInfo } from 'node:os';
 import { join } from 'node:path';
-import { checkStatePlacement, checkerWarnings, CHECKER_MAX_AGE_MS, NO_WEBHOOK_WARNING, NO_HEARTBEAT_WARNING, releaseNote, NO_SENSOR_WEBHOOK_WARNING, INVALID_SENSOR_WEBHOOK_WARNING, SAME_SENSOR_WEBHOOK_WARNING, stoppedWarning, timerUnit, dailyTimerUnit, freeSpaceVerdict, wslDriveCheck, hostMinimumWarnings, memTotalBytes } from '../scripts/doctor.mjs';
+import { checkStatePlacement, checkerWarnings, CHECKER_MAX_AGE_MS, NO_WEBHOOK_WARNING, NO_HEARTBEAT_WARNING, releaseNote, NO_SENSOR_WEBHOOK_WARNING, INVALID_SENSOR_WEBHOOK_WARNING, SAME_SENSOR_WEBHOOK_WARNING, stoppedWarning, timerUnit, dailyTimerUnit, freeSpaceVerdict, wslDriveCheck, hostMinimumWarnings, memTotalBytes, diskEncryptionWarning, NO_ENCRYPTION_WARNING } from '../scripts/doctor.mjs';
 
 test('a fresh install refuses a state whose parent is not writable, naming the fix', { skip: process.getuid() === 0 && 'root can write anywhere' }, () => {
   const base = mkdtempSync(join(tmpdir(), 'state-parent-'));
@@ -515,6 +515,28 @@ test('host minimum: warns below 4 vCPU, 7.5 GiB of memory and 55 GiB of disk, si
   assert.deepEqual(hostMinimumWarnings({ cpus: NaN, memoryBytes: NaN, diskBytes: NaN }), [], 'unknown figures never warn');
   assert.equal(memTotalBytes('MemTotal:        8048576 kB\nMemFree: 1 kB\n'), 8048576 * 1024);
   assert.ok(Number.isNaN(memTotalBytes('nothing')));
+});
+
+test('disk encryption: warns when no crypt device is under /; silent with one, and when a command or the source cannot be read', () => {
+  const runner = ({ findmnt = { status: 0, stdout: '/dev/mapper/root\n' }, lsblk = { status: 0, stdout: 'crypt\npart\ndisk\n' } } = {}) => {
+    const calls = [];
+    const run = (command, args) => { calls.push([command, ...args]); const r = command === 'findmnt' ? findmnt : lsblk; if (r instanceof Error) throw r; return r; };
+    run.calls = calls;
+    return run;
+  };
+  const run = runner();
+  assert.equal(diskEncryptionWarning({ run }), null, 'a crypt device in the chain');
+  assert.deepEqual(run.calls, [['findmnt', '-no', 'SOURCE', '/'], ['lsblk', '-s', '-n', '-o', 'TYPE', '/dev/mapper/root']]);
+  assert.equal(diskEncryptionWarning({ run: runner({ lsblk: { status: 0, stdout: 'disk\npart\n' } }) }), NO_ENCRYPTION_WARNING, 'plain disk and partition');
+  assert.equal(diskEncryptionWarning({ run: runner({ findmnt: { status: 0, stdout: '/dev/sda2[/@]\n' }, lsblk: { status: 0, stdout: 'part\ndisk\n' } }) }), NO_ENCRYPTION_WARNING, 'a btrfs subvolume suffix is removed');
+  assert.equal(diskEncryptionWarning({ run: runner({ findmnt: { status: 1, stdout: '' } }) }), null, 'findmnt fails');
+  assert.equal(diskEncryptionWarning({ run: runner({ lsblk: { status: 1, stdout: 'disk\n' } }) }), null, 'lsblk fails');
+  assert.equal(diskEncryptionWarning({ run: runner({ findmnt: new Error('ENOENT') }) }), null, 'findmnt missing');
+  assert.equal(diskEncryptionWarning({ run: runner({ lsblk: new Error('ENOENT') }) }), null, 'lsblk missing');
+  assert.equal(diskEncryptionWarning({ run: runner({ findmnt: { status: 0, stdout: 'overlay\n' } }) }), null, 'not a block device');
+  assert.equal(diskEncryptionWarning({ run: runner({ lsblk: { status: 0, stdout: '' } }) }), null, 'no types printed');
+  const source = readFileSync(new URL('../scripts/doctor.mjs', import.meta.url), 'utf8');
+  assert.match(source, /if \(!isWslHost\(process\.env, path => readFileSync\(path, 'utf8'\)\)\) \{\n    const encryption = diskEncryptionWarning\(\);/, 'not run under WSL');
 });
 
 function memWarning(kb) {
