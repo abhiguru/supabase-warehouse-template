@@ -57,7 +57,9 @@ Sections: [host prerequisites](#host-prerequisites),
   Size the disk for the data with the rule in [Disk space](#disk-space).
 - Recommended for a real facility: a **USB drive formatted exFAT for backups** (an existing drive is fine; it is not
   reformatted) and `sudo` once to set up the automatic copy ([USB backup drive](#usb-backup-drive)). Setup does not need
-  it; without one, `doctor` warns and the backups stay on the host, so copy them off the host yourself.
+  it; without one, `doctor` warns at once, and the checker's weekly `offhost_copy_missing` alert starts 7 days after its first run, that
+  the backups and the backup key sit only on this host: set up the drive, or record the decision not to keep a copy
+  (see "Recovery point and recovery time" under [Backup and restore](#backup-and-restore)).
 - `cloudflared` for the tunnel ([Cloudflare Tunnel ingress](#cloudflare-tunnel-ingress)).
 
 Record the host before changing it (`cat /etc/os-release`, `uname -m`, `free -h`, `df -h`, `docker ps`) so that an existing
@@ -1380,6 +1382,24 @@ photos, not another copy of every photo. A photo is therefore stored once on the
 stays in the older backups after it has left the live storage. Hard links need the backup folder and the previous backups on
 one filesystem, which is the normal case (`backups/` of the state).
 
+> **Recovery point and recovery time**
+>
+> - **Recovery point (RPO), on the host:** about one day, the nightly backup (`backup_missing` fires after 26 hours without one).
+>   **Off the host:** the last time the USB drive was plugged in, because the drive is the only copy that survives the loss of this
+>   host ([USB backup drive](#usb-backup-drive)). Everything entered since is lost with the host.
+> - **Recovery time (RTO):** how long a restore takes on this hardware. Every `db:restore` and `restore-host.sh` appends one line
+>   per phase to `<state>/restores.log` (`<utc> <script> phase=<name> seconds=<n>`, phases `verify`, `database`, `storage`, `start`
+>   and `total`), and `bash scripts/verify-restore.sh` prints its own seconds: the `total` of your last restore, or a drill, is your
+>   estimate. Add the time to bring a replacement host to the point of running `restore-host.sh`.
+> - **Alert:** `offhost_copy_missing` (weekly, never muted, starting 7 days after the checker's first run) tells an installation with
+>   no copy outside the host. If your facility has decided to go without one, record it, as the user that runs the checker, in
+>   `config/offhost-copy-declined` (a regular file you own, mode 0600) with exactly this sentence:
+>   `We have decided not to keep a copy of the backups outside this host.`, for example
+>   `printf '%s\n' 'We have decided not to keep a copy of the backups outside this host.' > "$WAREHOUSE_STATE_DIR/config/offhost-copy-declined" && chmod 600 "$WAREHOUSE_STATE_DIR/config/offhost-copy-declined"`.
+>   Any other text, a link, or looser permissions is ignored and the alert stays on. A drive that is plugged in all the time shares
+>   the host's fire, flood and theft: the daily status says so once a week when only one drive has written in 30 days; enrol a
+>   second drive and swap them weekly.
+
 The services are stopped only for the database dump, the catalog queries and the last pass of the file copy, then restarted;
 the first pass of the copy, the checksums and the signing happen while the app is up. The stop does not grow with the size of the
 photos or with how many are new, but it does grow with the number of files: the last pass reads the name, time and attributes of
@@ -1555,7 +1575,7 @@ writes `config/backup-key.escrow` (mode 0600: a fingerprint of the key, the time
 clear the terminal, because the key is still on its screen and in its scrollback (run `clear`, close the window, and in tmux or screen
 clear the history too; do not keep a log of the session). **A USB drive is not enrolled, and an encrypted archive is not written, until
 this record matches the key in use**: `backup-usb.sh setup --enroll` and `enroll` refuse, and a run records a failure that
-`npm run doctor` and the checker's `usb_backup` alert show, with the command to run. Without a terminal (an unattended install, a script)
+`npm run doctor` and the checker's `offhost_copy_missing` alert show, with the command to run. Without a terminal (an unattended install, a script)
 `bash scripts/backup-key-escrow.sh confirm --key-file FILE` does the same from a file that holds your copy of the key (bring it from
 where you keep it; the file of the host's own key is refused, since it is lost with the host). It compares the whole key as well and
 never creates a key; `show` is the command that creates one on an installation that has none. `bash scripts/backup-key-escrow.sh check`
@@ -2858,7 +2878,7 @@ has to reach the distro (run from an elevated PowerShell in the test; the usbipd
 **Without the task the attach does not survive a restart.** After a host reboot the drive was listed as Shared, not Attached
 (verified); it is also expected to detach whenever the distro stops (`wsl --shutdown`, a WSL update; not read back in the test), and
 every plug-in on Windows needs an attach too. The "Warehouse USB" task is the answer to that: it was run through a host restart and a
-`wsl --shutdown`. Still check `usbipd list` for "Attached" after every restart and use the manual attach if it says "Shared". If nobody does, the `usb_backup` alert and `npm run doctor` warn once the last copy is over 7 days old
+`wsl --shutdown`. Still check `usbipd list` for "Attached" after every restart and use the manual attach if it says "Shared". If nobody does, the `offhost_copy_missing` alert and `npm run doctor` warn once the last copy is over 7 days old
 (the default of `WAREHOUSE_USB_BACKUP_MAX_AGE_DAYS`). Printing over USB has the same limits
 ([PRINTING.md](PRINTING.md)), and is not verified on this route. Copying files to a Windows drive through `/mnt/<drive>` loses the
 extended attributes and ownership that a restore needs from the stored photos, so it is not a substitute.
