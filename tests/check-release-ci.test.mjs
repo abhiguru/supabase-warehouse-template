@@ -5,9 +5,9 @@ import { REQUIRED_CHECKS, run } from '../scripts/check-release-ci.mjs';
 const SHA = 'a'.repeat(40);
 const env = { GITHUB_REPOSITORY: 'owner/repo', GITHUB_SHA: SHA, GH_TOKEN: 'tok' };
 const [INSTALL, UPGRADE] = REQUIRED_CHECKS;
-const ok = (name, extra = {}) => ({ name, status: 'completed', conclusion: 'success', completed_at: '2026-11-01T10:00:00Z', ...extra });
+const ok = (name, extra = {}) => ({ name, app: { slug: 'github-actions' }, status: 'completed', conclusion: 'success', completed_at: '2026-11-01T10:00:00Z', ...extra });
 
-const reply = (status, body) => ({ ok: status >= 200 && status < 300, status, json: async () => body });
+const reply = (status, body, headers = {}) => ({ ok: status >= 200 && status < 300, status, json: async () => body, headers: { get: key => headers[key.toLowerCase()] ?? null } });
 const page = (runs, total = runs.length) => reply(200, { total_count: total, check_runs: runs });
 
 // A fake fetch: `handler(url, init, n)` answers; every call is recorded.
@@ -22,8 +22,9 @@ function harness(handler) {
 test('both required jobs green on the commit passes, and the request names the commit', async () => {
   const h = harness(() => page([ok(INSTALL), ok(UPGRADE), ok('Other')]));
   assert.equal(await h.go(), 0);
-  assert.equal(h.calls.length, 1);
-  assert.match(h.calls[0].url, new RegExp(`^https://api\\.github\\.com/repos/owner/repo/commits/${SHA}/check-runs\\?per_page=100&page=1$`));
+  assert.equal(h.calls.length, 2, 'one request per required name');
+  assert.match(h.calls[0].url, new RegExp(`^https://api\\.github\\.com/repos/owner/repo/commits/${SHA}/check-runs\\?check_name=${encodeURIComponent(INSTALL)}&filter=latest&per_page=100&page=1$`));
+  assert.match(h.calls[1].url, new RegExp(`check_name=${encodeURIComponent(UPGRADE)}&filter=latest`));
   assert.equal(h.calls[0].auth, 'Bearer tok');
   assert.ok(h.calls[0].signal instanceof AbortSignal, 'a timeout is set');
 });
@@ -60,26 +61,45 @@ test('the required run on page 2 is found; the pages are requested in order', as
   const filler = Array.from({ length: 100 }, (_, i) => ok(`filler ${i}`));
   const h = harness(url => (url.endsWith('page=1') ? page(filler, 102) : page([ok(INSTALL), ok(UPGRADE)], 102)));
   assert.equal(await h.go(), 0);
-  assert.equal(h.calls.length, 2);
+  assert.equal(h.calls.length, 4, 'two pages for each of the two names');
   assert.match(h.calls[1].url, /page=2$/);
 });
 
 test('403 with the token is retried once without it, and the answer counts', async () => {
   const h = harness((url, init) => (init.headers.Authorization ? reply(403, {}) : page([ok(INSTALL), ok(UPGRADE)])));
   assert.equal(await h.go(), 0);
-  assert.deepEqual(h.calls.map(call => call.auth), ['Bearer tok', undefined]);
+  assert.deepEqual(h.calls.map(call => call.auth), ['Bearer tok', undefined, undefined], 'after the refusal the token is not sent again');
 });
 
 test('403 both ways fails closed', async () => {
-  const h = harness(() => reply(403, {}));
+  const h = harness(() => reply(403, { message: 'Resource not accessible by integration' }, { 'x-ratelimit-remaining': '0' }));
   assert.equal(await h.go(), 1);
-  assert.match(h.lines.join('\n'), /answered 403/);
+  assert.match(h.lines.join('\n'), /answered 403 "Resource not accessible by integration" \(x-ratelimit-remaining 0\)/);
 });
 
-test('without a token there is one anonymous request', async () => {
+test('a check run of another app with the right name does not count', async () => {
+  const h = harness(() => page([ok(INSTALL), ok(UPGRADE, { app: { slug: 'some-other-app' } })]));
+  assert.equal(await h.go(), 1);
+  assert.match(h.lines.join('\n'), /Upgrade from the previous release: no run/);
+});
+
+test('the tag must name the commit the run started on', async () => {
+  const good = harness(() => page([ok(INSTALL), ok(UPGRADE)]));
+  assert.equal(await run({ env: { ...env, GITHUB_REF_NAME: 'v1.0.0' }, fetchImpl: async () => page([ok(INSTALL), ok(UPGRADE)]), log: () => {}, resolveTag: () => SHA }), 0);
+  const lines = [];
+  const calls = [];
+  const bad = await run({ env: { ...env, GITHUB_REF_NAME: 'v1.0.0' }, fetchImpl: async u => { calls.push(u); return page([ok(INSTALL), ok(UPGRADE)]); }, log: l => lines.push(l), resolveTag: () => 'b'.repeat(40) });
+  assert.equal(bad, 1);
+  assert.match(lines.join('\n'), /tag v1\.0\.0 names b+, not the commit/);
+  assert.equal(calls.length, 0, 'nothing is asked of the API');
+  assert.equal(await run({ env: { ...env, GITHUB_REF_NAME: 'v1.0.0' }, fetchImpl: async () => page([]), log: () => {}, resolveTag: () => '' }), 1, 'an unresolvable tag fails');
+  assert.equal(good.calls.length, 0);
+});
+
+test('without a token there is one anonymous request per name', async () => {
   const h = harness(() => page([ok(INSTALL), ok(UPGRADE)]));
   assert.equal(await h.go({ GITHUB_REPOSITORY: 'owner/repo', GITHUB_SHA: SHA }), 0);
-  assert.equal(h.calls[0].auth, undefined);
+  assert.deepEqual(h.calls.map(call => call.auth), [undefined, undefined]);
 });
 
 test('a network error, a server error and a body that is not a check-run list all fail', async () => {

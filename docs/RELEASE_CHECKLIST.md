@@ -116,9 +116,8 @@ Wait for both to pass before the next sections.
 (they take up to an hour and run on one machine), so nothing else stops a tag on a commit whose installation or upgrade run failed. The
 first step of the `release` job after Node is set up, `scripts/check-release-ci.mjs`, asks the GitHub API for the check runs of the tagged
 commit and fails, naming the missing or failed one, unless the newest run of each is a completed success. It never waits: if CI is still
-running or failed, let it finish or re-run the failed job (Actions, CI, Run workflow on the branch also attaches runs to a commit CI did not
-run on), then re-run the release workflow. A final tag on the commit of its release candidate asks about that same commit, so the same runs
-count. The workflow token has only `contents: read`: the script reads the public endpoint anonymously when the token is refused.
+running or failed, let it finish or re-run the failed job (for a tag on an older commit, open that commit's CI run in Actions and use "Re-run jobs"; "Run workflow" on a branch only tests the branch tip), then re-run the release workflow. A final tag on the commit of its release candidate asks about that same commit, so the same runs
+count. Only check runs made by GitHub Actions count, and the tag must name the commit the workflow started on. An `operator-upgrade` that skips itself with a notice (no starting point can be found) ends as a success and counts. The `release` job has `contents: read` and `checks: read`; the script reads the public endpoint anonymously if the token is refused.
 
 ## Image publication
 

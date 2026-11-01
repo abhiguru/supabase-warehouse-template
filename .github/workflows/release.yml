@@ -15,6 +15,10 @@ jobs:
   # images job removes what it built and leaves the registry (docs/DEVELOPER_HANDOFF.md, "A self-hosted runner for `operator-install`").
   release:
     runs-on: ${{ fromJSON(vars.CI_RUNNER || '"ubuntu-latest"') }}
+    # checks: read lets the CI gate step read the check runs of the tagged commit with the run's own token.
+    permissions:
+      contents: read
+      checks: read
     steps:
       - name: Fresh Docker config for this run
         run: |
@@ -45,7 +49,8 @@ jobs:
       - name: End-to-end CI passed on this commit (operator-install and operator-upgrade)
         # Branch protection requires neither job (long, runner-bound), so a tag could land on a commit whose installation or upgrade run failed
         # or never ran. This asks the GitHub API for the check runs of the tagged commit and fails when either is not a completed success.
-        # It never waits (this job may share one runner with those jobs): tag after CI is green (docs/RELEASE_CHECKLIST.md, "Tag validation").
+        # It also refuses a run whose commit is not the commit the tag names. It never waits (this job may share one runner with those jobs):
+        # tag after CI is green (docs/RELEASE_CHECKLIST.md, "Tag validation").
         env:
           GH_TOKEN: ${{ github.token }}
         run: node scripts/check-release-ci.mjs

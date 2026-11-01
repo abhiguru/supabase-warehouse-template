@@ -13,9 +13,14 @@
 //
 // It never waits and never polls: the release job may share one runner with those jobs, and waiting for them would deadlock.
 //
+// Only a check run created by GitHub Actions counts (another app can post a check run with the same name). A job that skips itself with a
+// notice (the upgrade drill when no starting point exists) still ends as a success, and counts.
+//
 // Environment: GITHUB_REPOSITORY (owner/name), GITHUB_SHA, GITHUB_API_URL (default https://api.github.com), GH_TOKEN or GITHUB_TOKEN
-// (optional). With a token the API is asked with it first; when that answers 401, 403 or 404 (the workflow token has only contents: read,
-// which may not cover checks) the same request is repeated without a token, which a public repository answers. A failure of both fails the gate.
+// (optional), GITHUB_REF_NAME (when set, the tag must name GITHUB_SHA). With a token the API is asked with it first; when that answers 401,
+// 403 or 404 the same request is repeated without a token, which a public repository answers. A failure of both fails the gate, with the
+// message and x-ratelimit-remaining of the last answer.
+import { execFileSync } from 'node:child_process';
 import { isMain } from './is-main.mjs';
 
 export const REQUIRED_CHECKS = ['Isolated operator installation', 'Upgrade from the previous release'];
@@ -36,7 +41,10 @@ async function getPage(fetchImpl, url, token) {
     throw new GateError(`the GitHub API could not be reached (${error?.name === 'TimeoutError' ? 'timed out after 10 s' : error?.message ?? error})`);
   }
   if (!response.ok) {
-    const failure = new GateError(`the GitHub API answered ${response.status}`);
+    let message = '';
+    try { message = String((await response.json())?.message ?? ''); } catch { /* no body */ }
+    const remaining = response.headers?.get?.('x-ratelimit-remaining');
+    const failure = new GateError(`the GitHub API answered ${response.status}${message ? ` "${message.slice(0, 200)}"` : ''}${remaining != null ? ` (x-ratelimit-remaining ${remaining})` : ''}`);
     failure.status = response.status;
     throw failure;
   }
@@ -59,11 +67,10 @@ async function getPageWithFallback(fetchImpl, url, state) {
   return getPage(fetchImpl, url, '');
 }
 
-export async function listCheckRuns({ fetchImpl = fetch, apiUrl = 'https://api.github.com', repository, sha, token = '' }) {
-  const state = { token };
+export async function listCheckRuns({ fetchImpl = fetch, apiUrl = 'https://api.github.com', repository, sha, token = '', name, state = { token } }) {
   const runs = [];
   for (let page = 1; page <= MAX_PAGES; page += 1) {
-    const url = `${apiUrl.replace(/\/+$/, '')}/repos/${repository}/commits/${sha}/check-runs?per_page=${PER_PAGE}&page=${page}`;
+    const url = `${apiUrl.replace(/\/+$/, '')}/repos/${repository}/commits/${sha}/check-runs?check_name=${encodeURIComponent(name)}&filter=latest&per_page=${PER_PAGE}&page=${page}`;
     const body = await getPageWithFallback(fetchImpl, url, state);
     if (!body || !Array.isArray(body.check_runs)) throw new GateError('the GitHub API answer has no check_runs list');
     runs.push(...body.check_runs);
@@ -78,7 +85,7 @@ const stamp = run => Date.parse(run.completed_at || run.started_at || '') || 0;
 export function judge(runs, required = REQUIRED_CHECKS) {
   const problems = [];
   for (const name of required) {
-    const same = runs.filter(run => run.name === name);
+    const same = runs.filter(run => run.name === name && run.app?.slug === 'github-actions');
     if (same.length === 0) { problems.push(`${name}: no run on this commit`); continue; }
     const newest = same.reduce((a, b) => (stamp(b) > stamp(a) ? b : a));
     if (newest.status !== 'completed') problems.push(`${name}: ${newest.status ?? 'unknown status'}, not finished`);
@@ -87,7 +94,15 @@ export function judge(runs, required = REQUIRED_CHECKS) {
   return problems;
 }
 
-export async function run({ env = process.env, argv = [], fetchImpl = fetch, log = console.log } = {}) {
+function gitResolveTag(name) {
+  try {
+    return execFileSync('git', ['rev-parse', '--verify', '--quiet', `refs/tags/${name}^{commit}`], { encoding: 'utf8', stdio: ['ignore', 'pipe', 'ignore'] }).trim();
+  } catch {
+    return '';
+  }
+}
+
+export async function run({ env = process.env, argv = [], fetchImpl = fetch, log = console.log, resolveTag = gitResolveTag } = {}) {
   const repository = env.GITHUB_REPOSITORY;
   const sha = env.GITHUB_SHA;
   if (!/^[\w.-]+\/[\w.-]+$/.test(repository ?? '') || !/^[0-9a-f]{40}$/.test(sha ?? '')) {
@@ -97,17 +112,25 @@ export async function run({ env = process.env, argv = [], fetchImpl = fetch, log
   const required = argv.length ? argv : REQUIRED_CHECKS;
   const where = `commit ${sha.slice(0, 12)} of ${repository}`;
   try {
-    const runs = await listCheckRuns({ fetchImpl, apiUrl: env.GITHUB_API_URL || 'https://api.github.com', repository, sha, token: env.GH_TOKEN || env.GITHUB_TOKEN || '' });
+    if (env.GITHUB_REF_NAME) {
+      const tagged = resolveTag(env.GITHUB_REF_NAME);
+      if (tagged !== sha) throw new GateError(`the tag ${env.GITHUB_REF_NAME} names ${tagged || 'no commit'}, not the commit this run was started on (${sha})`);
+    }
+    const runs = [];
+    const state = { token: env.GH_TOKEN || env.GITHUB_TOKEN || '' };
+    for (const name of required) {
+      runs.push(...await listCheckRuns({ fetchImpl, apiUrl: env.GITHUB_API_URL || 'https://api.github.com', repository, sha, name, state }));
+    }
     const problems = judge(runs, required);
     if (problems.length) {
-      log(`::error title=Release gate: CI::End-to-end CI has not passed on ${where}: ${problems.join('; ')}. Wait for CI on this commit (the push to main, or Actions > CI > Run workflow on the branch), re-run the failed job, then re-run this workflow.`);
+      log(`::error title=Release gate: CI::End-to-end CI has not passed on ${where}: ${problems.join('; ')}. Wait for CI on this commit (the push to main, or Actions > CI > the run of this commit > Re-run jobs), re-run the failed job, then re-run this workflow.`);
       return 1;
     }
     log(`CI passed on ${where}: ${required.join(', ')}.`);
     return 0;
   } catch (error) {
     if (!(error instanceof GateError)) throw error;
-    log(`::error title=Release gate: CI::Could not read the check runs of ${where}: ${error.message}. The gate fails closed; re-run this workflow once the API answers.`);
+    log(`::error title=Release gate: CI::Could not verify CI on ${where}: ${error.message}. The gate fails closed; re-run this workflow once the API answers.`);
     return 1;
   }
 }

@@ -594,7 +594,7 @@ test('release.yml publishes the release images in a job of their own: build, sca
   assert.match(release, /\npermissions:\n  contents: read\n\njobs:\n/);
   const [checks, publish] = release.split(/\n  publish-images:\n/);
   assert.ok(publish, 'a publish-images job exists');
-  assert.doesNotMatch(checks, /\n    permissions:|packages:\s*write|contents:\s*write/, 'the checks job writes nothing');
+  assert.doesNotMatch(checks.replace('\n    permissions:\n      contents: read\n      checks: read\n', ''), /\n    permissions:|packages:\s*write|contents:\s*write/, 'the checks job writes nothing, and its only own permissions are contents: read and checks: read');
   assert.match(publish, /^    needs: release\n/, 'it runs only after the validation, tests and audit of the release job pass');
   assert.match(publish, /\n    if: github\.repository == 'abhiguru\/supabase-warehouse-template'\n/, 'a fork has no right to the registry namespace');
   assert.match(publish, /\n    permissions:\n      contents: write\n      packages: write\n    steps:\n/, 'exactly the two write permissions, on this job');
@@ -774,7 +774,7 @@ test('release.yml checks the signature of the tag in the release job, before Nod
   assert.match(step, /\n {8}run: \|\n {10}git fetch --force --no-tags origin "refs\/tags\/\$GITHUB_REF_NAME:refs\/tags\/\$GITHUB_REF_NAME"\n {10}bash scripts\/check-release-signature\.sh "\$GITHUB_REF_NAME"\n?$/, 'the tag object is fetched, then checked; the tag name is quoted');
   assert.doesNotMatch(step, /\n {8}uses:|\$\{\{|secrets\./);
   assert.match(release, /\npermissions:\n {2}contents: read\n\njobs:\n/, 'the workflow permissions are unchanged');
-  assert.ok(!/\n {4}permissions:/.test(releaseJob), 'the release job has no permissions of its own');
+  assert.equal(releaseJob.match(/\n {4}permissions:\n(?: {6}[a-z-]+: [a-z]+\n)+/)?.[0], '\n    permissions:\n      contents: read\n      checks: read\n', 'the release job has exactly contents: read and checks: read of its own');
 });
 
 test('release: the end-to-end CI gate runs after setup-node and before anything is installed or tested, with the token only as GH_TOKEN, and names the real jobs of ci.yml', async () => {
@@ -786,7 +786,8 @@ test('release: the end-to-end CI gate runs after setup-node and before anything 
   assert.ok(at > 0, 'the step exists in the release job');
   assert.match(job.slice(at), /^ {6}- name: [^\n]*\n(?: {8}#[^\n]*\n)+ {8}env:\n {10}GH_TOKEN: \$\{\{ github\.token \}\}\n {8}run: node scripts\/check-release-ci\.mjs\n {6}- run: npm ci\n/);
   assert.ok(job.indexOf('actions/setup-node') < at && at < job.indexOf('- run: npm ci') && at < job.indexOf('- run: npm test'), 'after setup-node, before npm ci and the tests');
-  assert.match(release, /\npermissions:\n {2}contents: read\n\njobs:\n/, 'no permission is added');
+  assert.match(release, /\npermissions:\n {2}contents: read\n\njobs:\n/, 'the workflow permissions are unchanged');
+  assert.match(job, /\n {4}permissions:\n {6}contents: read\n {6}checks: read\n {4}steps:\n/, 'the job adds checks: read and nothing else');
   assert.doesNotMatch(job.slice(at, job.indexOf('- run: npm ci')), /permissions:|continue-on-error|\|\| true/);
   // The names the script requires are the check-run names of the two jobs; a rename in ci.yml would otherwise fail every release.
   const { REQUIRED_CHECKS } = await import('../scripts/check-release-ci.mjs');

@@ -13,7 +13,7 @@ file used to carry for earlier installations are in git: `git show b45ae0b:CHANG
 - **A release needs green end-to-end CI on its commit.** `operator-install` and `operator-upgrade` are not required checks on `main`, so a tag
   could land on a commit where they failed or never ran. `release.yml` now runs `scripts/check-release-ci.mjs` first: it asks the GitHub API for the
   check runs of the tagged commit and fails, naming the missing or failed one, unless the newest run of each is a completed success. It does not
-  wait or poll, and adds no workflow permission (it reads the public endpoint anonymously when the workflow token is refused). Operator action: none.
+  wait or poll, and adds one job permission, `checks: read` (it reads the public endpoint anonymously when the token is refused, and only counts check runs made by GitHub Actions on the commit the tag names). Operator action: none.
 - **Release tags are SSH-signed, and `upgrade.sh` verifies them.** `.github/allowed_signers` lists the keys that may sign a release tag (it ships
   with no key yet: the maintainer adds one before the first signed tag). A checkout that lists a key makes `upgrade.sh vX.Y.Z` run
   `git verify-tag` against ITS OWN list and refuse, before anything is changed, a tag that is unsigned, lightweight, signed by another key or
