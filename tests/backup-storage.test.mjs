@@ -21,9 +21,12 @@ function installation(prefix) {
   rmSync(join(state, 'data/storage/current-object'));
   mkdirSync(join(state, 'backups'), { mode: 0o700 });
   const bin = fakeBackupDocker(join(scratch, 'bin'));
+  // The kernel release the preflight reads to tell WSL2 from a plain Linux host: a plain one unless a test says otherwise.
+  const osrelease = join(scratch, 'osrelease');
+  writeFileSync(osrelease, '6.8.0-45-generic\n');
   let runs = 0;
   const f = {
-    scratch, state, bin, live: join(state, 'data/storage'),
+    scratch, state, bin, osrelease, live: join(state, 'data/storage'),
     put(path, body = `bytes of ${path}`, mtime = null) {
       mkdirSync(dirname(join(f.live, path)), { recursive: true });
       writeFileSync(join(f.live, path), body);
@@ -36,7 +39,8 @@ function installation(prefix) {
       const log = join(scratch, `docker-${++runs}.log`);
       const dest = join(state, 'backups', name);
       const env = { ...process.env, PATH: `${path ? path + ':' : ''}${bin}:${process.env.PATH}`, WAREHOUSE_STATE_DIR: state,
-        FAKE_DOCKER_LOG: log, FAKE_STAGE_PARENT: join(state, 'backups'), WAREHOUSE_BACKUP_RESERVE_MB: '0', ...extra };
+        FAKE_DOCKER_LOG: log, FAKE_STAGE_PARENT: join(state, 'backups'), WAREHOUSE_BACKUP_RESERVE_MB: '0',
+        WAREHOUSE_OSRELEASE_FILE: osrelease, WAREHOUSE_VHDX_DRIVE: undefined, ...extra };
       for (const key of Object.keys(env)) if (env[key] === undefined) delete env[key];
       const result = spawnSync('bash', [script('backup.sh'), dest], { encoding: 'utf8', env });
       return { ...result, dest, calls: existsSync(log) ? readFileSync(log, 'utf8') : '' };
@@ -920,6 +924,14 @@ function spaceShims(dir) {
   mkdirSync(dir, { recursive: true });
   writeFileSync(join(dir, 'df'), [
     '#!/bin/sh',
+    // The Windows drive of a WSL2 host (WAREHOUSE_VHDX_DRIVE, FAKE_VHDX_DRIVE here): FAKE_DRIVE_AVAIL bytes free, FAKE_DRIVE_DF=fail fails; every call is logged.
+    'if [ -n "$FAKE_VHDX_DRIVE" ] && [ "$4" = "$FAKE_VHDX_DRIVE" ]; then',
+    '  [ "$1" = "-B1" ] && [ "$2" = "--output=avail" ] && [ "$3" = "--" ] || { echo "df: unexpected arguments: $*" >&2; exit 2; }',
+    '  [ -z "$FAKE_DRIVE_DF_LOG" ] || echo "$*" >> "$FAKE_DRIVE_DF_LOG"',
+    '  [ "$FAKE_DRIVE_DF" = fail ] && { echo "df: /mnt/c: Input/output error" >&2; exit 1; }',
+    '  printf "Avail\\n%s\\n" "${FAKE_DRIVE_AVAIL:-0}"',
+    '  exit 0',
+    'fi',
     '[ "$1" = "-B1" ] && [ "$2" = "--output=avail" ] && [ "$3" = "--" ] && [ "$4" = "$FAKE_STAGE_PARENT" ] || { echo "df: unexpected arguments: $*" >&2; exit 2; }',
     '[ "$FAKE_DF" = fail ] && { echo "df: cannot read table of mounted file systems" >&2; exit 1; }',
     'printf "Avail\\n%s\\n" "${FAKE_AVAIL:-4096}"', ''].join('\n'), { mode: 0o755 });
@@ -1094,6 +1106,40 @@ test('the reserve is WAREHOUSE_BACKUP_RESERVE_MB (a whole number of MiB, 2048 by
       assert.match(lastLine(result.stderr), /^Refusing: WAREHOUSE_BACKUP_RESERVE_MB must be a whole number of MiB/, JSON.stringify(bad));
       assert.doesNotMatch(result.calls, / stop |pg_dump/);
     }
+  } finally { f.done(); }
+});
+
+test('under WSL2 the Windows drive that holds the virtual disk must keep 20 GiB free after the backup: refused before anything stops, exactly enough passes; a drive df cannot read warns and the backup goes on; a plain Linux host never asks about the drive', () => {
+  const f = installation('warehouse-backup-preflight-wsl-');
+  try {
+    f.put(OBJECT, 'a'.repeat(MIB));
+    const shim = spaceShims(join(f.scratch, 'shims'));
+    const need = treeBytes(f.live) + Math.floor(treeBytes(f.live) / 10) + 96 * MIB + 256 * MIB;   // no earlier backup, as in the reserve test
+    const GIB20 = 20 * 1024 ** 3;
+    const wslOs = join(f.scratch, 'osrelease-wsl');
+    writeFileSync(wslOs, '5.15.153.1-microsoft-standard-WSL2\n');
+    const driveLog = join(f.scratch, 'drive-df.log');
+    let seq = 0;
+    const attempt = (extra = {}) => f.backup(`warehouse-2026020${++seq}T000000Z`, { FAKE_AVAIL: String(1024 ** 4), FAKE_VHDX_DRIVE: '/mnt/c', WAREHOUSE_VHDX_DRIVE: '/mnt/c', FAKE_DRIVE_DF_LOG: driveLog, ...extra }, { path: shim });
+    // Refused: one byte short of need + 20 GiB on the drive, although the filesystem itself shows a terabyte.
+    const short = attempt({ WAREHOUSE_OSRELEASE_FILE: wslOs, FAKE_DRIVE_AVAIL: String(need + GIB20 - 1) });
+    assert.equal(short.status, 1);
+    assert.match(lastLine(short.stderr), /^Refusing: not enough free space on the Windows drive \/mnt\/c that holds the WSL virtual disk: a backup needs about \d+ MiB .*20 GiB free after it, but only \d+ MiB are free\. Nothing was stopped\. See docs\/OPERATOR_INSTALL\.md/);
+    nothingStopped(short);
+    // Exactly enough passes.
+    ok(attempt({ WAREHOUSE_OSRELEASE_FILE: wslOs, FAKE_DRIVE_AVAIL: String(need + GIB20) }), 'exactly need + 20 GiB');
+    // The drive is the one the operator names.
+    const other = attempt({ WAREHOUSE_OSRELEASE_FILE: wslOs, WAREHOUSE_VHDX_DRIVE: '/mnt/d', FAKE_VHDX_DRIVE: '/mnt/d', FAKE_DRIVE_AVAIL: '1' });
+    assert.equal(other.status, 1);
+    assert.match(lastLine(other.stderr), /Windows drive \/mnt\/d that holds/);
+    // df cannot read the drive: a warning, and the backup is made.
+    const unreadable = attempt({ WAREHOUSE_OSRELEASE_FILE: wslOs, FAKE_DRIVE_DF: 'fail' });
+    ok(unreadable, 'unreadable drive');
+    assert.match(unreadable.stderr, /WARNING: could not read the free space of \/mnt\/c, the Windows drive that holds the WSL virtual disk/);
+    // Not WSL (the fixture of every other test): the drive is never asked, even when it would be full.
+    rmSync(driveLog, { force: true });
+    ok(attempt({ FAKE_DRIVE_AVAIL: '1' }), 'plain Linux host');
+    assert.equal(existsSync(driveLog), false, 'df was not run on the drive');
   } finally { f.done(); }
 });
 

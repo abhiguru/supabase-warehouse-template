@@ -86,6 +86,8 @@ files of the newest verified backup plus the size of its database dump plus 1 Gi
 photos added since and new images come on top), and the monitoring checker raises `restore_space_low` under the same rule every run, and
 repeats it once a day ([MONITORING.md](MONITORING.md)). The photos grow with the facility: look again each year.
 
+On a Windows host the disk to watch is the Windows drive that holds the virtual disk, not `/`: [Watch the Windows drive](#watch-the-windows-drive).
+
 ### Host time zone
 
 Set the host's time zone before installing the monitoring timer. The time of the daily backup (`--daily-at`, default 02:30)
@@ -2592,6 +2594,24 @@ console session signed in at all, a physical re-plug of the drive, a USB run tha
 **Where the data lives.** The distro, with the whole installation, is one virtual disk file (`ext4.vhdx`) under that Windows
 account's profile. Never run `wsl --unregister` for this distro, never delete that Windows account or its profile, and do not
 reinstall Windows without a copy of a backup from outside the host ([Backups off the host](#backups-off-the-host-windows)).
+
+### Watch the Windows drive
+
+Inside Ubuntu, `/` is the filesystem of `ext4.vhdx` and shows its virtual size (about 1 TB), so `df` there looks roomy while the
+Windows drive that holds the file fills up. When that drive is full the file cannot grow and PostgreSQL stops with no earlier sign.
+The drive to watch is the one that holds the distro's `ext4.vhdx`: normally `C:`, which Ubuntu sees as `/mnt/c`.
+
+- **The floor is 20 GiB free on that drive** (and, for the monitoring alert, 10 % of the drive). `npm run doctor` refuses a new installation
+  below it (`--host-preflight`) and warns on a later run; `scripts/backup.sh` refuses a backup that would leave the drive below it, before
+  anything is stopped; the monitoring checker raises `disk_vhdx_drive_low` ([MONITORING.md](MONITORING.md)) and counts the same floor into
+  `restore_space_low`. A drive that cannot be read is a warning only.
+- **If the distro is on another drive** (it was moved with `wsl --export` and `wsl --import`), name that drive's mount point for the
+  monitoring checker and the scripts: `WAREHOUSE_VHDX_DRIVE=/mnt/d`, in the environment of `scripts/backup.sh` and the checker (the
+  default is `/mnt/c`). Find the file with `wsl -l -v` and the registry key `HKCU\Software\Microsoft\Windows\CurrentVersion\Lxss`
+  (`BasePath`).
+- **Make the virtual disk give back space it no longer uses.** The file only grows by itself. Marking it sparse lets Windows reclaim
+  freed blocks: [PS-admin] `wsl --manage <distro> --set-sparse true` (the distro restarts; do it only on a host with no live
+  facility, or follow [Planned work and updates](#planned-work-and-updates)). Not verified on this stack yet.
 
 ### WSL and Ubuntu 24.04 with systemd
 

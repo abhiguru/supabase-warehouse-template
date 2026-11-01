@@ -56,6 +56,7 @@ import { RECORD_FILE, interruptedUpgradeWarning, readUpgradeRecord } from './upg
 import { centralKeyFault, gatewayPortText, letterheadProblem, readEnv, root as checkoutRoot } from './doctor-common.mjs';
 import { LAN_SERVICE, describeAddresses, hostHasAddress, lanOrigin, lanSettings, probeLanKeys, readHostInterfaces } from './lan-common.mjs';
 import { redactServiceLog } from './service-diagnostics.mjs';
+import { MIN_VHDX_DRIVE_FREE_BYTES, MIN_VHDX_DRIVE_FREE_PERCENT, isWsl, vhdxDrive } from './wsl-host.mjs';
 import { usbBackupWarning, usbRotationNote } from './usb-backup-status.mjs';
 import { ageText, sensorCheck, sensorLimitSeconds } from './sensors-check.mjs';
 import { postSlackMessage, sensorTestMessage, testMessage } from './alert-webhook.mjs';
@@ -380,6 +381,8 @@ export function defaultDeps(env = process.env) {
     // The host's IPv4 addresses (the LAN fallback check), replaceable for tests.
     interfaces: () => readHostInterfaces(env),
     usbEtc: env.WAREHOUSE_USB_BACKUP_ETC || '/etc',
+    // Under WSL2 the Windows drive that holds the virtual disk (checkDisks, checkRestoreSpace).
+    vhdxDrive: vhdxDrive(env),
     usbLibexec: env.WAREHOUSE_USB_BACKUP_LIBEXEC || '/usr/local/libexec',
     unitDir: env.WAREHOUSE_WATCH_UNIT_DIR || '/etc/systemd/system',
     nodeVersion: process.version,
@@ -470,12 +473,33 @@ export function checkMemory(ctx) {
   const used = 100 * (1 - m.MemAvailable / m.MemTotal);
   return [result('memory', 'memory_high', !(used > LIMITS.memoryPercent), `Memory usage ${used.toFixed(0)}% (limit ${LIMITS.memoryPercent}%)`)];
 }
+// Under WSL2 "/" is the filesystem inside ext4.vhdx and shows its virtual size (about 1 TB); what limits it is the free space of the
+// Windows drive that holds that file. Null when the host is not WSL or the drive cannot be read (a drive that is not mounted must not
+// stop the other checks, and a host that is not WSL has nothing to say).
+function wslDrive(ctx) {
+  if (!isWsl(ctx.readText, ctx.proc)) return null;
+  const drive = ctx.vhdxDrive ?? vhdxDrive(ctx.env ?? {});
+  try {
+    const s = ctx.statfs(drive);
+    const free = Number(s.bavail) * Number(s.bsize);
+    const percent = 100 * Number(s.bavail) / Number(s.blocks);
+    return Number.isFinite(free) && Number.isFinite(percent) ? { drive, free, percent } : null;
+  } catch { return null; }
+}
+const gibText = bytes => (bytes / 1024 ** 3).toFixed(1);
 const unescapeMount = s => s.replace(/\\([0-7]{3})/g, (_, o) => String.fromCharCode(parseInt(o, 8)));
 export function checkDisks(ctx) {
   const free = path => { const s = ctx.statfs(path); return 100 * Number(s.bavail) / Number(s.blocks); };
   const out = [];
   const root = free('/');
   out.push(result('disk', 'disk_root_low', !(root < LIMITS.diskRootFreePercent), `Disk space on / ${root.toFixed(0)}% free (limit ${LIMITS.diskRootFreePercent}%)`));
+  const vhdx = wslDrive(ctx);
+  if (vhdx) {
+    const low = vhdx.free < MIN_VHDX_DRIVE_FREE_BYTES || vhdx.percent < MIN_VHDX_DRIVE_FREE_PERCENT;
+    out.push(result('disk', 'disk_vhdx_drive_low', !low,
+      `Windows drive ${vhdx.drive}, which holds the WSL virtual disk, has ${gibText(vhdx.free)} GiB free (${vhdx.percent.toFixed(0)}%; limit ${gibText(MIN_VHDX_DRIVE_FREE_BYTES)} GiB and ${MIN_VHDX_DRIVE_FREE_PERCENT}%)`,
+      'The virtual disk grows on this Windows drive and PostgreSQL stops when the drive is full, although "/" still shows free space. Free space on the Windows drive: docs/OPERATOR_INSTALL.md, "Windows host (Ubuntu in WSL2)", "Watch the Windows drive".'));
+  }
   const mounts = String(ctx.readText(join(ctx.proc, 'mounts')) ?? '').split('\n').map(l => l.split(' ')).filter(p => p.length >= 3);
   const seen = new Set(mounts.filter(p => unescapeMount(p[1]) === '/').map(p => p[0]));
   for (const [dev, mp, type, opts = ''] of mounts) {
@@ -954,6 +978,15 @@ export function checkRestoreSpace(ctx) {
   if (!Number.isFinite(free)) throw new Error('could not read the free space of the data directory');
   const need = newest.bytes + newest.dumpBytes + LIMITS.restoreReserveBytes;
   const gib = bytes => (bytes / 1024 ** 3).toFixed(1);
+  // Under WSL2 the restore grows the virtual disk on the Windows drive: that drive must keep its floor after the restore as well.
+  const vhdx = wslDrive(ctx);
+  const driveShort = vhdx !== null && vhdx.free - need < MIN_VHDX_DRIVE_FREE_BYTES;
+  if (free >= need && driveShort) {
+    return [result('restore_space', 'restore_space_low', false,
+      `Windows drive ${vhdx.drive}, which holds the WSL virtual disk, has ${gib(vhdx.free)} GiB free, and an in-place restore of ${newest.name} needs ${gib(need)} GiB, which would leave it below ${gib(MIN_VHDX_DRIVE_FREE_BYTES)} GiB`,
+      'The in-place restore that is the way back from an upgrade grows the virtual disk on this Windows drive, and PostgreSQL stops when the drive is full. Free space on the Windows drive: docs/OPERATOR_INSTALL.md, "Windows host (Ubuntu in WSL2)", "Watch the Windows drive".',
+      { repeatHours: 24 })];
+  }
   return [result('restore_space', 'restore_space_low', free >= need,
     `Free space in data/ is ${gib(free)} GiB, and an in-place restore of ${newest.name} needs ${gib(need)} GiB (its stored files, ${gib(newest.bytes)} GiB, ${newest.dumpBytes ? `its database dump, ${gib(newest.dumpBytes)} GiB, ` : ''}plus 1 GiB)`,
     'The way back from an upgrade is an in-place restore, which copies the stored files in again and replays the database while it keeps the replaced ones; this is a minimum (the photos added since that backup and any new images come on top). Free space (the data/*.pre-restore-* directories of restores you have accepted, backups you no longer need) or add disk: docs/OPERATOR_INSTALL.md, "Disk space".',

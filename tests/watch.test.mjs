@@ -113,6 +113,75 @@ test('memory: failing above 85% used (MemAvailable)', () => {
   } finally { clean(h); }
 });
 
+// ---- the Windows drive that holds the WSL virtual disk (disk_vhdx_drive_low)
+const wslHost = (h, { statfs = { bavail: 0, blocks: 0 } } = {}) => {
+  mkdirSync(join(h.proc, 'sys/kernel'), { recursive: true });
+  writeFileSync(join(h.proc, 'sys/kernel/osrelease'), '5.15.153.1-microsoft-standard-WSL2\n');
+  h.deps.vhdxDrive = '/mnt/c';
+  h.statfsTable['/mnt/c'] = statfs;
+};
+const driveOf = (gib, percent) => ({ bavail: Math.round(gib * 1024 ** 3 / 4096), blocks: Math.round(gib * 1024 ** 3 / 4096 * 100 / percent) });
+
+test('disk_vhdx_drive_low under WSL: fails below 20 GiB or below 10 %, passes at exactly 20 GiB and 10 %, names the drive and the Windows docs', () => {
+  const h = harness();
+  try {
+    wslHost(h);
+    const judge = () => find(W.checkDisks(h.ctx()), 'disk_vhdx_drive_low');
+    h.statfsTable['/mnt/c'] = driveOf(15, 50);
+    let r = judge();
+    assert.equal(r.ok, false, '15 GiB at 50 %');
+    assert.match(r.summary, /Windows drive \/mnt\/c, which holds the WSL virtual disk, has 15\.0 GiB free \(50%/);
+    assert.match(r.detail, /docs\/OPERATOR_INSTALL\.md, "Windows host \(Ubuntu in WSL2\)"/);
+    h.statfsTable['/mnt/c'] = driveOf(25, 5);
+    assert.equal(judge().ok, false, '25 GiB at 5 %');
+    h.statfsTable['/mnt/c'] = driveOf(25, 50);
+    assert.equal(judge().ok, true, '25 GiB at 50 %');
+    h.statfsTable['/mnt/c'] = { bavail: 20 * 1024 ** 3 / 4096, blocks: 20 * 1024 ** 3 / 4096 * 5 };   // exactly 20 GiB, 20 %
+    assert.equal(judge().ok, true, 'exactly 20 GiB is enough');
+    h.statfsTable['/mnt/c'] = { bavail: 20 * 1024 ** 3 / 4096 - 1, blocks: 20 * 1024 ** 3 / 4096 * 5 };
+    assert.equal(judge().ok, false, 'one block under 20 GiB');
+    h.statfsTable['/mnt/c'] = driveOf(100, 10);
+    assert.equal(judge().ok, true, 'exactly 10 % is enough');
+    h.statfsTable['/mnt/c'] = { bavail: 100 * 1024 ** 3 / 4096 - 1, blocks: 100 * 1024 ** 3 / 4096 * 10 };
+    assert.equal(judge().ok, false, 'just under 10 % of a large drive');
+    // The check is separate from the others: the result of "/" is still there.
+    assert.ok(find(W.checkDisks(h.ctx()), 'disk_root_low'));
+  } finally { clean(h); }
+});
+
+test('disk_vhdx_drive_low: no result when the host is not WSL, and none when the drive cannot be read', () => {
+  const h = harness();
+  try {
+    h.statfsTable['/mnt/c'] = driveOf(1, 1);
+    h.deps.vhdxDrive = '/mnt/c';
+    assert.equal(find(W.checkDisks(h.ctx()), 'disk_vhdx_drive_low'), undefined, 'no osrelease file: not WSL');
+    mkdirSync(join(h.proc, 'sys/kernel'), { recursive: true });
+    writeFileSync(join(h.proc, 'sys/kernel/osrelease'), '6.8.0-45-generic\n');
+    assert.equal(find(W.checkDisks(h.ctx()), 'disk_vhdx_drive_low'), undefined, 'an ordinary kernel');
+    writeFileSync(join(h.proc, 'sys/kernel/osrelease'), '5.15.153.1-Microsoft-standard-WSL2\n');
+    assert.equal(find(W.checkDisks(h.ctx()), 'disk_vhdx_drive_low').ok, false, 'WSL, any letter case');
+    delete h.statfsTable['/mnt/c'];   // statfs throws
+    const r = W.checkDisks(h.ctx());
+    assert.equal(find(r, 'disk_vhdx_drive_low'), undefined);
+    assert.equal(find(r, 'disk_root_low').ok, true, 'the other checks still run');
+  } finally { clean(h); }
+});
+
+test('disk_vhdx_drive_low: the drive is the one deps name (WAREHOUSE_VHDX_DRIVE)', () => {
+  const h = harness();
+  try {
+    wslHost(h);
+    h.deps.vhdxDrive = '/mnt/d';
+    h.statfsTable['/mnt/d'] = driveOf(5, 50);
+    h.statfsTable['/mnt/c'] = driveOf(500, 50);
+    const r = find(W.checkDisks(h.ctx()), 'disk_vhdx_drive_low');
+    assert.equal(r.ok, false);
+    assert.match(r.summary, /Windows drive \/mnt\/d/);
+    assert.equal(W.defaultDeps({ WAREHOUSE_STATE_DIR: '/s', WAREHOUSE_VHDX_DRIVE: '/mnt/e' }).vhdxDrive, '/mnt/e');
+    assert.equal(W.defaultDeps({ WAREHOUSE_STATE_DIR: '/s' }).vhdxDrive, '/mnt/c');
+  } finally { clean(h); }
+});
+
 test('disk: / under 20% free fails; other ext4/xfs/btrfs mounts under 10%; bind mounts and other types are ignored', () => {
   const h = harness();
   try {
@@ -3747,6 +3816,32 @@ test('restore_space_low: free space below the newest verified backup\'s stored f
     assert.equal(W.checkRestoreSpace(h.ctx())[0].ok, true, 'exactly enough is enough, as in scripts/restore.sh');
     dataSpace(h, 100 * GIB);
     assert.equal(W.checkRestoreSpace(h.ctx())[0].ok, true);
+  } finally { clean(h); }
+});
+
+test('restore_space_low under WSL also fails when the restore would leave the Windows drive below 20 GiB; data/ itself roomy', () => {
+  const h = harness();
+  try {
+    addVerified(h, 'warehouse-20261018T020000Z', { bytes: 5 * GIB });
+    const need = 6 * GIB;
+    dataSpace(h, 500 * GIB);
+    // Not WSL: the drive is not looked at.
+    h.statfsTable['/mnt/c'] = driveOf(1, 1);
+    h.deps.vhdxDrive = '/mnt/c';
+    assert.equal(W.checkRestoreSpace(h.ctx())[0].ok, true);
+    wslHost(h);
+    h.statfsTable['/mnt/c'] = { bavail: (need + 20 * GIB - 4096) / 4096, blocks: 1e9 };
+    let r = W.checkRestoreSpace(h.ctx());
+    assert.deepEqual([r[0].id, r[0].ok, r[0].repeatHours], ['restore_space_low', false, 24]);
+    assert.match(r[0].summary, /Windows drive \/mnt\/c, which holds the WSL virtual disk, has 26\.0 GiB free, and an in-place restore of warehouse-20261018T020000Z needs 6\.0 GiB, which would leave it below 20\.0 GiB/);
+    assert.match(r[0].detail, /docs\/OPERATOR_INSTALL\.md, "Windows host \(Ubuntu in WSL2\)"/);
+    h.statfsTable['/mnt/c'] = { bavail: (need + 20 * GIB) / 4096, blocks: 1e9 };
+    assert.equal(W.checkRestoreSpace(h.ctx())[0].ok, true, 'exactly 20 GiB left is enough');
+    // An unreadable drive adds nothing: data/ decides alone.
+    delete h.statfsTable['/mnt/c'];
+    assert.equal(W.checkRestoreSpace(h.ctx())[0].ok, true);
+    dataSpace(h, need - 4096);
+    assert.match(W.checkRestoreSpace(h.ctx())[0].summary, /^Free space in data\/ is/, 'data/ too small: its own message');
   } finally { clean(h); }
 });
 

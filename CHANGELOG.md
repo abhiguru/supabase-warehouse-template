@@ -22,6 +22,17 @@ file used to carry for earlier installations are in git: `git show b45ae0b:CHANG
   `tests/break_glass_workers.sql` (new), `tests/break_glass.sql`, `tests/break-glass-admin.test.mjs`, `tests/operator-otp-handler.test.mjs`.
   Operator procedure: [CENTRAL_LOGIN.md](docs/CENTRAL_LOGIN.md), "When the association's SMS is down".
 
+### Added (Windows hosts)
+
+- **WSL2: the Windows drive that holds the virtual disk is watched (`disk_vhdx_drive_low`).** Inside Ubuntu `/` shows the virtual size of
+  `ext4.vhdx` (about 1 TB), so a filling `C:` stopped PostgreSQL with no warning. On a WSL2 host (kernel release contains "microsoft") the
+  monitoring checker now alerts when the drive that holds the file (`/mnt/c`, or `WAREHOUSE_VHDX_DRIVE`) has under 20 GiB or under 10 % free,
+  and `restore_space_low` also fails when an in-place restore would leave it under 20 GiB; `npm run doctor` refuses a new installation under 20 GiB
+  (`--host-preflight`) and warns otherwise; `scripts/backup.sh` refuses a backup that would leave the drive under 20 GiB, before anything stops
+  (a drive `df` cannot read is a warning). Hosts that are not WSL are unchanged. Operator procedure: [OPERATOR_INSTALL.md](docs/OPERATOR_INSTALL.md),
+  "Watch the Windows drive". New file `scripts/wsl-host.mjs`. Tests: `tests/wsl-host.test.mjs`, `tests/watch.test.mjs`, `tests/doctor.test.mjs`,
+  `tests/backup-storage.test.mjs`.
+
 ### Changed
 
 - **Off-host copy alert (`offhost_copy_missing`, replaces `usb_backup`).** An installation whose backups and backup key sit only on the host's one disk (USB backup never

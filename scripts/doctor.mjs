@@ -10,6 +10,7 @@ import { canonicalOrigin } from './configure.mjs';
 import { validateDbValues } from './db-roles.mjs';
 import { isFixtureAddress, isProviderPlaceholder } from './provider-placeholder.mjs';
 import { isMain } from './is-main.mjs';
+import { isWsl, vhdxDrive, wslDriveVerdict } from './wsl-host.mjs';
 import { usbBackupWarning } from './usb-backup-status.mjs';
 import { interruptedUpgradeWarning } from './upgrade-record.mjs';
 import { storedSensorWebhook, storedWebhook } from './alert-webhook.mjs';
@@ -144,6 +145,19 @@ export function freeSpaceVerdict(freeBytes, { newInstall = false } = {}) {
     return { warning: `Only ${gib} GiB is free on the state's disk (less than 10 GiB): the next backup, image build or upgrade may not fit. Free space or add disk soon (docs/TROUBLESHOOTING.md, "Disk full").` };
   }
   return {};
+}
+
+// The Windows drive that holds the WSL virtual disk: an error for a new installation below 20 GiB, a warning for a running one; a drive
+// that cannot be read is a warning (the distro may be on another drive: WAREHOUSE_VHDX_DRIVE). Nothing when the host is not WSL.
+export function wslDriveCheck({ hostPreflight = false, readText = path => readFileSync(path, 'utf8'), statfs = statfsSync, env = process.env } = {}) {
+  if (!isWsl(readText)) return {};
+  const drive = vhdxDrive(env);
+  let free = NaN;
+  try { const d = statfs(drive); free = Number(d.bavail) * Number(d.bsize); } catch { /* the warning below says it */ }
+  if (!Number.isFinite(free)) {
+    return { warning: `could not read the free space of ${drive}, the Windows drive that holds the WSL virtual disk (set WAREHOUSE_VHDX_DRIVE to its mount point if the distro is on another drive).` };
+  }
+  return wslDriveVerdict(free, { newInstall: hostPreflight, drive });
 }
 
 export const listening = port => new Promise(resolve => {
@@ -292,6 +306,10 @@ export async function doctor({ hostPreflight = false, preflight = false, local =
   const space = freeSpaceVerdict(Number(fs.bavail) * Number(fs.bsize), { newInstall: hostPreflight });
   if (space.error) throw new Error(space.error);
   if (space.warning) console.error(`Warning: ${space.warning}`);
+  // WSL2: "/" shows the virtual size of the disk, so the free space that matters is that of the Windows drive holding ext4.vhdx.
+  const wsl = wslDriveCheck({ hostPreflight });
+  if (wsl.error) throw new Error(wsl.error);
+  if (wsl.warning) console.error(`Warning: ${wsl.warning}`);
   if (hostPreflight) return 'Host prerequisites and state filesystem preflight passed.';
   const envPath = resolve(state, 'config/compose.env');
   const env = readEnv(envPath);

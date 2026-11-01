@@ -15,7 +15,7 @@ test('operator configuration requires canonical HTTPS origins and supported Node
 import { mkdtempSync, mkdirSync, writeFileSync, chmodSync, rmSync, utimesSync } from 'node:fs';
 import { tmpdir, userInfo } from 'node:os';
 import { join } from 'node:path';
-import { checkStatePlacement, checkerWarnings, CHECKER_MAX_AGE_MS, NO_WEBHOOK_WARNING, NO_SENSOR_WEBHOOK_WARNING, INVALID_SENSOR_WEBHOOK_WARNING, SAME_SENSOR_WEBHOOK_WARNING, stoppedWarning, timerUnit, dailyTimerUnit, freeSpaceVerdict } from '../scripts/doctor.mjs';
+import { checkStatePlacement, checkerWarnings, CHECKER_MAX_AGE_MS, NO_WEBHOOK_WARNING, NO_SENSOR_WEBHOOK_WARNING, INVALID_SENSOR_WEBHOOK_WARNING, SAME_SENSOR_WEBHOOK_WARNING, stoppedWarning, timerUnit, dailyTimerUnit, freeSpaceVerdict, wslDriveCheck } from '../scripts/doctor.mjs';
 
 test('a fresh install refuses a state whose parent is not writable, naming the fix', { skip: process.getuid() === 0 && 'root can write anywhere' }, () => {
   const base = mkdtempSync(join(tmpdir(), 'state-parent-'));
@@ -501,6 +501,32 @@ test('free space: a new installation needs 10 GiB; a start only warns below 10 G
   // The scripts use the right mode: only setup's host preflight is strict.
   const doctor = readFileSync(new URL('../scripts/doctor.mjs', import.meta.url), 'utf8');
   assert.match(doctor, /freeSpaceVerdict\(Number\(fs\.bavail\) \* Number\(fs\.bsize\), \{ newInstall: hostPreflight \}\)/);
+});
+
+test('WSL drive check: nothing off WSL; at exactly 20 GiB passes; below it an error for a new installation and a warning for a start; an unreadable drive warns', () => {
+  const GiB = 1024 ** 3;
+  const wsl = () => '5.15.153.1-microsoft-standard-WSL2\n';
+  const drive = bytes => path => { assert.equal(path, '/mnt/c'); return { bavail: bytes / 4096, bsize: 4096 }; };
+  assert.deepEqual(wslDriveCheck({ hostPreflight: true, readText: () => '6.8.0-generic\n', statfs: () => { throw new Error('not asked'); } }), {});
+  assert.deepEqual(wslDriveCheck({ hostPreflight: true, readText: () => { throw new Error('ENOENT'); }, statfs: () => { throw new Error('not asked'); } }), {});
+  for (const hostPreflight of [true, false]) assert.deepEqual(wslDriveCheck({ hostPreflight, readText: wsl, statfs: drive(20 * GiB), env: {} }), {}, `exactly 20 GiB, preflight ${hostPreflight}`);
+  const strict = wslDriveCheck({ hostPreflight: true, readText: wsl, statfs: drive(20 * GiB - 4096), env: {} });
+  assert.deepEqual(Object.keys(strict), ['error']);
+  assert.match(strict.error, /At least 20 GiB free space is required on the Windows drive that holds the WSL virtual disk \(\/mnt\/c\); 20\.0 GiB is free[^]*"Windows host \(Ubuntu in WSL2\)"/);
+  const running = wslDriveCheck({ hostPreflight: false, readText: wsl, statfs: drive(12.5 * GiB), env: {} });
+  assert.deepEqual(Object.keys(running), ['warning']);
+  assert.match(running.warning, /Only 12\.5 GiB is free on the Windows drive that holds the WSL virtual disk \(\/mnt\/c\) \(less than 20 GiB\)/);
+  assert.equal(wslDriveCheck({ readText: wsl, statfs: () => ({ bavail: 0, bsize: 4096 }), env: {} }).error, undefined, 'a start never refuses on this drive');
+  const named = wslDriveCheck({ hostPreflight: true, readText: wsl, statfs: path => { assert.equal(path, '/mnt/d'); return { bavail: 1, bsize: 4096 }; }, env: { WAREHOUSE_VHDX_DRIVE: '/mnt/d' } });
+  assert.match(named.error, /\(\/mnt\/d\)/);
+  for (const hostPreflight of [true, false]) {
+    const unreadable = wslDriveCheck({ hostPreflight, readText: wsl, statfs: () => { throw new Error('ENOENT'); }, env: {} });
+    assert.deepEqual(Object.keys(unreadable), ['warning'], 'an unreadable drive never refuses');
+    assert.match(unreadable.warning, /could not read the free space of \/mnt\/c[^]*WAREHOUSE_VHDX_DRIVE/);
+  }
+  // doctor() wires it in after the state-disk check, with the mode of the run.
+  const doctorSource = readFileSync(new URL('../scripts/doctor.mjs', import.meta.url), 'utf8');
+  assert.match(doctorSource, /wslDriveCheck\(\{ hostPreflight \}\)/);
 });
 
 // ---- the LAN fallback checks (scripts/lan.mjs, lanChecks), as doctor reports them ---------------------------------------------------
