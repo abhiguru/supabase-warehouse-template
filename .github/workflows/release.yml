@@ -42,6 +42,13 @@ jobs:
         with:
           node-version: '22'
           cache: npm
+      - name: End-to-end CI passed on this commit (operator-install and operator-upgrade)
+        # Branch protection requires neither job (long, runner-bound), so a tag could land on a commit whose installation or upgrade run failed
+        # or never ran. This asks the GitHub API for the check runs of the tagged commit and fails when either is not a completed success.
+        # It never waits (this job may share one runner with those jobs): tag after CI is green (docs/RELEASE_CHECKLIST.md, "Tag validation").
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: node scripts/check-release-ci.mjs
       - run: npm ci
       - run: npm test
       - name: Dependency advisories this release adds (root, docker/storage, docker/pdf-renderer)

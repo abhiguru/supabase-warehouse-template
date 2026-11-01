@@ -112,6 +112,14 @@ behind Stable is a warning on the run and never blocks the tag; the weekly issue
 generated operator state. Before the tests it checks that the tag is signed by a key the previous release lists ([above](#signing-the-tag)). Then its second job, `publish-images`, builds, scans and publishes the images ([below](#image-publication)).
 Wait for both to pass before the next sections.
 
+**Before pushing the tag, wait for green `operator-install` and `operator-upgrade` on the commit.** Neither is a required check on `main`
+(they take up to an hour and run on one machine), so nothing else stops a tag on a commit whose installation or upgrade run failed. The
+first step of the `release` job after Node is set up, `scripts/check-release-ci.mjs`, asks the GitHub API for the check runs of the tagged
+commit and fails, naming the missing or failed one, unless the newest run of each is a completed success. It never waits: if CI is still
+running or failed, let it finish or re-run the failed job (Actions, CI, Run workflow on the branch also attaches runs to a commit CI did not
+run on), then re-run the release workflow. A final tag on the commit of its release candidate asks about that same commit, so the same runs
+count. The workflow token has only `contents: read`: the script reads the public endpoint anonymously when the token is refused.
+
 ## Image publication
 
 The `publish-images` job runs after the checks above, with `packages: write` and `contents: write` (no other job has either). It builds
