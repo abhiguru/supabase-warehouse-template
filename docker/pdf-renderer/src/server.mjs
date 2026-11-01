@@ -182,7 +182,9 @@ export function createServer({ supervisor, config, log }) {
     res.once('close', () => { if (!res.writableEnded) clientGone.abort('client'); });
 
     // Admit before reading. The body stays unread on the socket until a slot is free.
-    const admitted = supervisor.admit(declaredBytes, { id, arrivedAt, clientSignal: clientGone.signal });
+    const admitted = supervisor.admit(declaredBytes, { id, arrivedAt, clientSignal: clientGone.signal,
+      // A caller that knows its document is long (many pages, much browser memory) asks to run alone, as a large body does.
+      solo: String(req.headers['x-render-solo'] || '').toLowerCase() === 'true' });
     if (admitted.error) return refuse(admitted.error.status, admitted.error.message, declaredBytes || 0);
     const entry = admitted.entry;
 
