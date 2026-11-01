@@ -15,6 +15,10 @@ jobs:
   # images job removes what it built and leaves the registry (docs/DEVELOPER_HANDOFF.md, "A self-hosted runner for `operator-install`").
   release:
     runs-on: ${{ fromJSON(vars.CI_RUNNER || '"ubuntu-latest"') }}
+    # checks: read lets the CI gate step read the check runs of the tagged commit with the run's own token.
+    permissions:
+      contents: read
+      checks: read
     steps:
       - name: Fresh Docker config for this run
         run: |
@@ -31,10 +35,25 @@ jobs:
       - name: Release contents (CHANGELOG section, upgrade.sh, setup.sh)
         # What operators need to move to this tag with upgrade.sh (docs/RELEASE_CHECKLIST.md, "Changelog before the tag").
         run: bash scripts/check-release-contents.sh
+      - name: Release tag is signed by a key the previous release trusts
+        # upgrade.sh refuses a tag that is not signed by a key in the .github/allowed_signers of the checkout it runs from; this is the same
+        # check at the other end, against the previous release's list (docs/RELEASE_CHECKLIST.md, "Signing the tag"). Nothing is checked
+        # until a release lists a key. The tag is fetched as the tag object: a tag-triggered checkout can leave a plain reference.
+        run: |
+          git fetch --force --no-tags origin "refs/tags/$GITHUB_REF_NAME:refs/tags/$GITHUB_REF_NAME"
+          bash scripts/check-release-signature.sh "$GITHUB_REF_NAME"
       - uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0
         with:
           node-version: '22'
           cache: npm
+      - name: End-to-end CI passed on this commit (operator-install and operator-upgrade)
+        # Branch protection requires neither job (long, runner-bound), so a tag could land on a commit whose installation or upgrade run failed
+        # or never ran. This asks the GitHub API for the check runs of the tagged commit and fails when either is not a completed success.
+        # It also refuses a run whose commit is not the commit the tag names. It never waits (this job may share one runner with those jobs):
+        # tag after CI is green (docs/RELEASE_CHECKLIST.md, "Tag validation").
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: node scripts/check-release-ci.mjs
       - run: npm ci
       - run: npm test
       - name: Dependency advisories this release adds (root, docker/storage, docker/pdf-renderer)
@@ -95,6 +114,12 @@ jobs:
   # gets a fresh Docker config and Trivy cache in its temp folder, which does not protect against a compromise of the runner account
   # (the docker group is root-equivalent) or of the VM. The owner accepted that risk on 2026-10-30 (docs/DEVELOPER_HANDOFF.md,
   # "A self-hosted runner for `operator-install`"). To build on GitHub-hosted runners instead, delete the CI_RUNNER variable.
+      - name: The oldest supported apps still work with this release (app-compat.json)
+        # MOBILE_MIN_REF in ci.yml lists the app commits that carry minimumClientVersion. A tag fails when one of them would lose a function,
+        # table or edge function since the previous final release, or when the minimum fell or does not match a listed app, whatever CI said
+        # earlier (CONTRIBUTING.md, "Mobile companion pin"). Last in the job, so the apps' files are not in the tree the other steps read.
+        run: bash scripts/check-min-apps.sh "$RUNNER_TEMP/min-apps" -- --previous auto --require-previous
+
   publish-images:
     needs: release
     # A fork has no right to this registry namespace; its tags are still validated by the job above.

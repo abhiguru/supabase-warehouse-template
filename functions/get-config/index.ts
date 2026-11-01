@@ -45,5 +45,5 @@ Deno.serve(async (req: Request) => {
     }, timestamp: new Date().toISOString() }), {
       headers: { ...securityHeaders, 'Content-Type': 'application/json', 'Cache-Control': 'no-store' },
     });
-  } catch (error) { return createAuthErrorResponse(error, securityHeaders); }
+  } catch (error) { return createAuthErrorResponse(error, securityHeaders, req); }
 });

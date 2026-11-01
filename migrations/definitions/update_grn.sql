@@ -76,6 +76,7 @@ DECLARE
     v_order_before jsonb;
     v_order_lots uuid[];
     v_order_effects jsonb;
+    v_registration_sent boolean := false;
 BEGIN
   PERFORM warehouse_security.authorize_rpc('update_grn',jsonb_build_object('p_grn_id',p_grn_id,'p_customer_id',p_customer_id));
   -- Migration 90: rates typed on the GRN sheet are an administrator's or a supervisor's.
@@ -98,8 +99,10 @@ BEGIN
     END LOOP;
   END IF;
     -- Migration 121 (D13): the registration fits the column (20 characters), as the item name and packaging fit theirs.
-    -- Migration 130: surrounding white space (spaces, tabs, line breaks, non-breaking spaces) is not stored, a blank one is NULL; the length is checked on the trimmed value.
-    p_registration := NULLIF(regexp_replace(p_registration, '^[\s ]+|[\s ]+$', '', 'g'), '');
+    -- Migration 130: surrounding white space (spaces, tabs, line breaks, non-breaking spaces) is not stored, runs of white space inside collapse to one space, a blank one is NULL; the length is checked on the trimmed value.
+    -- A blank that is sent clears the vehicle; an omitted one (NULL) keeps it.
+    v_registration_sent := p_registration IS NOT NULL;
+    p_registration := NULLIF(regexp_replace(regexp_replace(p_registration, '^[\s\u00a0]+|[\s\u00a0]+$', '', 'g'), '[\s\u00a0]+', ' ', 'g'), '');
     IF p_registration IS NOT NULL AND char_length(p_registration) > 20 THEN
         RETURN warehouse_security.grn_rate_failure('registration_too_long',
           'Registration can have at most 20 characters', jsonb_build_object('limit', 20));
@@ -240,12 +243,12 @@ BEGIN
         ) THEN
             PERFORM 1 FROM goodsreceived WHERE id = p_grn_id FOR UPDATE;
 
-            IF EXISTS (SELECT 1 FROM invoice WHERE gr_id = p_grn_id AND deleted_at IS NULL)
+            IF EXISTS (SELECT 1 FROM invoice WHERE gr_id = p_grn_id AND deleted_at IS NULL AND cancelled_at IS NULL)
                OR EXISTS (
                    SELECT 1 FROM invoice_trl it
                    JOIN dispatch_trl dt ON dt.id = it.disp_trl_id
                    JOIN invoice inv ON inv.id = it.invoice_id
-                   WHERE dt.gr_id = p_grn_id AND inv.deleted_at IS NULL
+                   WHERE dt.gr_id = p_grn_id AND inv.deleted_at IS NULL AND inv.cancelled_at IS NULL
                ) THEN
                 RAISE EXCEPTION 'Cannot change the pricing mode of a GRN that has invoices: delete invoices first, then change the pricing mode and invoice again';
             END IF;
@@ -275,10 +278,10 @@ BEGIN
         END IF;
 
         -- ---- Migration 121 refusals. Each answers before the first write; nothing here changes a row. ----
-        -- An invoiced GRN is one with a live invoice, or whose invoiced flag is set.
+        -- An invoiced GRN is one with a live invoice (not deleted, not cancelled: migration 134), or whose invoiced flag is set.
         SELECT i.inv_no, i.inv_fin_year INTO v_inv_no, v_inv_year
         FROM invoice i
-        WHERE i.gr_id = p_grn_id AND i.deleted_at IS NULL
+        WHERE i.gr_id = p_grn_id AND i.deleted_at IS NULL AND i.cancelled_at IS NULL
         ORDER BY i.inv_fin_year, i.inv_no, i.id
         LIMIT 1;
         v_is_invoiced := v_inv_no IS NOT NULL OR v_stored_invoiced;
@@ -353,7 +356,7 @@ BEGIN
                 SELECT i.inv_no, i.inv_fin_year INTO v_inv_no2, v_inv_year2
                 FROM invoice_trl it
                 JOIN dispatch_trl dt ON dt.id = it.disp_trl_id
-                JOIN invoice i ON i.id = it.invoice_id AND i.deleted_at IS NULL
+                JOIN invoice i ON i.id = it.invoice_id AND i.deleted_at IS NULL AND i.cancelled_at IS NULL
                 WHERE dt.gr_trl_id = v_chk.line_id
                 ORDER BY i.inv_fin_year, i.inv_no, i.id
                 LIMIT 1;
@@ -439,7 +442,7 @@ BEGIN
             sender_name = COALESCE(p_sender_name, sender_name),
             supervisor_id = COALESCE(p_supervisor_id, supervisor_id),
             supervisor_name = COALESCE(p_supervisor_name, supervisor_name),
-            registration = COALESCE(p_registration, registration),
+            registration = CASE WHEN v_registration_sent THEN p_registration ELSE registration END,
             note = COALESCE(p_note, note),
             leon = COALESCE(p_leon, leon),
             pricing_mode = COALESCE(p_pricing_mode, pricing_mode),

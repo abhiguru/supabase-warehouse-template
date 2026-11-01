@@ -73,6 +73,9 @@ INSERT INTO ra_rpc(name,staff,customer) VALUES
  -- every signed-in account
  ('get_items',true,'any'),('get_item',true,'any'),('search_items_autocomplete',true,'any'),
  ('get_orders_list',true,'any'),('delete_user_account',true,'any'),
+ -- migration 140: every account may sign out one of its own devices; the body also lets an administrator or a supervisor sign out anyone's
+ -- (tests/session_devices_140.sql)
+ ('revoke_session',true,'any'),
  -- a customer's own documents, carts and reports; staff for every customer
  ('get_grn_details',true,'own'),('get_grn_item_dispatches',true,'own'),('get_grn_item_rates',true,'own'),('get_dispatch_details',true,'own'),
  ('get_invoice_data',true,'own'),('get_invoice_detail',true,'own'),('get_invoice_items_detailed',true,'own'),
@@ -126,17 +129,19 @@ INSERT INTO ra_rpc(name,staff,customer) VALUES
  ('replace_item_rates',false,'no'),('undo_rate_change',false,'no'),
  -- migration 85: the standard rate (staff refused by the guard since migration 90)
  ('get_standard_rate',false,'no'),('set_standard_rate',false,'no'),
- ('get_sensor_polling_data',true,'no'),('get_sensor_history',true,'no'),
+ ('get_sensor_polling_data',true,'no'),('get_sensor_history',true,'no'),('get_sensor_hourly',true,'no'),
  -- migration 74: one sensor
  ('get_sensor_device',true,'no'),('get_print_jobs',true,'no'),('cancel_print_job',true,'no'),
  ('delete_grn_image',true,'no'),('delete_dispatch_image',true,'no'),
  -- administrators and supervisors only
  ('update_user_role',false,'no'),('update_user_status',false,'no'),
+ -- migration 140: a person's signed-in devices; the body refuses a supervisor for an administrator's
+ ('list_user_sessions',false,'no'),
  ('assign_customer_to_user',false,'no'),('remove_customer_assignment',false,'no'),
  ('get_users_list',false,'no'),('get_user_details',false,'no'),('get_operations_dashboard',false,'no'),
  ('create_customer',false,'no'),('update_customer',false,'no'),
  ('create_item',false,'no'),('update_item',false,'no'),('delete_item_safe',false,'no'),
- ('delete_grn_safe',false,'no'),('delete_dispatch_with_order_cleanup',false,'no'),('delete_invoice',false,'no'),
+ ('delete_grn_safe',false,'no'),('delete_dispatch_with_order_cleanup',false,'no'),('delete_invoice',false,'no'),('cancel_invoice',false,'no'),
  -- the price history of migration 48: administrators and supervisors only
  ('get_item_price_history',false,'no'),('get_item_usage',false,'no'),
  -- migration 49: administrators only; the guard refuses a supervisor as well
@@ -463,6 +468,7 @@ FROM (VALUES ('SELECT public.get_all_stock_summary()'),
   ('SELECT public.get_item_wise_stock_list()'),
   ('SELECT public.get_item_storage_prices()'),
   ('SELECT public.get_sensor_polling_data()'),
+  ('SELECT public.get_sensor_hourly(gen_random_uuid(), now() - interval ''1 day'', now())'),
   ('SELECT public.get_operations_dashboard(CURRENT_DATE-30,CURRENT_DATE)'),
   ('SELECT public.get_users_list()'),
   ('SELECT public.get_supervisors()')) s(statement);

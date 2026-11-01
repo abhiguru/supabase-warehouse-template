@@ -557,10 +557,10 @@ SELECT pg_temp.zc_assert(pg_temp.zc_raises('UPDATE public.invoice_zero_charge_hi
 SELECT pg_temp.zc_assert(pg_temp.zc_raises('DELETE FROM public.invoice_zero_charge_history','permission denied%'),'the administrator cannot delete from it');
 SELECT pg_temp.zc_assert(pg_temp.zc_raises(format('INSERT INTO public.invoice_zero_charge_history(invoice_id,old_lines,new_lines) VALUES (%L,''{}'',''{}'')',:'invoice_a'),
  'permission denied%'),'the administrator cannot add to it by hand');
--- Deleting the invoice keeps its history.
-SELECT pg_temp.zc_assert(public.delete_invoice(:'invoice_a'::uuid)->>'success'='true','administrator deletes the ZCA invoice');
+-- Cancelling the invoice (migration 134: delete_invoice refuses) keeps its history.
+SELECT pg_temp.zc_assert(public.cancel_invoice(:'invoice_a'::uuid,'Zero charge test cleanup',NULL)->>'success'='true','administrator cancels the ZCA invoice');
 RESET ROLE;
-SELECT pg_temp.zc_assert(jsonb_array_length(pg_temp.zc_history(:'invoice_a'::uuid))=5,'the deleted invoice''s zero-charge history is kept');
+SELECT pg_temp.zc_assert(jsonb_array_length(pg_temp.zc_history(:'invoice_a'::uuid))=5,'the cancelled invoice''s zero-charge history is kept');
 SET LOCAL ROLE anon;
 SELECT pg_temp.zc_assert(pg_temp.zc_raises('SELECT count(*) FROM public.invoice_zero_charge_history','permission denied%'),'no anonymous access');
 RESET ROLE;

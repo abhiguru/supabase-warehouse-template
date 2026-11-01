@@ -29,11 +29,31 @@ test('the mobile companion is pinned once, by full commit, and the contract job 
   assert.equal(pins.length, 1, 'MOBILE_REF is declared exactly once');
   // A branch, a tag or a short hash can come to mean other code; 40 hex digits cannot.
   assert.match(pins[0], /^  MOBILE_REF: [0-9a-f]{40}$/, `MOBILE_REF must be a full commit SHA: ${pins[0].trim()}`);
-  // Every checkout of the app takes its ref from the pin, never from a name written in the step.
+  // MOBILE_MIN_REF: the app commits that carry app-compat.json's minimumClientVersion (every build handed out with it), a space-separated
+  // list of full SHAs, declared once; scripts/check-min-apps.sh reads it for both workflows.
+  const minPins = ci.split('\n').filter(line => /^\s*MOBILE_MIN_REF\s*:/.test(line));
+  assert.equal(minPins.length, 1, 'MOBILE_MIN_REF is declared exactly once');
+  assert.match(minPins[0], /^  MOBILE_MIN_REF: [0-9a-f]{40}(?: [0-9a-f]{40})*$/, `MOBILE_MIN_REF must be full commit SHAs: ${minPins[0].trim()}`);
+  // Every checkout of the app by a workflow step takes its ref from a pin, never from a name written in the step; the pin is found by the path.
   const checkouts = ci.split(/\n\s*- uses: actions\/checkout@/).slice(1).map(step => step.split(/\n\s*- /)[0]);
   const mobile = checkouts.filter(step => /repository: abhiguru\/rn-warehouse-template/.test(step));
-  assert.ok(mobile.length >= 1, 'the contract job checks out the app');
-  for (const step of mobile) assert.match(step, /\n\s*ref: \$\{\{ env\.MOBILE_REF \}\}\n/, 'the app is checked out at MOBILE_REF');
+  const pinFor = { mobile: 'MOBILE_REF' };
+  const seen = new Set();
+  for (const step of mobile) {
+    const path = /\n\s*path: ([a-z-]+)\n/.exec(step)?.[1];
+    assert.ok(pinFor[path], `the app checkout has a known path: ${path}`);
+    assert.match(step, new RegExp(`\\n\\s*ref: \\$\\{\\{ env\\.${pinFor[path]} \\}\\}\\n`), `the app at path ${path} is checked out at ${pinFor[path]}`);
+    seen.add(path);
+  }
+  assert.deepEqual([...seen], ['mobile'], 'the contract job checks out the app at the current pin');
+  // The oldest supported builds go through one script, in the contract job and in a tag's release job.
+  const contract = ci.slice(ci.indexOf('\n  contract:\n') + 1).split(/\n  [a-z-]+:\n/)[0];
+  assert.match(contract, /\n {10}fetch-depth: 0\n/, 'the backend checkout has its tags');
+  assert.match(contract, /- run: bash scripts\/check-min-apps\.sh "\$RUNNER_TEMP\/min-apps" --callers-test -- --previous auto\n {8}working-directory: backend\n/);
+  const release = readFileSync(new URL('../.github/workflows/release.yml', import.meta.url), 'utf8');
+  const releaseJob = release.slice(release.indexOf('\n  release:\n'), release.indexOf('\n  publish-images:\n'));
+  assert.ok(releaseJob.length > 100 && !releaseJob.includes('publish-images'), 'the release job section is found');
+  assert.match(releaseJob, /\n {8}run: bash scripts\/check-min-apps\.sh "\$RUNNER_TEMP\/min-apps" -- --previous auto --require-previous\n/);
   // The release step that moves the pin and runs the live comparison stays documented.
   const checklist = readFileSync(new URL('../docs/RELEASE_CHECKLIST.md', import.meta.url), 'utf8');
   assert.match(checklist, /## Mobile contract before a release/);
@@ -177,6 +197,79 @@ test('operator-upgrade installs the previous release, moves it to the commit wit
   assert.match(picker, /kind=merge-base/);
 });
 
+test('operator-upgrade drills the way back that upgrade.sh printed: a fault migration that fails only on the facility database, the printed lines run as printed, the facility the starting point again', async () => {
+  const ci = readFileSync(new URL('../.github/workflows/ci.yml', import.meta.url), 'utf8');
+  const job = ci.slice(ci.indexOf('\n  operator-upgrade:\n') + 1).split(/\n  [a-z-]+:\n/)[0];
+  const names = [...job.matchAll(/\n      - name: ([^\n]+)\n/g)].map(match => match[1]);
+  const drillName = 'A failed upgrade, then the way back that upgrade.sh printed';
+  // After the install of the previous release and before the real upgrade, which then starts from the restored installation.
+  assert.ok(names.indexOf('Install the previous release') < names.indexOf(drillName) && names.indexOf(drillName) < names.indexOf('Upgrade to this commit with upgrade.sh'), names.join(' | '));
+  const step = job.split(`      - name: ${drillName}\n`)[1].split('\n      - name: ')[0];
+  assert.match(step, /^        if: steps\.previous\.outputs\.skip != 'true'\n/);
+  const run = step.split('        run: |\n')[1].replace(/^ {10}/gm, '');
+  // The fault: a throwaway commit on a worktree of the checkout (never pushed), a migration that raises only on the facility's database. The
+  // preflight's rehearsal restores into warehouse_restore (scripts/upgrade-rehearse.sh), so the same file passes there.
+  assert.match(run, /git -C "\$backend" worktree prune\ngit -C "\$backend" worktree add --detach "\$fault" /);
+  const migration = /cat > "\$fault\/migrations\/99999999999999_ci_fail\.sql" <<'SQL'\n([^]*?)\nSQL\n/.exec(run)?.[1];
+  assert.ok(migration, 'the fault migration is written by the step');
+  assert.match(migration, /IF current_database\(\) = 'postgres' THEN\s+RAISE EXCEPTION 'CI fault injection: /);
+  assert.match(readFileSync(new URL('../scripts/upgrade-rehearse.sh', import.meta.url), 'utf8'), /-d warehouse_restore/, 'the rehearsal uses another database than the fault names');
+  assert.match(readFileSync(new URL('../scripts/migrate.sh', import.meta.url), 'utf8'), /-U supabase_admin -d postgres /, 'the live apply is the database the fault names');
+  assert.match(run, /git -C "\$fault" -c user\.name=ci -c user\.email=ci@example\.invalid -c commit\.gpgsign=false commit -q /);
+  // It fails inside setup, after the checkout, with the record kept and the API closed.
+  assert.match(run, /if bash upgrade\.sh --ref "\$fault_ref" > "\$RUNNER_TEMP\/failed-upgrade\.log" 2>&1; then\n[^]*?::error::the upgrade with the injected fault succeeded"\n\s+exit 1\nfi/);
+  for (const line of [
+    `grep -q 'CI fault injection' "$RUNNER_TEMP/failed-upgrade.log"`, `grep -q 'The upgrade stopped at: Setup' "$RUNNER_TEMP/failed-upgrade.log"`,
+    'test "$(git rev-parse HEAD)" = "$fault_ref"', 'test -f "$WAREHOUSE_STATE_DIR/config/upgrade-in-progress"', 'test -e "$WAREHOUSE_STATE_DIR/config/maintenance"', 'test "$(rpc)" = 503',
+  ]) assert.ok(run.includes(`${line}\n`), line);
+  // The lines are the ones `rollback` prints, they are found in what the failed upgrade printed, and they run one by one as printed.
+  assert.match(run, /node scripts\/upgrade-record\.mjs rollback > "\$RUNNER_TEMP\/rollback\.txt"/);
+  assert.match(run, /grep -qxF -- "\$line" "\$RUNNER_TEMP\/failed-upgrade\.log"/);
+  assert.match(run, /while IFS= read -r line; do\n\s+echo "\+ \$line"\n\s+bash -euo pipefail -c "\$line" < \/dev\/null\ndone < "\$RUNNER_TEMP\/rollback-commands\.txt"/, 'each line runs with standard input closed, so a command cannot eat the rest of the list');
+  // Then the facility is the starting point again.
+  for (const line of [
+    'test "$(git rev-parse HEAD)" = "$before"', 'test ! -e "$WAREHOUSE_STATE_DIR/config/upgrade-in-progress"', 'test ! -e "$WAREHOUSE_STATE_DIR/config/maintenance"',
+    'node scripts/doctor.mjs --local', 'test "$(rpc)" = 200',
+  ]) assert.ok(run.includes(line), line);
+  // Counts are retaken right before the failing upgrade (not the install-time ones); business tables and storage compare exactly, the rest "not fewer".
+  assert.ok(run.indexOf('> "$RUNNER_TEMP/counts-drill-before"') > 0 && run.indexOf('> "$RUNNER_TEMP/counts-drill-before"') < run.indexOf('if bash upgrade.sh --ref "$fault_ref"'), 'counts are taken before the failing upgrade');
+  assert.doesNotMatch(run, /counts-before"/, 'the install-time counts are not used by the drill');
+  const business = /for table in ([a-z_ ]+); do\n\s+test "\$\(grep "\^public\.\$table " [^\n]*= [^\n]*\n\s+done/.exec(run)?.[1].split(' ');
+  const seeded = /for table in (customers [a-z_ ]+); do/.exec(ci.slice(ci.indexOf('\n  seeded-upgrade:\n')))?.[1].split(' ');
+  assert.deepEqual(business, seeded, 'the business tables are those the seeded upgrade compares');
+  assert.match(run, /test "\$\(grep '\^storage\.objects ' "\$RUNNER_TEMP\/counts-drill-before" \|\| true\)" = "\$\(grep '\^storage\.objects ' "\$RUNNER_TEMP\/counts-drill-after" \|\| true\)"/);
+  assert.match(run, /awk 'NR == FNR [^\n]*rows lost in [^\n]*"\$RUNNER_TEMP\/counts-drill-before" "\$RUNNER_TEMP\/counts-drill-after"/);
+  assert.match(run, /mv "\$WAREHOUSE_STATE_DIR\/config\/upgrades\.log" "\$RUNNER_TEMP\/upgrades-after-rollback\.log"/, 'the drill\'s log line is set aside: the next step asserts there is none');
+  assert.match(run, /get_public_config/);
+  // The drill's time is paid for.
+  assert.match(job, /\n    timeout-minutes: (?:[89]\d|\d{3})\n/);
+  // The extraction runs on the real print: indented lines are commands, the masked administrator is filled in, no mask is left. (The step's own lines
+  // from the awk to the check for a leftover mask, run on a scratch directory with the real rollbackLines text as both the print and the failed log.)
+  const { rollbackLines } = await import('../scripts/upgrade-record.mjs');
+  const text = rollbackLines({ state: '/state', fromLabel: 'v0.6.0', fromSha: 'a'.repeat(40), toLabel: 'v0.7.0', backup: '/state/backups/warehouse-20261026T100000Z', adminPhone: '919888888871', webhookOff: true, preImages: 'pre-v0.6.0', maintenance: true }).join('\n') + '\n';
+  const from = run.indexOf(`awk '/^  [^ ]/'`);
+  const to = run.indexOf('\n', run.indexOf(`if grep -q 'XXXX'`));
+  assert.ok(from > 0 && to > from, 'the extraction is in the step');
+  const scratch = mkdtempSync(join(tmpdir(), 'warehouse-rollback-extract-'));
+  try {
+    writeFileSync(join(scratch, 'rollback.txt'), text);
+    writeFileSync(join(scratch, 'failed-upgrade.log'), `noise\n${text}more noise\n`);
+    const extracted = spawnSync('bash', ['-euo', 'pipefail', '-c', run.slice(from, to)], { encoding: 'utf8', env: { ...process.env, RUNNER_TEMP: scratch } });
+    assert.equal(extracted.status, 0, extracted.stdout + extracted.stderr);
+    const commands = readFileSync(join(scratch, 'rollback-commands.txt'), 'utf8').trimEnd().split('\n');
+    assert.equal(commands.length, 11, 'ten steps and the diagnostics save before the restore');
+    assert.ok(commands.some(line => /service-diagnostics\.mjs save rollback \|\| true$/.test(line)), 'the diagnostics save line is a command of the list');
+    assert.ok(commands.indexOf('  (umask 022; git checkout --detach ' + 'a'.repeat(40) + ')') === 1, 'the checkout follows the diagnostics save');
+    assert.equal(commands.find(line => line.includes('setup.sh')), "  bash setup.sh --operator --state-dir '/state' --admin-phone 919888888871 --admin-name 'Core Demo Administrator' --alert-webhook-file off");
+    assert.ok(commands.every(line => /^ {2}\S/.test(line)) && !commands.some(line => /XXXX|NAME\b/.test(line)));
+    // A line that the failed upgrade did not print stops the drill.
+    writeFileSync(join(scratch, 'failed-upgrade.log'), text.replace('  bash stop.sh\n', ''));
+    const missing = spawnSync('bash', ['-euo', 'pipefail', '-c', run.slice(from, to)], { encoding: 'utf8', env: { ...process.env, RUNNER_TEMP: scratch } });
+    assert.notEqual(missing.status, 0);
+    assert.match(missing.stdout + missing.stderr, /upgrade\.sh did not print this line of the way back:   bash stop\.sh/);
+  } finally { rmSync(scratch, { recursive: true, force: true }); }
+});
+
 test('the upgrade drill ties the 503 to the backup: ci-freeze-check.sh passes only with an "upgrading" answer between the Backup and Setup steps', () => {
   const dir = mkdtempSync(join(tmpdir(), 'warehouse-freeze-check-'));
   try {
@@ -226,7 +319,7 @@ test('the release-branch guard runs: a numbered migration is refused, a changed 
   // The step's script, without the fetch (the repository below is complete).
   const script = step.slice(step.indexOf('        run: |\n') + '        run: |\n'.length, step.indexOf('      - uses: actions/setup-node')).replace(/^ {10}/gm, '').replace(/^git fetch .*\n/m, '');
   const dir = mkdtempSync(join(tmpdir(), 'warehouse-guard-'));
-  const git = (...args) => { const r = spawnSync('git', ['-c', 'user.name=t', '-c', 'user.email=t@example.invalid', ...args], { cwd: dir, encoding: 'utf8' }); assert.equal(r.status, 0, r.stderr); return r.stdout.trim(); };
+  const git = (...args) => { const r = spawnSync('git', ['-c', 'user.name=t', '-c', 'user.email=t@example.invalid', '-c', 'commit.gpgsign=false', '-c', 'tag.gpgsign=false', ...args], { cwd: dir, encoding: 'utf8' }); assert.equal(r.status, 0, r.stderr); return r.stdout.trim(); };
   try {
     git('init', '-q', '-b', 'release-base');
     mkdirSync(join(dir, 'migrations', 'definitions'), { recursive: true });
@@ -522,7 +615,7 @@ test('release.yml publishes the release images in a job of their own: build, sca
   assert.match(release, /\npermissions:\n  contents: read\n\njobs:\n/);
   const [checks, publish] = release.split(/\n  publish-images:\n/);
   assert.ok(publish, 'a publish-images job exists');
-  assert.doesNotMatch(checks, /\n    permissions:|packages:\s*write|contents:\s*write/, 'the checks job writes nothing');
+  assert.doesNotMatch(checks.replace('\n    permissions:\n      contents: read\n      checks: read\n', ''), /\n    permissions:|packages:\s*write|contents:\s*write/, 'the checks job writes nothing, and its only own permissions are contents: read and checks: read');
   assert.match(publish, /^    needs: release\n/, 'it runs only after the validation, tests and audit of the release job pass');
   assert.match(publish, /\n    if: github\.repository == 'abhiguru\/supabase-warehouse-template'\n/, 'a fork has no right to the registry namespace');
   assert.match(publish, /\n    permissions:\n      contents: write\n      packages: write\n    steps:\n/, 'exactly the two write permissions, on this job');
@@ -653,7 +746,7 @@ test('migration ordering step: on a pull request a base that cannot be fetched i
 function baseTagFor(tag, build) {
   const dir = mkdtempSync(join(tmpdir(), 'warehouse-release-base-'));
   try {
-    const git = (...args) => { const r = spawnSync('git', ['-C', dir, '-c', 'user.name=T', '-c', 'user.email=t@example.test', ...args], { encoding: 'utf8' }); assert.equal(r.status, 0, `git ${args.join(' ')}: ${r.stderr}`); return r.stdout; };
+    const git = (...args) => { const r = spawnSync('git', ['-C', dir, '-c', 'user.name=T', '-c', 'user.email=t@example.test', '-c', 'commit.gpgsign=false', '-c', 'tag.gpgsign=false', ...args], { encoding: 'utf8' }); assert.equal(r.status, 0, `git ${args.join(' ')}: ${r.stderr}`); return r.stdout; };
     git('init', '-q', '-b', 'main');
     let n = 0;
     const commit = () => git('commit', '-q', '--allow-empty', '-m', `c${++n}`);
@@ -689,4 +782,64 @@ test('release.yml audits against the newest FINAL tag of another version: a rele
   assert.equal(line('v1.0.2-rc.1').base, 'v1.0.1');
   assert.equal(baseTagFor('v1.0.0', ({ commit, git }) => { commit(); git('tag', 'v1.0.0'); }).status, 1, 'no other final tag: an error');
   assert.match(baseTagFor('v1.0.0-rc.1', ({ commit, git }) => { commit(); git('tag', 'v1.0.0-rc.1'); }).out, /No previous release tag/);
+});
+
+test('release.yml checks the signature of the tag in the release job, before Node is set up, with no new permission', () => {
+  const release = readFileSync(new URL('../.github/workflows/release.yml', import.meta.url), 'utf8');
+  const releaseJob = release.slice(release.indexOf('\n  release:\n'), release.indexOf('\n  publish-images:\n'));
+  const name = '      - name: Release tag is signed by a key the previous release trusts\n';
+  assert.ok(releaseJob.includes(name), 'the step is in the release job');
+  assert.ok(releaseJob.indexOf(name) > releaseJob.indexOf('bash scripts/check-release-contents.sh'), 'after the contents gate');
+  assert.ok(releaseJob.indexOf(name) < releaseJob.indexOf('uses: actions/setup-node@'), 'before Node is set up');
+  const step = releaseJob.slice(releaseJob.indexOf(name) + name.length).split(/\n {6}- /)[0];
+  assert.match(step, /\n {8}run: \|\n {10}git fetch --force --no-tags origin "refs\/tags\/\$GITHUB_REF_NAME:refs\/tags\/\$GITHUB_REF_NAME"\n {10}bash scripts\/check-release-signature\.sh "\$GITHUB_REF_NAME"\n?$/, 'the tag object is fetched, then checked; the tag name is quoted');
+  assert.doesNotMatch(step, /\n {8}uses:|\$\{\{|secrets\./);
+  assert.match(release, /\npermissions:\n {2}contents: read\n\njobs:\n/, 'the workflow permissions are unchanged');
+  assert.equal(releaseJob.match(/\n {4}permissions:\n(?: {6}[a-z-]+: [a-z]+\n)+/)?.[0], '\n    permissions:\n      contents: read\n      checks: read\n', 'the release job has exactly contents: read and checks: read of its own');
+});
+
+test('release: the end-to-end CI gate runs after setup-node and before anything is installed or tested, with the token only as GH_TOKEN, and names the real jobs of ci.yml', async () => {
+  const release = readFileSync(new URL('../.github/workflows/release.yml', import.meta.url), 'utf8');
+  const ci = readFileSync(new URL('../.github/workflows/ci.yml', import.meta.url), 'utf8');
+  const job = release.slice(release.indexOf('\n  release:\n'), release.indexOf('\n  publish-images:\n'));
+  const stepName = 'End-to-end CI passed on this commit (operator-install and operator-upgrade)';
+  const at = job.indexOf(`      - name: ${stepName}\n`);
+  assert.ok(at > 0, 'the step exists in the release job');
+  assert.match(job.slice(at), /^ {6}- name: [^\n]*\n(?: {8}#[^\n]*\n)+ {8}env:\n {10}GH_TOKEN: \$\{\{ github\.token \}\}\n {8}run: node scripts\/check-release-ci\.mjs\n {6}- run: npm ci\n/);
+  assert.ok(job.indexOf('actions/setup-node') < at && at < job.indexOf('- run: npm ci') && at < job.indexOf('- run: npm test'), 'after setup-node, before npm ci and the tests');
+  assert.match(release, /\npermissions:\n {2}contents: read\n\njobs:\n/, 'the workflow permissions are unchanged');
+  assert.match(job, /\n {4}permissions:\n {6}contents: read\n {6}checks: read\n {4}steps:\n/, 'the job adds checks: read and nothing else');
+  assert.doesNotMatch(job.slice(at, job.indexOf('- run: npm ci')), /permissions:|continue-on-error|\|\| true/);
+  // The names the script requires are the check-run names of the two jobs; a rename in ci.yml would otherwise fail every release.
+  const { REQUIRED_CHECKS } = await import('../scripts/check-release-ci.mjs');
+  const jobName = id => ci.slice(ci.indexOf(`\n  ${id}:\n`) + 1).match(/^ {4}name: ([^\n]+)$/m)[1];
+  assert.deepEqual(REQUIRED_CHECKS, [jobName('operator-install'), jobName('operator-upgrade')]);
+  // The docs name the gate.
+  const checklist = readFileSync(new URL('../docs/RELEASE_CHECKLIST.md', import.meta.url), 'utf8');
+  assert.match(checklist, /green `operator-install` and `operator-upgrade` on the commit/);
+  assert.match(checklist, /scripts\/check-release-ci\.mjs/);
+});
+
+test('scale-check is scheduled only, needs validate, runs the 5-year seed and the check on the operator runner, uploads its timings and always stops the stack', () => {
+  const ci = readFileSync(new URL('../.github/workflows/ci.yml', import.meta.url), 'utf8');
+  const job = ci.slice(ci.indexOf('\n  scale-check:\n') + 1).split(/\n  [a-z-]+:\n/)[0];
+  assert.ok(job.length > 500, 'the job exists');
+  assert.match(job, /\n    if: github\.event_name == 'schedule' \|\| github\.event_name == 'workflow_dispatch'\n/, 'never on a push or a pull request');
+  assert.match(job, /\n    needs: validate\n/);
+  assert.match(job, /\n    runs-on: \$\{\{ github\.event\.pull_request\.head\.repo\.fork && 'ubuntu-latest' \|\| fromJSON\(vars\.OPERATOR_INSTALL_RUNNER \|\| '"ubuntu-latest"'\) \}\}\n/, 'same runner rule (and fork guard) as operator-install');
+  assert.match(job, /\n    timeout-minutes: 60\n/, 'a hung job ends');
+  assert.match(job, /bash setup\.sh --operator --state-dir "\$WAREHOUSE_STATE_DIR"/);
+  assert.match(job, /--api-url https:\/\/backend-core\.example\.test/, 'a fictional installation');
+  assert.match(job, /core-backend-test-[0-9]+/, 'the state name the operator fixtures accept');
+  assert.match(job, /node tests\/seed\/make-seed\.mjs --years 5 >/);
+  assert.ok(job.indexOf('make-seed.mjs --years 5') < job.indexOf('node tests/scale-check.mjs'), 'the data is loaded before the check');
+  assert.match(job, /SCALE_ENFORCE: '0'/, 'a warning only until the numbers have settled');
+  assert.match(job, /\n        run: node tests\/scale-check\.mjs\n/);
+  const upload = /- name: Per-RPC timings[^\n]*\n(?: {8}[^\n]*\n)+/.exec(job)?.[0] ?? '';
+  assert.match(upload, /if: always\(\)/, 'the timings are kept when the check fails');
+  assert.match(upload, /uses: actions\/upload-artifact@[0-9a-f]{40} # v\d+\.\d+\.\d+\n/, 'pinned by SHA with its version');
+  assert.match(upload, /path: \$\{\{ runner\.temp \}\}\/scale-check\.json/);
+  assert.match(job, /SCALE_OUTPUT: \$\{\{ runner\.temp \}\}\/scale-check\.json/, 'the file the check writes is the file that is uploaded');
+  assert.match(job, /- name: Stop only this checkout's operator project\n {8}if: always\(\)\n {8}run: test ! -f "\$WAREHOUSE_STATE_DIR\/config\/compose\.env" \|\| bash scripts\/compose\.sh --profile '\*' down\n/);
+  assert.doesNotMatch(job, /continue-on-error/, 'no step is softened');
 });

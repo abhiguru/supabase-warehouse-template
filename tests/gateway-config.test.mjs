@@ -187,6 +187,7 @@ test('CORS: the one configured origin, with credentials, answered at the gateway
   assert.match(CODE.cors, /^add_header Access-Control-Allow-Credentials true always;$/m);
   assert.match(CODE.cors, /^add_header Vary Origin always;$/m);
   assert.match(CODE.cors, /^add_header Access-Control-Expose-Headers \$cors_expose always;$/m);
+  assert.match(CODE.cors, /^add_header X-Request-Id \$request_id always;$/m, 'every answer carries the request id');
   const routes = {
     '/rest/v1/': ['GET,POST,PUT,PATCH,DELETE,OPTIONS', 'Authorization,Content-Type,X-Client-Info,apikey,Prefer,Range', 'Content-Range,X-Request-Id'],
     '/storage/v1/': ['GET,POST,PUT,DELETE,OPTIONS', 'Authorization,Content-Type,X-Client-Info,apikey,Cache-Control,X-Upsert', 'Content-Range,X-Request-Id'],
@@ -203,12 +204,16 @@ test('CORS: the one configured origin, with credentials, answered at the gateway
     assert.match(text, new RegExp(`^\\s*set \\$cors_expose "${exposed}";$`, 'm'), `${name} exposed headers`);
     // An upstream's own CORS headers would double the header the browser reads.
     for (const header of ['Allow-Origin', 'Allow-Credentials', 'Expose-Headers']) assert.match(text, new RegExp(`^\\s*proxy_hide_header Access-Control-${header};$`, 'm'), `${name} hides the upstream's ${header}`);
+    // The gateway's request id goes to the upstream (a client-sent X-Request-Id is overwritten) and an upstream's own is dropped.
+    assert.match(text, /^\s*proxy_set_header X-Request-Id \$request_id;$/m, `${name} sends the gateway's id upstream`);
+    assert.match(text, /^\s*proxy_hide_header X-Request-Id;$/m, `${name} drops an upstream X-Request-Id`);
   }
   // A preflight is an OPTIONS request with an Origin and a requested method; any other OPTIONS request goes upstream.
   assert.match(CODE.http, /map "\$request_method\|\$http_origin\|\$http_access_control_request_method" \$cors_preflight \{\n\s+default 0;\n\s+"~\^OPTIONS\\\|\[\^\|\]\+\\\|\[\^\|\]\+\$" 1;/);
   // The errors the gateway makes carry the CORS headers too, so a browser can read them.
   for (const status of [401, 404, 413, 429, 502, 503, 504]) {
     assert.match(block(CODE.locations, `location @json_${status}`), /include \/etc\/nginx\/cors-headers\.conf;/, `the ${status} answer`);
+    // 502 and 504 need a dead upstream, so they are not answered live in the nginx test: the id comes with that include (cors-headers.conf adds it).
     assert.match(CODE.locations, new RegExp(`^error_page ${status} @json_${status};$`, 'm'));
   }
 });
@@ -312,15 +317,16 @@ test('the gateway access log has no query string, so a signed link or an apikey 
   assert.ok(format.includes('$uri'), 'the path is logged as $uri (no query string)');
   assert.ok(format.includes('$remote_addr'), 'the client address stays in the log (owner decision of 2026-10-17)');
   for (const pattern of FORBIDDEN_IN_ACCESS_LOG) assert.doesNotMatch(format, pattern, `the format must not contain ${pattern}`);
-  assert.equal(format, '$remote_addr [$time_local] "$request_method $uri $server_protocol" $status $body_bytes_sent $request_time');
+  assert.equal(format, '$remote_addr [$time_local] "$request_method $uri $server_protocol" $status $body_bytes_sent $request_time $request_id');
   // The access log is the redacted format on stdout, in one place; the health check is not logged at all; no server or route sets another.
   assert.deepEqual(CODE.main.match(/^\s*access_log .*$/gm).map(line => line.trim()), ['access_log /dev/stdout warehouse_redacted;']);
   assert.deepEqual(CODE.gatewayTemplate.match(/^\s*access_log .*$/gm).map(line => line.trim()), ['access_log off;']);
   assert.doesNotMatch(CODE.locations + CODE.http + CODE.httpTemplate, /access_log|log_format/);
   // The checker (scripts/watch.mjs, checkApiLogs) reads the line this format writes.
   const line = format.replace('$remote_addr', '172.18.0.1').replace('$time_local', '26/Oct/2026:10:00:00 +0000').replace('$request_method', 'GET').replace('$uri', '/storage/v1/object/sign/docs/a.pdf')
-    .replace('$server_protocol', 'HTTP/1.1').replace('$status', '429').replace('$body_bytes_sent', '37').replace('$request_time', '0.001');
-  assert.equal(line, '172.18.0.1 [26/Oct/2026:10:00:00 +0000] "GET /storage/v1/object/sign/docs/a.pdf HTTP/1.1" 429 37 0.001');
+    .replace('$server_protocol', 'HTTP/1.1').replace('$status', '429').replace('$body_bytes_sent', '37').replace('$request_time', '0.001').replace('$request_id', '0123456789abcdef0123456789abcdef');
+  assert.equal(line, '172.18.0.1 [26/Oct/2026:10:00:00 +0000] "GET /storage/v1/object/sign/docs/a.pdf HTTP/1.1" 429 37 0.001 0123456789abcdef0123456789abcdef');
+  assert.ok(format.endsWith(' $request_id'), 'the id is the last field');
   assert.deepEqual(parseGatewayLog(line), [{ status: 429, seconds: 0.001 }]);
 });
 
@@ -597,7 +603,7 @@ test('the gateway-lan service: profile lan, the gateway\'s own image (no build o
   assert.match(service, /\n    security_opt: \["no-new-privileges:true"\]\n/);
   assert.match(service, /\n          cpus: '0\.5'\n          memory: 128M\n/);
   assert.match(service, /test: \["CMD", "wget", "-q", "-T", "5", "-O", "\/dev\/null", "http:\/\/127\.0\.0\.1:8080\/health"\]/);
-  assert.match(service, /\n    logging: \*default-logging\n/);
+  assert.match(service, /\n    logging: \*gateway-logging\n/);
   assert.match(service, /\n    depends_on:\n      db:\n        condition: service_healthy\n/);
   assert.doesNotMatch(service, /\n    networks:/, 'the default network only');
   assert.match(service, /- \/tmp:size=4m\n/);

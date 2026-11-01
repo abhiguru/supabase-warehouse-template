@@ -20,7 +20,9 @@ they go in the operator's secret store. Nothing here authorizes production deplo
   ([MONITORING.md](MONITORING.md)); the checker's one CI pass does not establish delivery. Incident contacts and an
   escalation policy are the operator's.
 - **Paired upgrade and rollback.** A backend and app upgrade done together, with the preflight and a rehearsed rollback
-  (the in-place restore). Redacted diagnostics for a failed upgrade.
+  (the in-place restore). Redacted diagnostics for a failed upgrade. CI drills the printed way back on every change (the
+  `operator-upgrade` job makes an upgrade fail inside setup and runs the lines `node scripts/upgrade-record.mjs rollback` prints), and
+  `rollback --last` prints it for an upgrade that finished; the paired backend-and-app rehearsal on the facility's own data is still owed.
 - **Retention policy.** The operator or legal owner approves retention, deletion and legal-hold rules for business
   documents, invoices, PDFs, images and backups. The owner approved the sign-in rows and generated PDFs older than 7 days (2026-10-19);
   the daily pass (`watch.mjs daily`) applies exactly that with `retention:apply` when the daily timer is installed, and never touches business
@@ -93,11 +95,10 @@ they go in the operator's secret store. Nothing here authorizes production deplo
 - **Printing functions.** `npm:ipp@2.0.1` is imported on demand; vendor it before printing is enabled
   ([CONTAINER_SECURITY.md](CONTAINER_SECURITY.md#edge-function-modules-and-image)).
 - **Scheduled image scan.** No workflow runs the scan between releases.
-- **Telling facilities about releases (backlog, owner decision 2026-10-26: not now).** Operators learn of a release only from the GitHub
-  release notes (Watch, Custom, Releases), and a facility whose operator has no GitHub account hears nothing. A daily-pass step could
-  run `git ls-remote --tags origin`, post once to the facility's Slack ("vX.Y.Z is available; this facility runs vA.B.C") and show the
-  same line in `doctor`; mark a security release (the public releases API returns the titles that carry "Security") and say
-  "your line 0.6 is out of support since <date>". Not built.
+- **Telling facilities about releases (built; the owner lifted the deferral on 2026-11-01).** `node scripts/doctor.mjs --local` and the daily
+  "Monitoring is alive" message say "vX.Y.Z is available (this facility runs vA.B.C)", marked "Security release" and with the date the running
+  line stops getting fixes ([MONITORING.md](MONITORING.md#a-newer-release)). It is a line in those two places, never an alert and never a
+  Slack post of its own. Open: a facility whose operator never reads either still hears nothing.
 - **`upgrade.sh --rollback` (backlog, owner decision 2026-10-26: not now).** A failed `upgrade.sh` prints the complete way back and
   `node scripts/upgrade-record.mjs rollback` prints it again from the record; a single command that runs those steps is not built.
 - **CI HTTP 500 investigation.** The fresh loopback config bootstrap answered HTTP 500 on attempt 2 of backend-main CI run

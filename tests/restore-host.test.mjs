@@ -134,6 +134,7 @@ test('restore-host builds the state from the backup, rewrites only the three pat
     assert.match(result.stdout, /Install the monitoring checker[^]*sudo bash scripts\/watch-timer\.sh install --state /);
     assert.doesNotMatch(result.stdout, /profile monitoring|prometheus/i);
     assert.match(result.stdout, /alerts are local only until you run setup\.sh --operator[^\n]*--alert-webhook-file/i);
+    assert.match(result.stdout, /external heartbeat again too: its ping URL \(config\/heartbeat-url\) is not in a backup either[^]*--heartbeat-url-file[^]*On WSL[^]*register-tasks\.ps1/);
     assert.equal(readFileSync(join(f.state, 'config/backup.key'), 'utf8'), `${backupKey}\n`, 'the rebuilt installation keeps the backup key');
     assert.equal(statSync(join(f.state, 'config/backup.key')).mode & 0o777, 0o600);
   } finally { clean(f); }
@@ -156,6 +157,18 @@ function savedImages(dir, { sign = true, key = backupKey } = {}) {
   return dir;
 }
 const dockerCalls = f => readFileSync(join(f.scratch, 'docker.log'), 'utf8').split('\n').filter(Boolean);
+
+test('restore-host appends verify and total lines with elapsed seconds to <state>/restores.log (mode 0600)', () => {
+  const f = fixture('warehouse-restore-host-timing-');
+  try {
+    const result = f.run(['--state-dir', f.state, '--yes', f.backup]);
+    assert.equal(result.status, 0, result.stderr + result.stdout);
+    const log = join(f.state, 'restores.log');
+    assert.equal(statSync(log).mode & 0o777, 0o600);
+    const lines = readFileSync(log, 'utf8').trim().split('\n');
+    assert.deepEqual(lines.map(line => /^\d{4}-\d\d-\d\dT\d\d:\d\d:\d\dZ restore-host\.sh phase=(\w+) seconds=\d+$/.exec(line)?.[1]), ['verify', 'total']);
+  } finally { clean(f); }
+});
 
 test('restore-host loads the images saved beside the backup, adopts their build record and does not load anything else', () => {
   const f = fixture('warehouse-restore-host-images-');
@@ -182,7 +195,7 @@ test('restore-host loads the images saved beside the backup, adopts their build 
 // At a release tag the recovered checkout pulls the release's images before restore.sh builds what is missing (build-images.sh --from-release).
 // The stand-in build-images.sh records its arguments and state, and whether restore.sh had run yet.
 function releaseCheckout(f, { tag }) {
-  const git = (...args) => assert.equal(spawnSync('git', ['-C', f.root, '-c', 'user.name=t', '-c', 'user.email=t@example.test', ...args], { encoding: 'utf8' }).status, 0, args.join(' '));
+  const git = (...args) => assert.equal(spawnSync('git', ['-C', f.root, '-c', 'user.name=t', '-c', 'user.email=t@example.test', '-c', 'commit.gpgsign=false', '-c', 'tag.gpgsign=false', ...args], { encoding: 'utf8' }).status, 0, args.join(' '));
   git('init', '-q'); git('add', 'scripts/restore.sh'); git('commit', '-q', '-m', 'release');
   if (tag) git('tag', tag);
   writeFileSync(join(f.root, 'scripts/build-images.sh'), `#!/usr/bin/env bash

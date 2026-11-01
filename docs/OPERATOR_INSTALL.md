@@ -28,6 +28,7 @@ Sections: [host prerequisites](#host-prerequisites),
 
 ## Host prerequisites
 
+- git 2.34 or newer and `ssh-keygen` (OpenSSH), to check the signature of a release tag when `upgrade.sh` runs (Ubuntu 22.04 and 24.04 have both).
 - Linux x86-64 with Docker Engine and the Compose plugin, enabled at boot; Ubuntu 24.04 is the tested baseline. ARM64 is
   not supported. The requirement is a Compose plugin whose `docker compose up` accepts
   `--wait-timeout`: setup, start and the backup scripts wait for services with it, and `doctor` stops with a message
@@ -39,8 +40,9 @@ Sections: [host prerequisites](#host-prerequisites),
     for this service and for the facility backend).
   - Docker Compose v5.6.1 (the current build of Docker's Ubuntu repository, which the commands below install; verified for the facility backend).
 - The installation user (not root) needs `sudo`: for Docker's install, for the state's parent directory, and for `scripts/tunnel.sh install-service`
-  and `scripts/watch-timer.sh install`. If it has none, the operator runs those commands as a user that does (the installation user then runs
-  the rest), naming the state with `--state` because `sudo` drops the environment.
+  and `scripts/watch-timer.sh install`. Those last two must be run with `sudo` **by the installation user itself** (give it `sudo` for the install, or
+  log in as it), naming the state with `--state` because `sudo` drops the environment: both refuse when the user who ran `sudo` does not own the state. Another account with `sudo` can only do Docker's install and create the
+  state's parent directory; the installation user then runs the rest.
 - Network access to `storage.googleapis.com` while the pdf-renderer image is built (it downloads Chrome headless shell).
 - Node.js 22.18 or newer with npm, Git, OpenSSL, `curl` and util-linux (`flock`), and `dig` (package `dnsutils`).
 - `rsync` and GNU `tar` (Ubuntu and Debian have `tar`; `rsync` is a package of its own): backups copy the stored photos with `rsync`
@@ -51,14 +53,31 @@ Sections: [host prerequisites](#host-prerequisites),
 - `tmux` (or another way to keep a process running after you log out) for the Expo development server of the app, if you
   run one on this host. The backend itself needs it for nothing.
 - A non-root user in the `docker` group. Do not run setup as root or make the Docker socket world-writable.
+- **Host minimum: 4 vCPU, 8 GiB of memory, an SSD and 60 GB of disk** (more disk for the data: [Disk space](#disk-space)). Below it
+  `doctor --host-preflight` (run by `setup.sh`) prints a warning and carries on: below 4 vCPU, 7.5 GiB of memory (an 8 GiB machine
+  reports about 7.7) or 55 GiB of disk in total on the state's filesystem. A hard disk instead of an SSD is not detected; the
+  database and the backups are slow on one.
+- **Full-disk encryption is recommended** (LUKS on Ubuntu, chosen in the installer's storage step; it cannot be added later without
+  reinstalling). The database, the photos, the signing keys and the backup key are on that disk, and a host is stolen, repaired or
+  discarded more often than it is attacked. `doctor` warns when no encrypted (`crypt`) device is under `/`, and says nothing when
+  it cannot tell, or on a Windows host (below: BitLocker). The cost: a host that reboots by itself, for example after a power
+  cut, waits for the passphrase unless the disk is set to unlock at boot (TPM-based unlock), so decide that before relying on an
+  unattended restart.
 - At least 10 GiB free on a persistent filesystem for the installation, plus capacity for the data. `setup.sh` refuses
   to start below 10 GiB. `start.sh` and `doctor` only warn below 10 GiB and refuse below 2 GiB, so a disk that has filled
   up since the install does not keep the facility down after a power cut ([Disk full](TROUBLESHOOTING.md#disk-full)).
   Size the disk for the data with the rule in [Disk space](#disk-space).
 - Recommended for a real facility: a **USB drive formatted exFAT for backups** (an existing drive is fine; it is not
   reformatted) and `sudo` once to set up the automatic copy ([USB backup drive](#usb-backup-drive)). Setup does not need
-  it; without one, `doctor` warns and the backups stay on the host, so copy them off the host yourself.
+  it; without one, `doctor` warns at once, and the checker's weekly `offhost_copy_missing` alert starts 7 days after its first run (a failed or stale
+  copy or an unconfirmed key copy is said at once), that
+  the backups and the backup key sit only on this host: set up the drive, or record the decision not to keep a copy
+  (see "Recovery point and recovery time" under [Backup and restore](#backup-and-restore)).
 - `cloudflared` for the tunnel ([Cloudflare Tunnel ingress](#cloudflare-tunnel-ingress)).
+- **Recommended: a router with dual-WAN or 4G/5G failover.** The Cloudflare Tunnel is the only way in, so an outage of the
+  facility's single internet line stops goods receipt (GRN), dispatch and every other app request, even though the host is fine.
+  A second line (another ISP, or a 4G/5G modem on the router's failover port) lets the tunnel reconnect by itself within a minute
+  or two. The tunnel dials out, so no address or port needs to be kept the same. Test it once (step "WAN pulled" of the [Windows acceptance list](#acceptance), which applies to any host).
 
 Record the host before changing it (`cat /etc/os-release`, `uname -m`, `free -h`, `df -h`, `docker ps`) so that an existing
 runtime is never removed by accident.
@@ -82,6 +101,8 @@ Two things tell you before it is too late. `bash upgrade.sh` refuses, before it 
 files of the newest verified backup plus the size of its database dump plus 1 GiB (its own way back would not fit; this is a minimum, the
 photos added since and new images come on top), and the monitoring checker raises `restore_space_low` under the same rule every run, and
 repeats it once a day ([MONITORING.md](MONITORING.md)). The photos grow with the facility: look again each year.
+
+On a Windows host the disk to watch is the Windows drive that holds the virtual disk, not `/`: [Watch the Windows drive](#watch-the-windows-drive).
 
 ### Host time zone
 
@@ -167,8 +188,10 @@ The operator scripts use only Node's built-in modules; `npm ci` is needed only t
 | First administrator | `--admin-phone`, `--admin-name` (both required) | `91` and ten digits, and a display name; see **First administrator** below. |
 | Slack webhook file | `--alert-webhook-file` | Private file with the facility's incoming-webhook URL. `off` only for a non-production install; without the option a terminal is asked and no terminal means setup refuses. See [Setup](#setup). |
 | Sensor Slack webhook file | `--sensor-webhook-file` | Private file with a second, separate incoming-webhook URL for sensor alerts. Required when Slack alerts are on and sensors are on; `off` removes it; leave it out to keep what is stored. See [Setup](#setup). |
+| External heartbeat file | `--heartbeat-url-file` | Private file (mode 0600, outside the checkout, one line) with the ping URL of a dead-man switch such as healthchecks.io; stored as `config/heartbeat-url`. `off` removes it; leave it out to keep what is stored. Without one `npm run doctor` warns, unless the decision is recorded (`config/heartbeat-declined`, [MONITORING.md](MONITORING.md#external-heartbeat-the-dead-man-switch)). Association members also see [An association view with healthchecks](MONITORING.md#an-association-view-with-healthchecks). |
 | Central sign-in (members only) | `--central-issuer` with `--central-jwks-url` or `--central-jwks-file` | The issuer and the public key set (an address or a file) that the association gives you; see [Central sign-in](#central-sign-in). Leave out for SMS sign-in only. |
 | PDF letterhead | `--letterhead-file` | A JPEG or PNG banner (at most 2 MiB) that the GRN, dispatch, invoice and customer stock PDFs print at the top, or `off` for plain PDFs. On a first install setup asks for it on a terminal (Enter means plain PDFs) and, with no terminal and without the option, refuses; a rerun without the option asks nothing and keeps what is there. See [Letterhead image](#letterhead-image-optional). |
+| Database memory | `--db-memory` | Whole GiB from 1 to 256 (default: the database container's limit is 1 GiB). Sets the database container's memory limit and, from it, `shared_buffers` (a quarter) and `effective_cache_size` (half) in `config/compose.env` (`DB_MEMORY_LIMIT`, `DB_SHARED_BUFFERS`, `DB_EFFECTIVE_CACHE_SIZE`). Refused while the installation's containers run (`bash stop.sh` first); it applies when the database container is created. A host with 8 GiB of memory can give the database 2 to 4 GiB; leave the rest to the other services. |
 
 **State directory.** An empty absolute path outside the checkout, not reached through a symlink, on the persistent
 filesystem, mode 0700 and owned by the installation user. The installer builds the state next to its final path
@@ -272,6 +295,11 @@ details (hub addresses, the Tapo login), set it up as in [SENSORS.md](SENSORS.md
 database** ([SENSORS.md, step 6](SENSORS.md#run-it-as-a-profile-of-the-installation): the SQL there must show a row per hub and per sensor with readings). When Slack alerts are on, a separate sensor Slack webhook is also required: `--sensor-webhook-file`, see below. The doctor warning is
 only the quick check.
 
+**Payments are optional and off by default.** The app (from app 0.7.0) shows the Paid and Pending figures of invoices only where the facility turns the
+`payments` capability on (it has no payment entry screen). To turn it on: `node scripts/set-capability.mjs payments on` (it also adds the key to
+an `instance.json` written before it existed), then `bash scripts/compose.sh restart functions` so the app is told, and a new `db:backup`
+(`db:restore-host` installs the `instance.json` of the backup, so a host rebuilt from an older backup would switch payments back off; `db:restore` refuses a backup whose `instance.json` differs). `payments off` reverses it.
+
 **Monitoring is not a Compose profile.** One small program, the checker (`scripts/watch.mjs`), runs from a systemd
 timer every 5 minutes, tells the facility's Slack channel when something is wrong, and once a day makes and verifies a
 backup and applies retention ([MONITORING.md](MONITORING.md)). Installing a unit needs root, which setup never uses, so
@@ -301,6 +329,8 @@ bash setup.sh --operator --state-dir "$WAREHOUSE_STATE_DIR" --admin-phone 91XXXX
 ```
 
 Sensor alerts then go to that webhook and everything else stays on the facility webhook ([MONITORING.md](MONITORING.md#alert-delivery)).
+
+The external heartbeat is given the same way: `--heartbeat-url-file /absolute/path` (a private file, mode 0600, one https URL; `off` removes it; leaving it out keeps it). It is not in a backup, so a restore on another host gives it again ([MONITORING.md](MONITORING.md#external-heartbeat-the-dead-man-switch)). `node scripts/doctor.mjs --local` also prints a `Note:` line when a newer release exists ("vX.Y.Z is available (this facility runs vA.B.C)", with "Security release" when its GitHub release says so, and the date the running line stops getting fixes when [SECURITY.md](../SECURITY.md) gives one); the daily "Monitoring is alive" message carries the same line. It is information, never an alert.
 
 The PDF letterhead is asked the same way: give `--letterhead-file /absolute/path` (a JPEG or PNG of at most 2 MiB) or
 `--letterhead-file off` for plain PDFs, or let setup ask on a terminal (the path, or Enter for plain PDFs). Without a
@@ -1345,13 +1375,19 @@ export WAREHOUSE_STATE_DIR=/absolute/path/to/this/warehouse
 bash rotate-keys.sh --yes
 ```
 
+**Rotation is required** when the host, the state directory, a backup (or the USB drive) that holds `config/compose.env`, or
+a copy of the signing keys is lost, stolen, sold or handed to someone else, and when anyone who should not have it may have read
+the JWT secret or the service key. It is **not** a substitute for the other secrets: see
+[Retire or lose a host](#retire-or-lose-a-host) for the full list. Break-glass sign-in codes that were issued and not used are
+**voided** by a rotation (they are deleted in step 2); issue a new one afterwards if it is still needed.
+
 Without `--yes` the command prints a usage message, changes nothing and exits with status 1. With `--yes` it takes the
 operator lock, requires a healthy database, and then:
 
 1. stages a copy of `config/compose.env` with a new 96-hex `JWT_SECRET` and newly signed `ANON_KEY` and
    `SERVICE_ROLE_KEY` (only those three lines change);
 2. in one database transaction under advisory lock 71042: stores the new secret in `warehouse_security.auth_config`,
-   deletes every refresh session and voids pending OTP challenges. The secret reaches `psql` only on standard input,
+   deletes every refresh session and every unused break-glass code and voids pending OTP challenges. The secret reaches `psql` only on standard input,
    never as an argument;
 3. renames the staged file over `config/compose.env` (mode 0600);
 4. recreates the running key consumers (`db gateway rest storage functions`, plus `supavisor` when the pooler is on (`POOLER_ENABLED=true` and
@@ -1379,6 +1415,24 @@ changed since the previous backup is a hard link to that backup's copy**: the se
 photos, not another copy of every photo. A photo is therefore stored once on the disk however many backups hold it, and it
 stays in the older backups after it has left the live storage. Hard links need the backup folder and the previous backups on
 one filesystem, which is the normal case (`backups/` of the state).
+
+> **Recovery point and recovery time**
+>
+> - **Recovery point (RPO), on the host:** about one day, the nightly backup (`backup_missing` fires after 26 hours without one).
+>   **Off the host:** the last time the USB drive was plugged in, because the drive is the only copy that survives the loss of this
+>   host ([USB backup drive](#usb-backup-drive)). Everything entered since is lost with the host.
+> - **Recovery time (RTO):** how long a restore takes on this hardware. Every `db:restore` and `restore-host.sh` appends one line
+>   per phase to `<state>/restores.log` (`<utc> <script> phase=<name> seconds=<n>`, phases `verify`, `database`, `storage`, `start`
+>   and `total`), and `bash scripts/verify-restore.sh` prints its own seconds: the `total` of your last restore, or a drill, is your
+>   estimate. Add the time to bring a replacement host to the point of running `restore-host.sh`.
+> - **Alert:** `offhost_copy_missing` (weekly, never muted; "no copy yet" starts 7 days after the checker's first run, a failed or stale copy or an unconfirmed key copy is said at once) tells an installation with
+>   no copy outside the host. If your facility has decided to go without one, record it, as the user that runs the checker, in
+>   `config/offhost-copy-declined` (a regular file you own, mode 0600) with exactly this sentence:
+>   `We have decided not to keep a copy of the backups outside this host.`, for example
+>   `printf '%s\n' 'We have decided not to keep a copy of the backups outside this host.' > "$WAREHOUSE_STATE_DIR/config/offhost-copy-declined" && chmod 600 "$WAREHOUSE_STATE_DIR/config/offhost-copy-declined"`.
+>   Any other text, a link, or looser permissions is ignored and the alert stays on. The decision does not excuse the copy of the backup key: that is still checked. `sudo bash scripts/backup-usb.sh uninstall` renames the record of the last copy (`config/usb-backup.last.uninstalled`), so a removed USB backup counts as no copy. A drive that is plugged in all the time shares
+>   the host's fire, flood and theft: the daily status says so once a week when only one drive has written in 30 days; enrol a
+>   second drive and swap them weekly.
 
 The services are stopped only for the database dump, the catalog queries and the last pass of the file copy, then restarted;
 the first pass of the copy, the checksums and the signing happen while the app is up. The stop does not grow with the size of the
@@ -1555,7 +1609,7 @@ writes `config/backup-key.escrow` (mode 0600: a fingerprint of the key, the time
 clear the terminal, because the key is still on its screen and in its scrollback (run `clear`, close the window, and in tmux or screen
 clear the history too; do not keep a log of the session). **A USB drive is not enrolled, and an encrypted archive is not written, until
 this record matches the key in use**: `backup-usb.sh setup --enroll` and `enroll` refuse, and a run records a failure that
-`npm run doctor` and the checker's `usb_backup` alert show, with the command to run. Without a terminal (an unattended install, a script)
+`npm run doctor` and the checker's `offhost_copy_missing` alert show, with the command to run. Without a terminal (an unattended install, a script)
 `bash scripts/backup-key-escrow.sh confirm --key-file FILE` does the same from a file that holds your copy of the key (bring it from
 where you keep it; the file of the host's own key is refused, since it is lost with the host). It compares the whole key as well and
 never creates a key; `show` is the command that creates one on an installation that has none. `bash scripts/backup-key-escrow.sh check`
@@ -2007,6 +2061,30 @@ one rerun with both sets of options does.
    passwords under
    [Secrets that rotate-keys does not change](#secrets-that-rotate-keys-does-not-change),
    then take a new backup.
+## Retire or lose a host
+
+A host that is lost, stolen, sold, scrapped, or whose disk goes for repair holds everything that matters in its state directory and
+in the backups beside it. If the disk was **not encrypted** ([Host prerequisites](#host-prerequisites)) assume the files were read.
+Do these, in this order, from another machine when the host is gone (the installation itself is replaced by
+[Recover a lost host from the USB drive](#recover-a-lost-host-from-the-usb-drive)):
+
+1. **Rotate the signing keys** on the installation that now serves the facility (the replacement host, after the recovery):
+   `bash rotate-keys.sh --yes` ([Rotate signing keys](#rotate-signing-keys)). Until it is done, whoever holds the old
+   `compose.env` can mint API keys that this backend still accepts. Everyone signs in again; unused break-glass codes are voided.
+2. **Delete the tunnel in Cloudflare** (Zero Trust, Networks, Tunnels) of the retired host, so its credential stops working; the
+   replacement host uses its own tunnel ([Cloudflare Tunnel ingress](#cloudflare-tunnel-ingress)).
+3. **Replace the MSG91 key**: create a new one in the MSG91 account, delete the old one there, and give the new one to the
+   replacement through `setup.sh --operator --provider-env`.
+4. **Revoke the Slack webhook URLs** (facility and sensors) and the heartbeat URL, and create new ones
+   ([Secrets that rotate-keys does not change](#secrets-that-rotate-keys-does-not-change)).
+5. **Rotate the database passwords, the superuser included**: `npm run db:rotate-passwords -- --yes --superuser`
+   ([Rotating the database passwords](#rotating-the-database-passwords)).
+6. **Re-enrol the USB backup drives** that were used with the retired host ([USB backup drive](#usb-backup-drive)), and decide what
+   to do with the old backups on them: they hold the whole database and the photos, unencrypted.
+7. **Keep the backup key** (`config/backup.key`) copy that is stored away from the host: a restore needs it. If a copy of it
+   was on the retired host or its drive, see its row in the table in the next section.
+8. Wipe the retired disk (a full-disk-encrypted one needs only its key destroyed) before it leaves your hands.
+
 ### Secrets that rotate-keys does not change
 
 `rotate-keys.sh` replaces the JWT secret and the two API keys derived from it. `compose.env`, and so every unencrypted
@@ -2023,6 +2101,10 @@ from the internet through the tunnel: they matter to someone who also reaches th
 | `SENSOR_INGEST_KEY` | Posting sensor readings to this installation's ingest function, from anywhere the gateway is reachable (sensors profile). | Mint a new key with a new label (`bash scripts/compose.sh exec -T db psql -X -qAt -v ON_ERROR_STOP=1 -U supabase_admin -d postgres -v label=<new label> < scripts/sensor-ingest-key.sql`, which prints it once), set it, recreate the bridge, then revoke the old one (`bash scripts/compose.sh exec -T db psql -X -q -v ON_ERROR_STOP=1 -U supabase_admin -d postgres -c "UPDATE warehouse_security.sensor_ingest_keys SET revoked_at = now() WHERE label = '<old label>' AND revoked_at IS NULL"`); [SENSORS.md](SENSORS.md#ingest-keys). |
 | `POSTGRES_PASSWORD` | The superuser login (`supabase_admin`), from inside the Compose network or the host. | `npm run db:rotate-passwords -- --yes --superuser`; see [Rotating the database passwords](#rotating-the-database-passwords). |
 | `DB_PASSWORD_AUTHENTICATOR`, `DB_PASSWORD_STORAGE` (every install), `DB_PASSWORD_POOLER` (only after `pooler.sh on`) | Each one database login of one service (PostgREST, Storage, the pooler's pool user), from inside the Compose network. | `npm run db:rotate-passwords -- --yes`; see [Rotating the database passwords](#rotating-the-database-passwords). |
+| The MSG91 key (`MSG91_AUTH_KEY` in `compose.env`, with the template, PE and sender ids) | Sending SMS from the facility's MSG91 account, at the facility's cost, by anyone who holds the key. | Create a new key in the MSG91 account and delete the old one there, then rerun `setup.sh --operator` with your usual inputs and `--provider-env` (a private file holding the new key); see "MSG91 provider file" in the setup options table above. |
+| The backup key (`config/backup.key`, and every copy of it) | Signing backups (a leaked key lets someone forge a backup that a restore accepts) and opening the USB archives, which are encrypted with it (with a copy of a drive, a leaked key reads the whole database and the photos). | Replace it, with the steps under [Backup key](#backup-key) ("If the key itself may have been disclosed"): move it aside, take a new backup, store and confirm the new copy, re-sign the saved images and enrol each USB drive again. |
+| The Cloudflare Tunnel credential (`~/.cloudflared/<id>.json` or the tunnel token, and `cert.pem`) | Running a connector for this facility's hostname: whoever holds it can answer requests for the public address. | Delete the tunnel in Cloudflare (Zero Trust, Networks, Tunnels) and create a new one with `scripts/tunnel.sh create`; see [Cloudflare Tunnel ingress](#cloudflare-tunnel-ingress). |
+| The heartbeat URL (`config/heartbeat-url`) | Pinging the dead-man switch, by anyone who holds the URL. | Create a new check in the monitoring service, delete the old one, and rerun `setup.sh --operator` with `--heartbeat-url-file`. |
 | `SECRET_KEY_BASE`, `VAULT_ENC_KEY` (only after `pooler.sh on`) | Pooler session signing; encryption of the pooler's stored tenant credentials. | No supported procedure yet; see below. |
 
 These procedures are **not exercised by CI**. Take a `db:backup` first and check with `node scripts/doctor.mjs --local`
@@ -2122,6 +2204,10 @@ the restore recreates its role, schema and `_supabase` database, and `bash scrip
 
 ## Rerun and upgrade
 
+A recreated container starts with an empty log, so `upgrade.sh`, `setup.sh` (on a state that already has containers), `rotate-keys.sh` and
+`scripts/rotate-db-passwords.sh` first save, before their first change, the last 48 hours of the log of `gateway`, `gateway-lan`, `functions`, `rest` and `supavisor`, redacted (secrets, tokens and query strings removed), in `$WAREHOUSE_STATE_DIR/diagnostics/pre-<label>-<utc>/`
+(the newest five directories are kept, and always the newest `pre-upgrade-*` one; a failure to save prints one line and does not stop the command). Plan for up to about 290 MB a copy, 1.7 GB in all. The copies hold what the live logs hold: client addresses, paths, status codes, request ids and error text, but no query string, token or password. Keep the directory private. [MONITORING.md](MONITORING.md#finding-one-request) says how to search them.
+
 A rerun is the same `setup.sh --operator ...` command with the same inputs against the same state directory. It
 regenerates nothing that already exists: identity, signing keys, database, stored files, the administrator and the provider
 lines are preserved (a different `--provider-env` file replaces only the MSG91 lines; the `--central-…` options set or
@@ -2142,6 +2228,14 @@ bash upgrade.sh --dry-run vX.Y.Z       # first: runs every check, prints what th
 bash upgrade.sh vX.Y.Z                 # then the real run, once you have done what the dry run listed under "before"
 sudo bash scripts/backup-usb.sh setup --state "$WAREHOUSE_STATE_DIR"   # only if you use a USB backup drive
 ```
+
+**Signed releases.** A release tag is signed by the maintainer. Once your checkout lists a signing key (`.github/allowed_signers`),
+`upgrade.sh` checks the tag against that list, as committed in the checkout you run now (never the list of the release it installs), and
+refuses with "is not signed by a key listed in .github/allowed_signers of this checkout ... Nothing was changed" when the tag is unsigned,
+signed by another key, signed with PGP or X.509 instead of SSH, a lightweight tag, or a signed object published under another name; it also refuses a release that lists no signing key when your checkout lists one (a dropped key list), and refuses on git older than 2.34. Do not work around the refusal:
+a tag that fails the check is not the maintainer's release; report it (SECURITY.md) and ask which release to use. A checkout from before signed releases lists no key: `upgrade.sh`
+prints a warning that shows the fingerprint(s) of the key(s) the release lists, to compare with the fingerprint published in the README ("Security") and in the release note, and goes on; the checkout it installs checks the releases after it. `--ref` is for development and is not verified.
+The upgrade record keeps `signature=checked|unchecked|ref`; a resumed upgrade says "Signature: not checked again" and shows it.
 
 **Run the dry run first, and do what it lists under "before".** `upgrade.sh` holds the operator lock from start to end (the monitoring checker
 judges nothing meanwhile; its `operator_lock_stuck` alert fires after 2 hours, or after twice the time of the last backup plus the last verify when that is longer) and prints the operator actions of `CHANGELOG.md` between your
@@ -2171,6 +2265,7 @@ recorded: the nightly pass does that, and so does `upgrade.sh` for the backup it
 be restored, the refusal quotes the restore's own last message: the host (free disk space or memory, a database image that has to be pulled
 while the host is offline) is as likely a cause as the backup. With no verified backup on record it warns that it did not rehearse and the
 upgrade goes on (the migrations then run for the first time on the live database, after the checkout).
+*Pre-pull.* Last of its checks, for a release tag, the preflight pulls the release's images while the facility still serves (below, "An upgrade pulls the release's images before it closes the API").
 Any refusal says "Nothing was changed". The facility is closed to phones for the backup, the proof that it restores and
 the setup of the release (*While it upgrades*, below). **Run it inside `tmux` or `screen` when you are connected over SSH:** a dropped connection stops it
 half way (the rerun below finishes it, but there is no reason to need that). Run it as the installation user, not with `sudo`.
@@ -2231,7 +2326,7 @@ example `bash upgrade.sh v0.8.0 -- --alert-webhook-file /secure/slack.txt --gate
 *If it stops.* Before its first change `upgrade.sh` writes `$WAREHOUSE_STATE_DIR/config/upgrade-in-progress` (mode 0600): the old
 commit, the target, the setup inputs and the current step, whether the release had a preflight (`preflight=ok` or `absent`) and the tag of the
 saved images (`pre_images=`), whether it closed the API (`maintenance=on`; `maintenance=opened` once it was opened and only the health check after that failed); once the backup has been proved to restore, also the path of that backup.
-The file is deleted when the upgrade succeeds, and while it exists `doctor`, `start.sh`, `bash scripts/watch-timer.sh status` and
+The file is renamed to `config/upgrade-last` when the upgrade succeeds (see [Found a problem after the upgrade](#found-a-problem-after-the-upgrade)), and while it exists `doctor`, `start.sh`, `bash scripts/watch-timer.sh status` and
 `node scripts/watch.mjs status` say "an upgrade from X to Y was interrupted at step Z" (a run killed by a power cut or a lost SSH
 connection leaves it too). A failed step prints the same facts, then both ways out.
 
@@ -2275,6 +2370,41 @@ connection leaves it too). A failed step prints the same facts, then both ways o
 Every run that gets past the checks adds a line to `$WAREHOUSE_STATE_DIR/config/upgrades.log` (UTC time, from, to, the old commit,
 the backup, `resumed` for a rerun, then `ok` or the step it failed at).
 
+### Found a problem after the upgrade
+
+An upgrade that finished can still turn out wrong a day later. The first choice is **the next patch release of the release you moved
+to**: it fixes forward and loses nothing, and `bash upgrade.sh vX.Y.Z` takes you there. Going back is the last resort, because it puts the
+database back to the backup that `upgrade.sh` took before the upgrade, and everything the facility recorded after that backup is gone:
+every receipt, dispatch, invoice and order entered on phones since the upgrade finished.
+
+When a successful upgrade ends, `upgrade.sh` keeps its record as `$WAREHOUSE_STATE_DIR/config/upgrade-last` (mode 0600: the same facts as
+`upgrade-in-progress`, with `finished=` and `result=ok`; the next successful upgrade replaces it). `doctor`, `start.sh` and the checker
+do not report it, because it is history, not a warning. To see the way back and what it costs:
+
+```bash
+cd /path/to/installed/backend
+node scripts/upgrade-record.mjs rollback --last
+```
+
+It only prints; it changes nothing. The printout starts with a warning that names the time the backup was taken and the loss, then the
+same list as [If it stops](#rerun-and-upgrade) (old commit, `stop.sh`, the saved images put back, the in-place restore of the backup,
+the old release's setup, the `functions` recreate, `doctor`), with three differences. Its **first line is
+`cp -p .../config/upgrade-last .../config/upgrade-in-progress`**: it puts the finished upgrade back on record as an interrupted one, so
+that from then on `doctor`, `start.sh` and the checker say "an upgrade was interrupted" and name the way out, and the checker repairs
+nothing meanwhile (the mode 0600 is kept). The second line is `bash scripts/maintenance.sh on`, which closes the API so that phones record
+nothing more that the restore would then lose; then, when the checkout has it, the diagnostics save (`service-diagnostics.mjs save rollback`), and only then the old commit (`git checkout`). `bash scripts/maintenance.sh off` opens it again before the `doctor`. The last line
+removes both `config/upgrade-in-progress` and `config/upgrade-last`; run it when `doctor` is green on the old release. When the images the
+upgrade saved (`pre-<release>`) are no longer on the host, the printout leaves out the two image lines and says the old release's setup builds
+its images again, which needs the network. `rollback --last` exists from the release after the one that introduced `upgrade-last`: an
+installation whose last upgrade was made by an older `upgrade.sh` has no `upgrade-last`, and the command says so. The command
+refuses, with one sentence, when there is no finished upgrade on record, when an upgrade is recorded as interrupted (use `rollback`
+without `--last`), when the backup folder is gone (the nightly pruning keeps the verified backup of an upgrade for 60 days), or when the
+checkout is not at the release that upgrade installed. Report the problem with the release number, whichever way you go.
+
+CI drills this list on every change: its `operator-upgrade` job makes an upgrade fail inside setup, runs the lines that
+`node scripts/upgrade-record.mjs rollback` prints, exactly as printed, and requires the previous release to be running again with the same
+rows.
+
 <details>
 <summary>What upgrade.sh does (the manual sequence, when you want each step by hand)</summary>
 
@@ -2314,7 +2444,7 @@ sudo bash scripts/backup-usb.sh setup --state "$WAREHOUSE_STATE_DIR"   # only if
    the API through them.
    Then `scripts/maintenance.sh off` of the new release opens the API and runs the health check.
 7. The public `node scripts/doctor.mjs`, which `upgrade.sh` leaves to you.
-8. A line in `upgrades.log`, the record deleted, and the `pre-` image tags of earlier upgrades removed.
+8. A line in `upgrades.log`, the record renamed to `config/upgrade-last`, and the `pre-` image tags of earlier upgrades removed.
 
 The last manual line keeps the USB choices of your earlier setup (`--no-encrypt` if you typed it, `--daily`, `--no-fresh-backup`, `--keep`); it prints them, so
 check that line. Database migrations need no separate step: setup applies them. If setup prints a
@@ -2334,6 +2464,18 @@ start then replaces only the containers whose image changed. What to expect:
   every image in use once. That needs the network and can take a good while on
   a small machine; later reruns print "Images match their recipes; nothing to
   rebuild." and need no network.
+- **An upgrade pulls the release's images before it closes the API.** The preflight of the release you move to
+  (`scripts/upgrade-prepull.sh`, after the rehearsal of the migrations) downloads that release's `release-images.json` the same way,
+  checks it against the release's commit, and runs `docker pull` of every image it lists by digest, and of the Docker Hub images that
+  `docker/docker-compose.yml` of the release names by digest (PostgREST, for example), while the facility still serves. It prints
+  `Pre-pull of images: done (N image(s) of vX.Y.Z, M base image(s))`. It only pulls: it tags nothing, so the images that run now stay
+  what they are until setup, and the way back still puts the old ones back. Setup then finds the images on the host and does not need
+  the registry during the downtime. A download or a pull that fails, or an image of another digest or commit, refuses the upgrade with
+  "Nothing was changed"; run the command again when the network answers. `--ref` and a host that is not x86-64 pull nothing, and
+  `--dry-run` only downloads and checks the list. A release that published no `release-images.json` (the download answers 404) is not
+refused: the preflight says so in one warning and setup pulls or builds inside the downtime, as before. The pull runs under the same
+operator lock as the rest of the upgrade; if a later check refuses, or you stop, the pulled images stay on the host (they are not tagged
+and cost only disk; `docker image rm <ref>` removes one).
 - **At a release tag, an image that needs building is pulled when the release published it.** A checkout exactly at a tag
   (`vX.Y.Z`, which is what `upgrade.sh vX.Y.Z` leaves and what a fresh clone of the tag is) downloads that release's
   `release-images.json` from the GitHub Release (https, one file, 60 seconds). The release workflow built every image of the tag
@@ -2342,7 +2484,7 @@ start then replaces only the containers whose image changed. What to expect:
   its recipe. For each service setup would build whose fingerprint equals the one in the file, it runs `docker pull` of
   `<service>@sha256:<digest>`, checks that the image on the host carries that digest, tags it `<project>-<service>` and records it as a build
   would, so nothing downstream differs. It prints which services were pulled and which built, for example
-  `Pulled 4 image(s) from the release (db functions pdf-renderer storage) and built 1 here (gateway).` Everything else builds here as
+  `Taken from the release: 4 (0 already on this host) (db functions pdf-renderer storage); built 1 here (gateway).` ("already on this host" counts the images the upgrade preflight pulled ahead) Everything else builds here as
   always, with one line that says why: a checkout that is not at a tag (`main`, a branch, a copy you changed), a release whose file
   is missing or cannot be read (the release is still a draft, GitHub or `ghcr.io` cannot be reached), a file that names another
   commit or release, or a reference outside `ghcr.io/abhiguru/supabase-warehouse-template`, a recipe in your checkout that is not
@@ -2536,9 +2678,14 @@ console session signed in at all, a physical re-plug of the drive, a USB run tha
 
 ### Prerequisites
 
-- Windows 10 22H2 (verified) or Windows 11 (not verified yet), Pro or Enterprise, x64. Windows 10 22H2 is out of Microsoft's
-  support. The Home edition is not verified. This route has the Cloudflare tunnel only, with no LAN fallback
-  ([Ingress and the LAN](#ingress-and-the-lan)).
+- **Windows 11 (Pro, Enterprise or Home), x64, is the supported host.** Windows 10 is at your own risk: the steps below were
+  verified on Windows 10 22H2, which is out of Microsoft's support, and not yet on Windows 11. Home has no Group Policy editor, so
+  the "no auto-restart" policy of [Windows Update](#windows-update) is set in the registry there. This route has the Cloudflare tunnel only,
+  with no LAN fallback ([Ingress and the LAN](#ingress-and-the-lan)).
+- **Full-disk encryption is recommended**: BitLocker (Pro, Enterprise) or device encryption (Home) on the drive that holds the
+  distro's virtual disk, because the whole installation, its keys included, is one file on it. `doctor` cannot see this from
+  inside Ubuntu and stays silent. Check from PowerShell [PS-admin]: `manage-bde -status C:` should say `Protection On`
+  (and `Conversion Status: Fully Encrypted`). Keep the recovery key away from this machine.
 - Hardware virtualisation on in the firmware. When Windows is itself a virtual machine, nested virtualisation (VT-x/EPT or the
   equivalent) must be switched on for that machine: WSL2 does not start without it. Check from PowerShell:
 
@@ -2571,6 +2718,25 @@ console session signed in at all, a physical re-plug of the drive, a USB run tha
 **Where the data lives.** The distro, with the whole installation, is one virtual disk file (`ext4.vhdx`) under that Windows
 account's profile. Never run `wsl --unregister` for this distro, never delete that Windows account or its profile, and do not
 reinstall Windows without a copy of a backup from outside the host ([Backups off the host](#backups-off-the-host-windows)).
+
+### Watch the Windows drive
+
+Inside Ubuntu, `/` is the filesystem of `ext4.vhdx` and shows its virtual size (about 1 TB), so `df` there looks roomy while the
+Windows drive that holds the file fills up. When that drive is full the file cannot grow and PostgreSQL stops with no earlier sign.
+The drive to watch is the one that holds the distro's `ext4.vhdx`: normally `C:`, which Ubuntu sees as `/mnt/c`.
+
+- **Keep 20 GiB free on that drive** (and, for the monitoring alert, 10 % of the drive). `npm run doctor` refuses a new installation
+  below it (`--host-preflight`) and warns on a later run; `scripts/backup.sh` refuses a backup that would leave the drive below it, before
+  anything is stopped; the monitoring checker raises `disk_vhdx_drive_low` ([MONITORING.md](MONITORING.md)) and counts the same floor into
+  `restore_space_low`. The drive counts only if it really is a Windows drive mount (type `9p`, `drvfs` or `virtiofs`); an empty `/mnt/c`
+  folder on the Linux filesystem does not.
+- **A drive that cannot be read** (not mounted, a mount that does not answer within 10 seconds, or not a Windows mount) is not passed over:
+  the checker raises `disk_vhdx_drive_low` saying it cannot read the drive, and `doctor` and `backup.sh` print a warning and go on.
+- **If the distro is on another drive** (it was moved with `wsl --export` and `wsl --import`), name that drive's mount point in the
+  installation's `config/compose.env`, on a line of its own: `VHDX_DRIVE=/mnt/d`. The monitoring checker, `doctor` and `scripts/backup.sh`
+  all read it (the default is `/mnt/c`), so no timer unit needs changing; a rerun of setup and a restore keep the line, because the
+  backup holds `compose.env`. `WAREHOUSE_VHDX_DRIVE` in the environment overrides it for one run. The file is the
+  one named by `BasePath` under `HKCU\Software\Microsoft\Windows\CurrentVersion\Lxss` for the distro's key.
 
 ### WSL and Ubuntu 24.04 with systemd
 
@@ -2712,7 +2878,7 @@ powershell -NoProfile -ExecutionPolicy Bypass -File \\wsl.localhost\Ubuntu-24.04
   `powershell -NoProfile -ExecutionPolicy Bypass -File $env:TEMP\register-tasks.ps1`. Use the temp folder of your own account,
   not `C:\Temp`: a folder that other users can write to is unsafe for a script that runs elevated. An execution policy set by
   Group Policy overrides `-ExecutionPolicy Bypass`.
-- Parameters: `-Distro` (default `Ubuntu-24.04`), `-BusId` (also registers the USB task, see
+- Parameters: `-Checkout` with `-State` (also register the best-effort shutdown task below), `-Distro` (default `Ubuntu-24.04`), `-BusId` (also registers the USB task, see
   [Backups off the host](#backups-off-the-host-windows)), `-UsbOnly`, and `-Force` (replace tasks that exist (verified); without it the
   script refuses). The script checks that it is elevated and that the distro exists before it changes anything, asks once for the
   password, never stores or prints it, starts the task, and reads it back: State, LastRunTime, LastTaskResult, the triggers
@@ -2731,8 +2897,16 @@ powershell -NoProfile -ExecutionPolicy Bypass -File \\wsl.localhost\Ubuntu-24.04
   again about 40 seconds to 2 minutes after `wsl --shutdown`, about 85 seconds after `wsl --terminate`, and about 70 to 90
   seconds after a host reboot with nobody signed in.
 
-Nothing stops the stack cleanly when Windows shuts down or restarts for an update (not verified yet): the processes are killed
-and PostgreSQL recovers its log on the next start. For a planned shutdown follow the next section.
+**Best-effort clean stop at shutdown.** With `-Checkout` and `-State` (the Linux paths of the checkout and of the state directory
+inside the distro) the script also registers "Warehouse WSL stop": it runs when Windows starts a shutdown or restart (System log
+event 1074, source User32) and runs `wsl.exe -d <distro> -- env WAREHOUSE_STATE_DIR=<state> bash <checkout>/stop.sh --on-host-shutdown`
+with a 90-second limit. It is not started when it is registered. It is **best effort and not verified**: Windows may kill WSL
+before the stop finishes, and then, as without the task, PostgreSQL recovers its log on the next start. `--on-host-shutdown`
+stops the stack like `stop.sh` but writes no `config/stopped-by-operator` file, so the stack starts again by itself after the
+restart (a plain `stop.sh` keeps it down until `start.sh`). Without the task nothing stops the stack cleanly when Windows
+shuts down or restarts for an update: the processes are killed and PostgreSQL recovers its log on the next start. For a
+planned shutdown follow [Planned work and updates](#planned-work-and-updates). After a restart the next daily "Monitoring is alive"
+message says "Host restarted at HH:MM" once ([MONITORING.md](MONITORING.md)).
 
 ### Ingress and the LAN
 
@@ -2748,6 +2922,27 @@ nothing is published to the Windows network.
   networking (`networkingMode=mirrored` in `.wslconfig`) is not verified. A facility on this route has no fallback if the
   internet or Cloudflare is down.
 - The external doctor runs inside the distro, on the install host ([External doctor](#external-doctor)).
+- Because there is no LAN fallback here, an internet outage stops the facility. Put the host behind a **dual-WAN or 4G/5G-failover
+  router** (a second line that takes over when the first fails) so that an ISP outage does not stop GRN and dispatch; the tunnel
+  reconnects by itself over the other line.
+
+### Windows Update
+
+An update that restarts Windows in the middle of the day or of the backup window stops the facility for minutes and kills
+PostgreSQL abruptly. Keep it to a time nobody works, and set it once (not verified on a facility host):
+
+- **Active hours** (Settings, Windows Update, Advanced options, Active hours; up to 18 hours): cover the working day **and the backup
+  window** (the daily backup runs at `--daily-at` and up to 6 hours after, [Monitoring](MONITORING.md)), so Windows does not restart then.
+- **No auto-restart with logged on users** (Pro and Enterprise: Group Policy, Computer Configuration, Administrative Templates,
+  Windows Components, Windows Update, "No auto-restart with logged on users for scheduled automatic updates installations", Enabled;
+  Home: the registry value `NoAutoRebootWithLoggedOnUsers` = 1 under `HKLM\SOFTWARE\Policies\Microsoft\Windows\WindowsUpdate\AU`).
+  A host that nobody is signed in to can still restart, which is why the active hours matter.
+- **Defer feature updates** (Group Policy "Select when Preview Builds and Feature Updates are received", or Settings, Pause updates)
+  until you have run [Planned work and updates](#planned-work-and-updates) for them on a quiet day.
+- **WSL comes from the Store**: keep its updates on (Microsoft Store, Library, Get updates) and run `wsl --version` **once a month**; update
+  it in a planned window (`wsl --update` is in the order below), because it shuts the distro down.
+- Register the best-effort shutdown task above, and read the "Host restarted at" line of the daily message: a restart you did not plan
+  is a reason to check the update settings.
 
 ### Planned work and updates
 
@@ -2775,6 +2970,13 @@ but the stack is stopped (for example after `stop.sh`); both are normal.
 version afterwards were not read back): it stopped the distro, which then stayed down while the task is disabled. Recovery after an update with the task enabled is not verified. The package work of
 [Monthly host maintenance](#monthly-host-maintenance) is done inside Ubuntu as written; a restart of the host is the Windows
 restart in step 4 of this list, not `sudo reboot` (not verified yet).
+
+**Reclaim space on the Windows drive (not verified).** The virtual disk file only grows by itself. Do not mark it sparse
+(`wsl --manage ... --set-sparse true`): that setting is reported to corrupt `ext4.vhdx`. To give freed space back, in a planned
+window with no live facility: take a fresh backup and copy it off the host first ([Backups off the host](#backups-off-the-host-windows)),
+run `sudo fstrim -av` inside Ubuntu, stop the distro with `wsl --shutdown`, then compact the file from an elevated PowerShell with
+`Optimize-VHD -Path <ext4.vhdx> -Mode Full` (Hyper-V module) or `diskpart` (`select vdisk file=<ext4.vhdx>`, `compact vdisk`). This
+sequence has not been run on this stack; if you cannot take the backup off the host first, do not compact.
 
 ### Sensors (Windows)
 
@@ -2858,7 +3060,7 @@ has to reach the distro (run from an elevated PowerShell in the test; the usbipd
 **Without the task the attach does not survive a restart.** After a host reboot the drive was listed as Shared, not Attached
 (verified); it is also expected to detach whenever the distro stops (`wsl --shutdown`, a WSL update; not read back in the test), and
 every plug-in on Windows needs an attach too. The "Warehouse USB" task is the answer to that: it was run through a host restart and a
-`wsl --shutdown`. Still check `usbipd list` for "Attached" after every restart and use the manual attach if it says "Shared". If nobody does, the `usb_backup` alert and `npm run doctor` warn once the last copy is over 7 days old
+`wsl --shutdown`. Still check `usbipd list` for "Attached" after every restart and use the manual attach if it says "Shared". If nobody does, the `offhost_copy_missing` alert and `npm run doctor` warn once the last copy is over 7 days old
 (the default of `WAREHOUSE_USB_BACKUP_MAX_AGE_DAYS`). Printing over USB has the same limits
 ([PRINTING.md](PRINTING.md)), and is not verified on this route. Copying files to a Windows drive through `/mnt/<drive>` loses the
 extended attributes and ownership that a restore needs from the stored photos, so it is not a substitute.
@@ -2884,3 +3086,6 @@ Before the facility goes live, on this host, with nobody signed in to Windows:
    ([Backups off the host](#backups-off-the-host-windows)). If it shows Shared, this host does not pass: report it; a manual
    `usbipd attach` is only a stopgap, not acceptance.
    Printing, where the facility uses it, is not verified on this route either.
+6. **WAN pulled** (a facility with a dual-WAN or failover router): unplug the primary internet line. Within a few minutes the public address
+   answers `get-public-config` again over the other line and `node scripts/doctor.mjs` passes; plug the line back in. A facility with one line
+   instead records that an ISP outage stops GRN and dispatch.

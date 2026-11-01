@@ -306,8 +306,10 @@ RESET ROLE;
 
 -- 8. Invoice numbers: whole numbers, per financial year (today) or counting on across years.
 SELECT pg_temp.nd_rule('invoice', '{"scheme":"year"}')->>'changed' AS _ \gset
+-- (The receipt exists since migration 139 made invoice.gr_id a foreign key.)
+INSERT INTO public.goodsreceived(gr_no, customer_id, date) VALUES ('NUMGRN', :'customer_id', now()) RETURNING id AS numgrn_id \gset
 INSERT INTO public.invoice(inv_fin_year, inv_no, gr_id, gr_no, customer_id, customer_name, inv_date, labour, tax_amount, total, discount)
-SELECT f.y, f.n, gen_random_uuid(), 'NUMGRN', :'customer_id', 'Numbering Customer', now(), 0, 0, 0, 0 FROM (VALUES (2090, 40), (2090, 7), (2091, 12)) AS f(y, n);
+SELECT f.y, f.n, :'numgrn_id'::uuid, 'NUMGRN', :'customer_id', 'Numbering Customer', now(), 0, 0, 0, 0 FROM (VALUES (2090, 40), (2090, 7), (2091, 12)) AS f(y, n);
 SELECT pg_temp.nd_assert(warehouse_security.document_number_suggestion('invoice', NULL, 2090)->>'number' = '41'
   AND warehouse_security.document_number_suggestion('invoice', NULL, 2091)->>'number' = '13'
   AND warehouse_security.document_number_suggestion('invoice', NULL, 2092)->>'number' = '1', 'year: each financial year counts for itself');
@@ -318,7 +320,7 @@ SELECT pg_temp.nd_assert(warehouse_security.document_number_suggestion('invoice'
   AND warehouse_security.document_number_suggestion('invoice', NULL, 2092)->'hint' = '"#"'::jsonb, 'sequence: the highest of every year plus 1, in any year');
 -- An invoice number that has reached the ceiling: the words name a financial year only when the rule counts per year.
 INSERT INTO public.invoice(inv_fin_year, inv_no, gr_id, gr_no, customer_id, customer_name, inv_date, labour, tax_amount, total, discount)
-VALUES (2093, 99999999, gen_random_uuid(), 'NUMGRN', :'customer_id', 'Numbering Customer', now(), 0, 0, 0, 0);
+VALUES (2093, 99999999, :'numgrn_id'::uuid, 'NUMGRN', :'customer_id', 'Numbering Customer', now(), 0, 0, 0, 0);
 SELECT pg_temp.nd_assert(warehouse_security.document_number_suggestion('invoice', NULL, 2090) = jsonb_build_object('number', NULL, 'hint', '#', 'scheme', 'sequence', 'reason', 'SERIES_FULL',
     'message', 'No invoice number is left', 'sqlstate', 'WH409'), 'sequence: the ceiling is no financial year'||warehouse_security.document_number_suggestion('invoice', NULL, 2090)::text);
 SELECT pg_temp.nd_rule('invoice', '{"scheme":"year"}') AS _ \gset

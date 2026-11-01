@@ -318,7 +318,10 @@ front; the checker reads both logs together (`checkApiLogs`).
 ## Logs
 
 What a service log may hold, for the 3 x 10 MB of `json-file` log each service keeps (`docker/docker-compose.yml`,
-`x-logging`; the oldest file is dropped when the third fills, and a recreated container starts with an empty log).
+`x-logging`; the oldest file is dropped when the third fills, and a recreated container starts with an empty log). The gateway services
+(`gateway`, `gateway-lan`) keep 10 files of 10 MB instead of 3, since they write a line per request: up to 100 MB each. Before an upgrade, a key rotation or a
+database password rotation recreates containers, `node scripts/service-diagnostics.mjs save <label>` writes the last 48 hours of each service log, through
+the same redaction as the other diagnostics, to `<state>/diagnostics/pre-<label>-<utc>/` (directory 0700, files 0600, the newest 5 kept, and the newest `pre-upgrade-*` one always, since the way back of an upgrade may need it). The five services saved are `gateway`, `gateway-lan`, `functions`, `rest` and `supavisor` (the last two only while running or with their profile). Worst case on disk: about 290 MB a copy (100 + 100 + 30 + 30 + 30 MB of log) and so about 1.7 GB for the six copies kept. The copies are redacted beyond the rule above: a query string in a quoted request line (nginx's error line, PostgREST's request log) becomes `?[REDACTED]`, and the referer and user agent PostgREST appends are removed; they still hold client addresses, so they are as private as the live logs. They are not rotated by Docker: only the count above removes them.
 
 - **The rule.** No log line holds a token, a key, an OTP, a password or a query string. A signed storage link
   (`?token=`) is a credential in a query string: a retained log that holds one can replay a still-valid document link.
@@ -326,8 +329,13 @@ What a service log may hold, for the 3 x 10 MB of `json-file` log each service k
   identifies a person: no user agent, no referer, no phone number, no session.
 - **Gateway access log** (`docker/nginx/nginx.conf`, `log_format warehouse_redacted`, on the container's stdout): a short
   format that replaces nginx's default `combined` one, which writes the whole request line, query string and all. A line is
-  `client-address [time] "METHOD /path HTTP/x" status bytes seconds`, for example
-  `203.0.113.7 [17/Oct/2026:17:43:35 +0000] "GET /storage/v1/object/sign/docs/a.pdf HTTP/1.1" 200 478 0.034`. `$uri` is
+  `client-address [time] "METHOD /path HTTP/x" status bytes seconds request-id`, for example
+  `203.0.113.7 [17/Oct/2026:17:43:35 +0000] "GET /storage/v1/object/sign/docs/a.pdf HTTP/1.1" 200 478 0.034 0123456789abcdef0123456789abcdef`. The
+  request id (`$request_id`) is 32 random hexadecimal characters made for each request: it is random and carries no user data. The gateway
+  also sends it to PostgREST, Storage and the functions (replacing any `X-Request-Id` the client wrote) and returns it in the `X-Request-Id`
+  answer header, so one request can be followed through the logs ([MONITORING.md](MONITORING.md#finding-one-request)). Storage logs it as the request id of its own
+  lines (`REQUEST_ID_HEADER`); PostgREST does not log it; the function logs write `request_id=` on their server-side error lines, and only an id of
+  exactly this form. `$uri` is
   the path without the query. Do not add `$request`, `$request_uri`, `$args`, `$query_string`, `$http_referer` or
   `$http_user_agent`; `tests/gateway-config.test.mjs` fails if one appears, and `npm run test:gateway` sends a fictional
   signed-link request and fails if the running gateway's log holds `token=`. The
@@ -339,7 +347,7 @@ What a service log may hold, for the 3 x 10 MB of `json-file` log each service k
   names, so the client address no longer reaches storage or its log. (Kong could remove `CF-Connecting-IP` only: it added
   `X-Real-IP` and `X-Forwarded-For` itself after its plugins had run.) Storage does not use the address: its
   image-render rate limit is off (`RATE_LIMITER_ENABLED` is unset).
-- **Residual: the gateway's error log.** nginx quotes the request line, query string included, in an error line (for
+- **Residual: the gateway's error log.** (A saved copy of it, `<state>/diagnostics/pre-*`, is redacted of query strings, so the exposure below is for the live log of 10 files only.) nginx quotes the request line, query string included, in an error line (for
   example `upstream timed out ..., request: "GET /storage/v1/object/sign/...?token=..."`). These lines appear only while
   a service fails (or for a body over its size limit, which nginx also logs with the request line), but a signed link that failed while it was valid stays in the log until it rotates out. The document
   functions make a signed link valid for one hour, so the exposure ends then. A request refused by the rate limit writes no
@@ -443,7 +451,10 @@ checks the digest of the image it got and that its revision label is its checkou
 candidate), a published release's tag and assets, `release-images.json` among them, cannot be changed or deleted afterwards; (4) the
 revision label: the facility refuses an image built from any other commit than its own checkout's, which closes the substitution of an older
 release's genuine image for a current one in a replaced list. It also refuses a file for another release or commit and any reference
-outside `ghcr.io/abhiguru/supabase-warehouse-template`. **What it does not do:** no cryptographic signature of the images or the list is
+outside `ghcr.io/abhiguru/supabase-warehouse-template`. **Release tags are SSH-signed** ([RELEASE_CHECKLIST.md](RELEASE_CHECKLIST.md#signing-the-tag)): once a release lists a key in
+`.github/allowed_signers`, `upgrade.sh` refuses a tag not signed by a key of the installed checkout's own list, so a taken-over account
+or a moved tag alone does not reach a facility that already trusts that key (the first upgrade into the signed era has nothing to check
+against, and `--ref` is not verified). **What it does not do:** no cryptographic signature of the images or the list is
 checked on the host (no `cosign` or attestation tool is installed there), so the label is a statement by whoever pushed the image, not proof
 of who built it; a maintainer account that is taken over can publish a new release with images of its own, exactly as it could publish new
 code. Before immutable releases are switched on, the list is an ordinary release asset that anyone with write access to the repository's
@@ -589,7 +600,7 @@ golden-PDF job on every change.
 
 ## audit_log retention
 
-`audit_log` keeps 730 days (2 years). Its monthly partitions are created ahead (3 months), and partitions older than the cutoff are dropped by
+`audit_log` keeps 2920 days (8 years; migration 134 raised it from 730 days because GST records are kept 72 months). Its monthly partitions are created ahead (3 months), and partitions older than the cutoff are dropped by
 the daily chain (`watch.mjs`, `watch-daily.sh`, `retention.sh apply`, `run_database_retention`); see "Retention" in
 [OPERATOR_INSTALL.md](OPERATOR_INSTALL.md#retention).
 

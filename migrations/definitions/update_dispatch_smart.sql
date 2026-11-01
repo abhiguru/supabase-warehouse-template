@@ -56,6 +56,7 @@ DECLARE
     v_order_before jsonb;
     v_order_lots uuid[];
     v_order_effects jsonb;
+    v_registration_sent boolean := false;
 BEGIN
   PERFORM warehouse_security.authorize_rpc('update_dispatch_smart',jsonb_build_object('p_dispatch_id',p_dispatch_id));
     -- The list-refresh lock comes before any row lock (migration 46).
@@ -134,9 +135,14 @@ BEGIN
     END IF;
 
     -- Migration 130 (D17): the vehicle number fits the column (20 characters, as on a GRN); beyond that a plain refusal.
-    -- Migration 130: surrounding white space (spaces, tabs, line breaks, non-breaking spaces) is not stored, a blank one is NULL; the length is checked on the trimmed value.
-    IF jsonb_typeof(p_dispatch_data->'registration') = 'string' THEN
-        p_dispatch_data := jsonb_set(p_dispatch_data, '{registration}', COALESCE(to_jsonb(NULLIF(regexp_replace(p_dispatch_data->>'registration', '^[\s ]+|[\s ]+$', '', 'g'), '')), 'null'::jsonb));
+    -- Migration 130: surrounding white space (spaces, tabs, line breaks, non-breaking spaces) is not stored, runs of white space inside collapse to one space, a blank one is NULL; the length is checked on the trimmed value.
+    IF jsonb_typeof(p_dispatch_data->'registration') IN ('object', 'array', 'boolean') THEN
+        RETURN warehouse_security.grn_rate_failure('registration_invalid',
+            'Registration must be text', jsonb_build_object('field', 'registration'));
+    END IF;
+    IF jsonb_typeof(p_dispatch_data->'registration') <> 'null' THEN
+        v_registration_sent := true;
+        p_dispatch_data := jsonb_set(p_dispatch_data, '{registration}', COALESCE(to_jsonb(NULLIF(regexp_replace(regexp_replace(p_dispatch_data->>'registration', '^[\s\u00a0]+|[\s\u00a0]+$', '', 'g'), '[\s\u00a0]+', ' ', 'g'), '')), 'null'::jsonb));
     END IF;
     IF p_dispatch_data->>'registration' IS NOT NULL AND char_length(p_dispatch_data->>'registration') > 20 THEN
         RETURN warehouse_security.grn_rate_failure('registration_too_long',
@@ -288,7 +294,7 @@ BEGIN
     IF v_day_changed OR v_no_changed THEN
         SELECT i.inv_no, i.inv_fin_year INTO v_inv_no, v_inv_year
         FROM invoice_trl it
-        JOIN invoice i ON i.id = it.invoice_id AND i.deleted_at IS NULL
+        JOIN invoice i ON i.id = it.invoice_id AND i.deleted_at IS NULL AND i.cancelled_at IS NULL
         JOIN dispatch_trl dt ON dt.id = it.disp_trl_id
         WHERE dt.disp_id = p_dispatch_id
         ORDER BY i.inv_fin_year, i.inv_no, i.id
@@ -349,7 +355,7 @@ BEGIN
         UPDATE dispatch SET
             disp_no = COALESCE(p_dispatch_data->>'disp_no', disp_no),
             disp_date = CASE WHEN v_day_changed THEN v_sent_day::timestamptz ELSE disp_date END,
-            registration = COALESCE(p_dispatch_data->>'registration', registration),
+            registration = CASE WHEN v_registration_sent THEN p_dispatch_data->>'registration' ELSE registration END,
             customer_id = COALESCE((p_dispatch_data->>'customer_id')::uuid, customer_id),
             -- The stored names stay unless the customer or the supervisor changes; then they are the master
             -- tables' names, never the client's and never the old person's (migration 120). The old values are
@@ -388,7 +394,7 @@ BEGIN
         AND EXISTS (
             -- Only a live invoice counts, the rule get_dispatch_details shows (migration 120).
             SELECT 1 FROM invoice_trl it
-            JOIN invoice inv ON inv.id = it.invoice_id AND inv.deleted_at IS NULL
+            JOIN invoice inv ON inv.id = it.invoice_id AND inv.deleted_at IS NULL AND inv.cancelled_at IS NULL
             WHERE it.disp_trl_id = dt.id
         )
         AND (

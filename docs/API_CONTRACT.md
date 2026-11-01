@@ -74,6 +74,12 @@ version ("requires app version ..."). Where a section below says an older app ke
 before, a check that is skipped when the argument is absent), that describes behaviour kept for other callers such as fas-sync; it is
 not a promise to older builds, and the policy decides.
 
+The minimum is a window, not a pin: `minimumClientVersion` is the oldest build the release still answers, and CI checks the app commits that
+carry it (`MOBILE_MIN_REF` in `.github/workflows/ci.yml`, one per build handed out with that version) against every release, so nothing those
+builds call is dropped without the minimum being raised first
+([CONTRIBUTING.md](../CONTRIBUTING.md#the-oldest-supported-apps-mobile_min_ref)). CI compares names; changed argument names and grants are
+caught only by the live comparison of the release checklist, which runs against each of those commits.
+
 `get-public-config` (no sign-in) answers, besides the fields of the instance manifest:
 
 | Field | Where it comes from |
@@ -199,6 +205,32 @@ keeps its arguments, sorts, filters and answer; rows that tie on every sort key 
 `update_dispatch_smart`, `save_invoice`, `update_invoice`, ...) is still the authoritative result of that
 write.
 
+### The packaging word on invoice and report lines (migration 141)
+
+Additive only: every key that was there is unchanged. The value is `goodsreceived_trl.packaging` of the line's receipt lot (the same column the GRN and dispatch RPCs answer).
+
+| RPC | Where | New key |
+|---|---|---|
+| `generate_invoice_data_for_grn_with_pricing` (through `build_invoice_form_lines`) | `items[]` | `grn_items_packaging` |
+| `get_invoice_detail` | `items[]` | `packaging` |
+| `get_customer_dispatch_activity` | `dispatches[].items[]` | `packaging` |
+| `get_customer_activity_detail` | `top_stock_items[]` | `packaging` (the lots' word; `null` when the lots of that item have different words) |
+
+`get_invoice_data` (`items[].grn_item.packaging`, `items[].catalog.packaging`) and `get_customer_grn_activity` (`grns[].items[].packaging`) already answered it. `get_all_customer_activity_summary`, `get_all_dispatch_activity` and `get_all_grn_activity` list customers, not items, and have no line to carry it. Test: `tests/packaging_lines_141.sql`.
+
+### Direct table reads and list page sizes (migrations 137 and 138)
+
+- **Direct table reads return at most 2,000 rows; page with `Range`.** The PostgREST setting `PGRST_DB_MAX_ROWS` is 2000 in
+  `docker/docker-compose.yml`, so a read of `dispatch_trl`, `goodsreceived_trl` or any of the 12 readable tables is cut at 2,000 rows
+  whatever `limit` or `Range` it asks for. The app's paged direct reads ask for at most 500 rows per request. RPCs answer one `jsonb`
+  value and are not cut.
+- **`get_dispatch_list_with_items`** clamps `p_limit` to 1..200 (a missing value is 10) and `p_page` to at least 1; the answer's `limit` and
+  `current_page` are the values used. **`get_invoices_list`** clamps `p_limit` to 1..200 (a missing value is 50) and `p_offset` to at least 0
+  (a negative offset used to fail). A client that needs more rows pages through the list.
+- **Customers do not see deleted documents**, in the direct reads and in `get_grn_details`, `get_grn_item_dispatches`, `get_dispatch_details`,
+  `get_customer_dispatch_items` and `get_customer_stock_analysis_v2` (a deleted receipt or dispatch is "not found"; its lines are left out):
+  see [STAFF_GRN_POLICY.md](STAFF_GRN_POLICY.md).
+
 ### Sessions: the refresh lifetime and the break-glass code (migration 126, 2026-10-26)
 
 No function changes its arguments or the shape of an answer; the app needs no change. What changed is how long a refresh token's session lasts and one more code that `operator-otp/verify` accepts.
@@ -219,6 +251,43 @@ has the link "Sign in with a code from your facility", which asks for the facili
 - **Refusals.** `{"success": false, "error": "<text>", "code": "<code>"}`: `invalid_code` 400 (wrong code, no code open, an unknown number, or the number of a customer or other non-worker, all answered alike so that a probe learns nothing; "Invalid facility code"), `code_used` 400, `code_expired` 400, `code_locked` 400 (five wrong tries ended it; all three: ask the operator for a new code; these three are answered only to someone who presents the code that was issued, a wrong code always gets `invalid_code`). There is no `customer_not_allowed`: a customer can never sign in with a code, and gets `invalid_code`. `rate_limited` 429 (the per-address failed-verification limit, as `verify`: "Too many OTP requests. Try again later."), `invalid_request` 400 (the number or code is malformed), 503 when the facility is not in operator mode or the database does not answer. Every refusal except `rate_limited` and `invalid_request` counts as a failed verification of the caller's address.
 - **Also.** `operator-otp/verify` (the older SMS code screen) accepts the same codes for the same workers and gives the same 24 hour session. `operator-otp/request` on an installation with no SMS provider (central sign-in alone) answers 503 `{success:false, code:'sms_not_configured', error:'SMS sign-in is not set up on this facility. Use the association sign-in.'}`.
 - **Database.** `public.operator_break_glass_sign_in(p_phone_number, p_code, p_ip_address)` is for the service role only (the edge function), like `operator_verify_otp`, and is not in `authorize_rpc`; the function that makes a code, `warehouse_security.break_glass_code`, is for `supabase_admin` alone and is not an API.
+
+### Signed-in devices: list and sign out one device (migration 140)
+
+A person keeps at most the **newest 10 sessions** (one per signed-in device). A sign-in first deletes that person's expired sessions, and
+one that would still make an 11th deletes the session used least recently (and the tokens recorded for it, so neither its current nor an earlier refresh token is accepted again); the app shows the
+Sign in screen on that device the next time it calls. A refresh never creates or deletes a session. Each session records the sign-in's
+source address (`CF-Connecting-IP`, IPv4 or IPv6, else none), the user agent (cut to 300 characters) and when it was last refreshed.
+
+- **Sign-in parameters (all optional).** `operator_verify_otp`, `operator_central_exchange` and `operator_break_glass_sign_in` take a last
+  parameter `p_user_agent text`; the source address is the `p_ip_address` they already take. The edge functions (`operator-otp/verify`,
+  `operator-otp/break-glass`, `central-exchange`) send both from the request headers. The previous signatures stay (they pass no user
+  agent), so an edge function that was not updated keeps working; answers are unchanged. These are service-role RPCs, not app calls.
+- **`list_user_sessions(p_user_id uuid)`** (`user_profiles.id`). Administrators; supervisors for everyone but administrators. Others:
+  42501 `Administrator required`. Answer, newest session first, unexpired sessions only:
+
+  ```json
+  {"success": true, "data": {"sessions": [
+    {"id": "uuid", "user_agent": "WarehouseApp/1.2 (Android 15)",
+     "created_ip": "203.0.113.0/24", "created_at": "2026-11-01T10:00:00+00:00",
+     "last_refreshed_at": "2026-11-01T10:30:00+00:00", "expires_at": "2026-12-01T10:30:00+00:00", "is_current": true}]}}
+  ```
+
+  `created_ip` is masked (IPv4 to its /24 as `a.b.c.0/24`, IPv6 to its /48 as `x:y:z::/48`; the full address is never returned) and `null`
+  when none was recorded. `last_refreshed_at` is the sign-in time for a session never refreshed. `is_current` is true for the session the
+  request itself is signed in with (`session_id` of the access token), so for another person's list it is false everywhere. Refusals are
+  `{success:false, error, message}`: `NOT_FOUND` (unknown or deleted person), `INVALID_INPUT` (null id), `PERMISSION_DENIED` (a supervisor
+  asking for an administrator's sessions).
+- **`revoke_session(p_session_id uuid)`** (`id` from the list). The session's owner (any role, customers included), an administrator, or a
+  supervisor for a session of anyone but an administrator. Deletes the session and the tokens recorded for it; the access token of that device
+  fails `check_session` (42501 `Session expired or revoked`) at once. Answer `{success:true, revoked_current:<bool>}`, where
+  `revoked_current` is true when the session signed out is the one making the request (the app then goes to the Sign in screen). An unknown
+  id, and a session the caller may not revoke, get `{success:true, revoked_current:false}` and nothing changes, so the answer does not tell
+  whether a session exists; to an administrator (or the service key) an unknown id is `{success:false, error:'NOT_FOUND', message}`. `null`
+  is `INVALID_INPUT`. Each deletion is written to `audit_log` (`table_name='refresh_sessions'`, `action='REVOKE'`, `user_id` = the caller,
+  `old_data` = session id and owner).
+- Both are granted to `authenticated` and the service role, guarded by `authorize_rpc` (`list_user_sessions` with the user-management
+  group, `revoke_session` for any signed-in account), and classified in `tests/role_allowlist.sql`. Tests: `tests/session_devices_140.sql`.
 
 ### The LAN address in `get-config` (`urls.lan`, 2026-10-26)
 
@@ -315,7 +384,7 @@ The app switches on `reason`, not on the English. It is built by `warehouse_secu
 app role). A refusal is returned before the function's first write. The refusals that can only be known after a write (`RATES_NEED_MANAGER`,
 `RATES_WOULD_DROP`, `TOTAL_CHANGED`) are raised as `rate_fail` with the refusal in `DETAIL`; the handler of `update_grn`, `update_invoice`
 and `save_invoice_internal` rolls the whole block back and answers it (nothing is saved). The three legacy length refusals of the GRN
-(`item_name_too_long`, `packaging_too_long`, and new `registration_too_long`, which the dispatch create and `update_dispatch_smart` also answer, limit 20 since migration 130) keep the older shape `{success:false, error, error_code, data:{limit, index?}, message}`.
+(`item_name_too_long`, `packaging_too_long`, and new `registration_too_long`, which the dispatch create and `update_dispatch_smart` also answer, limit 20 since migration 130) (the dispatch create and `update_dispatch_smart` also answer `registration_invalid`, "Registration must be text", for a vehicle sent as a JSON object, array or boolean; a JSON number is stored as text) keep the older shape `{success:false, error, error_code, data:{limit, index?}, message}`.
 
 | `reason` | Returned by | Fields (top level) | English `error` |
 |---|---|---|---|
@@ -662,7 +731,7 @@ ever deleted.
   active customer uses the same mobile (owner decision 2026-10-20; details in "Customers: duplicates, stale edit, deactivated search").
 - `update_customer(..., p_active)` (migration 83): `p_active = true` also clears `deleted_at` / `deleted_by`, so a
   business is never active and deleted at once; `false` and NULL leave `deleted_at` untouched.
-- `get_orders_list` leaves out orders of a deleted business.
+- `get_orders_list` leaves out orders of a deleted business. Since migration 135 the page size `p_limit` is held to 1..200 (default 50; a larger value answers 200 rows, and `data.pagination.limit` and `offset` say what was used), `p_offset` below 0 is 0, and `p_user_id` counts only for `service_role` (an authenticated caller is always the session user; an unknown `p_user_id` no longer fails the call). For `service_role`, `p_user_id` only names the profile that must exist; it never chooses whose orders are listed. `p_limit => NULL` now means 50 (it used to mean every row). The list is built for the page only, so a screen that refreshes should ask for the rows it shows, not for the whole queue.
 - Five readers that no longer hide a deactivated business from staff and administrators (filter is
   `deleted_at IS NULL`): `get_invoices_list`, `get_all_stock_summary`, `get_item_wise_stock_list` (all
   customers), `get_all_customer_activity_summary`, `get_item_dispatch_records`.
@@ -1138,10 +1207,12 @@ in-loop `Cannot delete item "..." - has N existing dispatches` stays as a backst
 every insert and delete, and every update except one that changes only `updated_at`, `updated_by`, `out_of_stock` or `invoiced` of a GRN, or
 only the `stock` of a line (every dispatch moves stock; `stock_movements` records it). `delete_grn_safe` still hard-deletes and the DELETE
 triggers keep a copy of the GRN and of each line; `audit_log.user_id` is the JWT `sub` (null for a service connection). History starts at the
-deploy; nothing purges `audit_log`. `save_grn` and `update_grn` also refuse a registration over 20 characters:
+deploy; `audit_log` is purged only by its retention (8 years, 2920 days; migration 134, below). `save_grn` and `update_grn` also refuse a registration over 20 characters:
 `{success:false, error:'Registration can have at most 20 characters', error_code:'registration_too_long', data:{limit:20}, message}` (the column is
 `varchar(20)`; before, a database text). `warehouse_security.ascii_digits(text)` turns Gujarati, Devanagari, Arabic-Indic and extended
 Arabic-Indic digits into 0-9; `save_grn` and `update_grn` store `rack` and `package_mark` through it. Rows already stored are not converted.
+
+The vehicle number (`registration`) of `save_grn`, `update_grn`, `create_dispatch_with_stock_check` and `update_dispatch_smart` is cleaned the same way (migration 130 and the definition files): spaces, tabs, line breaks and non-breaking spaces at either end are removed, each run of white space inside becomes one space (`GJ01   AB1234` is stored as `GJ01 AB1234`), and a blank value is stored as NULL. The 20-character limit counts the cleaned value. On `update_grn` and `update_dispatch_smart`, a vehicle that is sent blank clears the stored one (NULL); a call that leaves the vehicle out (parameter omitted, key absent, or JSON null on a dispatch) keeps it. Rows already stored are not converted.
 
 ### GRN lists by receipt, and low stock (migration 98, 2026-10-18)
 
@@ -1251,7 +1322,7 @@ deleting that line as a create does, and records it in `cart_quantity_consumed` 
 dispatch's `updated_at` too (migration 122), so the answered token is always new. `delete_dispatch_with_order_cleanup` gives back
 `LEAST(cart_quantity_consumed, disp_qty)` per line, and writes the `dispatch_deleted` entry of the order's change log for **every** cart
 that got something back (`restored_items` lists the lines actually given back to it, with the amount given back; the source order
-keeps its entry, empty when nothing went back, and its status reset as before). The order change log (`get_order_change_log`, unchanged)
+keeps its entry, empty when nothing went back, and its status reset as before). The order change log (`get_order_change_log`; its entries changed in migrations 128 and 133, see "Order history counts" below)
 also shows what a dispatch took (`order_revisions` action `auto_quantity_reduction`, new format `{action, timestamp, by, dispatch_id,
 dispatch_no, grn_item_id, previous_quantity, new_quantity}`, from create from an order, a direct create that reduces a line and an
 edit that raises) and what an edit gave back (one `UPDATE` entry per order, `changes.source = 'dispatch_edit'`). A dispatch-driven change
@@ -1333,6 +1404,12 @@ document can be entered again; `I1` and `I0001` are different strings. A number 
 it went away; `update_order_item_quantity` and `remove_item_from_order` answer `Order item not found` for a cart line that no
 longer exists (the guard lets a missing line through; a line of another customer is still refused with `Customer access denied`).
 
+### Searching a customer's items for an order (migration 130)
+
+`search_customer_items_for_order`: a search of only digits (search type `auto`, no weight given) finds the lots of that exact weight and also the
+lots whose item name, package mark or GRN number contains the digits (`4455` finds the mark `MK4455`; `50` still lists the 50 kg lots). The type
+`weight`, asked for by name, stays an exact-weight search. The count follows the same rule.
+
 ## Invoices and invoice data
 
 History: migrations 100, 102, 109, 120 and 121.
@@ -1349,6 +1426,56 @@ History: migrations 100, 102, 109, 120 and 121.
 - The three-argument `save_invoice` no longer refuses on the phone's estimated header `total`, `labour` and `tax_amount` (the
   server recomputes them); the discount keeps its range check. `delete_invoice` locks the live invoice, re-checks payments, and
   clears `goodsreceived.invoiced` only when no other live invoice holds the GRN (also in its trigger).
+
+### Cancelling an invoice (migration 134)
+
+An invoice is **cancelled, never deleted**: it keeps its number and its lines, stays visible (a customer account sees it, marked cancelled)
+and can not be edited. Owner decision, review finding H5.
+
+`cancel_invoice(p_invoice_id uuid, p_reason text, p_expected_updated_at timestamptz DEFAULT NULL)` (administrators and supervisors; staff and
+customers get `Staff access required`, a raised `42501`). The reason is trimmed and must be 3 to 500 characters. `p_expected_updated_at` is the
+invoice's `updated_at` as the caller read it (the version token; `NULL` = no check). Success:
+
+```
+{ "success": true, "invoice_id": "<uuid>", "invoice_number": 5, "inv_fin_year": 2026, "gr_id": "<uuid>", "cancelled_at": "<timestamptz>",
+  "cancelled_by": "<user_profiles.id>", "cancel_reason": "<trimmed>", "updated_at": "<the new token>", "message": "Invoice cancelled successfully" }
+```
+
+Refusals (the envelope of "One refusal envelope": `{success:false, error_code:'WH409', reason, error, message, ...}`; nothing is written):
+
+| `reason` | When | Extra keys |
+| --- | --- | --- |
+| `CANCEL_REASON_INVALID` | reason missing, blank, under 3 or over 500 characters | `min` 3, `max` 500 |
+| `STALE_RECORD` | the invoice changed after the caller read it | `what:'invoice'`, `id`, `expected_updated_at`, `current_updated_at` |
+| `INVOICE_CANCELLED` | already cancelled | `invoice_id`, `cancelled_at` |
+| `INVOICE_HAS_PAYMENTS` | a payment refers to the invoice | `invoice_id`, `payments` (count) |
+| `USER_REQUIRED` | a service connection with no person behind it | none |
+
+The reason is trimmed like the discount reason (spaces, no-break spaces and zero-width characters count as blank) and the table refuses a cancelled invoice without a person or with a reason outside 3 to 500 characters. No payment can be recorded for a cancelled invoice (nor moved onto one): the insert fails with `WH409`, "Invoice … is cancelled: no payment can be recorded for it". `get_grn_details` `invoices_summary` counts live invoices only (not deleted, not cancelled) and adds `cancelled_count`. `get_invoice_range_for_print` (preprinted printing) leaves cancelled invoices out of `data` and lists them in `skipped` as `{inv_no, inv_fin_year, invoice_id, reason:'cancelled'}`; `print-invoice-preprinted` returns that list as `skipped`, and refuses a range that holds only cancelled invoices.
+
+An unknown or deleted invoice is `{success:false, error:'Invoice not found'}` (as `update_invoice` answers it). The GRN's `invoiced` flag is cleared
+unless another live invoice (not deleted, not cancelled) holds the GRN. A cancelled invoice is **not live**: its dispatch lines can go on a new invoice, and
+the GRN and dispatch edit rules, `get_grn_edit_state`, `get_grn_item_rates` and `get_dispatch_details` treat it as no invoice. Its number stays taken:
+`NUMBER_TAKEN` for a new invoice with that number, and `get_next_invoice_number` still counts it.
+
+`delete_invoice(p_invoice_id)` now **refuses** and deletes nothing: `{success:false, error_code:'WH409', reason:'INVOICE_CANCEL_ONLY', error:'An invoice is
+not deleted: cancel it instead. Its number stays in the books.', message, invoice_id}` (an unauthorised caller keeps the old answer
+`{success:false, error:'Staff access required'}` and the like).
+`update_invoice` and the three-argument `save_invoice` over the id of a cancelled invoice answer `{success:false, error_code:'WH409',
+reason:'INVOICE_CANCELLED', error:'This invoice is cancelled and can not be changed.', message, invoice_id}` (`save_invoice` adds `function_version`).
+
+New fields: `get_invoice_detail` `invoice.cancelled_at` and `invoice.cancel_reason` (every reader; `null` when not cancelled), and for administrators,
+supervisors and staff also `invoice.cancelled_by` and `invoice.cancelled_by_name`; `get_invoices_list` rows carry `cancelled_at` and `cancel_reason`; the
+`invoice` table columns `cancelled_at` and `cancel_reason` are readable by name like `deleted_at` (`cancelled_by` is not: who cancelled is read through `get_invoice_detail` and `get_invoice_data`, which answer `cancelled_by` and `cancelled_by_name` to administrators, supervisors and staff only; `get_invoice_data` also answers `cancelled_at` and `cancel_reason` in `data.header`). `get_customer_invoice_summary` lists a
+cancelled invoice with `payment_status.status = 'cancelled'` (and `cancelled_at`, `cancel_reason`, balance 0) and leaves it out of every sum and
+count (`summary.total_invoices`, `total_amount`, `paid_count`, `pending_count`, the months and the customers); `summary.cancelled_count` says how many
+there are. `get_customer_activity_detail` does the same (`summary.cancelled_count`, `recent_invoices[].status = 'cancelled'`), and
+`get_all_customer_activity_summary` leaves them out of `total_invoice_amount`. The invoice-history report PDF prints such a row as Cancelled with
+no amount; the invoice PDF of a cancelled invoice has the line `CANCELLED <date> — <reason>` under the title.
+
+**Audit.** `invoice`, `invoice_trl`, `payments` and `dispatch_trl` write `audit_log` rows (`public.audit_trigger_func()`): every insert and delete, and
+every update that changes more than `updated_at`. `audit_log` is kept 8 years (2920 days, `warehouse_maintenance.retention_policy`; GST records
+are kept 72 months), up from 730 days.
 
 ### Unbilled bags (D9)
 
@@ -1432,6 +1559,16 @@ What the app reads:
 - `get_sensor_history`: same signature, buckets on `measured_at`, averages
   ignore nulls, a sample count per bucket, and period `1` (today, 5-minute
   buckets).
+- `get_sensor_hourly(p_device_id uuid, p_from timestamptz, p_to timestamptz)` (migration 136; administrator, supervisor and
+  staff, a customer account gets PostgREST's 403 `42501` like the other sensor reads): the hourly minimum, maximum and average of
+  one device from `sensor_hourly`, which keeps 24 months (raw readings keep 90 days). Hours are UTC hour starts; `p_from` is
+  included, `p_to` excluded; rows are ordered by `hour`. Answer:
+  `{success:true, data:{device_id, device_name, location, from, to, hours:[{hour, sample_count, temperature_min,
+  temperature_max, temperature_avg, humidity_min, humidity_max, humidity_avg}]}, metadata:{row_count, bucket:'hour',
+  timezone:'UTC'}}`; `hour` is always UTC, whatever the session time zone: `2026-10-02T03:00:00Z` (`from` and `to` echo the range as `2026-10-02T03:00:00.000Z`), the figures are numbers with two decimals, and a
+  temperature or humidity that no reading of the hour carried is `null`. Hours without readings have no row. A 200
+  `{success:false, error, error_code}` for `INVALID_RANGE` (a null bound, or `p_to` not after `p_from`), `RANGE_TOO_LARGE` (more
+  than 400 days) and `DEVICE_NOT_FOUND`.
 - `get_sensor_device(p_device_id)` (new; administrator, supervisor and staff):
   one device's status, its first reading and its hub. `data` also carries the
   keys of a `devices[]` entry of `get_sensor_polling_data`, so the app reads it
@@ -1463,9 +1600,28 @@ still a 200 `{success:false, error_code:'DEVICE_NOT_FOUND'|'INVALID_PERIOD'}`.
 `record_sensor_reading` and `update_sensor` were dropped: they were granted to
 the service role only and nothing called them.
 
+### Payments: capability and integrity (migration 139)
+
+- `capabilities.payments` in `get-public-config` (from the state's `instance.json`, set with
+  `node scripts/set-capability.mjs payments on|off`): **false by default**, and false when an `instance.json` written before
+  the key has none. The app (from app 0.7.0) shows the Paid and Pending figures only when it is true. The app has no payment entry screen;
+  payments are not entered through the API.
+- Constraints (the migration refuses, changing nothing, while a row breaks one; the refusal lists each rule with its count and the
+  query to find the rows): `invoice.gr_id` references `goodsreceived(id)`, `invoice.customer_id` and `dispatch.customer_id` and
+  `payments.customer_id` reference `customers(id)`, `invoice_trl.invoice_id` references `invoice(id)` (all `ON DELETE RESTRICT`),
+  `payments.supervisor_id` references `user_profiles(id)` (`ON DELETE SET NULL`), and `payments_amount_positive` requires
+  `amount > 0` (NULL stays allowed). A direct write that breaks one fails with SQLSTATE `23503` (missing parent), `23001`
+  (parent still referenced) or `23514` (amount).
+- `delete_grn_safe` answers `{success:false, error:'Cannot delete GRN <no>: it has an invoice (cancelled invoices included); an invoiced GRN is kept.'}`
+  for a GRN that any invoice refers to, also when no dispatch line was invoiced. `delete_invoice` refuses (`INVOICE_CANCEL_ONLY`, migration 134), so
+  an invoice is never deleted; a direct `DELETE` of an invoice that still has lines fails with `23001`.
+
 ### Order history counts (migration 133)
 
-`get_order_change_log` (same arguments and shape):
+`get_order_change_log` (same arguments and shape). Since migration 128 an entry of a quantity change or of a dispatch reduction looks up the GRN
+quantity, rack, weight and packaging by the entry's own GRN number, item name and package mark (before, any line of the GRN could be returned), and an
+entry whose previous and new quantity are equal is left out (every order save writes the whole cart, so an unchanged line used to appear as "30 -> 30"); the
+first appearance of a line stays, and the count and the paging follow the filter. Migration 133 adds:
 
 - An entry with `change_details.action = 'dispatch_deleted'` now also carries `change_details.total_quantity_restored`: the bags given back
   to the line that entry is about (one entry per restored line; the same number as `restoration_details.quantity_restored`). The app reads
@@ -1477,8 +1633,7 @@ the service role only and nothing called them.
 `get_grn_prefixes_with_stock(p_customer_id uuid DEFAULT NULL)` (migration 133): unchanged arguments and shape (`data: [{prefix, grn_count}]`, ordered by prefix).
 `prefix` is now the whole run of non-digit characters at the start of the GRN number, trimmed and upper-cased: `DV0102` gives `DV`, `X0001` gives `X`, `T-12` gives `T-`,
 `G 14` gives `G`, `dv01` joins `DV`, `GRN/26-27/0001` gives `GRN/`. A number that starts with a digit has no such run: its prefix is its first character (`0001` gives `0`,
-`26-27/0001` gives `2`, as before 133), so no GRN with stock is left without a button. A prefix is a real leading part of the number, so the app's case-insensitive
-"contains" search for it finds the GRNs. An older app that shows the prefix as given keeps working.
+`26-27/0001` gives `2`, as before 133), so no GRN with stock is left without a button. A prefix is a real leading part of the number, so the app's search for it (the anchored, case-insensitive pattern `<prefix>%<digits>%`, not a "contains" search) finds the GRNs. An older app that shows the prefix as given keeps working.
 
 ### `get_items_without_rate(p_customer_id uuid, p_item_ids uuid[], p_on date DEFAULT today (India day), p_weights integer[] DEFAULT NULL, p_pricing_mode text DEFAULT 'monthly', p_grn_id uuid DEFAULT NULL)` (migration 133)
 

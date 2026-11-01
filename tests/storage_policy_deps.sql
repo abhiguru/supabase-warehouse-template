@@ -7,15 +7,19 @@
 -- compares them with the set below, so a migration that changes one fails here with the name of the column.
 -- Run after scripts/configure-storage.sql (tests/migrations.sh does). A change to configure-storage.sql that reads another column, or
 -- stops reading one, changes the list below in the same commit.
+-- The two customer photo policies read goodsreceived.deleted_at and dispatch.deleted_at since migration 137's owner decision: a customer
+-- no longer fetches the file of a deleted document's photo.
 DO $$
 DECLARE
   expected text[] := ARRAY[
     'starter_customer_dispatch_images -> public.dispatch.customer_id',
+    'starter_customer_dispatch_images -> public.dispatch.deleted_at',
     'starter_customer_dispatch_images -> public.dispatch.id',
     'starter_customer_dispatch_images -> public.dispatch_images.dispatch_id',
     'starter_customer_dispatch_images -> public.dispatch_images.status',
     'starter_customer_dispatch_images -> public.dispatch_images.storage_path',
     'starter_customer_grn_images -> public.goodsreceived.customer_id',
+    'starter_customer_grn_images -> public.goodsreceived.deleted_at',
     'starter_customer_grn_images -> public.goodsreceived.id',
     'starter_customer_grn_images -> public.grn_images.grn_id',
     'starter_customer_grn_images -> public.grn_images.status',

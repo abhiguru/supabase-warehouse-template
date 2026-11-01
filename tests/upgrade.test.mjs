@@ -134,7 +134,9 @@ const S005 = '## v0.0.5 (2025-12-01)\n\nAn older release: OLDER-THAN-BACKPORT-LI
 const S0216 = '## v0.2.16 (2026-05-01)\n\n### Changed\n\n- A change that asks nothing of the operator: NOTHING-TO-DO-LINE.\n\n';
 
 // `at` is the release the installed checkout sits on.
-function world({ at = 'v0.1.0' } = {}) {
+// `sign` makes the releases a signed world: { allowed } is the text of .github/allowed_signers committed in every release, and
+// { keys: { v0.2.0: privateKeyPath } } signs that tag with that key (a tag not listed is made unsigned, explicitly).
+function world({ at = 'v0.1.0', sign = null } = {}) {
   const scratch = mkdtempSync(join(tmpdir(), 'warehouse-upgrade-'));
   const src = join(scratch, 'src');
   const origin = join(scratch, 'origin.git');
@@ -151,6 +153,7 @@ function world({ at = 'v0.1.0' } = {}) {
     }
     put(src, 'docker/postgres/Dockerfile', extra.dockerfile ?? dockerfile(18));
     put(src, 'CHANGELOG.md', extra.changelog);
+    if (sign?.allowed !== undefined) put(src, '.github/allowed_signers', sign.allowedBy?.[version] ?? sign.allowed);
     for (const name of extra.migrations ?? ['00000000000000_baseline.sql']) put(src, `migrations/${name}`, `-- ${name}\n`);
     // Files of a release that has a preflight: its own text, and real files of this repository (the preflight and the library it sources).
     for (const [path, text] of Object.entries(extra.files ?? {})) put(src, path, text);
@@ -175,7 +178,12 @@ function world({ at = 'v0.1.0' } = {}) {
   base('v0.1.1', { upgrade: true, changelog: changelog(S011 + S010) });
   git(src, 'tag', 'v0.1.1');                       // a lightweight tag
   base('v0.2.0', { upgrade: true, changelog: changelog(S020 + S011 + S010 + S005), migrations: ['00000000000000_baseline.sql', '00000000000001_more.sql'] });
-  git(src, 'tag', '-a', '-m', 'release 0.2.0', 'v0.2.0');
+  const key = sign?.keys?.['v0.2.0'];
+  if (sign?.gpg) {
+    const r = spawnSync('git', ['-c', 'gpg.format=openpgp', '-c', `user.signingkey=${sign.gpg.id}`, '-C', src, 'tag', '-s', '-m', 'release 0.2.0', 'v0.2.0'], { encoding: 'utf8', env: { ...process.env, ...gitEnv, GNUPGHOME: sign.gpg.home } });
+    assert.equal(r.status, 0, r.stderr);
+  } else if (key) git(src, '-c', 'gpg.format=ssh', '-c', `user.signingkey=${key}`, 'tag', '-s', '-m', 'release 0.2.0', 'v0.2.0');
+  else git(src, 'tag', '-a', '-m', 'release 0.2.0', 'v0.2.0');
   git(src, 'branch', 'squash');
   // A release on a new PostgreSQL major.
   base('v0.3.0', { upgrade: true, changelog: changelog(S020 + S011 + S010), dockerfile: dockerfile(19), migrations: ['00000000000000_baseline.sql', '00000000000001_more.sql'] });
@@ -193,7 +201,8 @@ function world({ at = 'v0.1.0' } = {}) {
   const realPreflight = (floor, sections = S0212) => ({ upgrade: true, changelog: changelog(sections + S020 + S011 + S010), migrations: ['00000000000000_baseline.sql', '00000000000001_more.sql'],
     copy: ['scripts/upgrade-preflight.sh', 'scripts/upgrade-lib.sh', 'scripts/upgrade-rehearse.sh', 'scripts/migration-plan.mjs'],
     // The real preflight's `# needs:` line also names docker/ (the rehearsal reads the database image from it); these facilities have no verified backup, so nothing is rehearsed.
-    files: { 'docker/.keep': '', 'scripts/upgrade-floor.txt': `# fixture\n${floor}`, 'scripts/doctor.mjs': `import { appendFileSync } from 'node:fs';
+    // The pre-pull of images (scripts/upgrade-prepull.sh, tests/upgrade-prepull.test.mjs) is a stand-in: it logs, to the log of the other helpers, that it ran and for what.
+    files: { 'docker/.keep': '', 'scripts/upgrade-prepull.sh': '#!/usr/bin/env bash\n[ -z "$FAKE_PREPULL_FAIL" ] || { echo "Refusing: pre-pull (fake). Nothing was changed." >&2; exit 1; }\necho "prepull label=$TO_LABEL dry=$DRY" >> "$FAKE_LOG.pre"\n', 'scripts/upgrade-floor.txt': `# fixture\n${floor}`, 'scripts/doctor.mjs': `import { appendFileSync } from 'node:fs';
 import { dirname } from 'node:path';
 import { fileURLToPath } from 'node:url';
 appendFileSync(process.env.FAKE_LOG + '.pre', 'doctor ' + process.argv.slice(2).join(' ') + ' from=' + dirname(fileURLToPath(import.meta.url)) + '\\n');
@@ -385,12 +394,15 @@ test('the upgrade writes its record before the first change, runs every step in 
     assert.match(w.upgradesLog(), new RegExp(`^\\d{4}-\\d\\d-\\d\\dT\\d\\d:\\d\\d:\\d\\dZ v0\\.1\\.0 -> v0\\.2\\.0 \\(from ${from.slice(0, 12)}, backup ${dir}\\) ok\\n$`));
     assert.equal(statModeOf(join(w.state, 'config/upgrades.log')) & 0o077, 0, 'the log is private');
     assert.notEqual(from, r.head);
+    const lastBefore = readFileSync(join(w.state, 'config/upgrade-last'), 'utf8');
+    assert.match(lastBefore, new RegExp(`^from_sha=${from}$`, 'm'));
     // Repeating it at the release: no checkout, the rest runs again (with a fresh backup: no upgrade was interrupted).
     const again = w.run(['v0.2.0']);
     assert.equal(again.status, 0, again.stderr);
     assert.match(again.stdout, /already at v0\.2\.0/);
     assert.equal(again.log.length, 3);
     assert.match(w.upgradesLog().trim().split('\n').at(-1), /v0\.2\.0 -> v0\.2\.0 \(from [0-9a-f]{12}, backup [^)]*\) ok$/);
+    assert.equal(readFileSync(join(w.state, 'config/upgrade-last'), 'utf8'), lastBefore, 'a repeated run at the same release keeps the note of the real upgrade');
   } finally { w.cleanup(); }
 });
 
@@ -1397,4 +1409,234 @@ test('fas-sync: the plan says to pause it, and a psql session from outside the s
     assert.deepEqual(r.log, []);
     assert.equal(existsSync(v.recordPath), false);
   } finally { v.cleanup(); }
+});
+
+test('the target\'s preflight pre-pulls the images before the running images are tagged; a dry run says so; a refusal of the pre-pull changes nothing; a resumed run does not pull again', () => {
+  const w = world();
+  try {
+    const dry = w.run(['--dry-run', 'v0.2.12']);
+    assert.equal(dry.status, 0, dry.stdout + dry.stderr);
+    assert.deepEqual(preLog(w).filter(line => line.startsWith('prepull')), ['prepull label=v0.2.12 dry=yes']);
+    rmSync(`${w.log}.pre`);
+    // A refusal: no operator command ran, the checkout did not move, nothing was recorded (the closing of the API comes after the preflight).
+    refusing(w)(['v0.2.12'], /Refusing: pre-pull \(fake\)\. Nothing was changed\.[^]*the preflight of v0\.2\.12 stopped this upgrade/, { FAKE_PREPULL_FAIL: '1' });
+    assert.equal(existsSync(join(w.state, 'config/maintenance')), false, 'the API was not closed');
+    rmSync(`${w.log}.pre`, { force: true });
+    const first = w.run(['v0.2.12'], { FAKE_FAIL: 'setup' });
+    assert.notEqual(first.status, 0);
+    const lines = preLog(w);
+    assert.equal(lines[lines.findIndex(line => line.startsWith('doctor ')) + 1], 'prepull label=v0.2.12 dry=no', 'right after the host checks of the preflight');
+    assert.ok(lines.findIndex(line => line.startsWith('prepull')) < lines.findIndex(line => line.startsWith('pre-images tag')), 'before the running images are tagged');
+    rmSync(`${w.log}.pre`);
+    const second = w.run(['v0.2.12']);
+    assert.equal(second.status, 0, second.stdout + second.stderr);
+    assert.deepEqual(preLog(w).filter(line => line.startsWith('prepull')), [], 'the resumed run does not pull again');
+  } finally { w.cleanup(); }
+});
+
+test('a successful upgrade keeps its record as config/upgrade-last (0600, with finished= and result=ok); a failed run leaves the earlier one alone; the next success replaces it; rollback --last prints the way back', () => {
+  const w = world();
+  try {
+    const last = join(w.state, 'config/upgrade-last');
+    const lastText = () => readFileSync(last, 'utf8');
+    const rollbackLast = () => spawnSync('node', [join(w.install, 'scripts/upgrade-record.mjs'), 'rollback', '--last'], { encoding: 'utf8', env: { ...process.env, WAREHOUSE_STATE_DIR: w.state } });
+    const from = w.tag('v0.1.0');
+    const dir = `${w.state}/backups/warehouse-20260101T000000Z`;
+    const first = w.run(['v0.2.0']);
+    assert.equal(first.status, 0, first.stdout + first.stderr);
+    assert.equal(existsSync(w.recordPath), false, 'the record of an interrupted upgrade is gone');
+    assert.equal(statModeOf(last), 0o600);
+    assert.match(lastText(), new RegExp(`^from_sha=${from}$`, 'm'));
+    assert.match(lastText(), new RegExp(`^to_sha=${w.tag('v0.2.0')}$`, 'm'));
+    assert.match(lastText(), new RegExp(`^backup=${dir}$`, 'm'));
+    assert.match(lastText(), /^finished=\d{4}-\d\d-\d\dT\d\d:\d\d:\d\dZ$/m);
+    assert.match(lastText(), /^result=ok$/m);
+    assert.deepEqual(readdirSync(join(w.state, 'config')).filter(name => name.startsWith('.upgrade-last')), [], 'no temporary file is left');
+    // It is history, not a warning: the checker's message does not report it.
+    assert.equal(spawnSync('node', [join(w.install, 'scripts/upgrade-record.mjs'), 'message'], { encoding: 'utf8', env: { ...process.env, WAREHOUSE_STATE_DIR: w.state } }).stdout, '');
+    const printed = rollbackLast();
+    assert.equal(printed.status, 0, printed.stderr);
+    const lines = printed.stdout.split('\n').filter(line => line.startsWith('  ') && !line.startsWith('      '));
+    assert.equal(lines[0], `  cp -p '${last}' '${w.recordPath}'`, 'the finished upgrade is put back on record as an interrupted one first');
+    assert.equal(lines[1], '  bash scripts/maintenance.sh on', 'then the API is closed');
+    assert.equal(lines[2], `  (umask 022; git checkout --detach ${from})`);
+    assert.equal(lines.at(-1), `  rm -f '${w.recordPath}' '${last}'`);
+    // A failed run of the next upgrade leaves it alone and writes none of its own; while the interrupted record exists, --last refuses.
+    const before = lastText();
+    const failed = w.run(['v0.2.12'], { FAKE_FAIL: 'setup' });
+    assert.notEqual(failed.status, 0);
+    assert.equal(lastText(), before);
+    assert.equal(existsSync(w.recordPath), true);
+    const refused = rollbackLast();
+    assert.equal(refused.status, 1);
+    assert.match(refused.stderr, /An upgrade is recorded as interrupted[^]*use "node scripts\/upgrade-record\.mjs rollback"/);
+    // The next success replaces it.
+    const second = w.run(['v0.2.12']);
+    assert.equal(second.status, 0, second.stdout + second.stderr);
+    assert.notEqual(lastText(), before);
+    assert.match(lastText(), new RegExp(`^to_sha=${w.tag('v0.2.12')}$`, 'm'));
+    assert.match(lastText(), /^from_label=v0\.2\.0$/m);
+    // A dry run and a refusal write nothing.
+    rmSync(last);
+    assert.equal(w.run(['--dry-run', 'v0.2.16']).status, 0);
+    assert.equal(existsSync(last), false);
+  } finally { w.cleanup(); }
+});
+
+// --- Signed release tags -------------------------------------------------------------------------------------------------------------
+// Keys are made in a scratch directory with ssh-keygen; nothing outside it is read or written.
+const makeKey = (dir, name) => {
+  const file = join(dir, name);
+  const r = spawnSync('ssh-keygen', ['-q', '-t', 'ed25519', '-N', '', '-C', name, '-f', file], { encoding: 'utf8' });
+  assert.equal(r.status, 0, r.stderr);
+  return { file, line: `release namespaces="git" ${readFileSync(`${file}.pub`, 'utf8').trim()}\n` };
+};
+const withKeys = fn => {
+  const dir = mkdtempSync(join(tmpdir(), 'warehouse-keys-'));
+  try { return fn(dir, makeKey(dir, 'good'), makeKey(dir, 'other')); } finally { rmSync(dir, { recursive: true, force: true }); }
+};
+
+test('signed release tags: a tag signed by a listed key proceeds, any other is refused, --ref is not verified', () => {
+  withKeys((dir, good, other) => {
+    // The installed checkout lists the good key; v0.2.0 is signed by it.
+    const ok = world({ sign: { allowed: `# keys\n${good.line}`, keys: { 'v0.2.0': good.file } } });
+    try {
+      const r = ok.run(['--dry-run', 'v0.2.0']);
+      assert.equal(r.status, 0, r.stderr);
+      assert.match(r.stdout, /Signature: +v0\.2\.0 is signed by a key listed in \.github\/allowed_signers/);
+    } finally { ok.cleanup(); }
+
+    // Signed by a key that is not listed.
+    const wrong = world({ sign: { allowed: good.line, keys: { 'v0.2.0': other.file } } });
+    try { refusing(wrong)(['v0.2.0'], /v0\.2\.0 is not signed by a key listed in \.github\/allowed_signers[^]*Nothing was changed/); } finally { wrong.cleanup(); }
+
+    // Unsigned, with a key listed.
+    const unsigned = world({ sign: { allowed: good.line, keys: {} } });
+    try {
+      const refused = refusing(unsigned);
+      refused(['v0.2.0'], /not signed by a key listed[^]*Nothing was changed/);
+      // A lightweight tag is no signed tag either.
+      refused(['v0.1.1'], /not an annotated, signed tag[^]*Nothing was changed/);
+      // --ref names no release: nothing is verified, and the warning says so.
+      const ref = unsigned.run(['--dry-run', '--ref', unsigned.tag('v0.2.0')]);
+      assert.equal(ref.status, 0, ref.stderr);
+      assert.match(ref.stderr, /its signature is not checked/);
+      assert.doesNotMatch(ref.stdout, /Signature: +v/);
+    } finally { unsigned.cleanup(); }
+
+    // The target's own list cannot add its signer: the list of the checkout that runs counts (here the installed one lists only the good key,
+    // the release is signed by the other key and its own .github/allowed_signers would list that key).
+    const own = world({ sign: { allowed: good.line, allowedBy: { 'v0.2.0': good.line + other.line }, keys: { 'v0.2.0': other.file } } });
+    try {
+      refusing(own)(['v0.2.0'], /not signed by a key listed/);
+    } finally { own.cleanup(); }
+
+    // A signed tag object published under another tag name is refused.
+    const renamed = world({ sign: { allowed: good.line, keys: { 'v0.2.0': good.file } } });
+    try {
+      git(renamed.origin, 'update-ref', 'refs/tags/v0.2.1', git(renamed.origin, 'rev-parse', 'refs/tags/v0.2.0'));
+      refusing(renamed)(['v0.2.1'], /carries another tag name[^]*Nothing was changed/);
+    } finally { renamed.cleanup(); }
+
+    // git older than 2.34 is refused when a signature has to be checked (a stand-in git earlier in PATH).
+    const old = world({ sign: { allowed: good.line, keys: { 'v0.2.0': good.file } } });
+    try {
+      const bin = join(dir, 'bin'); mkdirSync(bin);
+      const realGit = spawnSync('bash', ['-c', 'command -v git'], { encoding: 'utf8' }).stdout.trim();
+      put(bin, 'git', `#!/usr/bin/env bash\n[[ "$1" == version ]] && { echo 'git version 2.30.2'; exit 0; }\nexec ${realGit} "$@"\n`, 0o755);
+      refusing(old)(['v0.2.0'], /git 2\.34 or newer is needed[^]*Nothing was changed/, { PATH: `${bin}:${process.env.PATH}` });
+    } finally { old.cleanup(); }
+  });
+});
+
+test('signed release tags: a checkout whose allowed_signers lists no key warns and goes on (the transition to the first signed release)', () => {
+  // No file at all (every release before this one) and the shipped placeholder (comments only) behave the same.
+  for (const sign of [null, { allowed: '# placeholder, no key\n\n' }]) {
+    const w = world({ sign });
+    try {
+      const r = w.run(['--dry-run', 'v0.2.0']);
+      assert.equal(r.status, 0, r.stderr);
+      assert.match(r.stderr, /lists no release signing key in \.github\/allowed_signers, so the signature of v0\.2\.0 is not checked/);
+    } finally { w.cleanup(); }
+  }
+  // The shipped file lists the maintainer's release-signing key (one line), so a checkout of this repository checks signatures.
+  const shipped = readFileSync(join(root, '.github/allowed_signers'), 'utf8');
+  const keyLines = shipped.split('\n').filter(l => l.trim() && !l.trim().startsWith('#'));
+  assert.equal(keyLines.length, 1, 'the committed file lists exactly one key line');
+  assert.match(keyLines[0], /^release namespaces="git" ssh-ed25519 [A-Za-z0-9+\/=]+ warehouse-release-signing$/);
+});
+
+test('every test that makes tags with git says explicitly that they are unsigned', () => {
+  // A maintainer with tag.gpgsign=true (or a signing key that asks for a passphrase) would otherwise sign inside every fixture.
+  const dir = new URL('./', import.meta.url).pathname;
+  const files = readdirSync(dir).filter(name => name.endsWith('.test.mjs'));
+  let checked = 0;
+  for (const name of files) {
+    const text = readFileSync(join(dir, name), 'utf8');
+    if (name === 'upgrade.test.mjs' || !/(spawnSync|execFileSync)\('git'/.test(text) || !/git\([^)]*'tag'|'tag', '-[a-z]/.test(text)) continue;
+    checked += 1;
+    assert.match(text, /tag\.gpgsign=false/, `${name} makes tags with git without 'tag.gpgsign=false'`);
+  }
+  assert.ok(checked >= 3, `the guard looked at ${checked} files`);
+  assert.match(readFileSync(new URL('./upgrade.test.mjs', import.meta.url), 'utf8'), /'-c', 'tag\.gpgsign=false', '-C'/);
+});
+
+test('signed release tags: PGP is refused, a release may not drop the key list, the keys of an unchecked release are shown, the record says what was checked', () => {
+  withKeys((dir, good) => {
+    // M2: this checkout lists a key; the release lists none.
+    const drop = world({ sign: { allowed: good.line, allowedBy: { 'v0.2.0': '# none\n' }, keys: { 'v0.2.0': good.file } } });
+    try { refusing(drop)(['v0.2.0'], /v0\.2\.0 lists no release signing key[^]*although this checkout does[^]*Nothing was changed/); } finally { drop.cleanup(); }
+
+    // L1: this checkout lists none; the release lists the good key: the warning names its fingerprint.
+    const first = world({ sign: { allowed: '# none\n', allowedBy: { 'v0.2.0': good.line }, keys: { 'v0.2.0': good.file } } });
+    try {
+      const fingerprint = spawnSync('ssh-keygen', ['-lf', `${good.file}.pub`], { encoding: 'utf8' }).stdout.split(' ')[1];
+      assert.match(fingerprint, /^SHA256:/);
+      const r = first.run(['v0.2.0'], { FAKE_FAIL: 'setup' });
+      assert.match(r.stderr, new RegExp(`lists no release signing key[^]*v0\\.2\\.0 lists the signing key\\(s\\) [^]*${fingerprint.replace(/[+/]/g, '\\$&')}[^]*published`));
+      // L3: the record says the signature was not checked, and the rerun (resume) says so and does not check again.
+      assert.match(readFileSync(first.recordPath, 'utf8'), /^signature=unchecked$/m);
+      const again = first.run(['v0.2.0']);
+      assert.match(again.stdout, /Signature: +not checked again[^\n]*signature=unchecked/);
+    } finally { first.cleanup(); }
+
+    // L3 + L6: a checked signature is recorded, and a resumed upgrade does not check again.
+    const ok = world({ sign: { allowed: good.line, keys: { 'v0.2.0': good.file } } });
+    try {
+      ok.run(['v0.2.0'], { FAKE_FAIL: 'setup' });
+      assert.match(readFileSync(ok.recordPath, 'utf8'), /^signature=checked$/m);
+      const again = ok.run(['v0.2.0']);
+      assert.equal(again.status, 0, again.stderr);
+      assert.match(again.stdout, /Signature: +not checked again[^\n]*signature=checked/);
+      assert.doesNotMatch(again.stdout + again.stderr, /is signed by a key listed/);
+    } finally { ok.cleanup(); }
+
+    // --ref is recorded as such.
+    const ref = world({ sign: { allowed: good.line, keys: {} } });
+    try {
+      ref.run(['--ref', ref.tag('v0.2.0')], { FAKE_FAIL: 'setup' });
+      assert.match(readFileSync(ref.recordPath, 'utf8'), /^signature=ref$/m);
+    } finally { ref.cleanup(); }
+
+    // L6: ssh-keygen is not installed: refused with the reason (a PATH that has everything but ssh-keygen).
+    const nokeygen = world({ sign: { allowed: good.line, keys: { 'v0.2.0': good.file } } });
+    try {
+      const bin = join(dir, 'bin-no-keygen'); mkdirSync(bin);
+      for (const d of (process.env.PATH ?? '').split(':').filter(Boolean)) {
+        let names = []; try { names = readdirSync(d); } catch { continue; }
+        for (const n of names) if (n !== 'ssh-keygen') spawnSync('ln', ['-s', '-f', join(d, n), join(bin, n)]);
+      }
+      refusing(nokeygen)(['v0.2.0'], /ssh-keygen \(the OpenSSH client package\) is needed[^]*Nothing was changed/, { PATH: bin });
+    } finally { nokeygen.cleanup(); }
+  });
+});
+
+test('signed release tags: a tag signed with OpenPGP is refused even when the host keyring holds the key', { skip: spawnSync('bash', ['-c', 'command -v gpg']).status !== 0 && 'gpg is not installed' }, () => {
+  withKeys((dir, good) => {
+    const home = join(dir, 'gnupg'); mkdirSync(home, { mode: 0o700 });
+    const made = spawnSync('gpg', ['--batch', '--passphrase', '', '--quick-gen-key', 'release@example.invalid', 'default', 'default', 'never'], { encoding: 'utf8', env: { ...process.env, GNUPGHOME: home } });
+    assert.equal(made.status, 0, made.stderr);
+    const w = world({ sign: { allowed: good.line, gpg: { home, id: 'release@example.invalid' } } });
+    try { refusing(w)(['v0.2.0'], /v0\.2\.0 carries no SSH signature[^]*Nothing was changed/, { GNUPGHOME: home }); } finally { w.cleanup(); }
+  });
 });

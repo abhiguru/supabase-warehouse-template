@@ -157,7 +157,7 @@ BEGIN
 
   -- invoice is granted to the app role column by column (migration 48): the
   -- discount record and the zero-charge record are internal (and so is the version token updated_at, migration 121:
-  -- it is read only through the RPCs), and a customer
+  -- it is read only through the RPCs; and cancelled_by, migration 134: who cancelled an invoice), and a customer
   -- account reads its own invoice rows. Every column is either readable or on
   -- this list. A migration that adds a column must decide: GRANT SELECT (column)
   -- to authenticated, or add it here. Until it does, the column is not readable
@@ -171,7 +171,7 @@ BEGIN
     AND has_column_privilege('authenticated', a.attrelid, a.attnum, 'SELECT')
         = (a.attname IN ('discount_reason', 'discount_set_by', 'discount_set_at',
                          'zero_charge_reason', 'zero_charge_set_by', 'zero_charge_set_at',
-                         'updated_at'));
+                         'updated_at', 'cancelled_by'));
 
   IF invoice_columns IS NOT NULL THEN
     RAISE EXCEPTION 'invoice column readable by the app role although internal, or neither readable nor listed as internal: %', invoice_columns;

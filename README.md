@@ -32,6 +32,7 @@ bash setup.sh --operator \
   --admin-phone 91XXXXXXXXXX \
   --admin-name 'Warehouse Administrator' \
   --alert-webhook-file /secure/warehouse-slack-webhook.txt \
+  --heartbeat-url-file /secure/warehouse-heartbeat-url.txt \
   --letterhead-file /secure/letterhead.png   # or: --letterhead-file off (plain PDFs)
 export WAREHOUSE_STATE_DIR=/srv/warehouse/acme
 node scripts/doctor.mjs --local      # every service healthy on the loopback gateway
@@ -64,17 +65,18 @@ Point an AI coding agent at this repository and tell it to install the backend. 
    4. The company name (`--company`, the facility's display name, up to 120 characters).
    5. The first administrator's phone (`91` + ten digits) and name.
    6. A Slack webhook file (`off` only for a test install).
-   7. A letterhead file, or `off`.
-   8. Central sign-in, yes or no; if yes, the issuer and the key URL or file ([Central sign-in](docs/OPERATOR_INSTALL.md#central-sign-in)); if no, SMS sign-in only. If yes, also ask whether to require this facility's own SMS code at every central sign-in (`--central-local-code on`, default off; read the trade-off in [Central sign-in](docs/OPERATOR_INSTALL.md#central-sign-in)). The operator gives the association this facility's exact public origin (the `--api-url`) for its catalogue. The central identity service is not part of a facility install: the association's primary operator installs it once from its own repository (`central-identity-template`, private; ask the association). A facility needs only the issuer and the key set from the association.
-   9. The daily SMS ceiling, the most MSG91 requests they will pay for in 24 hours (`otp_daily_provider_attempt_cap`).
-   10. The host time zone, the facility's own.
-   11. The state directory (absolute, outside the checkout; the guide uses `/srv/warehouse/<name>`).
+   7. The ping URL of an external heartbeat, a dead-man switch such as healthchecks.io ([External heartbeat](docs/MONITORING.md#external-heartbeat-the-dead-man-switch)), given as a private file (`--heartbeat-url-file`), or `off`. An association member is told the URL of its association check; if the operator declines, doctor keeps a warning unless they record the decision.
+   8. A letterhead file, or `off`.
+   9. Central sign-in, yes or no; if yes, the issuer and the key URL or file ([Central sign-in](docs/OPERATOR_INSTALL.md#central-sign-in)); if no, SMS sign-in only. If yes, also ask whether to require this facility's own SMS code at every central sign-in (`--central-local-code on`, default off; read the trade-off in [Central sign-in](docs/OPERATOR_INSTALL.md#central-sign-in)). The operator gives the association this facility's exact public origin (the `--api-url`) for its catalogue. The central identity service is not part of a facility install: the association's primary operator installs it once from its own repository (`central-identity-template`, private; ask the association). A facility needs only the issuer and the key set from the association.
+   10. The daily SMS ceiling, the most MSG91 requests they will pay for in 24 hours (`otp_daily_provider_attempt_cap`).
+   11. The host time zone, the facility's own.
+   12. The state directory (absolute, outside the checkout; the guide uses `/srv/warehouse/<name>`).
 
 The operator copies every secret file onto the host. Never ask for a secret value in chat, and never print one into a log or a report. Do not `cat` or `echo` a secret file to check it; setup and doctor validate them.
 
 Run on the host itself, as the non-root installation user. When a command needs `sudo` and no password-less sudo is set up, give the operator the exact command to run in their own terminal and wait; never ask for the password. After the docker group change, use a new login shell or `sg docker -c '…'`.
 
-The installation user needs `sudo` for a few commands (Docker's install, the state's parent directory, `tunnel.sh install-service`, `watch-timer.sh install`). If it has none, the operator runs those commands in their own terminal as a user that has it, as above.
+The installation user needs `sudo` for a few commands (Docker's install, the state's parent directory, `tunnel.sh install-service`, `watch-timer.sh install`). `tunnel.sh install-service` and `watch-timer.sh install` must be run with `sudo` by the installation user itself (both refuse when the user who ran `sudo` does not own the state); another account with `sudo` can only do Docker's install and create the state's parent directory. If the installation user has no `sudo`, the operator gives it `sudo` for the install, or runs the commands in their own terminal as a user that has it, as above.
 
 **Read the guide from a local clone at the release tag, never through a web fetch:** [docs/OPERATOR_INSTALL.md](docs/OPERATOR_INSTALL.md) is about 244,000 characters, which a fetch cuts or summarises, and `main` is not a release. Clone it first, with the commands of the guide's [Host prerequisites](docs/OPERATOR_INSTALL.md#host-prerequisites) (Node and Docker come first there):
 
@@ -111,7 +113,7 @@ Then read the guide's sections in pieces with the file reader (the table of cont
    ([Setup](docs/OPERATOR_INSTALL.md#setup)), then the full
    [external doctor](docs/OPERATOR_INSTALL.md#external-doctor) through the public origin.
 
-If the operator chose the app too, continue with the app's [Install with an AI agent](https://github.com/abhiguru/rn-warehouse-template#install-with-an-ai-agent) (Expo Go), using this origin and, with central sign-in, the issuer from input 8.
+If the operator chose the app too, continue with the app's [Install with an AI agent](https://github.com/abhiguru/rn-warehouse-template#install-with-an-ai-agent) (Expo Go), using this origin and, with central sign-in, the issuer from input 9.
 
 **Stop and ask the operator** when an input is missing, when a step needs a payment or licence decision or an account outside the host,
 or when a step fails the same way twice; look in [docs/TROUBLESHOOTING.md](docs/TROUBLESHOOTING.md) first.
@@ -161,6 +163,14 @@ There is no accounting integration. Recorded payments drive the Paid and Pending
 figures of the invoice reports; the app does not write them. The ungranted
 baseline functions are not API
 ([docs/API_CONTRACT.md](docs/API_CONTRACT.md), "Legacy and dormant functions").
+
+## Security
+
+Release tags are signed. The release-signing key is an ed25519 key with the comment `warehouse-release-signing`; its fingerprint is
+
+    SHA256:JfbT0+bW7PmoB/HA7HsW+K150PQgTMimV2pPijMC8vM
+
+`upgrade.sh` checks the signature of a release tag against the public keys in [`.github/allowed_signers`](.github/allowed_signers) in the checkout it runs from (never the copy in the release it installs). Compare the fingerprint with `ssh-keygen -lf` of the key in that file. To report a vulnerability, see [SECURITY.md](SECURITY.md).
 
 ## Contributing, CI and history
 

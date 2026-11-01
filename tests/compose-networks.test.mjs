@@ -153,12 +153,15 @@ test('storage names its database superuser and does not install roles (its migra
   const { environment } = renderedCompose().services.storage;
   assert.equal(environment.DB_SUPER_USER, 'supabase_storage_admin');
   assert.equal(environment.DB_INSTALL_ROLES, 'false');
+  assert.equal(environment.REQUEST_ID_HEADER, 'x-request-id', 'storage logs the id the gateway sends');
 });
 
 test('every service has bounded logs', { skip }, () => {
   const { services } = renderedCompose();
   for (const [service, definition] of Object.entries(services)) {
-    assert.deepEqual(definition.logging, { driver: 'json-file', options: { 'max-file': '3', 'max-size': '10m' } }, `${service} logs are unbounded`);
+    // The gateways write a line per request, so they keep ten files of the same size instead of three.
+    const files = service === 'gateway' || service === 'gateway-lan' ? '10' : '3';
+    assert.deepEqual(definition.logging, { driver: 'json-file', options: { 'max-file': files, 'max-size': '10m' } }, `${service} logs are unbounded`);
   }
 });
 

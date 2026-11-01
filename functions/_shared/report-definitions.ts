@@ -114,6 +114,9 @@ function invoiceMoney(invoice: Row): { status: 'paid' | 'pending'; received: num
   return { status: balance <= paidWithinPaise ? 'paid' : 'pending', received: (total - balance) / 100, balance: balance / 100 };
 }
 
+/** An invoice the RPC marks cancelled: it carries cancelled_at (its payment status word is not the rule, as for Paid and Pending). */
+const isCancelledInvoice = (invoice: Row) => invoice.cancelled_at !== null && invoice.cancelled_at !== undefined && invoice.cancelled_at !== '';
+
 const period = (request: ReportRequest) => ({ p_from_date: request.from, p_to_date: request.to });
 /**
  * The oldest stock of the stock aging report, as the app's screen shows it (app/reports/stock-aging.tsx): the count of the
@@ -265,14 +268,26 @@ export const reportDefinitions: Record<ReportName, Definition> = {
       // the rule of `invoiceMoney` (a part-paid invoice is Pending). An invoice's amount is its total (the amount
       // that is paid or owed); the RPC's net_total is that total too, so the PDF prints no net column. Its summary is
       // worked out below from the totals and the payments it lists.
-      rows: (body, request) => list(body.invoices).map(invoice => ({
+      // A cancelled invoice (migration 134) is listed with the status 'cancelled' and no amount: it is in no sum (the RPC leaves it out
+      // of its summary, and its amount and tax cells are empty, so the totals row and the summary add nothing for it). A Paid / Pending
+      // choice lists only the invoices of that status, so it never lists a cancelled one.
+      rows: (body, request) => list(body.invoices).map(invoice => isCancelledInvoice(invoice) ? {
+        invoice_no: invoice.invoice_number,
+        date: invoice.invoice_date,
+        grn: invoice.grn_ref,
+        amount: null,
+        tax: null,
+        status: 'cancelled' as const,
+        received: 0,
+        balance: 0,
+      } : {
         invoice_no: invoice.invoice_number,
         date: invoice.invoice_date,
         grn: invoice.grn_ref,
         amount: invoice.total,
         tax: invoice.tax_amount,
         ...invoiceMoney(invoice),
-      })).filter(row => !request.status || row.status === request.status),
+      }).filter(row => !request.status || row.status === request.status),
       columns: [
         { key: 'invoice_no', label: 'invoiceNumber', kind: 'text' },
         { key: 'date', label: 'date', kind: 'date' },
@@ -679,6 +694,7 @@ export function formatCell(kind: Kind, value: unknown, lang: ReportLang): string
   if (kind === 'status') {
     if (text === 'paid') return label(lang, 'paid');
     if (text === 'pending') return label(lang, 'pending');
+    if (text === 'cancelled') return label(lang, 'cancelled');
   }
   return text;
 }

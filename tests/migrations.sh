@@ -543,7 +543,7 @@ test_files=(
   "$ROOT/tests/duplicate_warning_124.sql" "$ROOT/tests/dispatch_sort_key_grant_125.sql"
   "$ROOT/tests/report_stock_ist_day.sql" "$ROOT/tests/report_dispatch_weight.sql" "$ROOT/tests/report_grn_weight.sql"
   "$ROOT/tests/report_grn_invoices.sql"
-  "$ROOT/tests/sessions_sliding.sql" "$ROOT/tests/break_glass.sql" "$ROOT/tests/break_glass_workers.sql" "$ROOT/tests/otp_source_limits.sql"
+  "$ROOT/tests/sessions_sliding.sql" "$ROOT/tests/session_devices_140.sql" "$ROOT/tests/break_glass.sql" "$ROOT/tests/break_glass_workers.sql" "$ROOT/tests/otp_source_limits.sql"
   "$ROOT/tests/document_numbering.sql" "$ROOT/tests/order_change_log_128.sql"
   "$ROOT/tests/order_effects_128.sql" "$ROOT/tests/empty_orders_128.sql"
   "$ROOT/tests/rate_changes_129.sql"
@@ -555,6 +555,12 @@ test_files=(
   "$ROOT/tests/items_without_rate_133.sql"
   "$ROOT/tests/dispatch_list_grn_id_131.sql"
   "$ROOT/tests/rack_presets_131.sql"
+  "$ROOT/tests/invoice_cancel_134.sql"
+  "$ROOT/tests/payments_integrity_139.sql"
+  "$ROOT/tests/packaging_lines_141.sql"
+  "$ROOT/tests/orders_list_135.sql"
+  "$ROOT/tests/sensor_hourly_136.sql"
+  "$ROOT/tests/rls_wrapped_137.sql" "$ROOT/tests/customer_rpc_deleted_137.sql" "$ROOT/tests/list_clamps_138.sql"
 )
 for test_sql in "${test_files[@]}"; do
   docker exec -i -e PGPASSWORD=disposable-test-database-only "$container" psql -X -q -U supabase_admin -d postgres -v ON_ERROR_STOP=1 < "$test_sql"
@@ -585,6 +591,35 @@ fi
 # A column that exists but is all NULL passes.
 printf 'BEGIN;\nALTER TABLE public.api_configurations ADD COLUMN sentry_dsn text;\nCREATE TABLE public.auth_logs (id int);\n%s\nROLLBACK;\n' "$guard_sql" | mig_psql >/dev/null \
   || { echo 'The migration 123 guard refused an empty table and a NULL column.' >&2; exit 1; }
+
+# Migration 139's guard (its GUARD-BEGIN to GUARD-END block) refuses while a row breaks one of the new rules and names every rule that is
+# broken with its count and the query to find the rows. Run here in transactions that are rolled back: the migrated database passes,
+# then the constraints are dropped (in the transaction) and one bad row per rule is added.
+guard139_sql=$(sed -n '/^-- GUARD-BEGIN$/,/^-- GUARD-END$/p' "$ROOT/migrations/00000000000139_payments_integrity.sql")
+[[ "$guard139_sql" == *'DO $guard$'* && "$guard139_sql" == *'$guard$;'* ]] || { echo 'The guard block of migration 139 was not found.' >&2; exit 1; }
+printf 'BEGIN;\n%s\nROLLBACK;\n' "$guard139_sql" | mig_psql >/dev/null \
+  || { echo 'The migration 139 guard refused a database without bad rows.' >&2; exit 1; }
+guard139_drop='ALTER TABLE public.invoice DROP CONSTRAINT invoice_gr_id_fkey, DROP CONSTRAINT invoice_customer_id_fkey;
+ALTER TABLE public.invoice_trl DROP CONSTRAINT invoice_trl_invoice_id_fkey, DROP CONSTRAINT invoice_trl_disp_trl_id_fkey;
+ALTER TABLE public.dispatch DROP CONSTRAINT dispatch_customer_id_fkey;
+ALTER TABLE public.payments DROP CONSTRAINT payments_customer_id_fkey, DROP CONSTRAINT payments_supervisor_id_fkey, DROP CONSTRAINT payments_amount_positive;'
+if err=$(printf "BEGIN;\n%s\nINSERT INTO public.invoice(inv_fin_year, inv_no, gr_id, gr_no, customer_id, inv_date) VALUES (2026, 1, gen_random_uuid(), 'G', gen_random_uuid(), now());
+INSERT INTO public.invoice_trl(invoice_id, disp_trl_id) VALUES (gen_random_uuid(), gen_random_uuid());
+INSERT INTO public.dispatch(disp_no, customer_id) VALUES ('D1', gen_random_uuid());
+INSERT INTO public.payments(payment_no, payment_date, customer_id, supervisor_id, amount) VALUES ('P1', now(), gen_random_uuid(), gen_random_uuid(), 0), ('P2', now(), NULL, NULL, -1);
+%s\nROLLBACK;\n" "$guard139_drop" "$guard139_sql" | mig_psql 2>&1 >/dev/null); then
+  echo 'The migration 139 guard accepted orphans and payments of zero or less.' >&2; exit 1
+fi
+for expected in 'invoice.gr_id without a goods receipt: 1 rows' 'invoice.customer_id without a customer: 1 rows' 'invoice_trl.invoice_id without an invoice: 1 rows' \
+  'dispatch.customer_id without a customer: 1 rows' 'payments.customer_id without a customer: 1 rows' 'payments.supervisor_id without a user profile: 1 rows' \
+  'payments with an amount of zero or less: 2 rows' 'find them: SELECT t.* FROM public.payments t WHERE t.amount <= 0' 'Nothing was changed.'; do
+  [[ "$err" == *"$expected"* ]] || { echo "The migration 139 guard refusal does not name '$expected': $err" >&2; exit 1; }
+done
+# Only a payment of zero: the refusal names that and none of the orphan rules.
+if err=$(printf "BEGIN;\n%s\nINSERT INTO public.payments(payment_no, payment_date, amount) VALUES ('P1', now(), 0);\n%s\nROLLBACK;\n" "$guard139_drop" "$guard139_sql" | mig_psql 2>&1 >/dev/null); then
+  echo 'The migration 139 guard accepted a payment of zero.' >&2; exit 1
+fi
+[[ "$err" == *'payments with an amount of zero or less: 1 rows'* && "$err" != *'without a'* ]] || { echo "The migration 139 guard refusal for a zero payment is not the expected one: $err" >&2; exit 1; }
 
 mig_psql -c "ALTER DATABASE postgres RESET storage.allow_delete_query"
 

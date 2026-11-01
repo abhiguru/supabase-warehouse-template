@@ -189,11 +189,11 @@ SELECT pg_temp.did_assert(pg_temp.did_column(:'staff_quince'::jsonb, 'disp_no') 
   'staff: numbers, days, quantities and the summary of the Quince answer: ' || :'staff_quince');
 -- The other keys are all still there, and no key besides disp_id is new (migration 58 later added
 -- total_weight to a dispatch and weight to an item, which are in the sets below): the exact key set
--- of a dispatch and of its items.
+-- of a dispatch and of its items. Migration 141 added packaging to an item.
 SELECT pg_temp.did_assert(count(*) = 2
     AND bool_and(pg_temp.did_keys(x) = 'disp_date,disp_id,disp_no,items,supervisor_name,total_qty,total_weight')
     AND bool_and(jsonb_array_length(x->'items') = 1)
-    AND bool_and(pg_temp.did_keys(x#>'{items,0}') = 'item_name,orig_qty,package_mark,qty,rack,source_grn,source_grn_id,weight')
+    AND bool_and(pg_temp.did_keys(x#>'{items,0}') = 'item_name,orig_qty,package_mark,packaging,qty,rack,source_grn,source_grn_id,weight')
     AND bool_and(x#>>'{items,0,item_name}' = 'Dispatch Id Fennel' AND x#>>'{items,0,source_grn}' = 'DIS1'),
   'staff: the keys of each dispatch and of its items')
 FROM jsonb_array_elements((:'staff_quince'::jsonb)->'dispatches') AS t(x);

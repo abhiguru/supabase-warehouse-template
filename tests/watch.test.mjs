@@ -11,6 +11,7 @@ import { join } from 'node:path';
 import { createHash, createHmac } from 'node:crypto';
 import { repo } from './backup-test-helpers.mjs';
 import * as W from '../scripts/watch.mjs';
+import { statfsWithTimeout } from '../scripts/wsl-host.mjs';
 import { ADAPTERS } from '../scripts/notify.mjs';
 
 const HOUR = 3600 * 1000;
@@ -44,7 +45,7 @@ function harness({ webhook = true, dailyAt = '02:30', heartbeatAt = '09:00' } = 
     if (command === 'docker' && args[0] === 'inspect') return ok(args.slice(3).map(id => { const name = h.services.find(s => idOf(s) === id); return `${id}|${name}|${h.stateOf?.[name] ?? `running|${['db', 'gateway'].includes(name) ? 'healthy' : ''}`}|0|false|2026-10-18T00:00:00Z|False`; }).join('\n'));
     if (command === 'docker' && args[0] === 'events') return ok('');
     if (line.includes('pg_isready')) return ok('accepting connections');
-    if (line.includes('psql')) return ok('5|0|100000|100|50\n');
+    if (line.includes('psql')) return ok('5|0|100000|100|50|0\n');
     if (line.includes('docker logs')) return ok('');
     if (line.includes('exec -T functions')) return ok();
     if (command === 'flock') return ok();
@@ -67,6 +68,8 @@ function harness({ webhook = true, dailyAt = '02:30', heartbeatAt = '09:00' } = 
   Object.defineProperty(h.deps, 'fsApi', { get: () => h.fsApi, enumerable: true });
   h.deps.runGroup = async (c, a) => h.fakeRun(c, a);
   h.ctx = () => W.makeContext(h.deps, W.loadState(state, h.clock.t, h.deps.readText));
+  // A context for a checker that has been running for 8 days (offhost_copy_missing waits 7 days after the first run).
+  h.ctxOld = () => { const data = W.loadState(state, h.clock.t, h.deps.readText); data.firstRun = h.clock.t - 8 * 24 * HOUR; return W.makeContext(h.deps, data); };
   h.state_ = () => JSON.parse(readFileSync(join(state, 'config/watch-state.json'), 'utf8'));
   h.advance = ms => { h.clock.t += ms; };
   // A state file that is old enough for the daily jobs (a fresh state waits for the next window).
@@ -111,6 +114,96 @@ test('memory: failing above 85% used (MemAvailable)', () => {
   } finally { clean(h); }
 });
 
+// ---- the Windows drive that holds the WSL virtual disk (disk_vhdx_drive_low)
+// A WSL2 host: the kernel release, and the Windows drive as the 9p mount it is (more drives by name).
+const wslHost = (h, { statfs = { bavail: 0, blocks: 0 }, drives = ['/mnt/c'] } = {}) => {
+  mkdirSync(join(h.proc, 'sys/kernel'), { recursive: true });
+  writeFileSync(join(h.proc, 'sys/kernel/osrelease'), '5.15.153.1-microsoft-standard-WSL2\n');
+  writeFileSync(join(h.proc, 'mounts'), `/dev/sdc / ext4 rw 0 0\n${drives.map(d => `C:\\134 ${d} 9p rw,dirsync 0 0\n`).join('')}`);
+  h.statfsTable['/mnt/c'] = statfs;
+};
+const driveOf = (gib, percent) => ({ bavail: Math.round(gib * 1024 ** 3 / 4096), blocks: Math.round(gib * 1024 ** 3 / 4096 * 100 / percent) });
+
+test('disk_vhdx_drive_low under WSL: fails below 20 GiB or below 10 %, passes at exactly 20 GiB and 10 %, names the drive and the Windows docs', () => {
+  const h = harness();
+  try {
+    wslHost(h);
+    const judge = () => find(W.checkDisks(h.ctx()), 'disk_vhdx_drive_low');
+    h.statfsTable['/mnt/c'] = driveOf(15, 50);
+    let r = judge();
+    assert.equal(r.ok, false, '15 GiB at 50 %');
+    assert.match(r.summary, /Windows drive \/mnt\/c, which holds the WSL virtual disk, has 15\.0 GiB free \(50%/);
+    assert.match(r.detail, /docs\/OPERATOR_INSTALL\.md, "Windows host \(Ubuntu in WSL2\)"/);
+    h.statfsTable['/mnt/c'] = driveOf(25, 5);
+    assert.equal(judge().ok, false, '25 GiB at 5 %');
+    h.statfsTable['/mnt/c'] = driveOf(25, 50);
+    assert.equal(judge().ok, true, '25 GiB at 50 %');
+    h.statfsTable['/mnt/c'] = { bavail: 20 * 1024 ** 3 / 4096, blocks: 20 * 1024 ** 3 / 4096 * 5 };   // exactly 20 GiB, 20 %
+    assert.equal(judge().ok, true, 'exactly 20 GiB is enough');
+    h.statfsTable['/mnt/c'] = { bavail: 20 * 1024 ** 3 / 4096 - 1, blocks: 20 * 1024 ** 3 / 4096 * 5 };
+    assert.equal(judge().ok, false, 'one block under 20 GiB');
+    h.statfsTable['/mnt/c'] = driveOf(100, 10);
+    assert.equal(judge().ok, true, 'exactly 10 % is enough');
+    h.statfsTable['/mnt/c'] = { bavail: 100 * 1024 ** 3 / 4096 - 1, blocks: 100 * 1024 ** 3 / 4096 * 10 };
+    assert.equal(judge().ok, false, 'just under 10 % of a large drive');
+    // The check is separate from the others: the result of "/" is still there.
+    assert.ok(find(W.checkDisks(h.ctx()), 'disk_root_low'));
+  } finally { clean(h); }
+});
+
+test('disk_vhdx_drive_low: no result when the host is not WSL, and none when the drive cannot be read', () => {
+  const h = harness();
+  try {
+    h.statfsTable['/mnt/c'] = driveOf(1, 1);
+    assert.equal(find(W.checkDisks(h.ctx()), 'disk_vhdx_drive_low'), undefined, 'no osrelease file: not WSL');
+    mkdirSync(join(h.proc, 'sys/kernel'), { recursive: true });
+    writeFileSync(join(h.proc, 'sys/kernel/osrelease'), '6.8.0-45-generic\n');
+    assert.equal(find(W.checkDisks(h.ctx()), 'disk_vhdx_drive_low'), undefined, 'an ordinary kernel');
+    writeFileSync(join(h.proc, 'sys/kernel/osrelease'), '5.15.153.1-Microsoft-standard-WSL2\n');
+    writeFileSync(join(h.proc, 'mounts'), '/dev/sdc / ext4 rw 0 0\nC:\\134 /mnt/c 9p rw 0 0\n');
+    assert.equal(find(W.checkDisks(h.ctx()), 'disk_vhdx_drive_low').ok, false, 'WSL, any letter case');
+    delete h.statfsTable['/mnt/c'];   // statfs throws: under WSL that is reported, not passed over in silence
+    const r = W.checkDisks(h.ctx());
+    assert.equal(find(r, 'disk_vhdx_drive_low').ok, false);
+    assert.match(find(r, 'disk_vhdx_drive_low').summary, /^Cannot read the free space of \/mnt\/c, the Windows drive that holds the WSL virtual disk \(no statfs for \/mnt\/c\)/);
+    assert.match(find(r, 'disk_vhdx_drive_low').detail, /VHDX_DRIVE=<its mount point> in config\/compose\.env/);
+    assert.equal(find(r, 'disk_root_low').ok, true, 'the other checks still run');
+    // /mnt/c that is an empty folder of the Linux filesystem (no 9p mount) is not the drive, whatever statfs says about it.
+    h.statfsTable['/mnt/c'] = driveOf(900, 90);
+    writeFileSync(join(h.proc, 'mounts'), '/dev/sdc / ext4 rw 0 0\n');
+    const folder = find(W.checkDisks(h.ctx()), 'disk_vhdx_drive_low');
+    assert.equal(folder.ok, false);
+    assert.match(folder.summary, /\/mnt\/c is not a Windows drive mount \(filesystem type ext4\)/);
+    for (const type of ['drvfs', 'virtiofs']) {
+      writeFileSync(join(h.proc, 'mounts'), `/dev/sdc / ext4 rw 0 0\nC:\\134 /mnt/c ${type} rw 0 0\n`);
+      assert.equal(find(W.checkDisks(h.ctx()), 'disk_vhdx_drive_low').ok, true, type);
+    }
+  } finally { clean(h); }
+});
+
+test('disk_vhdx_drive_low: the drive is VHDX_DRIVE in config/compose.env (what reaches the timer units), WAREHOUSE_VHDX_DRIVE wins, a relative value is ignored', () => {
+  const h = harness();
+  try {
+    wslHost(h, { drives: ['/mnt/c', '/mnt/d', '/mnt/e'] });
+    h.statfsTable['/mnt/d'] = driveOf(5, 50);
+    h.statfsTable['/mnt/e'] = driveOf(5, 50);
+    h.statfsTable['/mnt/c'] = driveOf(500, 50);
+    const composePath = join(h.state, 'config/compose.env');
+    const base = readFileSync(composePath, 'utf8');
+    const drive = () => find(W.checkDisks(h.ctx()), 'disk_vhdx_drive_low');
+    assert.equal(drive().ok, true, 'default /mnt/c');
+    writeFileSync(composePath, `${base}VHDX_DRIVE=/mnt/d\n`, { mode: 0o600 });
+    assert.match(drive().summary, /Windows drive \/mnt\/d/);
+    h.deps.env = { WAREHOUSE_VHDX_DRIVE: '/mnt/e' };
+    assert.match(drive().summary, /Windows drive \/mnt\/e/, 'the environment variable wins');
+    h.deps.env = {};
+    writeFileSync(composePath, `${base}VHDX_DRIVE=mnt/d\n`, { mode: 0o600 });
+    assert.equal(drive().ok, true, 'a value that is not an absolute path is ignored');
+    // The real checker probes the drive through a child process with a timeout.
+    assert.equal(W.defaultDeps({ WAREHOUSE_STATE_DIR: '/s' }).driveStatfs, statfsWithTimeout);
+  } finally { clean(h); }
+});
+
 test('disk: / under 20% free fails; other ext4/xfs/btrfs mounts under 10%; bind mounts and other types are ignored', () => {
   const h = harness();
   try {
@@ -142,19 +235,42 @@ test('database: pg_isready, connections > 80, transaction > 300 s, cache < 90%, 
   const h = harness();
   try {
     const q = row => { h.runs.psql = ok(`${row}\n`); return W.checkDatabase(h.ctx()); };
-    let r = q('80|300|9001|999|100000');
+    let r = q('80|300|9001|999|100000|4');
     assert.deepEqual(r.filter(x => !x.ok), []);
-    assert.equal(find(q('81|0|100000|0|0'), 'db_connections_high').ok, false);
-    assert.equal(find(q('0|301|100000|0|0'), 'db_long_transaction').ok, false);
-    assert.equal(find(q('0|0|8900|1100|0'), 'db_cache_hit_low').ok, false);
-    assert.equal(find(q('0|0|80|20|0'), 'db_cache_hit_low').ok, true, 'a tiny sample is not judged');
-    assert.equal(find(q('0|0|100000|0|100001'), 'db_dead_tuples_high').ok, false);
+    assert.equal(find(q('81|0|100000|0|0|0'), 'db_connections_high').ok, false);
+    assert.equal(find(q('0|301|100000|0|0|0'), 'db_long_transaction').ok, false);
+    assert.equal(find(q('0|0|8900|1100|0|0'), 'db_cache_hit_low').ok, false);
+    assert.equal(find(q('0|0|80|20|0|0'), 'db_cache_hit_low').ok, true, 'a tiny sample is not judged');
+    assert.equal(find(q('0|0|100000|0|100001|0'), 'db_dead_tuples_high').ok, false);
+    assert.equal(find(q('0|0|100000|0|0|4'), 'db_lock_waiters').ok, true, '4 waiters pass');
+    const five = find(q('0|0|100000|0|0|5'), 'db_lock_waiters');
+    assert.equal(five.ok, false, '5 waiters fail');
+    assert.match(five.summary, /5 sessions waiting for the stock lock \(limit 5\)/);
+    assert.ok(h.calls.some(c => c.includes("l.objid=71040 AND l.objsubid=1") && c.includes('NOT l.granted') && c.includes("a.backend_type='client backend'")), 'the query counts ungranted client waiters of lock 71040');
+    assert.throws(() => q('5|0|100000|100|50'), /unexpected database query output/, 'five fields is the old shape');
+    assert.throws(() => q('5|0|100000|100|50|0|1'), /unexpected database query output/);
+    assert.throws(() => q('5|0|100000|100|50|x'), /unexpected database query output/);
     assert.ok(h.calls.some(c => c.includes("exec -T -e PGOPTIONS=-c statement_timeout=10000 db psql")), 'the query has a statement timeout');
     h.runs.pg_isready = bad();
     r = W.checkDatabase(h.ctx());
     assert.deepEqual(r.map(x => [x.id, x.ok]), [['postgres_down', false]]);
     h.runs.pg_isready = ok(); h.runs.psql = bad('boom');
     assert.throws(() => W.checkDatabase(h.ctx()), /database query failed/);
+  } finally { clean(h); }
+});
+
+test('db_lock_waiters is an ordinary alert: fires on the second failing run, repeats after 4 hours, limit 5', () => {
+  const h = harness();
+  try {
+    assert.equal(W.LIMITS.lockWaiters, 5);
+    assert.equal(W.LIMITS.repeatMs, 4 * HOUR);
+    const data = W.loadState(h.state, h.clock.t, h.deps.readText);
+    const row = ok_ => [{ check: 'database', id: 'db_lock_waiters', ok: ok_, summary: '5 sessions waiting for the stock lock (limit 5)', detail: '' }];
+    let plan = W.evaluate(data, row(false), new Set(['database']), h.clock.t);
+    assert.deepEqual(plan.start.map(a => a.id), [], 'once is not enough');
+    h.advance(5 * 60000);
+    plan = W.evaluate(data, row(false), new Set(['database']), h.clock.t);
+    assert.deepEqual(plan.start.map(a => a.id), ['db_lock_waiters']);
   } finally { clean(h); }
 });
 
@@ -719,14 +835,20 @@ test('LAN fallback: the checker is registered, gateway-lan is expected only when
 const nginxText = readFileSync(join(repo, 'docker/nginx/nginx.conf'), 'utf8');
 const logFormat = (nginxText.match(/^\s+log_format warehouse_redacted '([^\n]*)';$/m) ?? [])[1];
 assert.ok(logFormat, 'the warehouse_redacted log format is in docker/nginx/nginx.conf');
+const REQUEST_ID = '0123456789abcdef0123456789abcdef';
 const gatewayLine = (status, seconds) => {
-  const values = { remote_addr: '172.18.0.1', time_local: '19/Oct/2026:10:00:00 +0000', request_method: 'GET', uri: '/rest/v1/x', server_protocol: 'HTTP/1.1', status: String(status), body_bytes_sent: '123', request_time: seconds };
+  const values = { remote_addr: '172.18.0.1', time_local: '19/Oct/2026:10:00:00 +0000', request_method: 'GET', uri: '/rest/v1/x', server_protocol: 'HTTP/1.1', status: String(status), body_bytes_sent: '123', request_time: seconds, request_id: REQUEST_ID };
   return logFormat.replace(/\$([a-z_]+)/g, (_, name) => { if (!(name in values)) throw new Error(`unknown log variable ${name}`); return values[name]; });
 };
 test('the gateway test line is in the shape the nginx log format produces, and the checker reads it', () => {
-  assert.equal(gatewayLine(200, '0.100'), '172.18.0.1 [19/Oct/2026:10:00:00 +0000] "GET /rest/v1/x HTTP/1.1" 200 123 0.100');
+  assert.equal(gatewayLine(200, '0.100'), '172.18.0.1 [19/Oct/2026:10:00:00 +0000] "GET /rest/v1/x HTTP/1.1" 200 123 0.100 0123456789abcdef0123456789abcdef');
   assert.deepEqual(W.parseGatewayLog(gatewayLine(502, '1.500')), [{ status: 502, seconds: 1.5 }]);
   assert.deepEqual(W.parseGatewayLog(gatewayLine(429, '0.000')), [{ status: 429, seconds: 0 }]);
+  // A line from before the id was added to the format still parses; so does one with the id, and a malformed id does not.
+  const old = '172.18.0.1 [19/Oct/2026:10:00:00 +0000] "GET /rest/v1/x HTTP/1.1" 503 123 2.500';
+  assert.deepEqual(W.parseGatewayLog(old), [{ status: 503, seconds: 2.5 }]);
+  assert.deepEqual(W.parseGatewayLog(`${old} ${REQUEST_ID}`), [{ status: 503, seconds: 2.5 }]);
+  assert.deepEqual(W.parseGatewayLog(`${old} not-an-id`), []);
   // nginx's own error log lines (also on the container's output) are not request lines and are skipped.
   assert.equal(W.parseGatewayLog('2026/10/26 10:00:00 [error] 30#30: *3 no live upstreams while connecting to upstream, client: 10.0.0.3, server: _, request: "GET /rest/v1/x HTTP/1.1", upstream: "http://rest_up/x", host: "gateway:8000"').length, 0);
 });
@@ -1173,7 +1295,8 @@ test('backups: missing after 26 h, grace for a new install, failed, newest direc
     assert.equal(find(r, 'backup_failed').ok, false); assert.equal(find(r, 'backup_failed').detail, 'disk full');
     status('retention', { result: 'failed', message: 'locked' });
     assert.equal(find(W.checkBackups(h.ctx()), 'retention_failed').ok, false);
-    assert.equal(find(r, 'usb_backup').ok, true);
+    // h.ctx() is a checker on its first day: inside the 7 days of grace nothing is said about a missing USB copy.
+    assert.equal(find(r, 'offhost_copy_missing').ok, true);
   } finally { clean(h); }
 });
 
@@ -1181,12 +1304,12 @@ test('USB backup: a failed last copy is reported', () => {
   const h = harness();
   try {
     writeFileSync(join(h.state, 'config/usb-backup.last'), 'result=failed\nfinished_utc=2026-10-18T00:00:00Z\nmessage=drive missing\n');
-    const r = find(W.checkBackups(h.ctx()), 'usb_backup');
+    const r = find(W.checkBackups(h.ctxOld()), 'offhost_copy_missing');
     assert.equal(r.ok, false); assert.match(r.summary, /drive missing/);
   } finally { clean(h); }
 });
 
-test('USB backup: encrypted archives with no confirmed copy of the backup key raise usb_backup, and the confirmation clears it', () => {
+test('USB backup: encrypted archives with no confirmed copy of the backup key raise offhost_copy_missing, and the confirmation clears it', () => {
   const h = harness();
   try {
     const key = '5a'.repeat(16) + '0f'.repeat(16);
@@ -1195,36 +1318,85 @@ test('USB backup: encrypted archives with no confirmed copy of the backup key ra
     mkdirSync(join(h.scratch, 'etc'));
     writeFileSync(join(h.scratch, 'etc/warehouse-usb-backup.conf'), `STATE=${h.state}\nENCRYPT=yes\nENCRYPT_SET=default\n`);
     writeFileSync(join(h.state, 'config/usb-backup.last'), `result=ok\nfinished_utc=2026-10-19T08:00:00Z\nlast_success_epoch=${Math.floor((T0 - 3 * HOUR) / 1000)}\nmessage=copied 1\n`);
-    let r = find(W.checkBackups(h.ctx()), 'usb_backup');
+    let r = find(W.checkBackups(h.ctxOld()), 'offhost_copy_missing');
     assert.equal(r.ok, false);
     assert.match(r.summary, /USB archives are encrypted but the backup key copy is not confirmed \(there is no key escrow record\).*bash scripts\/backup-key-escrow\.sh show/);
     // A record for another key does not count; the right one does.
     const record = fp => writeFileSync(join(h.state, 'config/backup-key.escrow'), `warehouse-backup-key-escrow-v1\nkey_fingerprint=${fp}\nconfirmed_utc=2026-10-19T08:00:00Z\nconfirmed_by=op\n`);
     record(fingerprint('d4'.repeat(32)));
-    assert.match(find(W.checkBackups(h.ctx()), 'usb_backup').summary, /for another backup key/);
+    assert.match(find(W.checkBackups(h.ctxOld()), 'offhost_copy_missing').summary, /for another backup key/);
     record(fingerprint(key));
-    assert.equal(find(W.checkBackups(h.ctx()), 'usb_backup').ok, true);
+    assert.equal(find(W.checkBackups(h.ctxOld()), 'offhost_copy_missing').ok, true);
     // Readable archives, typed at setup, need no copy of the key.
     rmSync(join(h.state, 'config/backup-key.escrow'));
     writeFileSync(join(h.scratch, 'etc/warehouse-usb-backup.conf'), `STATE=${h.state}\nENCRYPT=no\nENCRYPT_SET=typed\n`);
-    assert.equal(find(W.checkBackups(h.ctx()), 'usb_backup').ok, true);
+    assert.equal(find(W.checkBackups(h.ctxOld()), 'offhost_copy_missing').ok, true);
   } finally { clean(h); }
 });
 
-test('USB backup: an installation that never reran the USB setup (readable archives, nothing typed) raises usb_backup, and the setup rerun clears it', () => {
+test('USB backup: an installation that never reran the USB setup (readable archives, nothing typed) raises offhost_copy_missing, and the setup rerun clears it', () => {
   const h = harness();
   try {
     mkdirSync(join(h.scratch, 'etc'));
     writeFileSync(join(h.state, 'config/usb-backup.last'), `result=ok\nfinished_utc=2026-10-19T08:00:00Z\nlast_success_epoch=${Math.floor((T0 - 3 * HOUR) / 1000)}\nmessage=copied 1\n`);
     // The configuration the previous release's setup wrote: ENCRYPT=no and no ENCRYPT_SET.
     writeFileSync(join(h.scratch, 'etc/warehouse-usb-backup.conf'), `STATE=${h.state}\nENCRYPT=no\n`);
-    const r = find(W.checkBackups(h.ctx()), 'usb_backup');
+    const r = find(W.checkBackups(h.ctxOld()), 'offhost_copy_missing');
     assert.equal(r.ok, false);
     assert.match(r.summary, /USB archives are still written unencrypted .*run sudo bash scripts\/backup-usb\.sh setup --state /);
     // After the rerun the configuration says what was chosen; a readable archive typed on purpose is fine.
     writeFileSync(join(h.scratch, 'etc/warehouse-usb-backup.conf'), `STATE=${h.state}\nENCRYPT=no\nENCRYPT_SET=typed\n`);
-    assert.equal(find(W.checkBackups(h.ctx()), 'usb_backup').ok, true);
+    assert.equal(find(W.checkBackups(h.ctxOld()), 'offhost_copy_missing').ok, true);
   } finally { clean(h); }
+});
+
+test('offhost_copy_missing: not before 7 days of checker life, weekly, never muted, cleared by the recorded decision', () => {
+  const h = harness();
+  try {
+    h.clock.t = T0;
+    const at = days => { const data = W.loadState(h.state, h.clock.t, h.deps.readText); data.firstRun = h.clock.t - days * 24 * HOUR; return W.makeContext(h.deps, data); };
+    const get = days => find(W.checkBackups(at(days)), 'offhost_copy_missing');
+    assert.equal(get(0).ok, true, 'new checker');
+    assert.equal(get(7).ok, true, 'exactly 7 days is not over 7 days');
+    const late = get(7 + 1 / 24);
+    assert.equal(late.ok, false);
+    assert.equal(late.repeatHours, 168);
+    assert.match(late.summary, /^No copy of the backups is kept outside this host: set up the USB backup drive/);
+    assert.equal(W.NEVER_MUTED.includes('offhost_copy_missing'), true);
+    assert.equal(W.isMuted({ muteUntil: T0 + HOUR, mutes: { offhost_copy_missing: T0 + HOUR } }, 'offhost_copy_missing', T0), false);
+    assert.equal(W.isMuted({ muteUntil: T0 + HOUR, mutes: {} }, 'other_bad', T0), true);
+    const marker = join(h.state, 'config/offhost-copy-declined');
+    writeFileSync(marker, 'We have decided not to keep a copy of the backups outside this host.\n', { mode: 0o600 });
+    assert.equal(get(30).ok, true, 'recorded decision');
+    chmodSync(marker, 0o644);
+    assert.equal(get(30).ok, false, 'a marker with the wrong mode is not a decision');
+    // Inside the grace only "no copy yet" waits: a failed or stale USB copy and an unconfirmed key copy are said at once.
+    rmSync(marker);
+    const usbLast = (result, ageDays) => writeFileSync(join(h.state, 'config/usb-backup.last'), `result=${result}\nfinished_utc=x\nlast_success_epoch=${Math.floor(h.clock.t / 1000) - ageDays * 86400}\nmessage=disk full\n`);
+    usbLast('failed', 0);
+    assert.match(get(0).summary, /failed at x: disk full/, 'failed copy, checker on its first day');
+    assert.equal(get(0).ok, false);
+    usbLast('ok', 9);
+    assert.match(get(0).summary, /9 days old/, 'stale copy, checker on its first day');
+    rmSync(join(h.state, 'config/usb-backup.last'));
+    writeFileSync(join(h.state, 'config/backup.key'), `${'5a'.repeat(32)}\n`, { mode: 0o600 });
+    const key = get(0);
+    assert.equal(key.ok, false, 'unconfirmed key copy, checker on its first day');
+    assert.match(key.summary, /^The backup key copy is not confirmed \(there is no key escrow record\)/);
+    assert.doesNotMatch(key.summary, /No copy of the backups/, 'the missing-copy sentence still waits');
+  } finally { clean(h); }
+});
+
+test('a stored usb_backup alert entry becomes offhost_copy_missing on load, keeping its history; an entry already under the new name wins', () => {
+  const entry = { failingRuns: 3, firingSince: 111, lastSent: 222, check: 'backups', summary: 's', detail: 'd' };
+  const moved = W.normalizeState({ alerts: { usb_backup: entry, other: entry } }, 0, () => {});
+  assert.equal('usb_backup' in moved.alerts, false);
+  assert.equal(moved.alerts.offhost_copy_missing.firingSince, 111);
+  assert.equal(moved.alerts.offhost_copy_missing.lastSent, 222);
+  assert.ok(moved.alerts.other);
+  const both = W.normalizeState({ alerts: { usb_backup: entry, offhost_copy_missing: { ...entry, lastSent: 999 } } }, 0, () => {});
+  assert.equal(both.alerts.offhost_copy_missing.lastSent, 999);
+  assert.equal('usb_backup' in both.alerts, false);
 });
 
 // ---------------------------------------------------------------- alerting
@@ -1376,17 +1548,19 @@ test('mute: all alerts or one alert id; the heartbeat still goes out; unmuted al
   } finally { clean(h); }
 });
 
-test('mute never covers backup_missing, backup_failed or daily_timer_legacy: they post while everything is muted, and the alive message says so', async () => {
+test('mute never covers backup_missing, backup_failed, offhost_copy_missing, daily_timer_legacy or upgrade_interrupted: they post while everything is muted, and the alive message says so', async () => {
   const h = harness();
   try {
     const out = [];
     assert.equal(await W.main(['mute', '600'], h.deps, t => out.push(t)), 0);
-    assert.match(out[0], /^Muted all alerts until \S+\. backup_missing, backup_failed, daily_timer_legacy and upgrade_interrupted are not muted\.$/);
+    assert.match(out[0], /^Muted all alerts until \S+\. backup_missing, backup_failed, offhost_copy_missing, daily_timer_legacy and upgrade_interrupted are not muted\.$/);
     assert.equal(await W.main(['mute', '600', 'backup_missing'], h.deps, t => out.push(t)), 1);
     assert.match(out[1], /^backup_missing cannot be muted: it says no backup exists\.$/);
     assert.equal(await W.main(['mute', '600', 'backup_failed'], h.deps, t => out.push(t)), 1);
     assert.equal(await W.main(['mute', '600', 'daily_timer_legacy'], h.deps, t => out.push(t)), 1);
     assert.match(out.at(-1), /^daily_timer_legacy cannot be muted: it says the daily backup is kept running by an out-of-date unit\.$/);
+    assert.equal(await W.main(['mute', '600', 'offhost_copy_missing'], h.deps, t => out.push(t)), 1);
+    assert.match(out.at(-1), /^offhost_copy_missing cannot be muted: it says the backups have no copy outside this host\.$/);
     // An older mute file that names them is ignored too.
     writeFileSync(join(h.state, 'config/watch-mutes.json'), JSON.stringify({ all: h.clock.t + 10 * HOUR, ids: { backup_failed: h.clock.t + 10 * HOUR, other_bad: h.clock.t + 10 * HOUR } }));
     const checks = stub(failing('backup_missing'), failing('backup_failed', { detail: 'disk full' }), failing('daily_timer_legacy'), failing('other_bad'), failing('service_down:rest'));
@@ -1401,7 +1575,7 @@ test('mute never covers backup_missing, backup_failed or daily_timer_legacy: the
     writeFileSync(join(h.state, 'config/watch-mutes.json'), JSON.stringify({ all: h.clock.t + HOUR, ids: { other_bad: h.clock.t + HOUR } }));
     await W.runOnce(h.deps, { checks, heal: null });
     const alive = h.posts.filter(p => /^Monitoring is alive/.test(p.text)).pop();
-    assert.match(alive.text, /Alerts are muted until \S+\. Muted: other_bad\. backup_missing, backup_failed, daily_timer_legacy and upgrade_interrupted are never muted: they are posted anyway\./);
+    assert.match(alive.text, /Alerts are muted until \S+\. Muted: other_bad\. backup_missing, backup_failed, offhost_copy_missing, daily_timer_legacy and upgrade_interrupted are never muted: they are posted anyway\./);
     h.clock.t = new Date(2026, 9, 21, 9, 5).getTime();
     writeFileSync(join(h.state, 'config/watch-mutes.json'), JSON.stringify({ all: null, ids: {} }));
     await W.runOnce(h.deps, { checks, heal: null });
@@ -2041,6 +2215,28 @@ test('daily: retention and pruning failures are retention failures; the backup s
       assert.equal(find(W.checkBackups(h2.ctx()), 'retention_failed').ok, false);
     } finally { clean(h2); }
   } finally { clean(h); }
+});
+
+test('daily: on a Monday the status line adds the one-drive note when only one USB drive wrote in 30 days; never on other days, never when two wrote, and the pass stays ok', async () => {
+  const note = 'Only one USB drive has written a backup in the last 30 days: take a copy away from the building by enrolling a second drive and swapping them weekly.';
+  const run = async (day, history) => {
+    const h = harness();
+    try {
+      h.seed(); dailyFake(h);
+      h.clock.t = at(day, 3, 0);
+      if (history) writeFileSync(join(h.state, 'config/usb-backup.history'), history(h.clock.t).join('\n') + '\n', { mode: 0o600 });
+      await daily(h);
+      const last = h.state_().lastDailyRun.backup;
+      assert.equal(last.result, 'ok');
+      assert.equal(h.posts.filter(p => /FAILED|FIRING/.test(p.text)).length, 0, 'information only: never an alert');
+      return last.message;
+    } finally { clean(h); }
+  };
+  const epoch = (t, days) => Math.floor(t / 1000) - days * 86400;
+  assert.match(await run(19, t => [`${epoch(t, 2)} AAAA-1111`, `${epoch(t, 9)} AAAA-1111`]), new RegExp(`^backup warehouse-\\d{8}T\\d{6}Z verified; ${note}$`), 'Monday 19 October 2026');
+  assert.doesNotMatch(await run(20, t => [`${epoch(t, 2)} AAAA-1111`]), /USB drive/, 'Tuesday');
+  assert.doesNotMatch(await run(19, t => [`${epoch(t, 2)} AAAA-1111`, `${epoch(t, 9)} BBBB-2222`]), /USB drive/, 'two drives');
+  assert.doesNotMatch(await run(19, null), /USB drive/, 'no history');
 });
 
 test('daily: a backup that re-copied files from a damaged earlier copy stays ok, and the warning is in the daily state and the status line', async () => {
@@ -3674,6 +3870,31 @@ test('restore_space_low: free space below the newest verified backup\'s stored f
   } finally { clean(h); }
 });
 
+test('restore_space_low under WSL also fails when the restore would leave the Windows drive below 20 GiB; data/ itself roomy', () => {
+  const h = harness();
+  try {
+    addVerified(h, 'warehouse-20261018T020000Z', { bytes: 5 * GIB });
+    const need = 6 * GIB;
+    dataSpace(h, 500 * GIB);
+    // Not WSL: the drive is not looked at.
+    h.statfsTable['/mnt/c'] = driveOf(1, 1);
+    assert.equal(W.checkRestoreSpace(h.ctx())[0].ok, true);
+    wslHost(h);
+    h.statfsTable['/mnt/c'] = { bavail: (need + 20 * GIB - 4096) / 4096, blocks: 1e9 };
+    let r = W.checkRestoreSpace(h.ctx());
+    assert.deepEqual([r[0].id, r[0].ok, r[0].repeatHours], ['restore_space_low', false, 24]);
+    assert.match(r[0].summary, /Windows drive \/mnt\/c, which holds the WSL virtual disk, has 26\.0 GiB free, and an in-place restore of warehouse-20261018T020000Z needs 6\.0 GiB, which would leave it below 20\.0 GiB/);
+    assert.match(r[0].detail, /docs\/OPERATOR_INSTALL\.md, "Windows host \(Ubuntu in WSL2\)"/);
+    h.statfsTable['/mnt/c'] = { bavail: (need + 20 * GIB) / 4096, blocks: 1e9 };
+    assert.equal(W.checkRestoreSpace(h.ctx())[0].ok, true, 'exactly 20 GiB left is enough');
+    // An unreadable drive adds nothing: data/ decides alone.
+    delete h.statfsTable['/mnt/c'];
+    assert.equal(W.checkRestoreSpace(h.ctx())[0].ok, true);
+    dataSpace(h, need - 4096);
+    assert.match(W.checkRestoreSpace(h.ctx())[0].summary, /^Free space in data\/ is/, 'data/ too small: its own message');
+  } finally { clean(h); }
+});
+
 test('restore_space_low judges the newest VERIFIED backup that records a size: a v5 backup by its tarball, an unverified or sizeless one is passed over, none at all is not judged', () => {
   const h = harness();
   try {
@@ -4568,4 +4789,117 @@ test('a malformed field of a delivery entry is reset on its own and an old key s
   // A well-formed field of the same entry is kept and wins over the old key.
   const half = W.normalizeState({ ...W.freshState(T0), lastHeartbeat: T0 - 5, delivery: { 'facility-slack': { lastError: 'broken', lastHeartbeat: T0 - 1 } } }, T0, () => {});
   assert.deepEqual(half.delivery['facility-slack'], { lastError: null, lastHeartbeat: T0 - 1 });
+});
+
+test('the daily "Monitoring is alive" message carries the release line; no line or a failed lookup leaves it out, and it is never an alert', async () => {
+  for (const [lookup, expected] of [
+    [async () => 'v0.8.0 is available (this facility runs v0.7.0) — Security release', /\nRelease: v0\.8\.0 is available \(this facility runs v0\.7\.0\) — Security release$/],
+    [async () => null, null],
+    [async () => { throw new Error('lookup exploded'); }, null],
+  ]) {
+    const h = harness();
+    try {
+      h.deps.releaseLine = lookup;
+      await W.runOnce(h.deps, { checks: [], ...NO_JOBS });
+      const beat = h.posts.filter(p => /^Monitoring is alive/.test(p.text));
+      assert.equal(beat.length, 1);
+      if (expected) assert.match(beat[0].text, expected); else assert.doesNotMatch(beat[0].text, /Release:/);
+      assert.equal(h.posts.length, 1, 'no message of its own');
+      assert.deepEqual(Object.keys(W.loadState(h.state, h.clock.t, h.deps.readText).alerts), [], 'no alert state');
+    } finally { clean(h); }
+  }
+});
+
+test('the release lookup runs once per local day, also while a failed post is retried; a new day looks again', async () => {
+  const h = harness();
+  try {
+    let lookups = 0;
+    h.deps.releaseLine = async () => { lookups += 1; return 'v0.8.0 is available (this facility runs v0.7.0)'; };
+    h.postFails = true;
+    await W.runOnce(h.deps, { checks: [], ...NO_JOBS });
+    h.advance(5 * 60000); await W.runOnce(h.deps, { checks: [], ...NO_JOBS });
+    h.postFails = false;
+    h.advance(5 * 60000); await W.runOnce(h.deps, { checks: [], ...NO_JOBS });
+    assert.equal(lookups, 1, 'one lookup for the day');
+    assert.match(h.posts.find(p => /^Monitoring is alive/.test(p.text)).text, /Release: v0\.8\.0 is available/, 'the remembered line is posted');
+    h.clock.t = new Date(2026, 9, 21, 9, 0).getTime();
+    await W.runOnce(h.deps, { checks: [], ...NO_JOBS });
+    assert.equal(lookups, 2, 'the next day looks again');
+    assert.equal(W.loadState(h.state, h.clock.t, h.deps.readText).releaseCheck.date, W.localDate(h.clock.t));
+  } finally { clean(h); }
+});
+
+test('a changed kernel boot id adds "Host restarted at HH:MM" to the next daily status once; never on the first run, never an alert', async () => {
+  const h = harness();
+  try {
+    const bootId = id => { mkdirSync(join(h.proc, 'sys/kernel/random'), { recursive: true }); writeFileSync(join(h.proc, 'sys/kernel/random/boot_id'), `${id}\n`); };
+    const beats = () => h.posts.filter(p => /^Monitoring is alive/.test(p.text));
+    bootId('11111111-aaaa-bbbb-cccc-000000000001');
+    await W.runOnce(h.deps, { checks: [], ...NO_JOBS });
+    assert.equal(beats().length, 1);
+    assert.doesNotMatch(beats()[0].text, /Host restarted/, 'the first run only records the id');
+    assert.equal(W.loadState(h.state, h.clock.t, h.deps.readText).bootId, '11111111-aaaa-bbbb-cccc-000000000001');
+    // Same id on a later day: nothing.
+    h.clock.t = new Date(2026, 9, 21, 9, 0).getTime();
+    await W.runOnce(h.deps, { checks: [], ...NO_JOBS });
+    assert.equal(beats().length, 2);
+    assert.doesNotMatch(beats()[1].text, /Host restarted/);
+    // A restart at 03:07 the next night: the heartbeat of that day says so, with the time, and a failed post keeps it for the retry.
+    bootId('22222222-aaaa-bbbb-cccc-000000000002');
+    h.clock.t = new Date(2026, 9, 22, 3, 7).getTime();
+    const plan = await W.runOnce(h.deps, { checks: [], ...NO_JOBS });
+    assert.equal(beats().length, 2, 'the daily status is not due before 09:00');
+    assert.equal(W.loadState(h.state, h.clock.t, h.deps.readText).hostRestart.at, h.clock.t);
+    assert.deepEqual(Object.keys(plan.data.alerts), [], 'not an alert');
+    h.clock.t = new Date(2026, 9, 22, 9, 0).getTime();
+    h.postFails = true;
+    await W.runOnce(h.deps, { checks: [], ...NO_JOBS });
+    assert.notEqual(W.loadState(h.state, h.clock.t, h.deps.readText).hostRestart, null, 'kept while the post fails');
+    h.postFails = false;
+    h.advance(5 * 60000);
+    await W.runOnce(h.deps, { checks: [], ...NO_JOBS });
+    assert.equal(beats().length, 3);
+    assert.match(beats()[2].text, /\nHost restarted at 03:07\.$/);
+    assert.equal(W.loadState(h.state, h.clock.t, h.deps.readText).hostRestart, null, 'said once');
+    // An unreadable boot id changes nothing.
+    rmSync(join(h.proc, 'sys/kernel/random/boot_id'));
+    h.clock.t = new Date(2026, 9, 23, 9, 0).getTime();
+    await W.runOnce(h.deps, { checks: [], ...NO_JOBS });
+    assert.doesNotMatch(beats()[3].text, /Host restarted/);
+    assert.equal(W.loadState(h.state, h.clock.t, h.deps.readText).bootId, '22222222-aaaa-bbbb-cccc-000000000002');
+  } finally { clean(h); }
+});
+
+test('the checker\'s own release lookup asks GitHub through its fetch: no redirects, with a time limit, releases list of the origin', async () => {
+  const h = harness();
+  try {
+    writeFileSync(join(h.state, 'public/release.json'), JSON.stringify({ backendRelease: 'v0.7.0' }));
+    const sha = 'b'.repeat(40);
+    h.runs['ls-remote'] = ok(`${sha}\trefs/tags/v0.7.0\n${sha}\trefs/tags/v0.7.1\n`);
+    h.runs['get-url'] = ok('https://github.com/abhiguru/supabase-warehouse-template.git\n');
+    h.runs['git -C'] = ok('');
+    const seen = [];
+    h.deps.fetch = async (url, options) => { seen.push({ url, options }); return { ok: true, json: async () => [{ tag_name: 'v0.7.1', name: 'v0.7.1 Security: x', published_at: '2026-10-01T00:00:00Z' }] }; };
+    const text = await h.ctx().releaseLine();
+    assert.equal(text, 'v0.7.1 is available (this facility runs v0.7.0) — Security release');
+    assert.equal(seen.length, 1);
+    assert.equal(seen[0].url, 'https://api.github.com/repos/abhiguru/supabase-warehouse-template/releases?per_page=100');
+    assert.equal(seen[0].options.redirect, 'error');
+    assert.ok(seen[0].options.signal instanceof AbortSignal);
+  } finally { clean(h); }
+});
+
+test('the checker and setup read the heartbeat file by one set of rules', async () => {
+  const { storedHeartbeatUrl } = await import('../scripts/alert-webhook.mjs');
+  const h = harness();
+  try {
+    const path = join(h.state, 'config/heartbeat-url');
+    for (const [text, url] of [['# note\n\nhttps://hc-ping.example.test/a\n', 'https://hc-ping.example.test/a'], ['http://hc.example.test/a\n', null], ['https://x.example.test/a b\n', null], ['', null]]) {
+      writeFileSync(path, text, { mode: 0o600 });
+      assert.equal(storedHeartbeatUrl(h.state), url, JSON.stringify(text));
+      const checker = W.readHeartbeatUrl(h.state);
+      assert.equal(checker.problem ? null : checker.url, url ?? (checker.problem ? null : ''), JSON.stringify(text));
+      assert.equal(Boolean(checker.url), url !== null, JSON.stringify(text));
+    }
+  } finally { clean(h); }
 });

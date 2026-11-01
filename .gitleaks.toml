@@ -1,0 +1,10 @@
+# Gitleaks reads this file from the scanned tree (scripts/scan-secrets.sh). It keeps the default rules.
+[extend]
+useDefault = true
+
+# tests/service-diagnostics.test.mjs lists fictional folder names (pre-rotate-keys-<date>) that the generic-api-key rule takes for a key.
+[[allowlists]]
+description = "fictional folder names in the service-diagnostics retention test"
+condition = "AND"
+paths = ['''tests/service-diagnostics\.test\.mjs$''']
+targetRules = ["generic-api-key"]

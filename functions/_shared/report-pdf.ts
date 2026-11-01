@@ -7,7 +7,7 @@
 // documents bucket. The answer has the shape of the document PDFs
 // (document-pdf.ts): { success, pdf_url, expires_in, document }.
 import { restClient } from './supabase-rest.ts';
-import { validateUserAccess, createAuthErrorResponse } from './auth-helpers.ts';
+import { validateUserAccess, createAuthErrorResponse, requestId } from './auth-helpers.ts';
 import { securityHeaders } from './security-headers.ts';
 import { htmlToPdf, createFooterHtml } from './pdf-renderer-client.ts';
 import { reportHtml } from './document-html.ts';
@@ -67,7 +67,7 @@ export async function reportPdf(req: Request): Promise<Response> {
       columns: report.columns, rows: report.rows, totals: report.totals,
       note, empty: report.empty,
     });
-    const pdf = await htmlToPdf(html, { footerHtml: createFooterHtml(company.data.value, report.title, '', note) });
+    const pdf = await htmlToPdf(html, { footerHtml: createFooterHtml(company.data.value, report.title, '', note), requestId: requestId(req) });
     // Upload uses server authority only after the report read was authorized.
     const path = `report/${request.report}/${request.customerId ?? 'all'}/${crypto.randomUUID()}.pdf`;
     const upload = await writer.storage.from('documents').upload(path, pdf, { contentType: 'application/pdf', upsert: false });
@@ -89,5 +89,5 @@ export async function reportPdf(req: Request): Promise<Response> {
     return new Response(JSON.stringify({ success: true, pdf_url: publicUrl + signedUrl.pathname + signedUrl.search, expires_in: 3600, document }), {
       headers: { ...securityHeaders, 'Content-Type': 'application/json', 'Cache-Control': 'no-store' },
     });
-  } catch (error) { return createAuthErrorResponse(error, securityHeaders); }
+  } catch (error) { return createAuthErrorResponse(error, securityHeaders, req); }
 }

@@ -699,3 +699,32 @@ test('a folder left by an interrupted copy of the images is removed at the next 
     assert.deepEqual(readdirSync(f.dest).filter(name => name.startsWith('.images')), []);
   } finally { f.cleanup(); }
 });
+
+test('a good copy appends "<epoch> <drive uuid>" to config/usb-backup.history (mode 0600, the last 100 kept); a failed run adds nothing', () => {
+  const f = fixture('warehouse-usb-history-');
+  try {
+    f.enroll();
+    const history = join(f.state, 'config/usb-backup.history');
+    f.backups(1);
+    const first = f.run(RUN, f.verifyEnv());
+    assert.equal(first.status, 0, first.stderr + first.stdout);
+    const lines = readFileSync(history, 'utf8').trim().split('\n');
+    assert.equal(lines.length, 1);
+    assert.match(lines[0], /^\d{9,} \S+$/);
+    assert.equal(lines[0].split(' ')[1], /^drive_uuid=(.*)$/m.exec(f.last())[1], 'the drive that wrote it');
+    assert.equal(statSync(history).mode & 0o777, 0o600);
+    // A run that fails records no history line.
+    const failed = f.run(RUN, { ...f.verifyEnv(), PATH: '/nonexistent' });
+    assert.notEqual(failed.status, 0);
+    assert.equal(readFileSync(history, 'utf8').trim().split('\n').length, 1);
+    // More than 100 lines are cut to the newest 100 when the next copy is written.
+    writeFileSync(history, Array.from({ length: 150 }, (_, i) => `${1700000000 + i} old-drive`).join('\n') + '\n', { mode: 0o600 });
+    const next = f.run(RUN, f.verifyEnv());
+    assert.equal(next.status, 0, next.stderr + next.stdout);
+    const kept = readFileSync(history, 'utf8').trim().split('\n');
+    assert.equal(kept.length, 100);
+    assert.equal(kept[0], `${1700000051} old-drive`);
+    assert.notEqual(kept.at(-1).split(' ')[1], 'old-drive');
+    assert.equal(statSync(history).mode & 0o777, 0o600);
+  } finally { f.cleanup(); }
+});

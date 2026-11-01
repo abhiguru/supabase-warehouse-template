@@ -398,6 +398,9 @@ cmd_enroll() {
 cmd_uninstall() {
   require_root uninstall
   systemctl disable --now "$UNIT.timer" >/dev/null 2>&1 || true
+  # The record of the last copy is history once the automation is gone: it must not stand in for a USB backup that no longer exists.
+  uninstalled_state="$(conf_get STATE 2>/dev/null || true)"
+  [[ -z "$uninstalled_state" || ! -f "$uninstalled_state/config/usb-backup.last" ]] || mv -f -- "$uninstalled_state/config/usb-backup.last" "$uninstalled_state/config/usb-backup.last.uninstalled" || true
   rm -f -- "$RULE" "$UNITS/$UNIT@.service" "$UNITS/$UNIT-scan.service" "$UNITS/$UNIT.timer" "$HELPER" "$CONF" "$DRIVES"
   systemctl daemon-reload
   udevadm control --reload-rules
@@ -710,6 +713,13 @@ record() {
     "$result" "$(date -u -d "@$now" +%Y-%m-%dT%H:%M:%SZ)" "$now" "$last_ok" "$D_UUID" "$DEVICE" "$COPIED" "$PRESENT" "$FAILED" "${IMAGES_PROBLEM//$'\n'/ }" "${message//$'\n'/ }")"
   tmp="$(mktemp "$STATE/config/.usb-backup.last.XXXXXX")"
   printf '%s\n' "$report" > "$tmp"; mv -f -- "$tmp" "$RESULT_FILE"
+  # One "<epoch> <filesystem UUID>" line per successful copy, the last 100 kept: the checker's weekly note (scripts/usb-backup-status.mjs,
+  # usbRotationNote) reads which drives wrote in the last 30 days. Information only; a fault here never fails a run.
+  if [[ "$result" == ok && -n "$D_UUID" ]]; then
+    { tmp="$(mktemp "$STATE/config/.usb-backup.history.XXXXXX")" &&
+      { tail -n 99 -- "$STATE/config/usb-backup.history" 2>/dev/null || true; printf '%s %s\n' "$now" "$D_UUID"; } > "$tmp" &&
+      chmod 600 -- "$tmp" && mv -f -- "$tmp" "$STATE/config/usb-backup.history"; } || true
+  fi
   if [[ -n "$DEST" && -d "$DEST" && -w "$DEST" ]]; then
     { printf '%s\n' "$report"
       if ((ENCRYPT)); then

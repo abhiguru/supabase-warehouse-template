@@ -15,6 +15,14 @@ The operator selected this policy on 3 October 2026: active, approved staff may
 view, create and edit warehouse GRNs. GRN deletion remains limited to admins
 and supervisors. Customers retain their assigned-customer read boundary.
 
+**Customers do not see deleted documents (migration 137, owner decision).** A customer account reads a goods receipt, dispatch or invoice
+of an assigned customer only while it is not deleted (`deleted_at IS NULL` on the document), and never the lines or photos of a deleted
+one (`goodsreceived_trl`, `grn_images`, `dispatch_trl`, `dispatch_images`, `invoice_trl`), nor the photo files of a deleted receipt or dispatch in Storage. The RPCs that read documents past the policies follow the same rule for a customer caller: `get_grn_details`,
+`get_dispatch_details` and `get_grn_item_dispatches` answer "not found" for a deleted receipt or dispatch (and leave deleted dispatches and invoices out of
+the totals; since migration 134 `get_grn_details` counts only live invoices, not deleted and not cancelled, for every role, not only for customers), and `get_customer_dispatch_items` and `get_customer_stock_analysis_v2` leave out the lines of deleted receipts and dispatches. Administrators, supervisors and staff read
+deleted documents as before. Only deletion hides a document from a customer: an invoice that is cancelled (not deleted) stays visible to
+its customer. `tests/rls_wrapped_137.sql` proves it for every role.
+
 Migration 18 adds an explicit GRN RPC allowlist and read policies for GRN
 headers, items and attachments, plus customer lookup needed by the receipt
 form. Existing business RPCs retain their quantity/stock and dependency checks.
@@ -90,8 +98,10 @@ The current role table comes first; the sections after it record how each role's
 | The order effect of a dispatch or GRN save before it is made (`preview_create_dispatch`, `preview_update_dispatch`, `preview_update_grn`, migration 128) | yes | yes | yes | **no** (`Staff access required`) |
 | The order effect of a GRN delete before it is made (`preview_delete_grn`, migration 128) | yes | yes | **no** (`Staff access required`) | no |
 | A customer's order read without making one (`get_customer_order`, migration 128): the customer's own for a customer account | yes | yes | yes | own customer only |
+| Which items have no rate yet (`get_items_without_rate`, migration 133) | yes | yes | yes | **no** (`Staff access required`) |
 | Read the rack presets of the GRN item form (`get_rack_presets`, migration 131) | yes | yes | yes | **no** (`Staff access required`) |
 | Change the rack presets (`set_rack_presets`, migration 131) | yes | yes | **no** (`Staff access required`) | no |
+| Cancel an invoice (`cancel_invoice`, migration 134; `delete_invoice` only refuses) | yes | yes | **no** (`Staff access required`) | no |
 | Supervisor's mobile number on a receipt or dispatch | yes | yes | yes | **no** (name only) |
 | `printer_status` (direct read removed in 123: the edge function reads it with the service key) | yes | yes | yes | **no** (and no longer without sign-in) |
 
@@ -213,7 +223,8 @@ already.) The operations dashboard is not shown to staff by the app and
 **Staff — item pricing.** Opened by migration 45 (`get_item_storage_prices` and the four price writers) and taken away
 again by migration 90; see "Staff lose item pricing, 16 October 2026".
 
-**Staff — sensors.** `get_sensor_polling_data` and `get_sensor_history`. The
+**Staff — sensors.** `get_sensor_polling_data`, `get_sensor_history` and
+`get_sensor_hourly` (the hourly summary kept 24 months, migration 136). The
 sensor tables stay closed to staff.
 
 **Staff — photo removal in the receipt and dispatch edit forms.**

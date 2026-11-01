@@ -216,3 +216,15 @@ test('a collation mismatch refuses the key rotation before anything is changed o
     assert.equal(readFileSync(f.log, 'utf8').includes('--force-recreate'), false);
   } finally { rmSync(f.scratch, { recursive: true, force: true }); }
 });
+
+test('rotation deletes the unused break-glass codes inside its transaction, guarded for a database without the table, and the docs say they are voided', () => {
+  const sql = readFileSync(join(root, 'scripts/rotate-auth.sql'), 'utf8');
+  const guarded = /IF to_regclass\('warehouse_security\.break_glass_codes'\) IS NOT NULL THEN DELETE FROM warehouse_security\.break_glass_codes; END IF;/;
+  assert.match(sql, guarded);
+  const begin = sql.indexOf('\nBEGIN;'), commit = sql.lastIndexOf('COMMIT;');
+  assert.ok(begin !== -1 && begin < sql.search(guarded) && sql.search(guarded) < commit, 'between BEGIN and COMMIT');
+  const docs = readFileSync(join(root, 'docs/OPERATOR_INSTALL.md'), 'utf8');
+  assert.match(docs, /Break-glass sign-in codes that were issued and not used are\s+\*\*voided\*\* by a rotation/);
+  assert.match(docs, /\n## Retire or lose a host\n/);
+  for (const row of ['The MSG91 key', 'The backup key', 'The Cloudflare Tunnel credential']) assert.ok(docs.includes(`| ${row}`), row);
+});

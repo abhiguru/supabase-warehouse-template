@@ -62,3 +62,15 @@ For deployers hosting GlitchTip or utilizing Sentry Cloud:
 2. **Server-Side Data Scrubbers**: Enable GlitchTip/Sentry server-side data scrubbing rules as a secondary defense layer for IP masking and header scrubbing.
 3. **Restricted Access**: Access to the error tracking dashboard should be restricted to authorized operational staff via role-based access control and MFA.
 4. **No Marketing / Analytics Use**: Error telemetry events must never be exported, joined with customer analytics datasets, or used for behavioural profiling.
+
+---
+
+## 4. Session records on the facility backend
+
+This is stored by the facility's own backend, not sent to any telemetry service. Since migration 140 each signed-in device's session
+(`warehouse_security.refresh_sessions`) keeps, besides its token hash and times, the **source IP address** of the sign-in (`CF-Connecting-IP`),
+the app's **user agent** (cut to 300 characters) and the time of its last refresh, so an administrator or supervisor can recognise a device
+and sign it out. The address is shown only masked (IPv4 to its /24, IPv6 to its /48) in `list_user_sessions`; the full address stays in the
+database and in the SMS limit tables the sign-in already used. These values are deleted with the session: when the person signs out, an
+administrator signs the device out, a person's 11th session replaces their oldest, the session expires (`npm run retention:apply`), or the
+person is switched off or deleted. They are used for nothing else. A revoke is written to `audit_log` (session id, owner, caller; no address).

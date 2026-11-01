@@ -731,7 +731,7 @@ test('--from-release at a release tag pulls each image that needs building by di
     assert.equal(result.pulls, `${refOf('db')}\n${refOf('functions')}`, 'by digest, only the images that need building (the optional ones have no container)');
     assert.equal(result.tags, `${refOf('db')} ${PROJECT}-db\n${refOf('functions')} ${PROJECT}-functions`, 'tagged as Compose tags a build');
     assert.match(result.stdout, new RegExp(`Pulled the db image from release v1\\.2\\.3: not on this host \\(${refOf('db').replace(/[.]/g, '\\.')}\\)\\.`));
-    assert.match(result.stdout, /Pulled 2 image\(s\) from the release \(db functions\) and built 0 here \(none\)\./);
+    assert.match(result.stdout, /Taken from the release: 2 \(0 already on this host\) \(db functions\); built 0 here \(none\)\./);
     // The URL is the release's asset over https, and the call refuses anything else.
     assert.equal(result.curls.split('\n').length, 1);
     assert.match(result.curls, /^--fail .*--proto =https --proto-redir =https --tlsv1\.2 --max-time 60 --max-filesize \d+ --output \S+ https:\/\/github\.com\/abhiguru\/supabase-warehouse-template\/releases\/download\/v1\.2\.3\/release-images\.json$/);
@@ -750,6 +750,31 @@ test('--from-release at a release tag pulls each image that needs building by di
   } finally { cleanup(f); }
 });
 
+test('--from-release: an image of the released digest that is already on the host (pre-pulled by the upgrade preflight) is not pulled again, and is still checked, tagged and recorded', () => {
+  const f = fixture();
+  try {
+    atTag(f, 'v1.2.3');
+    releaseFile(f);
+    const first = run(f, FROM_RELEASE);
+    assert.equal(first.pulls, `${refOf('db')}\n${refOf('functions')}`, 'absent: pulled');
+    // The tags and the build record are gone (a new release's setup finds the pre-pulled images by digest, not by tag); the digest images stay.
+    rmSync(f.record);
+    const second = run(f, FROM_RELEASE);
+    assert.equal(second.status, 0, second.stderr);
+    assert.equal(second.pulls, '', 'present: no docker pull, so the downtime needs no registry');
+    assert.match(second.stdout, new RegExp(`The db image of release v1\\.2\\.3 is already on this host \\(${refOf('db').replace(/[.]/g, '\\.')}\\)\\.`));
+    assert.match(second.stdout, /Taken from the release: 2 \(2 already on this host\) \(db functions\); built 0/, 'it still counts as the release\'s image');
+    assert.deepEqual(recorded(f.record).map(line => line[1]), ['db', 'functions'], 'recorded as a build would');
+    // An image of that digest that carries another commit is refused and built, as for a pulled one.
+    rmSync(f.record);
+    writeFileSync(join(f.scratch, 'labels', refOf('db').replace(/[/:]/g, '_')), 'b'.repeat(40));
+    const stale = run(f, FROM_RELEASE);
+    assert.equal(stale.pulls, '');
+    assert.match(stale.stderr, /the pulled db image was built from commit b{12}/);
+    assert.equal(stale.builds, 'db');
+  } finally { cleanup(f); }
+});
+
 test('--from-release: a recipe that differs from the released one is built here, the others are pulled', () => {
   const f = fixture();
   try {
@@ -762,7 +787,7 @@ test('--from-release: a recipe that differs from the released one is built here,
     assert.equal(result.pulls, refOf('db'));
     assert.equal(result.builds, 'functions');
     assert.match(result.stdout, /Building the functions image: image missing; not taken from release v1\.2\.3: its recipe differs from the release's/);
-    assert.match(result.stdout, /Pulled 1 image\(s\) from the release \(db\) and built 1 here \(functions\)\./);
+    assert.match(result.stdout, /Taken from the release: 1 \(0 already on this host\) \(db\); built 1 here \(functions\)\./);
     assert.deepEqual(recorded(f.record).map(line => line[1]), ['db', 'functions']);
     assert.deepEqual(tarballs(f), [...SIGNED, 'db.tar', 'functions.tar', 'image-recipes.sha256'], 'a pulled and a built image are both saved');
     // A service the release has no image of is built too.
@@ -788,7 +813,7 @@ test('--from-release: a download that fails builds everything and says why in on
     assert.equal(result.builds, 'db functions');
     assert.equal(result.pulls, '');
     assert.match(result.stdout, new RegExp(`Not pulling the images of release v1\\.2\\.3: ${URL_OF('v1.2.3').replace(/[./]/g, '\\$&')} could not be fetched \\(curl: \\(22\\) The requested URL returned error: 404\\), so the images are built here\\.`));
-    assert.match(result.stdout, /Pulled 0 image\(s\) from the release \(none\) and built 2 here \(db functions\)\./);
+    assert.match(result.stdout, /Taken from the release: 0 \(0 already on this host\) \(none\); built 2 here \(db functions\)\./);
     assert.deepEqual(readdirSync(join(f.state, 'config')).filter(name => name.startsWith('.release-images')), [], 'no download is left');
   } finally { cleanup(f); }
 });
@@ -1110,7 +1135,7 @@ test('--from-release: a pulled image built from another commit, or with no revis
     assert.equal(result.tags, '', 'neither refused image was tagged as the project\'s');
     assert.equal(result.builds, 'db functions', 'both are built here instead');
     assert.match(result.stdout, /Building the db image: image missing; the release image could not be used\./);
-    assert.match(result.stdout, /Pulled 0 image\(s\) from the release \(none\) and built 2 here \(db functions\)\./);
+    assert.match(result.stdout, /Taken from the release: 0 \(0 already on this host\) \(none\); built 2 here \(db functions\)\./);
     for (const [, , id] of recorded(f.record)) assert.match(id, /^sha256:0*[1-9]\d{2}$/, 'the images recorded are the ones built here');
   } finally { cleanup(f); }
 });
@@ -1127,7 +1152,7 @@ test('--from-release: a pull that takes longer than the limit is stopped and tha
     assert.match(result.stderr, new RegExp(`Warning: pulling the db image of release v1\\.2\\.3 \\(${refOf('db').replace(/[./]/g, '\\$&')}\\) took longer than 1 seconds and was stopped; it is built here\\.`));
     assert.equal(result.builds, 'db');
     assert.equal(result.tags, `${refOf('functions')} ${PROJECT}-functions`, 'the pull that finished was used');
-    assert.match(result.stdout, /Pulled 1 image\(s\) from the release \(functions\) and built 1 here \(db\)\./);
+    assert.match(result.stdout, /Taken from the release: 1 \(0 already on this host\) \(functions\); built 1 here \(db\)\./);
     // The limit is 20 minutes unless a test lowers it.
     assert.match(readFileSync(join(repo, 'scripts/build-images.sh'), 'utf8'), /limit="\$\{WAREHOUSE_IMAGE_PULL_TIMEOUT:-1200\}"/);
   } finally { cleanup(f); }
@@ -1273,7 +1298,7 @@ test('--retag re-tags each image of the pre-release by digest as a carbon copy, 
     const pulled = run(f, FROM_RELEASE);
     assert.equal(pulled.status, 0, pulled.stderr);
     assert.equal(pulled.pulls, `${refOf('db')}\n${refOf('functions')}`);
-    assert.match(pulled.stdout, /Pulled 2 image\(s\) from the release \(db functions\) and built 0 here \(none\)\./);
+    assert.match(pulled.stdout, /Taken from the release: 2 \(0 already on this host\) \(db functions\); built 0 here \(none\)\./);
     assert.match(pulled.stdout, /Pulled the db image from release v1\.2\.3: not on this host/);
   } finally { cleanup(f); }
 });

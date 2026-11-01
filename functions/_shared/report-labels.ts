@@ -87,6 +87,7 @@ const table = {
   status: ['Status', 'સ્થિતિ'], // users.fields.status
   paid: ['Paid', 'ચૂકવેલ'], // reports.customerActivity.paid
   pending: ['Pending', 'બાકી'], // common.pending
+  cancelled: ['Cancelled', 'રદ કરેલ'], // an invoice cancelled by an administrator or supervisor (migration 134); a Gujarati draft
   payment: ['Payment', 'ચુકવણી'], // reports.filters.payment (the Paid / Pending choice)
   date: ['Date', 'તારીખ'], // common.date
   item: ['Item', 'આઇટમ'], // common.item

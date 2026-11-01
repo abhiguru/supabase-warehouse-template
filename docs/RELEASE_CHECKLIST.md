@@ -29,6 +29,15 @@ The `contract` CI job compares names only against the pinned app commit
       (overloads, argument names and the grant to signed-in users).
 - [ ] Set `minimumClientVersion` in `app-compat.json` to the oldest app build this release still answers (a backend release supports the newest
       app release; older builds are told to update, [API_CONTRACT.md](API_CONTRACT.md#which-app-builds-a-release-supports-and-what-the-backend-tells-the-app)).
+- [ ] `MOBILE_MIN_REF` (`.github/workflows/ci.yml`) lists the app commit of every build handed out with the current `minimumClientVersion`.
+      Add the commit of each app build released with that version; when the minimum is raised, replace the list with the commits of the new
+      minimum, in the same pull request. For each listed commit, `scripts/check-min-apps.sh` (the `contract` job and `release.yml` run it) must
+      pass, and so must the live comparison, with that commit checked out and its `node_modules` installed, from the running stack's own
+      checkout: `WAREHOUSE_STATE_DIR=<state> node scripts/check-mobile-contract.mjs <app checkout at that commit> --live`. CI compares names only;
+      the live comparison is what catches changed argument names and grants. A function, table or edge function that these apps call cannot be
+      dropped in a release that does not raise the minimum
+      ([CONTRIBUTING.md](../CONTRIBUTING.md#the-oldest-supported-apps-mobile_min_ref)). Say in the release note that builds below the minimum are
+      told to update.
 - [ ] Record the backend and app commit pair in the pull request.
 
 ## Image scan before a release
@@ -74,6 +83,34 @@ fresh build and scan before each release instead). Before every release tag:
       the `functions` container (the steps that depend on the release live in its `setup.sh`: `CONTRIBUTING.md`, "Releases").
       `scripts/check-release-contents.sh` checks these and the `CHANGELOG.md` section when the tag is pushed.
 
+## Signing the tag
+
+Release tags are signed with an SSH key, and `upgrade.sh` refuses a tag that no key in the `.github/allowed_signers` of the installed
+checkout signed. One-time setup (the maintainer, once):
+
+- [ ] Create the signing key on the maintainer's own machine, **not** on the CI runner or any host that builds releases, with a passphrase
+      (a hardware key, `ssh-keygen -t ed25519-sk`, is better), and keep a copy of the private key away from that machine:
+      `ssh-keygen -t ed25519 -C "warehouse-release-signing" -f ~/.ssh/warehouse_release_signing`.
+- [ ] Add the public key to `.github/allowed_signers` as one line (`release namespaces="git" ssh-ed25519 AAAA... warehouse-release-signing`,
+      the file's comment shows the form), in a commit of its own, **before** the first signed tag, and release that commit. Never change this
+      file in a pull request that is not about the key.
+- [ ] In the clone used for tagging only (not globally): `git config gpg.format ssh`,
+      `git config user.signingkey ~/.ssh/warehouse_release_signing.pub`.
+- [ ] Publish the key's fingerprint (`ssh-keygen -lf ~/.ssh/warehouse_release_signing.pub`) in the README under a "Security" heading and in each
+      release note: an operator whose checkout lists no key yet is shown the fingerprint of the release's key and compares it with these.
+- [ ] GitHub's immutable releases are switched on for the repository (see [Image publication](#image-publication)).
+
+Every release: sign with `git tag -s vX.Y.Z-rc.N <commit> -m "..."` (instead of `git tag -a`), then check it before the push:
+`git -c gpg.ssh.allowedSignersFile=.github/allowed_signers tag -v vX.Y.Z-rc.N`.
+
+How it is checked. Until a release lists a key, nothing is checked: `upgrade.sh` warns that the checkout lists no key and goes on, and
+`release.yml` prints a notice. From the first release that lists a key, a checkout at that release (or later) refuses any tag not signed by
+a key of ITS OWN list, and `release.yml` checks the pushed tag against the list of the previous final release, as an operator at that
+release would (for the first signed release, whose predecessor lists no key, against the release's own list). Only an SSH signature counts: a PGP or
+X.509 signature is refused, whatever the host keyring holds. A release that lists no key after one that does is refused (a downgrade). A release therefore cannot add its own signers: **key rotation** needs one release signed with the old key that carries the
+new key line; keep the old line for at least two releases. A lost key means releases cannot be verified until such a bridge release signed
+by a still-listed key. `--ref` is not verified.
+
 ## Tag validation
 
 A `v*` tag runs `release.yml`: the semantic-version gate (`scripts/check-release.sh`), the release contents gate
@@ -81,8 +118,15 @@ A `v*` tag runs `release.yml`: the semantic-version gate (`scripts/check-release
 functions recreate in `setup.sh`), `npm test`, the dependency advisories this release adds over the previous tag (`scripts/audit-compare.mjs --with-root`), the
 Chrome for Testing freshness check of the PDF renderer (`scripts/check-cft-freshness.mjs --mode warn`: a Chrome more than 14 days
 behind Stable is a warning on the run and never blocks the tag; the weekly issue is the signal) and a Compose validation against
-generated operator state. Then its second job, `publish-images`, builds, scans and publishes the images ([below](#image-publication)).
+generated operator state. Before the tests it checks that the tag is signed by a key the previous release lists ([above](#signing-the-tag)). Then its second job, `publish-images`, builds, scans and publishes the images ([below](#image-publication)).
 Wait for both to pass before the next sections.
+
+**Before pushing the tag, wait for green `operator-install` and `operator-upgrade` on the commit.** Neither is a required check on `main`
+(they take up to an hour and run on one machine), so nothing else stops a tag on a commit whose installation or upgrade run failed. The
+first step of the `release` job after Node is set up, `scripts/check-release-ci.mjs`, asks the GitHub API for the check runs of the tagged
+commit and fails, naming the missing or failed one, unless the newest run of each is a completed success. It never waits: if CI is still
+running or failed, let it finish or re-run the failed job (for a tag on an older commit, open that commit's CI run in Actions and use "Re-run jobs"; "Run workflow" on a branch only tests the branch tip), then re-run the release workflow. A final tag on the commit of its release candidate asks about that same commit, so the same runs
+count. Only check runs made by GitHub Actions count, and the tag must name the commit the workflow started on. An `operator-upgrade` that skips itself with a notice (no starting point can be found) ends as a success and counts. The `release` job has `contents: read` and `checks: read`; the script reads the public endpoint anonymously if the token is refused.
 
 ## Image publication
 
@@ -137,7 +181,7 @@ names the candidate it was built for; the revision is the commit of both.
       `docker/docker-compose.yml` that have `build:`), and each `ref` is `ghcr.io/abhiguru/supabase-warehouse-template/<service>@sha256:<64 hex>`.
 - [ ] A release candidate's draft is **published as a pre-release before the rehearsal** (`gh release edit vX.Y.Z-rc.N --draft=false
       --prerelease`), or the rehearsal's `setup.sh` finds no file and builds, which proves nothing about the pull. The rehearsal output must
-      say `Pulled N image(s) from the release (...)`. The final's job needs the candidate's list, so keep the candidate's release (draft or
+      say `Taken from the release: N (M already on this host) (...)`. The final's job needs the candidate's list, so keep the candidate's release (draft or
       published) until the final has been tagged.
 
 ## Upgrade rehearsal from the previous tag
@@ -146,19 +190,25 @@ The `operator-upgrade` CI job runs `upgrade.sh --ref` from the previous tag (or 
 the new tag itself (a commit is not a release tag). So the rehearsal runs on a release candidate, and the final tag goes on the same
 commit afterwards: a failed rehearsal never leaves a published `vX.Y.Z` that has to be moved.
 
-- [ ] Tag the release commit `vX.Y.Z-rc.N` (`git tag -a vX.Y.Z-rc.N <commit>`, push it) and wait for `release.yml` to pass. The
+- [ ] The `operator-upgrade` job's rollback drill passed for this commit (it makes an upgrade fail inside setup and runs the way back that
+      `node scripts/upgrade-record.mjs rollback` prints; a notice that it was skipped is not a pass).
+- [ ] Tag the release commit `vX.Y.Z-rc.N` (`git tag -s vX.Y.Z-rc.N <commit> -m "..."`, push it) and wait for `release.yml` to pass. The
       `CHANGELOG.md` section is `## vX.Y.Z (date)`; `upgrade.sh` prints it for the candidate too.
 - [ ] On a **throwaway** installation of the previous release (its own state and project name; never a facility's), with some data
       in it, run `bash upgrade.sh --dry-run vX.Y.Z-rc.N` and then `bash upgrade.sh vX.Y.Z-rc.N`. Both must end well; the last line of
       `$WAREHOUSE_STATE_DIR/config/upgrades.log` must end in `ok`, `config/upgrade-in-progress` must be gone, and
       `node scripts/doctor.mjs` must pass.
+- [ ] On the same throwaway installation, `node scripts/upgrade-record.mjs rollback --last` prints the way back from the finished upgrade:
+      read it (it starts with `bash scripts/maintenance.sh on`, names the loss, and ends with `rm -f` of `config/upgrade-last`).
+- [ ] At a release candidate tag the preflight prints `Pre-pull of images: done (N image(s) of vX.Y.Z-rc.N, ...)` before the pause, and setup
+      pulls nothing again.
 - [ ] Read what `upgrade.sh` printed under "What vX.Y.Z-rc.N asks of the operator": it must be the operator actions of this release and
       no other release's.
 - [ ] If the previous release is on another PostgreSQL major, `upgrade.sh` must refuse and name the "Major PostgreSQL upgrade"
       section; rehearse that procedure instead.
 - [ ] Once, for the first release that has the upgrade record: stop a rehearsal in the middle (`kill -9` of `upgrade.sh` while `setup.sh`
       runs), check that `node scripts/doctor.mjs --local` reports the interrupted upgrade, and finish it with the same command.
-- [ ] Rehearsal passed: tag the same commit `vX.Y.Z` (`git tag -a vX.Y.Z vX.Y.Z-rc.N^{commit}`), push it, wait for `release.yml`.
+- [ ] Rehearsal passed: tag the same commit `vX.Y.Z` (`git tag -s vX.Y.Z vX.Y.Z-rc.N^{commit} -m "..."`), push it, wait for `release.yml`.
       Failed: fix on `main` and start again with `-rc.N+1`; do not move a tag.
 - [ ] Record in the release pull request or the release note: the previous tag, the candidate, the tag, the date and the result.
 

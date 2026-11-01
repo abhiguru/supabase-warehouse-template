@@ -78,7 +78,7 @@ SELECT pg_temp.gpx_assert((SELECT string_agg(e->>'prefix'||':'||(e->>'grn_count'
 SELECT pg_temp.gpx_assert((SELECT sum((e->>'grn_count')::int) FROM jsonb_array_elements(:'pa'::jsonb->'data') e)
  =(SELECT count(DISTINCT gr.id) FROM public.goodsreceived gr JOIN public.goodsreceived_trl gt ON gt.gr_id=gr.id WHERE gr.deleted_at IS NULL AND gt.stock>0),
  'every GRN with stock is counted: '||:'pa');
--- A button finds its GRNs under the app's search (case-insensitive contains): every prefix is contained in its numbers.
+-- A button finds its GRNs under the app's search (the anchored, case-insensitive <prefix>%<digits>% pattern); the weaker check here is that every prefix is contained in its numbers.
 SELECT pg_temp.gpx_assert(NOT EXISTS (
   SELECT 1 FROM jsonb_array_elements(:'pf'::jsonb->'data') e
   WHERE NOT EXISTS (SELECT 1 FROM public.goodsreceived gr WHERE gr.customer_id=:'customer_id'::uuid AND gr.gr_no ILIKE '%'||replace(replace(e->>'prefix','\','\\'),'%','\%')||'%')),

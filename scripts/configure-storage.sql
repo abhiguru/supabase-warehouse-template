@@ -41,79 +41,81 @@ ALTER TABLE storage.objects ENABLE ROW LEVEL SECURITY;
 DROP POLICY IF EXISTS starter_staff_images ON storage.objects;
 DROP POLICY IF EXISTS starter_manager_images_select ON storage.objects;
 CREATE POLICY starter_manager_images_select ON storage.objects FOR SELECT TO authenticated
-USING (bucket_id IN ('grn-images','dispatch-images') AND warehouse_security.active_role() IN ('admin','supervisor'));
+USING (bucket_id IN ('grn-images','dispatch-images') AND (SELECT warehouse_security.active_role()) IN ('admin','supervisor'));
 DROP POLICY IF EXISTS starter_manager_images_insert ON storage.objects;
 CREATE POLICY starter_manager_images_insert ON storage.objects FOR INSERT TO authenticated
-WITH CHECK (bucket_id IN ('grn-images','dispatch-images') AND warehouse_security.active_role() IN ('admin','supervisor'));
+WITH CHECK (bucket_id IN ('grn-images','dispatch-images') AND (SELECT warehouse_security.active_role()) IN ('admin','supervisor'));
 DROP POLICY IF EXISTS starter_manager_images_update ON storage.objects;
 CREATE POLICY starter_manager_images_update ON storage.objects FOR UPDATE TO authenticated
-USING (bucket_id IN ('grn-images','dispatch-images') AND warehouse_security.active_role() IN ('admin','supervisor'))
-WITH CHECK (bucket_id IN ('grn-images','dispatch-images') AND warehouse_security.active_role() IN ('admin','supervisor'));
+USING (bucket_id IN ('grn-images','dispatch-images') AND (SELECT warehouse_security.active_role()) IN ('admin','supervisor'))
+WITH CHECK (bucket_id IN ('grn-images','dispatch-images') AND (SELECT warehouse_security.active_role()) IN ('admin','supervisor'));
 DROP POLICY IF EXISTS starter_manager_images_delete ON storage.objects;
 CREATE POLICY starter_manager_images_delete ON storage.objects FOR DELETE TO authenticated
-USING (bucket_id IN ('grn-images','dispatch-images') AND warehouse_security.active_role() IN ('admin','supervisor')
+USING (bucket_id IN ('grn-images','dispatch-images') AND (SELECT warehouse_security.active_role()) IN ('admin','supervisor')
   AND NOT EXISTS (SELECT 1 FROM public.grn_images i WHERE i.storage_path=name)
   AND NOT EXISTS (SELECT 1 FROM public.dispatch_images i WHERE i.storage_path=name)
   AND NOT EXISTS (SELECT 1 FROM public.goodsreceived g WHERE g.gr_image_url IS NOT NULL AND position(name IN g.gr_image_url) > 0)
   AND NOT EXISTS (SELECT 1 FROM public.dispatch d WHERE d.disp_image_url IS NOT NULL AND position(name IN d.disp_image_url) > 0));
+-- A customer reads the file of a confirmed photo of an assigned customer's document only while the document is not deleted
+-- (migration 137 does the same for the grn_images and dispatch_images rows).
 DROP POLICY IF EXISTS starter_customer_grn_images ON storage.objects;
 CREATE POLICY starter_customer_grn_images ON storage.objects FOR SELECT TO authenticated USING (
   bucket_id='grn-images' AND EXISTS (SELECT 1 FROM public.grn_images i JOIN public.goodsreceived g ON g.id=i.grn_id
-    WHERE i.storage_path=name AND i.status='confirmed' AND warehouse_security.owns_customer(g.customer_id))
+    WHERE i.storage_path=name AND i.status='confirmed' AND g.deleted_at IS NULL AND (SELECT warehouse_security.owns_customer(g.customer_id)))
 );
 DROP POLICY IF EXISTS starter_customer_dispatch_images ON storage.objects;
 CREATE POLICY starter_customer_dispatch_images ON storage.objects FOR SELECT TO authenticated USING (
   bucket_id='dispatch-images' AND EXISTS (SELECT 1 FROM public.dispatch_images i JOIN public.dispatch d ON d.id=i.dispatch_id
-    WHERE i.storage_path=name AND i.status='confirmed' AND warehouse_security.owns_customer(d.customer_id))
+    WHERE i.storage_path=name AND i.status='confirmed' AND d.deleted_at IS NULL AND (SELECT warehouse_security.owns_customer(d.customer_id)))
 );
 -- Staff can read GRN attachments and upload only their registered pending
 -- objects. A file that an image row names cannot be deleted or overwritten by
 -- staff, and unrelated buckets remain restricted.
 DROP POLICY IF EXISTS starter_grn_staff_read ON storage.objects;
 CREATE POLICY starter_grn_staff_read ON storage.objects FOR SELECT TO authenticated
-USING (bucket_id='grn-images' AND warehouse_security.active_role()='staff' AND EXISTS (
+USING (bucket_id='grn-images' AND (SELECT warehouse_security.active_role())='staff' AND EXISTS (
   SELECT 1 FROM public.grn_images i WHERE i.storage_path=name
-    AND (i.status='confirmed' OR i.uploaded_by=public.get_current_user_profile_id())
+    AND (i.status='confirmed' OR i.uploaded_by=(SELECT public.get_current_user_profile_id()))
 ));
 DROP POLICY IF EXISTS starter_grn_staff_insert ON storage.objects;
 CREATE POLICY starter_grn_staff_insert ON storage.objects FOR INSERT TO authenticated
-WITH CHECK (bucket_id='grn-images' AND warehouse_security.active_role()='staff' AND EXISTS (
+WITH CHECK (bucket_id='grn-images' AND (SELECT warehouse_security.active_role())='staff' AND EXISTS (
   SELECT 1 FROM public.grn_images i WHERE i.storage_path=name AND i.status='pending'
-    AND i.uploaded_by=public.get_current_user_profile_id()
+    AND i.uploaded_by=(SELECT public.get_current_user_profile_id())
 ));
 DROP POLICY IF EXISTS starter_grn_staff_update ON storage.objects;
 CREATE POLICY starter_grn_staff_update ON storage.objects FOR UPDATE TO authenticated
-USING (bucket_id='grn-images' AND warehouse_security.active_role()='staff' AND EXISTS (
+USING (bucket_id='grn-images' AND (SELECT warehouse_security.active_role())='staff' AND EXISTS (
   SELECT 1 FROM public.grn_images i WHERE i.storage_path=name AND i.status='pending'
-    AND i.uploaded_by=public.get_current_user_profile_id()
+    AND i.uploaded_by=(SELECT public.get_current_user_profile_id())
 ))
-WITH CHECK (bucket_id='grn-images' AND warehouse_security.active_role()='staff' AND EXISTS (
+WITH CHECK (bucket_id='grn-images' AND (SELECT warehouse_security.active_role())='staff' AND EXISTS (
   SELECT 1 FROM public.grn_images i WHERE i.storage_path=name AND i.status='pending'
-    AND i.uploaded_by=public.get_current_user_profile_id()
+    AND i.uploaded_by=(SELECT public.get_current_user_profile_id())
 ));
 -- Staff dispatch attachments follow the same contract (migration 23): read
 -- confirmed or own pending metadata, upload only registered pending objects.
 DROP POLICY IF EXISTS starter_dispatch_staff_read ON storage.objects;
 CREATE POLICY starter_dispatch_staff_read ON storage.objects FOR SELECT TO authenticated
-USING (bucket_id='dispatch-images' AND warehouse_security.active_role()='staff' AND EXISTS (
+USING (bucket_id='dispatch-images' AND (SELECT warehouse_security.active_role())='staff' AND EXISTS (
   SELECT 1 FROM public.dispatch_images i WHERE i.storage_path=name
-    AND (i.status='confirmed' OR i.uploaded_by=public.get_current_user_profile_id())
+    AND (i.status='confirmed' OR i.uploaded_by=(SELECT public.get_current_user_profile_id()))
 ));
 DROP POLICY IF EXISTS starter_dispatch_staff_insert ON storage.objects;
 CREATE POLICY starter_dispatch_staff_insert ON storage.objects FOR INSERT TO authenticated
-WITH CHECK (bucket_id='dispatch-images' AND warehouse_security.active_role()='staff' AND EXISTS (
+WITH CHECK (bucket_id='dispatch-images' AND (SELECT warehouse_security.active_role())='staff' AND EXISTS (
   SELECT 1 FROM public.dispatch_images i WHERE i.storage_path=name AND i.status='pending'
-    AND i.uploaded_by=public.get_current_user_profile_id()
+    AND i.uploaded_by=(SELECT public.get_current_user_profile_id())
 ));
 DROP POLICY IF EXISTS starter_dispatch_staff_update ON storage.objects;
 CREATE POLICY starter_dispatch_staff_update ON storage.objects FOR UPDATE TO authenticated
-USING (bucket_id='dispatch-images' AND warehouse_security.active_role()='staff' AND EXISTS (
+USING (bucket_id='dispatch-images' AND (SELECT warehouse_security.active_role())='staff' AND EXISTS (
   SELECT 1 FROM public.dispatch_images i WHERE i.storage_path=name AND i.status='pending'
-    AND i.uploaded_by=public.get_current_user_profile_id()
+    AND i.uploaded_by=(SELECT public.get_current_user_profile_id())
 ))
-WITH CHECK (bucket_id='dispatch-images' AND warehouse_security.active_role()='staff' AND EXISTS (
+WITH CHECK (bucket_id='dispatch-images' AND (SELECT warehouse_security.active_role())='staff' AND EXISTS (
   SELECT 1 FROM public.dispatch_images i WHERE i.storage_path=name AND i.status='pending'
-    AND i.uploaded_by=public.get_current_user_profile_id()
+    AND i.uploaded_by=(SELECT public.get_current_user_profile_id())
 ));
 -- Photo removal by staff (migrations 45 and 47): delete_grn_image /
 -- delete_dispatch_image remove the image row, then the app removes the file.
@@ -125,11 +127,11 @@ WITH CHECK (bucket_id='dispatch-images' AND warehouse_security.active_role()='st
 -- it deletes it; this was not checked against a running Storage API.
 DROP POLICY IF EXISTS starter_staff_removed_image_read ON storage.objects;
 CREATE POLICY starter_staff_removed_image_read ON storage.objects FOR SELECT TO authenticated
-USING (bucket_id IN ('grn-images','dispatch-images') AND warehouse_security.active_role()='staff'
+USING (bucket_id IN ('grn-images','dispatch-images') AND (SELECT warehouse_security.active_role())='staff'
   AND warehouse_security.staff_may_remove_image_file(bucket_id,name));
 DROP POLICY IF EXISTS starter_staff_removed_image_delete ON storage.objects;
 CREATE POLICY starter_staff_removed_image_delete ON storage.objects FOR DELETE TO authenticated
-USING (bucket_id IN ('grn-images','dispatch-images') AND warehouse_security.active_role()='staff'
+USING (bucket_id IN ('grn-images','dispatch-images') AND (SELECT warehouse_security.active_role())='staff'
   AND warehouse_security.staff_may_remove_image_file(bucket_id,name));
 -- Generated PDFs have no direct client-read policy. Authorized Edge functions issue expiring links.
 COMMIT;

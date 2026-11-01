@@ -3,11 +3,12 @@
 -- points at the app, the app list equal to what the app calls (scripts/contract-details.mjs logic). Names only for the app and the
 -- edge functions; for fas-sync (~/fas-sync, fassync/push.py: ten calls) the argument names it passes too, because it calls by name.
 -- Runs after all migrations in migrations.sh's disposable database; it writes nothing.
+-- Migration 134 added cancel_invoice(uuid, text, timestamptz); it joins the app list below in the app change that calls it (delete_invoice stays: it exists and refuses).
 \set ON_ERROR_STOP on
 BEGIN;
 CREATE FUNCTION pg_temp.rc_assert(ok boolean, label text) RETURNS void LANGUAGE plpgsql AS $$
 BEGIN IF NOT COALESCE(ok, false) THEN RAISE EXCEPTION 'rpc callers: %', label; END IF; END $$;
--- The app (src/ and app/): 113 names, 5 of them reached through a variable (save_invoice, update_invoice, the three sensor calls).
+-- The app (src/ and app/): 115 names, 7 of them reached through a variable or a fetch call (save_invoice, update_invoice, the three sensor calls, get_print_jobs, cancel_print_job).
 SELECT pg_temp.rc_assert(count(*) = 0, 'the app calls a function that is gone: ' || string_agg(n, ', ' ORDER BY n))
 FROM unnest(ARRAY[
   'add_item_to_order','assign_customer_to_user','cancel_dispatch_image_upload','cancel_grn_image_upload','check_dispatch_exists',
@@ -30,7 +31,7 @@ FROM unnest(ARRAY[
   'save_grn','search_customer_items_for_order','search_customers','search_items_autocomplete','set_customer_active',
   'set_my_language','set_standard_rate','undo_rate_change','update_customer','update_dispatch_smart',
   'update_grn','update_item','update_order_item_quantity','update_user_role','update_user_status',
-  'user_accessible_customers','save_invoice','update_invoice','get_sensor_polling_data','get_sensor_device',
+  'user_accessible_customers','save_invoice','update_invoice','get_sensor_polling_data','get_print_jobs','cancel_print_job','get_sensor_device',
   'update_sensor_device','suggest_document_number','get_document_numbering','set_document_numbering',
   -- functions/_shared/report-pdf.ts calls these by variable name (call.name of report-definitions.ts), with the caller's token.
   'get_customer_grn_activity','get_all_grn_activity','get_customer_dispatch_activity','get_all_dispatch_activity','get_customer_invoice_summary',
@@ -47,7 +48,7 @@ FROM unnest(ARRAY[
 WHERE NOT EXISTS (SELECT 1 FROM pg_proc p WHERE p.pronamespace = 'public'::regnamespace AND p.proname = n
   AND has_function_privilege('service_role', p.oid, 'EXECUTE'));
 -- The numbering RPCs (migration 127): the app calls them from the build that has the Document numbers screen, with these parameter names, and
--- a signed-in session may run them (the guard decides who). Not in the app list above, which is what the app calls today.
+-- a signed-in session may run them (the guard decides who). Also called by the app; listed here with their parameter names.
 -- The rack presets RPCs (migration 131): the app calls them from the build that has the Rack presets screen, with these parameter names.
 SELECT pg_temp.rc_assert(count(*) = 0, 'a rack presets RPC is gone, has lost a parameter or is not callable by a session: ' || string_agg(f.name, ', ' ORDER BY f.name))
 FROM (VALUES ('get_rack_presets', '{}'), ('set_rack_presets', '{p_floor,p_chamber,p_version}')) AS f(name, arguments)
@@ -66,7 +67,7 @@ WHERE NOT EXISTS (SELECT 1 FROM pg_proc p WHERE p.pronamespace = 'public'::regna
   AND p.proargnames IS NOT DISTINCT FROM CASE WHEN f.arguments = '{}' THEN NULL ELSE f.arguments::text[] END
   AND has_function_privilege('authenticated', p.oid, 'EXECUTE'));
 -- The order-effect previews and the order read (migration 128): the app calls them from the build that tells the person which order lines a save
--- changes and that never makes an empty order, with the argument names of the real save. Not in the app list above, which is what the app calls today.
+-- changes and that never makes an empty order, with the argument names of the real save. Also called by the app; listed here with their parameter names.
 SELECT pg_temp.rc_assert(count(*) = 0, 'an order-effect preview is gone, has lost a parameter or is not callable by a session: ' || string_agg(f.name, ', ' ORDER BY f.name))
 FROM (VALUES
   ('preview_create_dispatch', '{p_dispatch_data,p_dispatch_items}'),

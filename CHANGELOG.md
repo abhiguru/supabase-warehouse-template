@@ -10,6 +10,92 @@ file used to carry for earlier installations are in git: `git show b45ae0b:CHANG
 
 ### Added
 
+- **An invoice is cancelled, not deleted; the invoice records are audited and the audit trail is kept 8 years (migration 134, review finding H5).**
+  New `cancel_invoice(p_invoice_id, p_reason, p_expected_updated_at)` (administrators and supervisors): the invoice keeps its number and its lines,
+  gets `cancelled_at`, `cancelled_by` and `cancel_reason`, frees its GRN for a new invoice, and is refused with `INVOICE_HAS_PAYMENTS`,
+  `INVOICE_CANCELLED`, `STALE_RECORD` or `CANCEL_REASON_INVALID`. `delete_invoice` now refuses (`INVOICE_CANCEL_ONLY`) and deletes nothing;
+  `update_invoice` and `save_invoice` refuse a cancelled invoice (`INVOICE_CANCELLED`). A cancelled invoice is not live for the GRN and dispatch edit
+  rules, is listed marked cancelled (customers still see it), and is left out of every sum and count of the customer invoice summary, the customer
+  activity and the invoice-history report (`cancelled_count`; status Cancelled); its PDF has a CANCELLED line. `invoice`, `invoice_trl`, `payments`
+  and `dispatch_trl` write `audit_log`, and `audit_log` is kept 2920 days (was 730). **Operator note:** the app needs the matching app release to
+  show and call it; `delete_invoice` no longer works for any caller. No payment can be recorded for a cancelled invoice; the preprinted print range skips
+  cancelled invoices and reports them as `skipped`; `get_invoice_data` and `get_grn_details` know the cancellation; customers read `cancelled_at` and
+  `cancel_reason` but not `cancelled_by`. Tests: `tests/invoice_cancel_134.sql` (new), `tests/invoice-cancel.test.mjs` (new),
+  and the suites that deleted invoices for set-up now cancel them. API: [API_CONTRACT.md](docs/API_CONTRACT.md), "Cancelling an invoice".
+- **Payments: foreign keys, positive amounts and a `payments` capability (migration 139).** Six foreign keys the schema never declared now exist:
+  `invoice.gr_id`, `invoice.customer_id`, `invoice_trl.invoice_id`, `dispatch.customer_id` and `payments.customer_id` (all `ON DELETE
+  RESTRICT`) and `payments.supervisor_id` (`ON DELETE SET NULL`), and `payments.amount` must be greater than zero. A guard refuses the
+  migration, changing nothing, while a row breaks a rule, and lists each rule with its count and the query to find the rows. The constraints are
+  added `NOT VALID` and validated; the file is one transaction, so writes to these tables wait until it commits (short on a facility's data). Every child
+  column already had an index. `delete_grn_safe` now refuses, with a clear answer, a GRN that any invoice refers to (cancelled ones included), and locks the GRN row first. New capability `payments` (`node scripts/set-capability.mjs payments on|off`; new manifests write
+  `payments: false`, and `get-public-config` serves false for a manifest without the key); the app (from app 0.7.0) shows Paid and Pending only when it is on.
+  Turning it on: [OPERATOR_INSTALL.md](docs/OPERATOR_INSTALL.md). Contract: [API_CONTRACT.md](docs/API_CONTRACT.md). Tests:
+  `tests/payments_integrity_139.sql` (new), the guard checks in `tests/migrations.sh`, `tests/configure.test.mjs`, `tests/release-info.test.mjs`.
+
+- **Hourly sensor summary kept 24 months (migration 136).** New table `sensor_hourly` (per device and UTC hour: reading count and
+  minimum, maximum and average of temperature and humidity). The daily retention job rolls completed hours up before it deletes the raw
+  `sensor_readings` (still kept 90 days; at most 2,000 hours per run, the last 31 days of a rolled device are rolled again so late readings are folded in, and raw rows are removed only once summarized), and deletes summary
+  rows older than the new policy row `sensor_hourly` (730 days). `retention:preview` and `retention:apply` report `sensor_hourly_rolled`
+  (device-hours) and `sensor_hourly`. New RPC `get_sensor_hourly(p_device_id, p_from, p_to)` for administrators, supervisors and staff (range up to
+  400 days; `INVALID_RANGE`, `RANGE_TOO_LARGE`, `DEVICE_NOT_FOUND`); shape in [API_CONTRACT.md](docs/API_CONTRACT.md). Tests:
+  `tests/sensor_hourly_136.sql` (new), `tests/role_allowlist.sql`, `tests/audit_log_retention.sql`.
+- **Signed-in devices: list and sign out one device (migration 140, review finding M10).** Each session now records the sign-in's source address,
+  its user agent (300 characters) and when it was last refreshed, and a person keeps at most their **newest 10 sessions** (an 11th sign-in
+  deletes the oldest session and its recorded tokens). New RPCs `list_user_sessions(p_user_id)` (administrators; supervisors except for
+  administrators' sessions; address masked to /24 or /48) and `revoke_session(p_session_id)` (the owner, an administrator, or a supervisor
+  except for administrators' sessions). `operator_verify_otp`, `operator_central_exchange` and `operator_break_glass_sign_in` take a last
+  `p_user_agent`; the old signatures stay as wrappers, so an edge function that is not updated keeps working. The edge functions send
+  `CF-Connecting-IP` (now checked as one real IPv4 or IPv6 address) and the user agent. Needs the app batch that shows the list. Shapes:
+  [API_CONTRACT.md](docs/API_CONTRACT.md), "Signed-in devices"; privacy: [TELEMETRY_AND_PRIVACY.md](docs/TELEMETRY_AND_PRIVACY.md), section 4.
+  Tests: `tests/session_devices_140.sql` (new), `tests/operator-otp-handler.test.mjs`, `tests/central-exchange.test.mjs`.
+- **Lock-wait alert.** The checker's database query gains a sixth column, the sessions waiting for advisory lock 71040 (the stock lock), and the new alert `db_lock_waiters` fires at 5 or more (two failing runs, repeating every 4 hours); see MONITORING.md.
+- **Internet line guidance.** "Host prerequisites" and "Ingress and the LAN" recommend a dual-WAN or 4G/5G-failover router so that an ISP outage does not stop GRN and dispatch, and the acceptance list gains a "WAN pulled" step.
+- **Windows 11 host, Windows Update and a restart note.** Windows 11 (Pro or Home) is the supported host and Windows 10 is at your own risk; a new "Windows Update" section (active hours, no auto-restart with logged on users, deferred feature updates, monthly `wsl --version`); `register-tasks.ps1 -Checkout -State` registers the best-effort "Warehouse WSL stop" task (System event 1074, 90 s) that runs `stop.sh --on-host-shutdown` (stops the stack without the stopped-by-operator hold); the checker remembers the kernel boot id and the daily "Monitoring is alive" message says "Host restarted at HH:MM" once after a restart (not an alert).
+- **Retiring or losing a host.** A new section "Retire or lose a host" lists what to do in order (rotate the signing keys, delete the tunnel, replace the MSG91 key, revoke the Slack and heartbeat URLs, rotate the database passwords with `--superuser`, re-enrol USB drives, keep the backup key copy), "Rotate signing keys" says when rotation is required, and "Secrets that rotate-keys does not change" gains the MSG91 key, backup key, tunnel credential and heartbeat URL. Key rotation now also deletes unused break-glass codes.
+- **Disk-encryption warning.** `doctor` warns when the root filesystem has no `crypt` (LUKS) device under it (not under WSL, silent when `findmnt` or `lsblk` fail); the host prerequisites recommend full-disk encryption, and the Windows ones give the `manage-bde -status` check.
+- **`setup.sh --db-memory <GiB>`** (1 to 256) sets the database container's memory limit and, from it, `shared_buffers` (a quarter) and `effective_cache_size` (half) through `DB_MEMORY_LIMIT`, `DB_SHARED_BUFFERS` and `DB_EFFECTIVE_CACHE_SIZE` in `config/compose.env`; refused while the containers run. Without it the values are the old fixed ones (1G, 128MB, 512MB).
+- **Host minimum checked.** `doctor --host-preflight` warns (never refuses) below 4 vCPU, 7.5 GiB of memory and 55 GiB of disk in total on the state's filesystem; "Host prerequisites" states 4 vCPU / 8 GiB / SSD / 60 GB.
+- **A request id on every API answer, and logs saved before restarts.** The gateway makes a random `$request_id` (32 hex characters, no user
+  data) for each request: the last field of its access line, an `X-Request-Id` header passed to PostgREST, Storage and the functions (a
+  client-sent one is replaced) and returned on every answer, error answers included. The function helpers write `request_id=` on their
+  server-side error lines (only an id of exactly that form is repeated). `scripts/watch.mjs` still reads old lines. Before an upgrade, `setup.sh`
+  on an existing state, `rotate-keys.sh` and `scripts/rotate-db-passwords.sh` recreate containers, they save the last 48 hours of each
+  service log, redacted, in `<state>/diagnostics/pre-<label>-<utc>/` (`node scripts/service-diagnostics.mjs save <label>`, the newest 5 kept, best
+  effort). The saves run before each script's first change and the printed way back of an interrupted upgrade starts with one; copies are redacted of query strings and keep the newest `pre-upgrade-*`. Storage logs the request id (`REQUEST_ID_HEADER`). The gateway services keep 10 log files instead of 3. See [MONITORING.md](docs/MONITORING.md#finding-one-request). Operator action: none.
+  Tests: `tests/gateway-config.test.mjs`, `tests/gateway-nginx.test.mjs`, `tests/watch.test.mjs`, `tests/access.test.mjs`,
+  `tests/pdf-renderer-footer.test.mjs`, `tests/service-diagnostics.test.mjs`, `tests/compose-networks.test.mjs`, `tests/diagnostics-wiring.test.mjs`.
+
+- **Outside observer and release notice.** `setup.sh --operator --heartbeat-url-file ABSOLUTE|off` stores the ping URL of an external
+  dead-man switch as `config/heartbeat-url` (mode 0600; kept when the option is left out); `npm run doctor` warns while there is none, unless
+  the facility records `config/heartbeat-declined` ("We have decided not to use an external heartbeat."). The restore-host "Next" steps
+  say to give it again (it is not in a backup) and, on WSL, to register the Windows tasks. [MONITORING.md](docs/MONITORING.md) describes an association-owned
+  healthchecks project with one check per facility as a fleet "who is down" board (nothing but the ping is sent). `doctor --local` and the
+  daily "Monitoring is alive" message now say "vX.Y.Z is available (this facility runs vA.B.C)", with a Security marker and the support-end
+  date of the running line when they can be told; it is information, never an alert. Tests: `tests/release-check.test.mjs` (new),
+  `tests/alert-webhook.test.mjs`, `tests/configure.test.mjs`, `tests/doctor.test.mjs`, `tests/watch.test.mjs`, `tests/restore-host.test.mjs`.
+
+- **A repeatable 5-year scale check.** `tests/seed/make-seed.mjs --years N` writes a scale fixture (per year 12,000 receipts, 9,000 dispatches, 2,400 invoices, 3 lines per document, 200 customers of which 20% hold 80%, 1,500 items, 90 days of sensor readings; the default seed is unchanged), and the new `scale-check` CI job (weekly and on demand, not a required check) loads five years of it into a fictional installation and runs `tests/scale-check.mjs`: 20 workers for 60 seconds as an administrator, a staff member and a customer, calling the list and polled RPCs as the app does. It uploads `scale-check.json` (p50, p95, max per RPC) and warns when a p95 is above `SCALE_P95_MS` (300); `SCALE_ENFORCE=1` makes that a failure. Operator action: none.
+- **A release needs green end-to-end CI on its commit.** `operator-install` and `operator-upgrade` are not required checks on `main`, so a tag
+  could land on a commit where they failed or never ran. `release.yml` now runs `scripts/check-release-ci.mjs` first: it asks the GitHub API for the
+  check runs of the tagged commit and fails, naming the missing or failed one, unless the newest run of each is a completed success. It does not
+  wait or poll, and adds one job permission, `checks: read` (it reads the public endpoint anonymously when the token is refused, and only counts check runs made by GitHub Actions on the commit the tag names). Operator action: none.
+- **Release tags are SSH-signed, and `upgrade.sh` verifies them.** `.github/allowed_signers` lists the keys that may sign a release tag; the maintainer's
+  key now ships there (fingerprint `SHA256:JfbT0+bW7PmoB/HA7HsW+K150PQgTMimV2pPijMC8vM`, also in the README under "Security"), so a checkout that has this release verifies every later tag. A checkout that lists a key makes `upgrade.sh vX.Y.Z` run
+  `git verify-tag` against ITS OWN list and refuse, before anything is changed, a tag that is unsigned, lightweight, signed by another key or
+  published under another name; git 2.34 or newer and `ssh-keygen` are then needed. A checkout that lists no key (older releases) warns and
+  goes on, so the first signed release can be reached; `--ref` is not verified. Only an SSH signature counts (PGP and X.509 are refused whatever the host keyring holds), a release that drops the key list is refused, the warning of a checkout without a key shows the fingerprints the release lists, and the upgrade record keeps `signature=checked|unchecked|ref`. `release.yml` checks the pushed tag against the previous release's
+  list (`scripts/check-release-signature.sh`). Operator action: none.
+- **The way back from an upgrade is drilled in CI, kept after success, and the images are pulled before the freeze.** (1) The `operator-upgrade` job makes an
+  upgrade fail inside setup (a throwaway commit with a migration that raises only on the facility's database) and runs the lines that
+  `node scripts/upgrade-record.mjs rollback` prints, exactly as printed; the previous release must be running again, healthy, with the same
+  rows. (2) A successful `upgrade.sh` keeps its record as `config/upgrade-last`; `node scripts/upgrade-record.mjs rollback --last` prints the way
+  back from a finished upgrade, headed with what it loses (everything recorded since the backup) and that the next patch release is preferred, and
+  starting with `bash scripts/maintenance.sh on`. It only prints. `doctor`, `start.sh` and the checker do not report `upgrade-last`.
+  (3) The release's preflight (`scripts/upgrade-prepull.sh`) pulls the release's images by digest, and the Docker Hub images its compose file
+  names, before the API is closed; `scripts/build-images.sh` does not pull an image of the released digest that is already on the host. A
+  download (other than a 404: a release with no `release-images.json` is skipped with a warning) or pull that fails refuses the upgrade with "Nothing was changed". `rollback --last` first copies `upgrade-last` back to `upgrade-in-progress`, so that doctor and the checker report an interrupted upgrade until the list has been run, and leaves out the image lines when the saved images are gone; the setup summary now reads "Taken from the release: N (M already on this host)". Operator actions: none. Tests: `tests/upgrade-prepull.test.mjs`
+  (new), `tests/upgrade-preflight.test.mjs`, `tests/upgrade.test.mjs`, `tests/upgrade-record.test.mjs`, `tests/build-images.test.mjs`,
+  `tests/workflows.test.mjs`.
 - **Break-glass codes for every facility worker, with their own sign-in (migration 132).** `scripts/break-glass-admin.sh` now makes a one-time code
   (10 minutes, once, five wrong tries) for an active, approved administrator, **supervisor or staff member** (never a customer) and prints the
   role. The app signs in with it through `POST /functions/v1/operator-otp/break-glass` `{phone_number, code}` (service-role RPC
@@ -22,8 +108,71 @@ file used to carry for earlier installations are in git: `git show b45ae0b:CHANG
   `tests/break_glass_workers.sql` (new), `tests/break_glass.sql`, `tests/break-glass-admin.test.mjs`, `tests/operator-otp-handler.test.mjs`.
   Operator procedure: [CENTRAL_LOGIN.md](docs/CENTRAL_LOGIN.md), "When the association's SMS is down".
 
+### Added (Windows hosts)
+
+- **WSL2: the Windows drive that holds the virtual disk is watched (`disk_vhdx_drive_low`).** Inside Ubuntu `/` shows the virtual size of
+  `ext4.vhdx` (about 1 TB), so a filling `C:` stopped PostgreSQL with no warning. On a WSL2 host (kernel release contains "microsoft") the
+  monitoring checker now alerts when the drive that holds the file (`/mnt/c`, or `VHDX_DRIVE` in `config/compose.env`, or `WAREHOUSE_VHDX_DRIVE` for one run) has under 20 GiB or under 10 % free,
+  and `restore_space_low` also fails when an in-place restore would leave it under 20 GiB; `npm run doctor` refuses a new installation under 20 GiB
+  (`--host-preflight`) and warns otherwise; `scripts/backup.sh` refuses a backup that would leave the drive under 20 GiB, before anything stops
+  (a drive that is not a Windows mount, or that `df` cannot read within 10 seconds, is a warning). A drive the checker cannot read raises the same alert, saying so. Hosts that are not WSL are unchanged. Operator procedure: [OPERATOR_INSTALL.md](docs/OPERATOR_INSTALL.md),
+  "Watch the Windows drive". New file `scripts/wsl-host.mjs`. Tests: `tests/wsl-host.test.mjs`, `tests/watch.test.mjs`, `tests/doctor.test.mjs`,
+  `tests/backup-storage.test.mjs`.
+
 ### Changed
 
+- **The packaging word on invoice and report lines (migration 141, owner decision D18).** `build_invoice_form_lines` (so `generate_invoice_data_for_grn_with_pricing`) answers `grn_items_packaging`, `get_invoice_detail` and `get_customer_dispatch_activity` answer `packaging` on each line, and `get_customer_activity_detail` on each top-stock row (`null` when the lots of an item differ). Additive: no existing key changes. Test: `tests/packaging_lines_141.sql`; table in [API_CONTRACT.md](docs/API_CONTRACT.md).
+- **Fixed: clearing the vehicle of a GRN stores nothing again (`update_grn`, `update_dispatch_smart`; definition files, no migration).** Since
+  migration 130 a blank vehicle sent on an edit turned into NULL and then kept the old value; a blank now clears it, and an edit that leaves the
+  vehicle out still keeps it. Runs of white space inside a vehicle number (spaces, tabs, non-breaking spaces) collapse to one space in all four
+  writers (`save_grn`, `update_grn`, `create_dispatch_with_stock_check`, `update_dispatch_smart`); stored rows are not changed. A vehicle sent to `update_dispatch_smart` as a JSON number or boolean is stored as text (only `null` or leaving the key out keeps the vehicle), as a new dispatch does; a JSON object, array or boolean vehicle is refused with `registration_invalid`. Tests:
+  `tests/rules_130.sql`. No operator action.
+
+- **Document PDFs page their lines instead of refusing over 1,000 (review finding M12).** The GRN, dispatch, invoice and customer stock PDFs read
+  their lines 1,000 at a time by key (`id > last id`, ordered by `id`; a document that changed while it was read is answered 503 "The document
+  changed while printing. Try again.") and list them in the order of the screens (GRN by line id; dispatch and invoice by the time in the id,
+  then the id). A document of more than 3,500 lines is refused with 400 "Document exceeds the limit of 3,500 lines" (was "Document exceeds the
+  starter limit of 1000 rows" above 1,000), and one of more than about 120 printed pages (estimated from the length of the cells) with 400
+  "Document is too long to print"; the limits are below the 5,000 lines first planned because the renderer's memory fails a job of about 130 pages
+  or more (measurements: [PDF_GENERATION.md](docs/PDF_GENERATION.md), "Long documents"). A document of more than 50 estimated pages is
+  rendered alone: **Operator note:** the renderer image takes the new request header `X-Render-Solo: true` (without it, two long documents
+  rendered together fail), so the renderer image and the functions move together in one upgrade. A renderer failure is 503 "PDF renderer
+  unavailable". New golden case `invoice-paged` (4 pages); the ten existing goldens are unchanged. Tests: `tests/document-lines.test.mjs` (new),
+  `tests/pdf-renderer-footer.test.mjs`, `docker/pdf-renderer/test/supervisor.test.mjs`.
+- **The order list reads the page first (migration 135, `get_orders_list`).** The function used to read the view `v_orders_list`, which
+  aggregated the lines of every order and picked the latest dispatch of every order, twice per call (count and page), so every phone on an
+  order screen paid for the whole queue every refresh. The matching orders are now found from `orders` (filters, search, count), the page is cut
+  with the same sort, and the item list, the pending totals and the dispatch fields are built only for the orders on the page. The answer is
+  the same (same keys, same order, same count and `has_more`). New rules: `p_limit` is held to 1..200 (the answer's `pagination.limit` says
+  which), `p_offset` to 0 or more (a huge offset answers an empty page), `p_limit => NULL` means 50 (it used to mean every row), the latest dispatch of an order is now picked by creation time and then by id, so two dispatches with equal times always give the same one, and `p_user_id` counts only for `service_role` (any other caller is checked as the session user). New index
+  `idx_dispatch_source_order_latest` on `dispatch (source_order_id, created_at DESC)`. The view is unchanged. Test: `tests/orders_list_135.sql`.
+
+- **Row policies evaluate their helpers once; customers no longer see deleted documents; direct reads and list pages are capped (migrations 137 and 138, review findings M5 and M8).**
+  Every policy on the 12 app-readable tables, and the `storage.objects` policies of `scripts/configure-storage.sql`, now calls
+  `active_role()`, `owns_customer(...)`, `get_current_user_profile_id()` and (the `user_profiles` policies) `auth.uid()` inside a scalar subquery, so a role check is evaluated once per
+  statement instead of once per row; `owns_customer()` asks `active_role()` once instead of three times. A customer's
+  `select * from dispatch_trl` over 50,000 lines ran in about 2.5 s and now runs in about 0.19 s. **Owner decision:** the customer policies
+  (receipts, dispatches, invoices and their lines and photos) also require `deleted_at IS NULL` on the document, so a customer no longer
+  reads a deleted document (nor the file of its photo in Storage: `starter_customer_grn_images`, `starter_customer_dispatch_images`); staff, supervisors and administrators are unchanged, and a cancelled invoice stays visible. `get_dispatch_list_with_items`
+  and `get_invoices_list` clamp `p_limit` to 1..200 (page and offset to at least 1 and 0). PostgREST returns at most 2,000 rows
+  of a direct table read (`PGRST_DB_MAX_ROWS`, `docker/docker-compose.yml`). Tests: `tests/rls_wrapped_137.sql`, `tests/customer_rpc_deleted_137.sql`, `tests/list_clamps_138.sql`
+  (new), `tests/database-settings.test.mjs`, `tests/grn_heavy_dispatch.sql` (pages in 200s). Docs: [API_CONTRACT.md](docs/API_CONTRACT.md), [STAFF_GRN_POLICY.md](docs/STAFF_GRN_POLICY.md).
+- **Off-host copy alert (`offhost_copy_missing`, replaces `usb_backup`).** An installation whose backups and backup key sit only on the host's one disk (USB backup never
+  set up) now gets a weekly, never-muted alert, and `npm run doctor` says the same at once. **Installations without a USB copy start
+  getting this alert 7 days after the checker's first run**; a failed or stale USB copy and an unconfirmed backup-key copy are raised at once, as `usb_backup` did.
+  Fix it by setting up the drive ([OPERATOR_INSTALL.md](docs/OPERATOR_INSTALL.md), "USB backup drive"), or record the decision in `config/offhost-copy-declined` (exact sentence, mode 0600,
+  see "Recovery point and recovery time"; the key-copy check stays on). `offhost_copy_missing` is in the never-muted list with `backup_missing`, `backup_failed`,
+  `daily_timer_legacy` and `upgrade_interrupted`; a stored `usb_backup` alert is carried over to the new name. `backup-usb.sh uninstall` renames
+  `config/usb-backup.last` to `usb-backup.last.uninstalled`. Also: on Mondays the daily status adds a note when only one USB drive wrote in the last 30 days
+  (`config/usb-backup.history`, kept by `backup-usb.sh`; **a drive set up before this release records nothing there until `bash scripts/backup-usb.sh setup` is run again**); `restore.sh` and `restore-host.sh` append per-phase seconds to `<state>/restores.log`.
+  Tests: `tests/declined-marker.test.mjs`, `tests/backup-usb.test.mjs`, `tests/backup-usb-drive.test.mjs`, `tests/watch.test.mjs`, `tests/restore.test.mjs`, `tests/restore-host.test.mjs`.
+- **The oldest supported app is a window, not a pin.** `minimumClientVersion` in `app-compat.json` was still `0.1.0` although migration 123 had
+  dropped functions that older builds call. It is now `0.6.0`, the first build with the update screen. CI checks every app build handed out
+  with that version (`MOBILE_MIN_REF` in `ci.yml`, a list of commits) with the contract scanner and the `rpc-callers` test, and
+  `scripts/check-app-compat.mjs` (run by the `contract` job and, with the previous final tag required, by `release.yml`) refuses a minimum that
+  does not match a listed app or falls below the previous release, and a function, table or edge function such an app calls that was dropped
+  since the previous release unless the minimum rose. Operator note: staff on app v0.5.0 or older (those builds report version 0.1.0) must
+  install a 0.6.0 or newer build; they are told to update when they open this facility. No operator action on the server.
 - **Saving a GRN no longer deletes other people's photo uploads in progress (`update_grn`, no new migration).** When the photo list is sent, an
   unfinished (`pending`) photo that is not in the list used to be removed for an administrator or supervisor, whoever uploaded it. Now it is
   removed only if the saver uploaded it or it is older than 15 minutes; another person's recent pending upload survives and can still be
@@ -37,6 +186,20 @@ file used to carry for earlier installations are in git: `git show b45ae0b:CHANG
   on an installation with no provider, and a first install with neither a provider file nor `--central-issuer`.
   [OPERATOR_INSTALL.md](docs/OPERATOR_INSTALL.md), "MSG91 provider file". Tests: `tests/configure.test.mjs`, `tests/operator-otp-handler.test.mjs`.
 
+- Migration 128: the order history and the order effect of a save. `get_order_change_log` looks up the GRN quantity, rack, weight and packaging
+  of a quantity entry by the entry's own GRN number, item name and package mark, and leaves out entries whose previous and new quantity are
+  equal (count and paging follow). The dispatch and GRN writers answer with `order_effects` (the order lines a save changed), and new preview
+  RPCs (`preview_create_dispatch`, `preview_update_dispatch`, `preview_update_grn`, `preview_delete_grn`) tell it before the save.
+  No order is empty: `get_orders_list` leaves out an order with no line, `get_customer_order` reads an order without making one, and
+  `add_item_to_order` takes `p_customer_id` and makes the order with its first line. Details: `docs/API_CONTRACT.md`.
+- Migration 130: GRN and dispatch input rules. The last confirmed photo of a GRN cannot be deleted (`GRN_PHOTO_REQUIRED`); `dispatch.registration`
+  holds 20 characters (`registration_too_long`); a number with white space is refused (`DISPATCH_NUMBER_SPACES`, `GRN_NUMBER_SPACES`); the
+  vehicle number is trimmed and a blank one is NULL; an all-digit search of `search_customer_items_for_order` also finds item names, package
+  marks and GRN numbers that contain the digits; only `delete_dispatch_with_order_cleanup` deletes a dispatch; the daily job removes photo
+  uploads left `pending` for 24 hours. Details: `docs/API_CONTRACT.md`.
+- Migration 133: `get_order_change_log` tells the right counts around a deleted dispatch (`change_details.total_quantity_restored`, the chain of
+  a line's quantities, a line put back after removal is `added`); `get_grn_prefixes_with_stock` returns the whole leading non-digit run of a
+  GRN number as the prefix; new `get_items_without_rate` (staff and above) names the items that have no rate yet for the GRN Review step.
 - Migration 129: `replace_item_rates` and `set_standard_rate` take an optional `p_request_key` (a resend returns the first answer);
   a rate change from an earlier date is refused (`LATER_RATES_EXIST`) when a later rate has already begun, unless `p_replace_later`;
   an item's first default rate also covers earlier days (`find_storage_price`); `apply_grn_rates` refuses customer and everyone
@@ -57,6 +220,56 @@ file used to carry for earlier installations are in git: `git show b45ae0b:CHANG
   timer, and the agent instructions read the guide from a local clone at the release tag; the release checklist covers a new image package and
   runs the live contract check from the stack's own checkout; the seed is described as a drill fixture. A pulled release image is reported as
   "not on this host".
+
+### Operator actions
+
+- **Before upgrading to the release with migration 139 (foreign keys and positive payments): count the rows that break the new rules.** The migration
+  refuses, changing nothing, while any of these counts is not zero. The upgrade rehearsal (`scripts/upgrade-rehearse.sh`, run by the preflight on a restored
+  copy of the newest verified backup) applies the migration plan, so it runs this guard too and refuses the upgrade before any change to the facility. To
+  count first, run in `psql` as the database owner (all zeros means the migration applies):
+
+  ```sql
+  SELECT (SELECT count(*) FROM public.invoice t WHERE t.gr_id IS NOT NULL AND NOT EXISTS (SELECT 1 FROM public.goodsreceived p WHERE p.id = t.gr_id)) AS invoice_without_grn,
+         (SELECT count(*) FROM public.invoice t WHERE t.customer_id IS NOT NULL AND NOT EXISTS (SELECT 1 FROM public.customers p WHERE p.id = t.customer_id)) AS invoice_without_customer,
+         (SELECT count(*) FROM public.invoice_trl t WHERE NOT EXISTS (SELECT 1 FROM public.invoice p WHERE p.id = t.invoice_id)) AS invoice_line_without_invoice,
+         (SELECT count(*) FROM public.dispatch t WHERE t.customer_id IS NOT NULL AND NOT EXISTS (SELECT 1 FROM public.customers p WHERE p.id = t.customer_id)) AS dispatch_without_customer,
+         (SELECT count(*) FROM public.payments t WHERE t.customer_id IS NOT NULL AND NOT EXISTS (SELECT 1 FROM public.customers p WHERE p.id = t.customer_id)) AS payment_without_customer,
+         (SELECT count(*) FROM public.payments t WHERE t.supervisor_id IS NOT NULL AND NOT EXISTS (SELECT 1 FROM public.user_profiles p WHERE p.id = t.supervisor_id)) AS payment_without_profile,
+         (SELECT count(*) FROM public.payments t WHERE t.amount <= 0) AS payment_amount_not_positive;
+  ```
+
+- **App 0.7.0 is needed with this release.** `delete_invoice` now always refuses (`INVOICE_CANCEL_ONLY`); cancelling an invoice, the `payments` capability switch
+  and the devices list (migration 140) are in the 0.7.0 app only. Upgrade the app in the same window.
+- **git 2.34 or newer and `ssh-keygen` are needed on the host from now on**: `upgrade.sh` verifies the SSH signature of every release tag against the key
+  list this release ships.
+
+- **Before upgrading to the release with migrations 137 and 138: count the deleted documents.** From this release a customer account no
+  longer sees a soft-deleted receipt, dispatch or invoice (nor its lines, photos or photo files), and the customer-callable RPCs
+  `get_grn_details`, `get_dispatch_details`, `get_grn_item_dispatches`, `get_customer_dispatch_items` and `get_customer_stock_analysis_v2` answer
+  "not found" for a deleted receipt or dispatch and leave its lines out. Staff, supervisors and administrators are unchanged. A cancelled
+  invoice stays visible. Run these in `psql` as the database owner; all zeros means nothing changes for any customer:
+
+  ```sql
+  -- deleted documents
+  SELECT (SELECT count(*) FROM public.goodsreceived WHERE deleted_at IS NOT NULL) AS deleted_grns,
+         (SELECT count(*) FROM public.dispatch      WHERE deleted_at IS NOT NULL) AS deleted_dispatches,
+         (SELECT count(*) FROM public.invoice       WHERE deleted_at IS NOT NULL) AS deleted_invoices;
+  -- live dispatch lines of a deleted receipt
+  SELECT count(*) AS live_dispatch_lines_of_deleted_grns
+    FROM public.dispatch_trl dt
+    JOIN public.goodsreceived_trl t ON t.id = dt.gr_trl_id JOIN public.goodsreceived g ON g.id = t.gr_id
+    JOIN public.dispatch d ON d.id = dt.disp_id
+   WHERE g.deleted_at IS NOT NULL AND d.deleted_at IS NULL;
+  -- live invoice lines of a deleted dispatch
+  SELECT count(*) AS live_invoice_lines_of_deleted_dispatches
+    FROM public.invoice_trl it
+    JOIN public.invoice i ON i.id = it.invoice_id
+    JOIN public.dispatch_trl dt ON dt.id = it.disp_trl_id JOIN public.dispatch d ON d.id = dt.disp_id
+   WHERE d.deleted_at IS NOT NULL AND i.deleted_at IS NULL;
+  ```
+
+  Where a count is not zero, customers of those documents stop seeing them (and a customer's dispatch list and stock figures lose the lines
+  of a deleted receipt or dispatch). That is the intended rule; check that none of them is a document a customer still needs.
 
 ## v0.7.0 (2026-10-30)
 

@@ -164,9 +164,13 @@ BEGIN
     END IF;
 
     -- Migration 130 (D17): the vehicle number fits the column (20 characters, as on a GRN); beyond that a plain refusal.
-    -- Migration 130: surrounding white space (spaces, tabs, line breaks, non-breaking spaces) is not stored, a blank one is NULL; the length is checked on the trimmed value.
-    IF jsonb_typeof(p_dispatch_data->'registration') = 'string' THEN
-        p_dispatch_data := jsonb_set(p_dispatch_data, '{registration}', COALESCE(to_jsonb(NULLIF(regexp_replace(p_dispatch_data->>'registration', '^[\s ]+|[\s ]+$', '', 'g'), '')), 'null'::jsonb));
+    -- Migration 130: surrounding white space (spaces, tabs, line breaks, non-breaking spaces) is not stored, runs of white space inside collapse to one space, a blank one is NULL; the length is checked on the trimmed value.
+    IF jsonb_typeof(p_dispatch_data->'registration') IN ('object', 'array', 'boolean') THEN
+        RETURN warehouse_security.grn_rate_failure('registration_invalid',
+            'Registration must be text', jsonb_build_object('field', 'registration'));
+    END IF;
+    IF jsonb_typeof(p_dispatch_data->'registration') IN ('string', 'number') THEN
+        p_dispatch_data := jsonb_set(p_dispatch_data, '{registration}', COALESCE(to_jsonb(NULLIF(regexp_replace(regexp_replace(p_dispatch_data->>'registration', '^[\s\u00a0]+|[\s\u00a0]+$', '', 'g'), '[\s\u00a0]+', ' ', 'g'), '')), 'null'::jsonb));
     END IF;
     IF p_dispatch_data->>'registration' IS NOT NULL AND char_length(p_dispatch_data->>'registration') > 20 THEN
         RETURN warehouse_security.grn_rate_failure('registration_too_long',

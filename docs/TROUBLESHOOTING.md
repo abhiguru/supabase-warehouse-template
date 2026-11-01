@@ -119,7 +119,7 @@ Check: `df -h /`.
 
 ### Backup failed
 
-**You see:** Slack `backup_failed` or `backup_missing`. These two are never muted. Until it is fixed, the data since the last
+**You see:** Slack `backup_failed` or `backup_missing`. These two are never muted (neither is `offhost_copy_missing`). Until it is fixed, the data since the last
 good backup exists only on this disk.
 
 1. Why: `node scripts/watch.mjs status` (the "Daily backup" line has the message) and
@@ -563,7 +563,7 @@ Turn the fallback off with `bash scripts/lan.sh off`; the phones keep working ov
   errors recur; delete a damaged archive yourself and the next run writes it
   again. A damaged archive is never deleted by the run and is not counted among the archives it keeps.
 - **USB: confirm the backup key copy**: a run, `setup --enroll` or `enroll` stops with `The backup key copy is not confirmed
-  (there is no key escrow record)` (or `... is for another backup key`), and `npm run doctor` and the `usb_backup` alert say that
+  (there is no key escrow record)` (or `... is for another backup key`), and `npm run doctor` and the `offhost_copy_missing` alert say that
   archives are encrypted but the key copy is not confirmed. Nothing was written to the drive. Archives on the drive are encrypted
   with `config/backup.key`, which lives on the disk that dies with the host, so the run waits until you have a copy elsewhere. In a
   terminal on the host, as the installation user: `bash scripts/backup-key-escrow.sh show` (with `WAREHOUSE_STATE_DIR` set). It prints
@@ -576,7 +576,7 @@ Turn the fallback off with `bash scripts/lan.sh off`; the phones keep working ov
   `backup-key.escrow` file from another installation: it records another key's fingerprint and is refused. If you would rather not
   encrypt, `sudo bash scripts/backup-usb.sh setup --state "$WAREHOUSE_STATE_DIR" --no-encrypt` needs no confirmation, and then the
   drive holds every credential of the instance in the clear.
-- **USB: `archives are still written unencrypted` (doctor, `usb_backup`, `backup-usb.sh status`)**: this installation's USB backup was
+- **USB: `archives are still written unencrypted` (doctor, `offhost_copy_missing`, `backup-usb.sh status`)**: this installation's USB backup was
   set up by an earlier release, when readable archives were the default, and nobody has run the setup since. It keeps writing readable
   archives (every credential on the drive) with the old 2-hour limit. Run `sudo bash scripts/backup-usb.sh setup --state
   "$WAREHOUSE_STATE_DIR"` (a tty and your password), then confirm the key copy as above; or type `--no-encrypt` if readable archives are

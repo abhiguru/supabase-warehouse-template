@@ -115,9 +115,10 @@ export class Supervisor {
   /**
    * Admit a request before its body is read.
    * @param {number|null} declaredBytes  Content-Length, or null when unknown (treated as a large body)
+   * @param {boolean} [opts.solo]  the caller asks to run alone (the `X-Render-Solo: true` header), whatever the body size
    * @returns {{error: HttpError} | {entry: object}}
    */
-  admit(declaredBytes, { id, arrivedAt = Date.now(), clientSignal = null } = {}) {
+  admit(declaredBytes, { id, arrivedAt = Date.now(), clientSignal = null, solo = false } = {}) {
     if (this.stopping) return { error: new HttpError(503, 'shutting down') };
     if (this.state === 'crashed' && this.launchFailures > 0) return { error: new HttpError(503, 'browser unavailable') };
     if (this.queue.length >= this.config.maxQueue) return { error: new HttpError(503, 'queue full') };
@@ -127,7 +128,7 @@ export class Supervisor {
     const entry = {
       id,
       bytes,
-      big: bytes >= this.config.soloBodyBytes,
+      big: solo || bytes >= this.config.soloBodyBytes,
       arrivedAt,
       deadlineAt: arrivedAt + this.config.deadlineMs,
       queuedAt: Date.now(),

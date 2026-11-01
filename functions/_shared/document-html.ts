@@ -13,6 +13,9 @@ export const kgEach = (value: unknown): unknown =>
 // dates (a receipt's "2026-10-13T00:00:00+00:00" is 13-10-2026). A value that cannot be read as a date is printed as it is.
 export const documentDate = (value: unknown): string => formatCell('date', value, 'en') || String(value ?? '');
 
+/** The one header line of a cancelled invoice, in English as every document is: "CANCELLED 01-11-2026 \u2014 reason". */
+export const cancelledNotice = (cancelledAt: unknown, reason: unknown): string => `CANCELLED ${documentDate(cancelledAt)} \u2014 ${String(reason ?? '').trim()}`;
+
 // `letterhead` is the optional data URI of the facility's letterhead image (functions/_shared/letterhead.ts). Only a value
 // of exactly the shape data:image/(jpeg|png);base64,<base64> is used; anything else is ignored and the document is the
 // plain one. With an image the content policy also allows `img-src data:` and the image is printed first, full width.
@@ -27,6 +30,11 @@ export function documentHtml(title: string, company: string, metadata: Record<st
     <tbody>${rows.map(row => `<tr>${row.map(cell => `<td>${escapeHtml(cell)}</td>`).join('')}</tr>`).join('')}</tbody></table>
     <p><small>Open-source starter layout. Configure your business details and document terms before operational use.</small></p></body></html>`;
 }
+
+// A cancelled invoice's document: the line `notice` (see cancelledNotice) in bold under the title. Only a cancelled invoice goes through this;
+// every other document is exactly what documentHtml made.
+export const withNotice = (html: string, notice: string): string =>
+  html.replace('</h2>', () => `</h2>\n    <p style="font-size:14px;color:#9b1c1c"><strong>${escapeHtml(notice)}</strong></p>`);
 
 export interface ReportHtml {
   title: string;

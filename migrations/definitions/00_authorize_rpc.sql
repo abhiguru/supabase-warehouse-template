@@ -15,7 +15,7 @@ BEGIN
   -- User management: administrators, and supervisors for other people who are
   -- not administrators. The four bodies refuse a supervisor who targets an
   -- administrator or the own profile, or who grants the administrator role.
-  IF rpc IN ('update_user_role','update_user_status','assign_customer_to_user','remove_customer_assignment') THEN
+  IF rpc IN ('update_user_role','update_user_status','assign_customer_to_user','remove_customer_assignment','list_user_sessions') THEN
     IF role_name NOT IN ('admin','supervisor') THEN RAISE EXCEPTION 'Administrator required' USING ERRCODE = '42501'; END IF;
     RETURN;
   END IF;
@@ -25,6 +25,9 @@ BEGIN
     IF role_name <> 'admin' THEN RAISE EXCEPTION 'Administrator required' USING ERRCODE = '42501'; END IF;
     RETURN;
   END IF;
+  -- Administrators and supervisors: every other RPC, among them cancel_invoice (migration 134; the only way to take an invoice
+  -- out of use, and delete_invoice now refuses), set_rack_presets (migration 131) and the rest of the management RPCs. Staff and
+  -- customers are refused by the lists and the final ELSE below.
   IF role_name IN ('admin','supervisor') THEN RETURN; END IF;
   -- Approved document RPCs only; no shared ownership or table-policy change.
   IF role_name = 'staff' AND rpc IN (
@@ -76,6 +79,8 @@ BEGIN
     'get_grn_item_rates',
     -- Sensors (owner decision, 2026-10-11).
     'get_sensor_polling_data','get_sensor_history',
+    -- The hourly summary kept 24 months (migration 136).
+    'get_sensor_hourly',
     -- One sensor (migration 74).
     'get_sensor_device',
     -- The print "View jobs" sheet (migration 123); customers stay refused by the final ELSE.
@@ -100,7 +105,8 @@ BEGIN
     RETURN;
   END IF;
 
-  IF rpc IN ('get_items','get_item','search_items_autocomplete','get_orders_list','delete_user_account') THEN RETURN; END IF;
+  -- revoke_session (migration 140): any signed-in account may sign out its own device; the body also lets an administrator or a supervisor act.
+  IF rpc IN ('get_items','get_item','search_items_autocomplete','get_orders_list','delete_user_account','revoke_session') THEN RETURN; END IF;
   -- get_stock_aging_report and get_item_wise_stock_list: with a customer id
   -- they are that customer's report; without one they are the all-customers
   -- report, which no customer account may run.

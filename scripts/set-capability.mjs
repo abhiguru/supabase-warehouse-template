@@ -2,7 +2,7 @@
 // (<state>/public/instance.json, `capabilities`), which get-public-config
 // serves to the app. The app shows a feature only where its capability is on.
 //
-//   WAREHOUSE_STATE_DIR=/abs/state node scripts/set-capability.mjs <sensors|printing> <on|off>
+//   WAREHOUSE_STATE_DIR=/abs/state node scripts/set-capability.mjs <sensors|printing|payments> <on|off>
 //
 // Only the one boolean changes; every other byte of the file stays as it is.
 // The new file is written next to the old one and renamed over it, keeping its
@@ -16,9 +16,12 @@ import { isDeepStrictEqual } from 'node:util';
 import { isMain } from './is-main.mjs';
 import { sensorWebhookNotice } from './alert-webhook.mjs';
 
-export const CAPABILITIES = ['sensors', 'printing'];
+export const CAPABILITIES = ['sensors', 'printing', 'payments'];
+// Capabilities added after the first releases: a manifest written before them lacks the key (the server reads it as off), so
+// turning one on adds it to the end of the capabilities object.
+const ADDED_LATER = ['payments'];
 const VALUES = { on: true, off: false };
-const USAGE = 'Usage: WAREHOUSE_STATE_DIR=/absolute/state node scripts/set-capability.mjs <sensors|printing> <on|off>';
+const USAGE = 'Usage: WAREHOUSE_STATE_DIR=/absolute/state node scripts/set-capability.mjs <sensors|printing|payments> <on|off>';
 
 function privateDirectory(path, what) {
   const st = lstatSync(path, { throwIfNoEntry: false });
@@ -45,18 +48,31 @@ export function setCapability(stateDir, name, value) {
   let manifest;
   try { manifest = JSON.parse(text); } catch { throw new Error(`${path} is not valid JSON; it was not changed.`); }
   const capabilities = manifest?.capabilities;
+  const absent = ADDED_LATER.includes(name) && capabilities && typeof capabilities === 'object' && !Array.isArray(capabilities) && !(name in capabilities);
   if (!capabilities || typeof capabilities !== 'object' || Array.isArray(capabilities)
-    || Object.values(capabilities).some(flag => typeof flag !== 'boolean') || typeof capabilities[name] !== 'boolean') {
+    || Object.values(capabilities).some(flag => typeof flag !== 'boolean') || (typeof capabilities[name] !== 'boolean' && !absent)) {
     throw new Error(`${path} has no boolean capabilities.${name}; it was not changed.`);
   }
   const wanted = VALUES[value];
-  if (capabilities[name] === wanted) return { changed: false, path, name, enabled: wanted };
-  // The capabilities object holds booleans only, so it contains no brace.
-  const pattern = new RegExp(`("capabilities"\\s*:\\s*\\{[^{}]*?"${name}"\\s*:\\s*)(true|false)`, 'g');
-  const matches = [...text.matchAll(pattern)];
-  if (matches.length !== 1) throw new Error(`${path}: capabilities.${name} is not written exactly once; it was not changed.`);
-  const at = matches[0].index + matches[0][1].length;
-  const updated = text.slice(0, at) + String(wanted) + text.slice(at + matches[0][2].length);
+  if ((absent ? false : capabilities[name]) === wanted) return { changed: false, path, name, enabled: wanted };
+  let updated;
+  if (absent) {
+    // Add the key after the last one, in the layout the object already has (one key per line, or all on one line).
+    const object = [...text.matchAll(/("capabilities"\s*:\s*\{)([^{}]*?)(\s*\})/g)];
+    if (object.length !== 1) throw new Error(`${path}: capabilities is not written exactly once; it was not changed.`);
+    const indent = /\n([ \t]*)"[^"]*"\s*:\s*(?:true|false)\s*$/.exec(object[0][2])?.[1];
+    const entry = indent === undefined ? `, "${name}": ${wanted}` : `,\n${indent}"${name}": ${wanted}`;
+    const end = object[0].index + object[0][1].length + object[0][2].length;
+    if (object[0][2].trim() === '') throw new Error(`${path} has no boolean capabilities.${name}; it was not changed.`);
+    updated = text.slice(0, end) + entry + text.slice(end);
+  } else {
+    // The capabilities object holds booleans only, so it contains no brace.
+    const pattern = new RegExp(`("capabilities"\\s*:\\s*\\{[^{}]*?"${name}"\\s*:\\s*)(true|false)`, 'g');
+    const matches = [...text.matchAll(pattern)];
+    if (matches.length !== 1) throw new Error(`${path}: capabilities.${name} is not written exactly once; it was not changed.`);
+    const at = matches[0].index + matches[0][1].length;
+    updated = text.slice(0, at) + String(wanted) + text.slice(at + matches[0][2].length);
+  }
   const expected = { ...manifest, capabilities: { ...capabilities, [name]: wanted } };
   if (!isDeepStrictEqual(JSON.parse(updated), expected)) throw new Error(`${path}: the edit would change more than capabilities.${name}; it was not changed.`);
   const mode = lstatSync(path).mode & 0o7777;
@@ -94,6 +110,7 @@ if (isMain(import.meta.url)) {
         try { notice = sensorWebhookNotice(process.env.WAREHOUSE_STATE_DIR); } catch { /* the notice is a courtesy */ }
         if (notice) console.log(notice);
       }
+      if (result.name === 'payments' && result.enabled) console.log('The app now shows Paid and Pending on invoices. Payments are not entered in the app; only enter them in the database if you have a process for it.');
       if (result.name === 'printing' && result.enabled) console.log('The print routes still answer 503 until printing is accepted (docs/PRINTING.md).');
     }
   } catch (error) { console.error(`set-capability: ${error.message}`); process.exitCode = 1; }
