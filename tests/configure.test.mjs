@@ -597,6 +597,12 @@ test('set-capability flips one manifest flag in place, keeps every other byte an
     assert.equal(run(['payments', 'on']).status, 0);
     assert.deepEqual(JSON.parse(readFileSync(manifestPath, 'utf8')).capabilities, { sensors: false, printing: false, payments: true });
     assert.equal(readFileSync(manifestPath, 'utf8'), original.replace('"payments": false', '"payments": true'), 'the key is added in the file\'s own layout');
+    // The one-line layout (JSON.stringify) gets the key in the same style.
+    const oneLine = JSON.stringify(JSON.parse(legacy));
+    writeFileSync(manifestPath, oneLine);
+    assert.equal(run(['payments', 'on']).status, 0);
+    assert.equal(readFileSync(manifestPath, 'utf8'), oneLine.replace('"printing":false}', '"printing":false, "payments": true}'));
+    assert.equal(JSON.parse(readFileSync(manifestPath, 'utf8')).capabilities.payments, true);
     writeFileSync(manifestPath, original);
 
     for (const args of [['alarms', 'on'], ['sensors', 'yes'], ['sensors', 'true'], ['Sensors', 'on'], ['sensors'], ['sensors', 'on', 'extra'], []]) {

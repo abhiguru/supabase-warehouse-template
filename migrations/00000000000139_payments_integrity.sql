@@ -8,11 +8,14 @@
 --  * The child-side columns of all six keys already have an index in the baseline (idx_invoice_grn, idx_invoice_customer_id,
 --    idx_invoice_trl_invoice_id, idx_dispatch_customer_id, idx_payments_customer_id, idx_payments_supervisor_id), so none is built here.
 --
--- The delete paths were checked: customers are soft-deleted; delete_invoice and the invoice cancel function delete the lines first;
--- delete_grn_safe (migrations/definitions) now refuses, with a clear answer, a GRN that an invoice refers to.
+-- The delete paths were checked: customers are soft-deleted; delete_invoice refuses (an invoice is cancelled, never deleted, migration 134),
+-- so no code deletes an invoice, and a hard DELETE of an invoice that still has lines is refused by the new key; delete_grn_safe
+-- (migrations/definitions) now refuses, with a clear answer, a GRN that any invoice refers to (cancelled invoices included: they stay).
 --
--- Each constraint is added NOT VALID (a short lock) and validated afterwards (no blocking lock). The guard refuses, changing nothing,
--- while a row breaks one of them: the operator decides what to do with those rows.
+-- Locks: each constraint is added NOT VALID (no scan under the lock) and validated afterwards (a scan that does not block writes). The file
+-- runs in ONE transaction, though, so the locks of the ADD CONSTRAINT statements are held until it commits: writes to invoice, invoice_trl,
+-- dispatch, payments and their parent tables wait until then. The scans are short on a facility's data. The guard refuses, changing nothing,
+-- while a row breaks a rule: the operator decides what to do with those rows.
 
 -- 0. Guard. (GUARD-BEGIN: tests/migrations.sh runs this block.)
 -- GUARD-BEGIN

@@ -1517,7 +1517,7 @@ the service role only and nothing called them.
 
 - `capabilities.payments` in `get-public-config` (from the state's `instance.json`, set with
   `node scripts/set-capability.mjs payments on|off`): **false by default**, and false when an `instance.json` written before
-  the key has none. The app shows the Paid and Pending figures only when it is true. The app has no payment entry screen;
+  the key has none. The app (from app 0.7.0) shows the Paid and Pending figures only when it is true. The app has no payment entry screen;
   payments are not entered through the API.
 - Constraints (the migration refuses, changing nothing, while a row breaks one; the refusal lists each rule with its count and the
   query to find the rows): `invoice.gr_id` references `goodsreceived(id)`, `invoice.customer_id` and `dispatch.customer_id` and
@@ -1525,8 +1525,9 @@ the service role only and nothing called them.
   `payments.supervisor_id` references `user_profiles(id)` (`ON DELETE SET NULL`), and `payments_amount_positive` requires
   `amount > 0` (NULL stays allowed). A direct write that breaks one fails with SQLSTATE `23503` (missing parent), `23001`
   (parent still referenced) or `23514` (amount).
-- `delete_grn_safe` answers `{success:false, error:'Cannot delete GRN <no>: an invoice refers to it. Delete the invoice first.'}` for a
-  GRN that an invoice refers to, also when no dispatch line was invoiced. `delete_invoice` is unchanged (it removes the lines first).
+- `delete_grn_safe` answers `{success:false, error:'Cannot delete GRN <no>: it has an invoice (cancelled invoices included); an invoiced GRN is kept.'}`
+  for a GRN that any invoice refers to, also when no dispatch line was invoiced. `delete_invoice` refuses (`INVOICE_CANCEL_ONLY`, migration 134), so
+  an invoice is never deleted; a direct `DELETE` of an invoice that still has lines fails with `23001`.
 
 ### Order history counts (migration 133)
 

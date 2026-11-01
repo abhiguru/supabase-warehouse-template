@@ -26,9 +26,9 @@ file used to carry for earlier installations are in git: `git show b45ae0b:CHANG
   `invoice.gr_id`, `invoice.customer_id`, `invoice_trl.invoice_id`, `dispatch.customer_id` and `payments.customer_id` (all `ON DELETE
   RESTRICT`) and `payments.supervisor_id` (`ON DELETE SET NULL`), and `payments.amount` must be greater than zero. A guard refuses the
   migration, changing nothing, while a row breaks a rule, and lists each rule with its count and the query to find the rows. The constraints are
-  added `NOT VALID` and validated, so locks stay short; every child column already had an index. `delete_grn_safe` now refuses, with a clear
-  answer, a GRN that an invoice refers to. New capability `payments` (`node scripts/set-capability.mjs payments on|off`; new manifests write
-  `payments: false`, and `get-public-config` serves false for a manifest without the key); the app shows Paid and Pending only when it is on.
+  added `NOT VALID` and validated; the file is one transaction, so writes to these tables wait until it commits (short on a facility's data). Every child
+  column already had an index. `delete_grn_safe` now refuses, with a clear answer, a GRN that any invoice refers to (cancelled ones included), and locks the GRN row first. New capability `payments` (`node scripts/set-capability.mjs payments on|off`; new manifests write
+  `payments: false`, and `get-public-config` serves false for a manifest without the key); the app (from app 0.7.0) shows Paid and Pending only when it is on.
   Turning it on: [OPERATOR_INSTALL.md](docs/OPERATOR_INSTALL.md). Contract: [API_CONTRACT.md](docs/API_CONTRACT.md). Tests:
   `tests/payments_integrity_139.sql` (new), the guard checks in `tests/migrations.sh`, `tests/configure.test.mjs`, `tests/release-info.test.mjs`.
 

@@ -2,7 +2,7 @@
 --   A. each key exists with the right delete rule and is validated; the amount rule exists and is validated
 --   B. a row that points at nothing is refused; amounts of 0 and -1 are refused, a positive amount and NULL are accepted
 --   C. deleting a user profile that a payment names sets payments.supervisor_id to NULL (the payment stays)
---   D. the delete paths still work: delete_invoice (lines first), and delete_grn_safe refuses, with its own answer, a GRN that an invoice refers to
+--   D. delete_grn_safe refuses, with its own answer, a GRN that an invoice refers to (cancelled or not); delete_invoice refuses (INVOICE_CANCEL_ONLY)
 --   E. a customer, a GRN or an invoice that is still referenced cannot be hard-deleted
 -- (The guard of the migration is run against a database with bad rows by tests/migrations.sh.)
 -- Fictional data; runs only in migrations.sh's disposable, network-disabled database.
@@ -92,7 +92,7 @@ SELECT set_config('request.jwt.claims',:'admin_claims',true);
 SET LOCAL ROLE authenticated;
 SELECT public.delete_grn_safe(:'grn'::uuid) AS r_blocked \gset
 RESET ROLE;
-SELECT pg_temp.p9_assert(:'r_blocked'::jsonb->>'success'='false' AND :'r_blocked'::jsonb->>'error' LIKE '%an invoice refers to it%', 'delete_grn_safe names the invoice: '||:'r_blocked');
+SELECT pg_temp.p9_assert(:'r_blocked'::jsonb->>'success'='false' AND :'r_blocked'::jsonb->>'error' LIKE '%it has an invoice (cancelled invoices included); an invoiced GRN is kept.', 'delete_grn_safe names the invoice: '||:'r_blocked');
 SELECT pg_temp.p9_assert(EXISTS (SELECT 1 FROM public.goodsreceived WHERE id=:'grn'::uuid), 'the GRN is still there');
 -- A GRN without an invoice is still deleted.
 SELECT set_config('request.jwt.claims',:'admin_claims',true);
@@ -111,23 +111,25 @@ INSERT INTO public.dispatch(disp_no, customer_id) VALUES ('D139B', :'cust_d'::uu
 SELECT pg_temp.p9_assert(pg_temp.p9_state(format('DELETE FROM public.customers WHERE id = %L', :'cust_p')) = '23001', 'a customer with a payment cannot be hard-deleted');
 SELECT pg_temp.p9_assert(pg_temp.p9_state(format('DELETE FROM public.customers WHERE id = %L', :'cust_d')) = '23001', 'a customer with a dispatch cannot be hard-deleted');
 
--- delete_invoice: refuses while a payment points at the invoice, and deletes the lines before the invoice otherwise.
-SELECT set_config('request.jwt.claims',:'admin_claims',true);
-SET LOCAL ROLE authenticated;
-SELECT public.delete_invoice(:'inv'::uuid) AS r_paid \gset
-RESET ROLE;
-SELECT pg_temp.p9_assert(:'r_paid'::jsonb->>'success'='false' AND EXISTS (SELECT 1 FROM public.invoice WHERE id=:'inv'::uuid), 'an invoice with a payment is not deleted: '||:'r_paid');
--- An invoice that has a line cannot be hard-deleted before its line is.
+-- An invoice that has a line cannot be hard-deleted.
 INSERT INTO public.dispatch(disp_no, customer_id) VALUES ('D139', :'cust'::uuid) RETURNING id AS disp \gset
 INSERT INTO public.dispatch_trl(gr_id, disp_id) VALUES (:'grn'::uuid, :'disp'::uuid) RETURNING id AS dtrl \gset
 INSERT INTO public.invoice_trl(invoice_id, disp_trl_id) VALUES (:'inv'::uuid, :'dtrl'::uuid);
 SELECT pg_temp.p9_assert(pg_temp.p9_state(format('DELETE FROM public.invoice WHERE id = %L', :'inv')) = '23001', 'an invoice with a line cannot be hard-deleted');
--- Without its payment, delete_invoice removes the line, then the invoice.
-DELETE FROM public.payments WHERE invoice_id = :'inv'::uuid;
+-- delete_invoice refuses and deletes nothing; a cancelled invoice still blocks the GRN's deletion.
 SELECT set_config('request.jwt.claims',:'admin_claims',true);
 SET LOCAL ROLE authenticated;
 SELECT public.delete_invoice(:'inv'::uuid) AS r_del \gset
 RESET ROLE;
-SELECT pg_temp.p9_assert(:'r_del'::jsonb->>'success'='true' AND NOT EXISTS (SELECT 1 FROM public.invoice WHERE id=:'inv'::uuid)
-  AND NOT EXISTS (SELECT 1 FROM public.invoice_trl WHERE invoice_id=:'inv'::uuid), 'delete_invoice deletes the lines and the invoice: '||:'r_del');
+SELECT pg_temp.p9_assert(:'r_del'::jsonb->>'success'='false' AND :'r_del'::jsonb->>'reason'='INVOICE_CANCEL_ONLY'
+  AND EXISTS (SELECT 1 FROM public.invoice WHERE id=:'inv'::uuid) AND EXISTS (SELECT 1 FROM public.invoice_trl WHERE invoice_id=:'inv'::uuid), 'delete_invoice refuses and deletes nothing: '||:'r_del');
+-- A GRN whose only invoice is cancelled is kept as well.
+INSERT INTO public.goodsreceived(gr_no, customer_id, date) VALUES ('P139C', :'cust'::uuid, now()) RETURNING id AS grn_c \gset
+INSERT INTO public.invoice(inv_fin_year, inv_no, gr_id, gr_no, customer_id, inv_date, cancelled_at, cancelled_by, cancel_reason)
+  VALUES (2026, 139004, :'grn_c'::uuid, 'P139C', :'cust'::uuid, now(), now(), :'admin_profile'::uuid, 'Pay139 test');
+SELECT set_config('request.jwt.claims',:'admin_claims',true);
+SET LOCAL ROLE authenticated;
+SELECT public.delete_grn_safe(:'grn_c'::uuid) AS r_cancelled \gset
+RESET ROLE;
+SELECT pg_temp.p9_assert(:'r_cancelled'::jsonb->>'success'='false' AND :'r_cancelled'::jsonb->>'error' LIKE '%cancelled invoices included%' AND EXISTS (SELECT 1 FROM public.goodsreceived WHERE id=:'grn_c'::uuid), 'a GRN with a cancelled invoice is kept: '||:'r_cancelled');
 ROLLBACK;
