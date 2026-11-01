@@ -222,11 +222,10 @@ has the link "Sign in with a code from your facility", which asks for the facili
 
 ### Signed-in devices: list and sign out one device (migration 140)
 
-A person keeps at most the **newest 10 sessions** (one per signed-in device). A sign-in that would make an 11th deletes the oldest session of
-that person (and the tokens recorded for it, so neither its current nor an earlier refresh token is accepted again); the app shows the
+A person keeps at most the **newest 10 sessions** (one per signed-in device). A sign-in first deletes that person's expired sessions, and
+one that would still make an 11th deletes the session used least recently (and the tokens recorded for it, so neither its current nor an earlier refresh token is accepted again); the app shows the
 Sign in screen on that device the next time it calls. A refresh never creates or deletes a session. Each session records the sign-in's
-source address (`CF-Connecting-IP`, IPv4 or IPv6, else none), the user agent (cut to 300 characters) and when it was last refreshed;
-`warehouse_security.refresh_sessions.label` (at most 60 characters, for a device name) exists but nothing writes it yet, so it is `null`.
+source address (`CF-Connecting-IP`, IPv4 or IPv6, else none), the user agent (cut to 300 characters) and when it was last refreshed.
 
 - **Sign-in parameters (all optional).** `operator_verify_otp`, `operator_central_exchange` and `operator_break_glass_sign_in` take a last
   parameter `p_user_agent text`; the source address is the `p_ip_address` they already take. The edge functions (`operator-otp/verify`,
@@ -237,7 +236,7 @@ source address (`CF-Connecting-IP`, IPv4 or IPv6, else none), the user agent (cu
 
   ```json
   {"success": true, "data": {"sessions": [
-    {"id": "uuid", "label": null, "user_agent": "WarehouseApp/1.2 (Android 15)",
+    {"id": "uuid", "user_agent": "WarehouseApp/1.2 (Android 15)",
      "created_ip": "203.0.113.0/24", "created_at": "2026-11-01T10:00:00+00:00",
      "last_refreshed_at": "2026-11-01T10:30:00+00:00", "expires_at": "2026-12-01T10:30:00+00:00", "is_current": true}]}}
   ```
@@ -254,7 +253,7 @@ source address (`CF-Connecting-IP`, IPv4 or IPv6, else none), the user agent (cu
   id, and a session the caller may not revoke, get `{success:true, revoked_current:false}` and nothing changes, so the answer does not tell
   whether a session exists; to an administrator (or the service key) an unknown id is `{success:false, error:'NOT_FOUND', message}`. `null`
   is `INVALID_INPUT`. Each deletion is written to `audit_log` (`table_name='refresh_sessions'`, `action='REVOKE'`, `user_id` = the caller,
-  `old_data` = session id, owner and label).
+  `old_data` = session id and owner).
 - Both are granted to `authenticated` and the service role, guarded by `authorize_rpc` (`list_user_sessions` with the user-management
   group, `revoke_session` for any signed-in account), and classified in `tests/role_allowlist.sql`. Tests: `tests/session_devices_140.sql`.
 

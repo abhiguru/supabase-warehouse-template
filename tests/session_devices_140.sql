@@ -25,7 +25,8 @@ END $$;
 CREATE FUNCTION pg_temp.sd_in(p_user uuid, age_minutes integer DEFAULT 0, p_ip inet DEFAULT NULL, p_ua text DEFAULT NULL) RETURNS text LANGUAGE plpgsql AS $$
 DECLARE refresh text := warehouse_security.issue_session(p_user, NULL, p_ip, p_ua)->>'refresh_token';
 BEGIN
-  UPDATE warehouse_security.refresh_sessions SET created_at = now() - make_interval(mins => age_minutes)
+  UPDATE warehouse_security.refresh_sessions SET created_at = now() - make_interval(mins => age_minutes),
+    last_refreshed_at = now() - make_interval(mins => age_minutes)
     WHERE token_hash = encode(extensions.digest(refresh,'sha256'),'hex');
   RETURN refresh;
 END $$;
@@ -69,6 +70,8 @@ SELECT pg_temp.sd_in(:'other_user'::uuid, 4) AS other2 \gset
 SELECT pg_temp.sd_in(:'staff_user'::uuid, 12) AS s1 \gset
 -- The first token is rotated once, so the session has a recorded (consumed) token.
 SELECT public.refresh_jwt_token(:'s1')->>'refresh_token' AS s1b \gset
+-- The rotation counts as use; the session is put back to the age of its sign-in so that it is the least recently used.
+UPDATE warehouse_security.refresh_sessions SET last_refreshed_at = created_at WHERE token_hash = encode(extensions.digest(:'s1b','sha256'),'hex');
 SELECT pg_temp.sd_in(:'staff_user'::uuid, 11) AS s2 \gset
 SELECT pg_temp.sd_in(:'staff_user'::uuid, 10) AS s3 \gset
 SELECT pg_temp.sd_in(:'staff_user'::uuid, 9) AS s4 \gset
@@ -95,15 +98,35 @@ SELECT pg_temp.sd_assert(NOT pg_temp.sd_rotates(:'s1') AND NOT pg_temp.sd_rotate
  'neither the replaced nor the current token of an evicted session can be used again');
 SELECT pg_temp.sd_assert(pg_temp.sd_rotates(:'s9') AND pg_temp.sd_rotates(:'other2'), 'a kept session still refreshes');
 
+-- A live session is never given up for expired ones: an old, daily-refreshed phone and nine expired sessions, then a new sign-in.
+SELECT pg_temp.sd_in(:'cust_user'::uuid, 60 * 24 * 40) AS ph_a \gset
+UPDATE warehouse_security.refresh_sessions SET last_refreshed_at = now() - interval '1 hour' WHERE token_hash = encode(extensions.digest(:'ph_a','sha256'),'hex');
+SELECT pg_temp.sd_in(:'cust_user'::uuid, 5) AS ex1 \gset
+SELECT pg_temp.sd_in(:'cust_user'::uuid, 4) AS ex2 \gset
+SELECT pg_temp.sd_in(:'cust_user'::uuid, 3) AS ex3 \gset
+SELECT pg_temp.sd_in(:'cust_user'::uuid, 2) AS ex4 \gset
+SELECT pg_temp.sd_in(:'cust_user'::uuid, 1) AS ex5 \gset
+SELECT pg_temp.sd_in(:'cust_user'::uuid, 6) AS ex6 \gset
+SELECT pg_temp.sd_in(:'cust_user'::uuid, 7) AS ex7 \gset
+SELECT pg_temp.sd_in(:'cust_user'::uuid, 8) AS ex8 \gset
+SELECT pg_temp.sd_in(:'cust_user'::uuid, 9) AS ex9 \gset
+UPDATE warehouse_security.refresh_sessions SET expires_at = now() - interval '1 minute' WHERE user_id = :'cust_user' AND token_hash <> encode(extensions.digest(:'ph_a','sha256'),'hex');
+SELECT pg_temp.sd_assert(pg_temp.sd_count(:'cust_user') = 10, 'fixture: the phone and nine expired sessions');
+SELECT pg_temp.sd_in(:'cust_user'::uuid, 0) AS ph_new \gset
+SELECT pg_temp.sd_assert(pg_temp.sd_has(:'ph_a') AND pg_temp.sd_has(:'ph_new') AND pg_temp.sd_count(:'cust_user') = 2,
+ 'a new sign-in removes the expired sessions and keeps the live old phone');
+DELETE FROM warehouse_security.refresh_sessions WHERE user_id = :'cust_user';
+
 -- ---------------------------------------------------------------------------
 -- 2. What a sign-in writes, and what a refresh changes
 -- ---------------------------------------------------------------------------
 SELECT pg_temp.sd_in(:'cust_user'::uuid, 120, '203.0.113.77', repeat('x', 400)) AS c1 \gset
 SELECT pg_temp.sd_assert((pg_temp.sd_row(:'c1')).created_ip = '203.0.113.77'::inet
-  AND char_length((pg_temp.sd_row(:'c1')).user_agent) = 300 AND (pg_temp.sd_row(:'c1')).label IS NULL
-  AND (pg_temp.sd_row(:'c1')).last_refreshed_at = now(), 'a sign-in records the address, the user agent cut to 300 characters and the time');
-SELECT pg_temp.sd_assert((SELECT pg_get_constraintdef(oid) FROM pg_constraint WHERE conname='refresh_sessions_user_agent_len') LIKE '%300%'
-  AND (SELECT pg_get_constraintdef(oid) FROM pg_constraint WHERE conname='refresh_sessions_label_len') LIKE '%60%', 'the length limits are checked by the table');
+  AND char_length((pg_temp.sd_row(:'c1')).user_agent) = 300
+  AND (pg_temp.sd_row(:'c1')).last_refreshed_at = now() - interval '120 minutes', 'a sign-in records the address, the user agent cut to 300 characters and the time');
+SELECT pg_temp.sd_assert((SELECT pg_get_constraintdef(oid) FROM pg_constraint WHERE conname='refresh_sessions_user_agent_len') LIKE '%300%', 'the length limit is checked by the table');
+SELECT warehouse_security.issue_session(:'cust_user'::uuid, NULL, '203.0.113.78', 'U')->>'refresh_token' AS fresh1 \gset
+SELECT pg_temp.sd_assert((pg_temp.sd_row(:'fresh1')).last_refreshed_at = now(), 'a new session''s last_refreshed_at is the sign-in time');
 UPDATE warehouse_security.refresh_sessions SET last_refreshed_at = now() - interval '1 hour' WHERE token_hash = encode(extensions.digest(:'c1','sha256'),'hex');
 SELECT public.refresh_jwt_token(:'c1')->>'refresh_token' AS c1b \gset
 SELECT pg_temp.sd_assert((pg_temp.sd_row(:'c1b')).last_refreshed_at = now(), 'a refresh moves last_refreshed_at');
@@ -192,7 +215,7 @@ UPDATE warehouse_security.refresh_sessions SET created_ip = '2001:db8:abcd:1234:
 SELECT pg_temp.sd_as(:'admin_claims', format('SELECT public.list_user_sessions(%L)', :'staff_profile')) AS listed \gset
 SELECT pg_temp.sd_assert(:'listed'::jsonb->>'success' = 'true' AND jsonb_array_length(:'listed'::jsonb #> '{data,sessions}') = 10,
  'an administrator lists the ten sessions of a staff member: '||:'listed');
-SELECT pg_temp.sd_assert((SELECT bool_and(s ?& ARRAY['id','label','user_agent','created_ip','created_at','last_refreshed_at','expires_at','is_current'])
+SELECT pg_temp.sd_assert((SELECT bool_and(s ?& ARRAY['id','user_agent','created_ip','created_at','last_refreshed_at','expires_at','is_current'])
   FROM jsonb_array_elements(:'listed'::jsonb #> '{data,sessions}') s), 'every session carries the agreed fields');
 SELECT pg_temp.sd_assert((SELECT bool_and((a->>'created_at')::timestamptz >= (b->>'created_at')::timestamptz) FROM
   (SELECT s AS a, lead(s) OVER (ORDER BY ord) AS b FROM jsonb_array_elements(:'listed'::jsonb #> '{data,sessions}') WITH ORDINALITY t(s,ord)) q WHERE b IS NOT NULL),

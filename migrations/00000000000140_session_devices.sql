@@ -2,9 +2,9 @@
 -- at most the newest 10 sessions (owner decision).
 --
 --  * warehouse_security.refresh_sessions records where a session was made: last_refreshed_at, created_ip (the source address of the
---    sign-in), user_agent (cut to 300 characters) and label (reserved for a device name, at most 60 characters; nothing writes it yet).
+--    sign-in), user_agent (cut to 300 characters).
 --  * warehouse_security.issue_session takes the source address and user agent of a sign-in, stamps last_refreshed_at on every refresh
---    and, after a new session, deletes all but that person's newest 10 (consumed_refresh_tokens follow by ON DELETE CASCADE, so a token
+--    and, after a new session, deletes that person's expired sessions and then all but the newest 10 live ones (by last use) (consumed_refresh_tokens follow by ON DELETE CASCADE, so a token
 --    of an evicted session is unknown afterwards and cannot be replayed). The old two-argument signature goes; every call with one or
 --    two arguments binds to the new function through its defaults.
 --  * The sign-in RPCs (operator_verify_otp, operator_central_exchange, operator_break_glass_sign_in) gain a last parameter p_user_agent and
@@ -16,18 +16,14 @@
 --
 -- Nothing here creates, alters or drops a role.
 
-SET LOCAL maintenance_work_mem = '256MB';
-
 -- ===== 1. The columns =====
 ALTER TABLE warehouse_security.refresh_sessions
   ADD COLUMN last_refreshed_at timestamptz,
   ADD COLUMN created_ip inet,
-  ADD COLUMN user_agent text CONSTRAINT refresh_sessions_user_agent_len CHECK (char_length(user_agent) <= 300),
-  ADD COLUMN label text CONSTRAINT refresh_sessions_label_len CHECK (char_length(label) <= 60);
+  ADD COLUMN user_agent text CONSTRAINT refresh_sessions_user_agent_len CHECK (char_length(user_agent) <= 300);
 COMMENT ON COLUMN warehouse_security.refresh_sessions.last_refreshed_at IS 'Migration 140: when the session was made or last refreshed.';
 COMMENT ON COLUMN warehouse_security.refresh_sessions.created_ip IS 'Migration 140: source address of the sign-in (CF-Connecting-IP); shown masked (IPv4 /24, IPv6 /48); deleted with the session.';
 COMMENT ON COLUMN warehouse_security.refresh_sessions.user_agent IS 'Migration 140: the app''s user agent at sign-in, at most 300 characters; deleted with the session.';
-COMMENT ON COLUMN warehouse_security.refresh_sessions.label IS 'Migration 140: a device name, at most 60 characters (reserved; nothing writes it yet).';
 CREATE INDEX refresh_sessions_user_created ON warehouse_security.refresh_sessions (user_id, created_at DESC);
 
 -- ===== 2. issue_session: where it was made, last refresh, the newest 10 (otherwise as migration 132) =====
@@ -46,12 +42,15 @@ BEGIN
     VALUES (p_user, encode(extensions.digest(refresh, 'sha256'), 'hex'),
       now() + CASE WHEN sliding THEN make_interval(secs => idle_seconds) ELSE interval '7 days' END, now(), p_ip, left(p_user_agent, 300))
     RETURNING id INTO session_id;
-    -- Only the newest 10 sessions of the person stay (the new one always does). The tokens recorded for a deleted session go with it
+    -- The person's expired sessions go first; then only the newest 10 stay (the new one always does), ranked by last use, so a live
+    -- session is never given up for an expired one. The tokens recorded for a deleted session go with it
     -- (consumed_refresh_tokens.session_id ON DELETE CASCADE), so none of them is accepted or recognised afterwards.
     DELETE FROM warehouse_security.refresh_sessions s
     WHERE s.user_id = p_user AND s.id <> session_id
-      AND s.id NOT IN (SELECT k.id FROM warehouse_security.refresh_sessions k
-        WHERE k.user_id = p_user AND k.id <> session_id ORDER BY k.created_at DESC, k.id LIMIT 9);
+      AND (s.expires_at <= now() OR s.hard_expires_at <= now()
+        OR s.id NOT IN (SELECT k.id FROM warehouse_security.refresh_sessions k
+          WHERE k.user_id = p_user AND k.id <> session_id AND k.expires_at > now() AND (k.hard_expires_at IS NULL OR k.hard_expires_at > now())
+          ORDER BY COALESCE(k.last_refreshed_at, k.created_at) DESC, k.id LIMIT 9));
   ELSE
     -- A sliding session ends at the earlier of the idle time after this refresh and the absolute limit after sign-in; one already
     -- past the absolute limit (the operator lowered it) is not renewed. A session with a hard end (break-glass) never passes it.
@@ -228,6 +227,14 @@ REVOKE ALL ON FUNCTION public.operator_break_glass_sign_in(text, text, inet, tex
 GRANT EXECUTE ON FUNCTION public.operator_break_glass_sign_in(text, text, inet, text) TO service_role;
 COMMENT ON FUNCTION public.operator_break_glass_sign_in(text, text, inet, text) IS 'Migration 140: as the three-argument form, and records the source address and the user agent with the session.';
 
+-- The comment of the nine-argument function goes to the ten-argument one before the old signature gets its wrapper comment.
+DO $do$
+DECLARE v_comment text := obj_description('public.operator_central_exchange(text,text,text,text,timestamptz,text,text,inet,text)'::regprocedure, 'pg_proc');
+BEGIN
+  IF v_comment IS NULL THEN RAISE EXCEPTION 'operator_central_exchange: the comment to carry over is missing'; END IF;
+  EXECUTE format('COMMENT ON FUNCTION public.operator_central_exchange(text,text,text,text,timestamptz,text,text,inet,text,text) IS %L', v_comment);
+END $do$;
+
 -- 3d. The previous signatures: thin wrappers (grants as before).
 CREATE OR REPLACE FUNCTION public.operator_verify_otp(p_phone_number text, p_otp_code text, p_name text DEFAULT NULL::text, p_display_name text DEFAULT NULL::text, p_ip_address inet DEFAULT NULL::inet) RETURNS jsonb
     LANGUAGE sql SECURITY DEFINER
@@ -272,7 +279,7 @@ BEGIN
     RETURN jsonb_build_object('success', false, 'error', 'PERMISSION_DENIED', 'message', 'Supervisors cannot see the sessions of administrators');
   END IF;
   SELECT COALESCE(jsonb_agg(jsonb_build_object(
-      'id', s.id, 'label', s.label, 'user_agent', s.user_agent,
+      'id', s.id, 'user_agent', s.user_agent,
       -- Masked: IPv4 to its /24, IPv6 to its /48.
       'created_ip', CASE WHEN s.created_ip IS NULL THEN NULL
                          ELSE text(network(set_masklen(s.created_ip, CASE family(s.created_ip) WHEN 4 THEN 24 ELSE 48 END))) END,
@@ -292,7 +299,7 @@ CREATE FUNCTION public.revoke_session(p_session_id uuid) RETURNS jsonb
     LANGUAGE plpgsql SECURITY DEFINER
     SET search_path TO 'pg_catalog', 'public', 'extensions'
     AS $$
-DECLARE v_owner uuid; v_owner_role text; v_label text; v_caller_role text := warehouse_security.active_role(); v_caller uuid := auth.uid();
+DECLARE v_owner uuid; v_owner_role text; v_caller_role text := warehouse_security.active_role(); v_caller uuid := auth.uid();
   v_service boolean := COALESCE(auth.jwt()->>'role', '') = 'service_role'; v_current boolean := p_session_id::text = auth.jwt()->>'session_id';
   v_admin boolean; v_allowed boolean;
 BEGIN
@@ -301,7 +308,7 @@ BEGIN
     RETURN jsonb_build_object('success', false, 'error', 'INVALID_INPUT', 'message', 'Session ID is required');
   END IF;
   v_admin := v_service OR v_caller_role = 'admin';
-  SELECT s.user_id, s.label, p.role::text INTO v_owner, v_label, v_owner_role
+  SELECT s.user_id, p.role::text INTO v_owner, v_owner_role
     FROM warehouse_security.refresh_sessions s JOIN public.user_profiles p ON p.auth_user_id = s.user_id
     WHERE s.id = p_session_id FOR UPDATE OF s;
   IF v_owner IS NULL THEN
@@ -317,7 +324,7 @@ BEGIN
   -- The recorded tokens of the session go with it (ON DELETE CASCADE).
   DELETE FROM warehouse_security.refresh_sessions WHERE id = p_session_id;
   INSERT INTO public.audit_log(table_name, action, user_id, old_data)
-  VALUES ('refresh_sessions', 'REVOKE', v_caller, jsonb_build_object('session_id', p_session_id, 'user_id', v_owner, 'label', v_label));
+  VALUES ('refresh_sessions', 'REVOKE', v_caller, jsonb_build_object('session_id', p_session_id, 'user_id', v_owner));
   RETURN jsonb_build_object('success', true, 'revoked_current', v_current);
 END $$;
 ALTER FUNCTION public.revoke_session(uuid) OWNER TO supabase_admin;
