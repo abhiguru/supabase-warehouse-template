@@ -710,6 +710,13 @@ record() {
     "$result" "$(date -u -d "@$now" +%Y-%m-%dT%H:%M:%SZ)" "$now" "$last_ok" "$D_UUID" "$DEVICE" "$COPIED" "$PRESENT" "$FAILED" "${IMAGES_PROBLEM//$'\n'/ }" "${message//$'\n'/ }")"
   tmp="$(mktemp "$STATE/config/.usb-backup.last.XXXXXX")"
   printf '%s\n' "$report" > "$tmp"; mv -f -- "$tmp" "$RESULT_FILE"
+  # One "<epoch> <filesystem UUID>" line per successful copy, the last 100 kept: the checker's weekly note (scripts/usb-backup-status.mjs,
+  # usbRotationNote) reads which drives wrote in the last 30 days. Information only; a fault here never fails a run.
+  if [[ "$result" == ok && -n "$D_UUID" ]]; then
+    { tmp="$(mktemp "$STATE/config/.usb-backup.history.XXXXXX")" &&
+      { tail -n 99 -- "$STATE/config/usb-backup.history" 2>/dev/null || true; printf '%s %s\n' "$now" "$D_UUID"; } > "$tmp" &&
+      chmod 600 -- "$tmp" && mv -f -- "$tmp" "$STATE/config/usb-backup.history"; } || true
+  fi
   if [[ -n "$DEST" && -d "$DEST" && -w "$DEST" ]]; then
     { printf '%s\n' "$report"
       if ((ENCRYPT)); then

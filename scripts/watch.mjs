@@ -56,7 +56,7 @@ import { RECORD_FILE, interruptedUpgradeWarning, readUpgradeRecord } from './upg
 import { centralKeyFault, gatewayPortText, letterheadProblem, readEnv, root as checkoutRoot } from './doctor-common.mjs';
 import { LAN_SERVICE, describeAddresses, hostHasAddress, lanOrigin, lanSettings, probeLanKeys, readHostInterfaces } from './lan-common.mjs';
 import { redactServiceLog } from './service-diagnostics.mjs';
-import { usbBackupWarning } from './usb-backup-status.mjs';
+import { usbBackupWarning, usbRotationNote } from './usb-backup-status.mjs';
 import { ageText, sensorCheck, sensorLimitSeconds } from './sensors-check.mjs';
 import { postSlackMessage, sensorTestMessage, testMessage } from './alert-webhook.mjs';
 import { ADAPTERS, AUDIENCES, TARGET_IDS, audienceOf, ALERT_LOG, createAlertLog, deliver, historyLine, loadTargets, pickAudience, readAlertLog, secretsOf, targetsOf } from './notify.mjs';
@@ -910,6 +910,8 @@ export function newestBackupMs(state) {
   }
   return newest;
 }
+export const OFFHOST_ALERT = 'offhost_copy_missing';
+const OFFHOST_GRACE_MS = 7 * 24 * HOUR;
 export function checkBackups(ctx) {
   const now = ctx.now();
   const last = fieldsOf(ctx.readText(backupStatusPath(ctx.state, 'backup')));
@@ -924,8 +926,10 @@ export function checkBackups(ctx) {
     // The failed daily backup is reported only here (after two failing runs), with the job's own message.
     result('backups', 'backup_failed', !failed, `The last backup failed${last.message ? `: ${last.message}` : ''}`, last.message ?? ''),
   ];
-  const usb = usbBackupWarning(ctx.state, { now, etc: ctx.usbEtc });
-  out.push(result('backups', 'usb_backup', usb === null, usb ?? 'USB backup fine or not set up', usb ?? ''));
+  // The only copy of the backups that survives the loss of this host is the USB drive. Weekly, never muted, and not before the checker
+  // has run for 7 days (the time to plug a drive in); the recorded decision not to keep one (usbBackupWarning) clears it.
+  const usb = now - ctx.data.firstRun > OFFHOST_GRACE_MS ? usbBackupWarning(ctx.state, { now, etc: ctx.usbEtc }) : null;
+  out.push(result('backups', OFFHOST_ALERT, usb === null, usb ?? 'An off-host copy of the backups exists or is declined', usb ?? '', { repeatHours: 168 }));
   const ret = fieldsOf(ctx.readText(backupStatusPath(ctx.state, 'retention')));
   out.push(result('backups', 'retention_failed', ret.result !== 'failed', `The last retention clean-up failed${ret.message ? `: ${ret.message}` : ''}`, ret.message ?? ''));
   return out;
@@ -1434,7 +1438,7 @@ export function gatewayMaintenance(ctx) {
 // upgrade stopped half way: a facility that muted "everything" for a week while a service was being repaired would otherwise also silence
 // the only warning that its data is not being saved, or that it is closed to phones and half upgraded.
 export const UPGRADE_ALERT = 'upgrade_interrupted';
-export const NEVER_MUTED = ['backup_missing', 'backup_failed', LEGACY_DAILY_ALERT, UPGRADE_ALERT];
+export const NEVER_MUTED = ['backup_missing', 'backup_failed', OFFHOST_ALERT, LEGACY_DAILY_ALERT, UPGRADE_ALERT];
 const listIds = ids => (ids.length > 1 ? `${ids.slice(0, -1).join(', ')} and ${ids.at(-1)}` : ids.join(''));
 export const isMuted = (data, id, now) => !NEVER_MUTED.includes(id) && Boolean((data.muteUntil && now < data.muteUntil) || (data.mutes?.[id] && now < data.mutes[id]));
 
@@ -1827,6 +1831,9 @@ function recordDaily(ctx, data, outcome, attempt, secrets) {
   if (backup.result !== 'ok') message = backup.message.startsWith('backup') || backup.message.startsWith('the daily') ? backup.message : `backup failed: ${backup.message}`;
   else if (verify.result !== 'ok') message = `backup ${name} was made but verification failed${keptNote(outcome.prune)}: ${verify.message}`;
   else message = `backup ${name} verified${outcome.prune.pruned ? `; removed ${outcome.prune.pruned} old` : ''}${outcome.prune.message ? `; ${outcome.prune.message}` : ''}${backup.warning ? `; ${backup.warning}` : ''}`;
+  // Once a week (Monday), information only: one drive that never leaves the building is not a copy away from it.
+  const rotation = backupOk && new Date(now).getDay() === 1 ? usbRotationNote(ctx.state, now) : null;
+  if (rotation) message = `${message}; ${rotation}`;
   message = `${clean(message)}${backupOk ? '' : ` (attempt ${attempt} of ${LIMITS.dailyAttempts})`}`;
   data.lastDailyRun.backup = { date, at: now, result: backupOk ? 'ok' : 'failed', message };
   try { writeJobStatus(ctx, 'backup', backupOk, message, name && backup.result === 'ok' ? { backup: name } : {}); } catch { /* the state file carries the result */ }
@@ -2015,7 +2022,7 @@ const USAGE = `Usage: node scripts/watch.mjs run | daily | health [--wait SECOND
   test-message  post a test message to the facility's alert channel (test-message sensors: to the separate sensor-alert channel)
   history       the local record of alert deliveries (logs/alerts.jsonl, 12 months): when, which alerts, which channel, delivered or failed; --days N (default 30)
   status        failing alerts, mutes, the daily jobs and the time zone
-  mute          silence all alerts (or one alert id, quoted when it has spaces) for MINUTES; backup_missing and backup_failed are never muted
+  mute          silence all alerts (or one alert id, quoted when it has spaces) for MINUTES; backup_missing, backup_failed, offhost_copy_missing, daily_timer_legacy and upgrade_interrupted are never muted
   unmute        end the mute (all, or one alert id)
 Mute before a deliberate stop.sh (or any planned stop): a stopped service is an alert like any other.
 The daily backup, verification, pruning and retention run once a day inside a 6-hour window after the time chosen
@@ -2150,7 +2157,7 @@ export async function main(argv, deps = defaultDeps(), out = text => console.log
     if (args[1]) {
       if (!ALERT_ID.test(args[1])) { out('Not an alert id.'); return 1; }
       if (NEVER_MUTED.includes(args[1])) {
-        const why = { [LEGACY_DAILY_ALERT]: 'it says the daily backup is kept running by an out-of-date unit', [UPGRADE_ALERT]: 'it says an upgrade stopped half way, with the facility closed to phones' }[args[1]] ?? 'it says no backup exists';
+        const why = { [LEGACY_DAILY_ALERT]: 'it says the daily backup is kept running by an out-of-date unit', [UPGRADE_ALERT]: 'it says an upgrade stopped half way, with the facility closed to phones', [OFFHOST_ALERT]: 'it says the backups have no copy outside this host' }[args[1]] ?? 'it says no backup exists';
         out(`${args[1]} cannot be muted: ${why}.`);
         return 1;
       }

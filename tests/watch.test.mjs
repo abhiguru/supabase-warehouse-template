@@ -67,6 +67,8 @@ function harness({ webhook = true, dailyAt = '02:30', heartbeatAt = '09:00' } = 
   Object.defineProperty(h.deps, 'fsApi', { get: () => h.fsApi, enumerable: true });
   h.deps.runGroup = async (c, a) => h.fakeRun(c, a);
   h.ctx = () => W.makeContext(h.deps, W.loadState(state, h.clock.t, h.deps.readText));
+  // A context for a checker that has been running for 8 days (offhost_copy_missing waits 7 days after the first run).
+  h.ctxOld = () => { const data = W.loadState(state, h.clock.t, h.deps.readText); data.firstRun = h.clock.t - 8 * 24 * HOUR; return W.makeContext(h.deps, data); };
   h.state_ = () => JSON.parse(readFileSync(join(state, 'config/watch-state.json'), 'utf8'));
   h.advance = ms => { h.clock.t += ms; };
   // A state file that is old enough for the daily jobs (a fresh state waits for the next window).
@@ -1173,7 +1175,7 @@ test('backups: missing after 26 h, grace for a new install, failed, newest direc
     assert.equal(find(r, 'backup_failed').ok, false); assert.equal(find(r, 'backup_failed').detail, 'disk full');
     status('retention', { result: 'failed', message: 'locked' });
     assert.equal(find(W.checkBackups(h.ctx()), 'retention_failed').ok, false);
-    assert.equal(find(r, 'usb_backup').ok, true);
+    assert.equal(find(r, 'offhost_copy_missing').ok, true);
   } finally { clean(h); }
 });
 
@@ -1181,12 +1183,12 @@ test('USB backup: a failed last copy is reported', () => {
   const h = harness();
   try {
     writeFileSync(join(h.state, 'config/usb-backup.last'), 'result=failed\nfinished_utc=2026-10-18T00:00:00Z\nmessage=drive missing\n');
-    const r = find(W.checkBackups(h.ctx()), 'usb_backup');
+    const r = find(W.checkBackups(h.ctxOld()), 'offhost_copy_missing');
     assert.equal(r.ok, false); assert.match(r.summary, /drive missing/);
   } finally { clean(h); }
 });
 
-test('USB backup: encrypted archives with no confirmed copy of the backup key raise usb_backup, and the confirmation clears it', () => {
+test('USB backup: encrypted archives with no confirmed copy of the backup key raise offhost_copy_missing, and the confirmation clears it', () => {
   const h = harness();
   try {
     const key = '5a'.repeat(16) + '0f'.repeat(16);
@@ -1195,35 +1197,58 @@ test('USB backup: encrypted archives with no confirmed copy of the backup key ra
     mkdirSync(join(h.scratch, 'etc'));
     writeFileSync(join(h.scratch, 'etc/warehouse-usb-backup.conf'), `STATE=${h.state}\nENCRYPT=yes\nENCRYPT_SET=default\n`);
     writeFileSync(join(h.state, 'config/usb-backup.last'), `result=ok\nfinished_utc=2026-10-19T08:00:00Z\nlast_success_epoch=${Math.floor((T0 - 3 * HOUR) / 1000)}\nmessage=copied 1\n`);
-    let r = find(W.checkBackups(h.ctx()), 'usb_backup');
+    let r = find(W.checkBackups(h.ctxOld()), 'offhost_copy_missing');
     assert.equal(r.ok, false);
     assert.match(r.summary, /USB archives are encrypted but the backup key copy is not confirmed \(there is no key escrow record\).*bash scripts\/backup-key-escrow\.sh show/);
     // A record for another key does not count; the right one does.
     const record = fp => writeFileSync(join(h.state, 'config/backup-key.escrow'), `warehouse-backup-key-escrow-v1\nkey_fingerprint=${fp}\nconfirmed_utc=2026-10-19T08:00:00Z\nconfirmed_by=op\n`);
     record(fingerprint('d4'.repeat(32)));
-    assert.match(find(W.checkBackups(h.ctx()), 'usb_backup').summary, /for another backup key/);
+    assert.match(find(W.checkBackups(h.ctxOld()), 'offhost_copy_missing').summary, /for another backup key/);
     record(fingerprint(key));
-    assert.equal(find(W.checkBackups(h.ctx()), 'usb_backup').ok, true);
+    assert.equal(find(W.checkBackups(h.ctxOld()), 'offhost_copy_missing').ok, true);
     // Readable archives, typed at setup, need no copy of the key.
     rmSync(join(h.state, 'config/backup-key.escrow'));
     writeFileSync(join(h.scratch, 'etc/warehouse-usb-backup.conf'), `STATE=${h.state}\nENCRYPT=no\nENCRYPT_SET=typed\n`);
-    assert.equal(find(W.checkBackups(h.ctx()), 'usb_backup').ok, true);
+    assert.equal(find(W.checkBackups(h.ctxOld()), 'offhost_copy_missing').ok, true);
   } finally { clean(h); }
 });
 
-test('USB backup: an installation that never reran the USB setup (readable archives, nothing typed) raises usb_backup, and the setup rerun clears it', () => {
+test('USB backup: an installation that never reran the USB setup (readable archives, nothing typed) raises offhost_copy_missing, and the setup rerun clears it', () => {
   const h = harness();
   try {
     mkdirSync(join(h.scratch, 'etc'));
     writeFileSync(join(h.state, 'config/usb-backup.last'), `result=ok\nfinished_utc=2026-10-19T08:00:00Z\nlast_success_epoch=${Math.floor((T0 - 3 * HOUR) / 1000)}\nmessage=copied 1\n`);
     // The configuration the previous release's setup wrote: ENCRYPT=no and no ENCRYPT_SET.
     writeFileSync(join(h.scratch, 'etc/warehouse-usb-backup.conf'), `STATE=${h.state}\nENCRYPT=no\n`);
-    const r = find(W.checkBackups(h.ctx()), 'usb_backup');
+    const r = find(W.checkBackups(h.ctxOld()), 'offhost_copy_missing');
     assert.equal(r.ok, false);
     assert.match(r.summary, /USB archives are still written unencrypted .*run sudo bash scripts\/backup-usb\.sh setup --state /);
     // After the rerun the configuration says what was chosen; a readable archive typed on purpose is fine.
     writeFileSync(join(h.scratch, 'etc/warehouse-usb-backup.conf'), `STATE=${h.state}\nENCRYPT=no\nENCRYPT_SET=typed\n`);
-    assert.equal(find(W.checkBackups(h.ctx()), 'usb_backup').ok, true);
+    assert.equal(find(W.checkBackups(h.ctxOld()), 'offhost_copy_missing').ok, true);
+  } finally { clean(h); }
+});
+
+test('offhost_copy_missing: not before 7 days of checker life, weekly, never muted, cleared by the recorded decision', () => {
+  const h = harness();
+  try {
+    h.clock.t = T0;
+    const at = days => { const data = W.loadState(h.state, h.clock.t, h.deps.readText); data.firstRun = h.clock.t - days * 24 * HOUR; return W.makeContext(h.deps, data); };
+    const get = days => find(W.checkBackups(at(days)), 'offhost_copy_missing');
+    assert.equal(get(0).ok, true, 'new checker');
+    assert.equal(get(7).ok, true, 'exactly 7 days is not over 7 days');
+    const late = get(7 + 1 / 24);
+    assert.equal(late.ok, false);
+    assert.equal(late.repeatHours, 168);
+    assert.match(late.summary, /^No copy of the backups is kept outside this host: set up the USB backup drive/);
+    assert.equal(W.NEVER_MUTED.includes('offhost_copy_missing'), true);
+    assert.equal(W.isMuted({ muteUntil: T0 + HOUR, mutes: { offhost_copy_missing: T0 + HOUR } }, 'offhost_copy_missing', T0), false);
+    assert.equal(W.isMuted({ muteUntil: T0 + HOUR, mutes: {} }, 'other_bad', T0), true);
+    const marker = join(h.state, 'config/offhost-copy-declined');
+    writeFileSync(marker, 'We have decided not to keep a copy of the backups outside this host.\n', { mode: 0o600 });
+    assert.equal(get(30).ok, true, 'recorded decision');
+    chmodSync(marker, 0o644);
+    assert.equal(get(30).ok, false, 'a marker with the wrong mode is not a decision');
   } finally { clean(h); }
 });
 
@@ -1381,12 +1406,14 @@ test('mute never covers backup_missing, backup_failed or daily_timer_legacy: the
   try {
     const out = [];
     assert.equal(await W.main(['mute', '600'], h.deps, t => out.push(t)), 0);
-    assert.match(out[0], /^Muted all alerts until \S+\. backup_missing, backup_failed, daily_timer_legacy and upgrade_interrupted are not muted\.$/);
+    assert.match(out[0], /^Muted all alerts until \S+\. backup_missing, backup_failed, offhost_copy_missing, daily_timer_legacy and upgrade_interrupted are not muted\.$/);
     assert.equal(await W.main(['mute', '600', 'backup_missing'], h.deps, t => out.push(t)), 1);
     assert.match(out[1], /^backup_missing cannot be muted: it says no backup exists\.$/);
     assert.equal(await W.main(['mute', '600', 'backup_failed'], h.deps, t => out.push(t)), 1);
     assert.equal(await W.main(['mute', '600', 'daily_timer_legacy'], h.deps, t => out.push(t)), 1);
     assert.match(out.at(-1), /^daily_timer_legacy cannot be muted: it says the daily backup is kept running by an out-of-date unit\.$/);
+    assert.equal(await W.main(['mute', '600', 'offhost_copy_missing'], h.deps, t => out.push(t)), 1);
+    assert.match(out.at(-1), /^offhost_copy_missing cannot be muted: it says the backups have no copy outside this host\.$/);
     // An older mute file that names them is ignored too.
     writeFileSync(join(h.state, 'config/watch-mutes.json'), JSON.stringify({ all: h.clock.t + 10 * HOUR, ids: { backup_failed: h.clock.t + 10 * HOUR, other_bad: h.clock.t + 10 * HOUR } }));
     const checks = stub(failing('backup_missing'), failing('backup_failed', { detail: 'disk full' }), failing('daily_timer_legacy'), failing('other_bad'), failing('service_down:rest'));
@@ -1401,7 +1428,7 @@ test('mute never covers backup_missing, backup_failed or daily_timer_legacy: the
     writeFileSync(join(h.state, 'config/watch-mutes.json'), JSON.stringify({ all: h.clock.t + HOUR, ids: { other_bad: h.clock.t + HOUR } }));
     await W.runOnce(h.deps, { checks, heal: null });
     const alive = h.posts.filter(p => /^Monitoring is alive/.test(p.text)).pop();
-    assert.match(alive.text, /Alerts are muted until \S+\. Muted: other_bad\. backup_missing, backup_failed, daily_timer_legacy and upgrade_interrupted are never muted: they are posted anyway\./);
+    assert.match(alive.text, /Alerts are muted until \S+\. Muted: other_bad\. backup_missing, backup_failed, offhost_copy_missing, daily_timer_legacy and upgrade_interrupted are never muted: they are posted anyway\./);
     h.clock.t = new Date(2026, 9, 21, 9, 5).getTime();
     writeFileSync(join(h.state, 'config/watch-mutes.json'), JSON.stringify({ all: null, ids: {} }));
     await W.runOnce(h.deps, { checks, heal: null });
@@ -2043,6 +2070,28 @@ test('daily: retention and pruning failures are retention failures; the backup s
   } finally { clean(h); }
 });
 
+test('daily: on a Monday the status line adds the one-drive note when only one USB drive wrote in 30 days; never on other days, never when two wrote, and the pass stays ok', async () => {
+  const note = 'Only one USB drive has written a backup in the last 30 days: take a copy away from the building by enrolling a second drive and swapping them weekly.';
+  const run = async (day, history) => {
+    const h = harness();
+    try {
+      h.seed(); dailyFake(h);
+      h.clock.t = at(day, 3, 0);
+      if (history) writeFileSync(join(h.state, 'config/usb-backup.history'), history(h.clock.t).join('\n') + '\n', { mode: 0o600 });
+      await daily(h);
+      const last = h.state_().lastDailyRun.backup;
+      assert.equal(last.result, 'ok');
+      assert.equal(h.posts.filter(p => /FAILED|FIRING/.test(p.text)).length, 0, 'information only: never an alert');
+      return last.message;
+    } finally { clean(h); }
+  };
+  const epoch = (t, days) => Math.floor(t / 1000) - days * 86400;
+  assert.match(await run(19, t => [`${epoch(t, 2)} AAAA-1111`, `${epoch(t, 9)} AAAA-1111`]), new RegExp(`^backup warehouse-\\d{8}T\\d{6}Z verified; ${note}$`), 'Monday 19 October 2026');
+  assert.doesNotMatch(await run(20, t => [`${epoch(t, 2)} AAAA-1111`]), /USB drive/, 'Tuesday');
+  assert.doesNotMatch(await run(19, t => [`${epoch(t, 2)} AAAA-1111`, `${epoch(t, 9)} BBBB-2222`]), /USB drive/, 'two drives');
+  assert.doesNotMatch(await run(19, null), /USB drive/, 'no history');
+});
+
 test('daily: a backup that re-copied files from a damaged earlier copy stays ok, and the warning is in the daily state and the status line', async () => {
   const h = harness();
   try {
@@ -2477,13 +2526,16 @@ case "\${FAKE_BACKUP:-ok}" in
   ok) d="$WAREHOUSE_STATE_DIR/backups/warehouse-20261019T020000Z"; mkdir -p "$d"; echo x > "$d/metadata.txt"; cp "$WAREHOUSE_STATE_DIR/public/instance.json" "$d/"; echo "Backup created at $d" ;;
   unhealthy) echo 'Database service is not healthy.' >&2; exit 1 ;;
   fail) echo 'pg_dump: error: boom' >&2; exit 1 ;;
-  warn|warn1|other-warning|space-warn|both-warn)
+  warn|warn1|other-warning|space-warn|both-warn|samefs|samefs-warn)
     d="$WAREHOUSE_STATE_DIR/backups/warehouse-20261019T020000Z"; mkdir -p "$d"; echo x > "$d/metadata.txt"; cp "$WAREHOUSE_STATE_DIR/public/instance.json" "$d/"; echo "Backup created at $d"
     case "$FAKE_BACKUP" in
       warn) echo 'WARNING: 2 files re-copied: backup warehouse-20261018T020000Z has a damaged copy. This backup holds good copies.' >&2 ;;
       warn1) echo 'WARNING: 1 file re-copied: backup warehouse-20261018T020000Z has a damaged copy. This backup holds good copies.' >&2 ;;
       other-warning) echo 'WARNING: something else entirely' >&2; echo 'WARNING: 3 files re-copied: backup not-a-backup has a damaged copy.' >&2 ;;
       space-warn) echo 'WARNING: df gave no free space for /srv/state/backups, so stat -f was used for the free-space check; find out why df fails there (docs/TROUBLESHOOTING.md, "backup refused: not enough free space").' >&2 ;;
+      samefs) echo 'Warning: /srv/state/backups shares a filesystem with /srv/state/data; a backup there does not survive loss of this disk. Copy it to protected off-host storage.' >&2 ;;
+      samefs-warn) echo 'Warning: /srv/state/backups shares a filesystem with /srv/state/data; a backup there does not survive loss of this disk. Copy it to protected off-host storage.' >&2
+        echo 'WARNING: 2 files re-copied: backup warehouse-20261018T020000Z has a damaged copy. This backup holds good copies.' >&2 ;;
       both-warn) echo 'WARNING: df gave no free space for /srv/state/backups, so stat -f was used for the free-space check; find out why df fails there (docs/TROUBLESHOOTING.md, "backup refused: not enough free space").' >&2
         echo 'WARNING: 2 files re-copied: backup warehouse-20261018T020000Z has a damaged copy. This backup holds good copies.' >&2 ;;
     esac ;;
@@ -2561,6 +2613,13 @@ test('watch-daily.sh: the WARNING backup.sh prints when df gave no free space an
     assert.match(r.stderr, /WARNING: df gave no free space/, 'and still on standard error for the journal');
     r = f.run({ FAKE_BACKUP: 'both-warn' });
     assert.equal(r.fields.backup_warning, `2 files re-copied: backup warehouse-20261018T020000Z has a damaged copy; ${space}`);
+    // backup.sh's "shares a filesystem" warning (the backup sits on the disk it protects) reaches the daily status too.
+    const sameFs = '/srv/state/backups shares a filesystem with /srv/state/data: it does not survive loss of this disk';
+    r = f.run({ FAKE_BACKUP: 'samefs' });
+    assert.deepEqual([r.fields.backup, r.fields.verify, r.fields.done], ['ok', 'ok', '1']);
+    assert.equal(r.fields.backup_warning, sameFs);
+    r = f.run({ FAKE_BACKUP: 'samefs-warn' });
+    assert.equal(r.fields.backup_warning, `2 files re-copied: backup warehouse-20261018T020000Z has a damaged copy; ${sameFs}`);
   } finally { rmSync(f.scratch, { recursive: true, force: true }); }
 });
 
