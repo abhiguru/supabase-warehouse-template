@@ -10,12 +10,6 @@ file used to carry for earlier installations are in git: `git show b45ae0b:CHANG
 
 ### Added
 
-- **The oldest supported app is a window, not a pin.** `minimumClientVersion` in `app-compat.json` was still `0.1.0` although migration 123 had
-  dropped functions that older builds call. It is now `0.6.0`, the first build with the update screen, and CI checks that app commit
-  (`MOBILE_MIN_REF` in `ci.yml`) with the same contract scanner and `rpc-callers` test as the pinned one. `scripts/check-app-compat.mjs`
-  (run by the `contract` job and, with the previous final tag required, by `release.yml`) refuses a minimum that does not match the app at the
-  pin or falls below the previous release, and a function, table or edge function that app calls and that was dropped since the previous
-  release unless the minimum rose. Operator note: app builds older than 0.6.0 are told to update when they open this facility; no operator action.
 - **A release needs green end-to-end CI on its commit.** `operator-install` and `operator-upgrade` are not required checks on `main`, so a tag
   could land on a commit where they failed or never ran. `release.yml` now runs `scripts/check-release-ci.mjs` first: it asks the GitHub API for the
   check runs of the tagged commit and fails, naming the missing or failed one, unless the newest run of each is a completed success. It does not
@@ -51,6 +45,13 @@ file used to carry for earlier installations are in git: `git show b45ae0b:CHANG
 
 ### Changed
 
+- **The oldest supported app is a window, not a pin.** `minimumClientVersion` in `app-compat.json` was still `0.1.0` although migration 123 had
+  dropped functions that older builds call. It is now `0.6.0`, the first build with the update screen. CI checks every app build handed out
+  with that version (`MOBILE_MIN_REF` in `ci.yml`, a list of commits) with the contract scanner and the `rpc-callers` test, and
+  `scripts/check-app-compat.mjs` (run by the `contract` job and, with the previous final tag required, by `release.yml`) refuses a minimum that
+  does not match a listed app or falls below the previous release, and a function, table or edge function such an app calls that was dropped
+  since the previous release unless the minimum rose. Operator note: staff on app v0.5.0 or older (those builds report version 0.1.0) must
+  install a 0.6.0 or newer build; they are told to update when they open this facility. No operator action on the server.
 - **Saving a GRN no longer deletes other people's photo uploads in progress (`update_grn`, no new migration).** When the photo list is sent, an
   unfinished (`pending`) photo that is not in the list used to be removed for an administrator or supervisor, whoever uploaded it. Now it is
   removed only if the saver uploaded it or it is older than 15 minutes; another person's recent pending upload survives and can still be

@@ -18,10 +18,10 @@ env:
   # (tests/workflows.test.mjs refuses anything else). What it is for and when to move it:
   # CONTRIBUTING.md, "Mobile companion pin".
   MOBILE_REF: 9e27783f619760a7d2a6a7c5f26b8b25547e9277
-  # MOBILE_MIN_REF: the app commit that FIRST carried the version app-compat.json names as minimumClientVersion, the oldest app build
-  # this backend still answers. The contract job and release.yml check it too, so nothing it calls can be dropped unnoticed. Always a
-  # full SHA. When it moves: CONTRIBUTING.md, "Mobile companion pin".
-  MOBILE_MIN_REF: b6121d58f31bf4e14e69483fa26e00373cb3d67c
+  # MOBILE_MIN_REF: the app commits that carry the version app-compat.json names as minimumClientVersion, the oldest app builds this backend
+  # still answers: a space-separated list of full SHAs, one per build handed out with that version. The contract job and release.yml check
+  # each one (scripts/check-min-apps.sh), so nothing they call can be dropped unnoticed. When it moves: CONTRIBUTING.md, "Mobile companion pin".
+  MOBILE_MIN_REF: b6121d58f31bf4e14e69483fa26e00373cb3d67c 086db18af750d54fb9c6acdb81b2fe379ae1ed8f
 # Where a job runs is the repository variable CI_RUNNER (a JSON value for runs-on, for example
 # ["self-hosted","linux","x64","my-label"]); operator-install and operator-upgrade take OPERATOR_INSTALL_RUNNER instead. Without the
 # variable, and always for a pull request from a fork, a job runs on a GitHub-hosted runner: code from a fork never
@@ -257,25 +257,15 @@ jobs:
           ref: ${{ env.MOBILE_REF }}
           path: mobile
           persist-credentials: false
-      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
-        with:
-          repository: abhiguru/rn-warehouse-template
-          # The oldest supported app build (app-compat.json minimumClientVersion).
-          ref: ${{ env.MOBILE_MIN_REF }}
-          path: mobile-min
-          persist-credentials: false
       - name: Record tested commit pair
         run: |
           git -C backend log -1 --format='Backend %H'
           git -C mobile log -1 --format='Mobile %H'
-          git -C mobile-min log -1 --format='Mobile (oldest supported) %H'
       - uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0
         with:
           node-version: '22'
       - run: npm ci
         working-directory: mobile
-      - run: npm ci
-        working-directory: mobile-min
       - run: node scripts/check-mobile-contract.mjs ../mobile
         working-directory: backend
       # With MOBILE_CHECKOUT set, tests/rpc-callers.test.mjs also compares the app's RPC names with tests/rpc_callers_exist.sql.
@@ -283,14 +273,8 @@ jobs:
         working-directory: backend
         env:
           MOBILE_CHECKOUT: ${{ github.workspace }}/mobile
-      # The oldest supported app: every name it calls must still exist, and the minimum may only rise (scripts/check-app-compat.mjs).
-      - run: node scripts/check-mobile-contract.mjs ../mobile-min --output "$RUNNER_TEMP/min-report.json"
-        working-directory: backend
-      - run: node --test tests/rpc-callers.test.mjs
-        working-directory: backend
-        env:
-          MOBILE_MIN_CHECKOUT: ${{ github.workspace }}/mobile-min
-      - run: node scripts/check-app-compat.mjs --report "$RUNNER_TEMP/min-report.json" --app-json ../mobile-min/app.json --previous auto
+      # The oldest supported app builds (MOBILE_MIN_REF, a list): every name each one calls must still exist, and the minimum may only rise.
+      - run: bash scripts/check-min-apps.sh "$RUNNER_TEMP/min-apps" --callers-test -- --previous auto
         working-directory: backend
 
   secrets:

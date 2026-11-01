@@ -2,7 +2,8 @@
 // "App compatibility is a window, not a pin" (CONTRIBUTING.md, "Mobile companion pin"): app-compat.json names the oldest app build this
 // backend answers, and MOBILE_MIN_REF (ci.yml) is the app commit that first carried that version. This script judges the three ways
 // that promise breaks:
-//   R1  the app at MOBILE_MIN_REF has the version app-compat.json declares as the minimum;
+//   R1  the app at a MOBILE_MIN_REF commit has the version app-compat.json declares as the minimum (scripts/check-min-apps.sh runs this
+//       once per listed commit);
 //   R2  the minimum is a plain MAJOR.MINOR.PATCH and not lower than in the previous final release;
 //   R3  nothing that app calls (RPC, table, edge function) was dropped since the previous final release, unless the minimum was raised.
 //
@@ -57,6 +58,8 @@ export function judge({ minimum, previousMinimum = null, previousLabel = 'the pr
       raised = order > 0;
     }
   }
+  // R3 gives the clearer message: the contract scanner already fails on a name the app calls that the current tree no longer defines, but
+  // says only that it is missing; this says what to do (raise the minimum, or keep the name).
   if (previousDefined && !raised) {
     for (const [group, label] of [['rpc', 'function'], ['tables', 'table'], ['edge', 'edge function']]) {
       const now = new Set(currentDefined[group]);
@@ -115,7 +118,8 @@ export function previousFinalTag(root, currentTag = '') {
   const tags = git(root, ['tag', '--merged', 'HEAD', '--list', 'v[0-9]*']);
   if (tags === null) return null;
   const own = currentTag.replace(/^v/, '').split(/[-+]/)[0];
-  const finals = tags.split('\n').filter(tag => /^v\d+\.\d+\.\d+$/.test(tag) && tag.slice(1) !== own);
+  // parseVersion also refuses a malformed name such as v01.2.3, which would otherwise break the ordering below.
+  const finals = tags.split('\n').filter(tag => tag.startsWith('v') && parseVersion(tag.slice(1)) && tag.slice(1) !== own);
   finals.sort((a, b) => compareVersions(parseVersion(b.slice(1)), parseVersion(a.slice(1))));
   return finals[0] ?? null;
 }

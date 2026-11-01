@@ -175,6 +175,14 @@ test('previous tag: the newest FINAL tag, never the version being released and n
     repo.git('tag', 'v0.11.0');
     assert.equal(previousFinalTag(repo.dir, 'v0.11.0'), 'v0.10.0', 'the final tag does not compare with itself');
     assert.equal(previousFinalTag(repo.dir, ''), 'v0.11.0', 'outside a tag run the newest final tag counts');
+    // A malformed name is ignored, and so is a tag on a commit that HEAD does not contain (another line of development).
+    repo.git('tag', 'v01.2.3');
+    repo.git('tag', 'v9.x.0');
+    repo.git('checkout', '-q', '-b', 'other');
+    repo.write('b', '2'); repo.commit('elsewhere');
+    repo.git('tag', 'v5.0.0');
+    repo.git('checkout', '-q', 'main');
+    assert.equal(previousFinalTag(repo.dir, ''), 'v0.11.0', 'a malformed tag and an unmerged tag do not count');
   } finally { rmSync(repo.dir, { recursive: true, force: true }); }
 });
 

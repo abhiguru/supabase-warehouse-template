@@ -29,14 +29,15 @@ test('the mobile companion is pinned once, by full commit, and the contract job 
   assert.equal(pins.length, 1, 'MOBILE_REF is declared exactly once');
   // A branch, a tag or a short hash can come to mean other code; 40 hex digits cannot.
   assert.match(pins[0], /^  MOBILE_REF: [0-9a-f]{40}$/, `MOBILE_REF must be a full commit SHA: ${pins[0].trim()}`);
-  // MOBILE_MIN_REF: the app commit that first carried app-compat.json's minimumClientVersion, pinned the same way.
+  // MOBILE_MIN_REF: the app commits that carry app-compat.json's minimumClientVersion (every build handed out with it), a space-separated
+  // list of full SHAs, declared once; scripts/check-min-apps.sh reads it for both workflows.
   const minPins = ci.split('\n').filter(line => /^\s*MOBILE_MIN_REF\s*:/.test(line));
   assert.equal(minPins.length, 1, 'MOBILE_MIN_REF is declared exactly once');
-  assert.match(minPins[0], /^  MOBILE_MIN_REF: [0-9a-f]{40}$/, `MOBILE_MIN_REF must be a full commit SHA: ${minPins[0].trim()}`);
-  // Every checkout of the app takes its ref from a pin, never from a name written in the step; the pin is found by the step's path.
+  assert.match(minPins[0], /^  MOBILE_MIN_REF: [0-9a-f]{40}(?: [0-9a-f]{40})*$/, `MOBILE_MIN_REF must be full commit SHAs: ${minPins[0].trim()}`);
+  // Every checkout of the app by a workflow step takes its ref from a pin, never from a name written in the step; the pin is found by the path.
   const checkouts = ci.split(/\n\s*- uses: actions\/checkout@/).slice(1).map(step => step.split(/\n\s*- /)[0]);
   const mobile = checkouts.filter(step => /repository: abhiguru\/rn-warehouse-template/.test(step));
-  const pinFor = { mobile: 'MOBILE_REF', 'mobile-min': 'MOBILE_MIN_REF' };
+  const pinFor = { mobile: 'MOBILE_REF' };
   const seen = new Set();
   for (const step of mobile) {
     const path = /\n\s*path: ([a-z-]+)\n/.exec(step)?.[1];
@@ -44,24 +45,15 @@ test('the mobile companion is pinned once, by full commit, and the contract job 
     assert.match(step, new RegExp(`\\n\\s*ref: \\$\\{\\{ env\\.${pinFor[path]} \\}\\}\\n`), `the app at path ${path} is checked out at ${pinFor[path]}`);
     seen.add(path);
   }
-  assert.deepEqual([...seen].sort(), ['mobile', 'mobile-min'], 'the contract job checks out the app at both pins');
-  // The contract job runs the scanner, the callers test and the compatibility check on the oldest app too.
+  assert.deepEqual([...seen], ['mobile'], 'the contract job checks out the app at the current pin');
+  // The oldest supported builds go through one script, in the contract job and in a tag's release job.
   const contract = ci.slice(ci.indexOf('\n  contract:\n') + 1).split(/\n  [a-z-]+:\n/)[0];
   assert.match(contract, /\n {10}fetch-depth: 0\n/, 'the backend checkout has its tags');
-  assert.match(contract, /- run: npm ci\n {8}working-directory: mobile-min\n/);
-  assert.match(contract, /- run: node scripts\/check-mobile-contract\.mjs \.\.\/mobile-min --output "\$RUNNER_TEMP\/min-report\.json"\n {8}working-directory: backend\n/);
-  assert.match(contract, /MOBILE_MIN_CHECKOUT: \$\{\{ github\.workspace \}\}\/mobile-min\n/);
-  assert.match(contract, /- run: node scripts\/check-app-compat\.mjs --report "\$RUNNER_TEMP\/min-report\.json" --app-json \.\.\/mobile-min\/app\.json --previous auto\n {8}working-directory: backend\n/);
-  // A tag runs the same check against the pin it reads from ci.yml, and the job has no image publishing in it.
+  assert.match(contract, /- run: bash scripts\/check-min-apps\.sh "\$RUNNER_TEMP\/min-apps" --callers-test -- --previous auto\n {8}working-directory: backend\n/);
   const release = readFileSync(new URL('../.github/workflows/release.yml', import.meta.url), 'utf8');
   const releaseJob = release.slice(release.indexOf('\n  release:\n'), release.indexOf('\n  publish-images:\n'));
   assert.ok(releaseJob.length > 100 && !releaseJob.includes('publish-images'), 'the release job section is found');
-  assert.match(releaseJob, /\n {8}id: pin\n/);
-  assert.match(releaseJob, /sed -n 's\/\^  MOBILE_MIN_REF: \/\/p' \.github\/workflows\/ci\.yml/);
-  assert.match(releaseJob, /\[\[ "\$ref" =~ \^\[0-9a-f\]\{40\}\$ \]\]/, 'anything but 40 hex digits is refused');
-  assert.match(releaseJob, /repository: abhiguru\/rn-warehouse-template\n {10}ref: \$\{\{ steps\.pin\.outputs\.ref \}\}\n {10}path: mobile-min\n {10}persist-credentials: false\n/);
-  assert.match(releaseJob, /- run: node scripts\/check-mobile-contract\.mjs mobile-min --output "\$RUNNER_TEMP\/min-report\.json"\n/);
-  assert.match(releaseJob, /- run: node scripts\/check-app-compat\.mjs --report "\$RUNNER_TEMP\/min-report\.json" --app-json mobile-min\/app\.json --previous auto --require-previous\n/);
+  assert.match(releaseJob, /\n {8}run: bash scripts\/check-min-apps\.sh "\$RUNNER_TEMP\/min-apps" -- --previous auto --require-previous\n/);
   // The release step that moves the pin and runs the live comparison stays documented.
   const checklist = readFileSync(new URL('../docs/RELEASE_CHECKLIST.md', import.meta.url), 'utf8');
   assert.match(checklist, /## Mobile contract before a release/);
