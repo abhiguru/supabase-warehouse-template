@@ -812,14 +812,20 @@ test('LAN fallback: the checker is registered, gateway-lan is expected only when
 const nginxText = readFileSync(join(repo, 'docker/nginx/nginx.conf'), 'utf8');
 const logFormat = (nginxText.match(/^\s+log_format warehouse_redacted '([^\n]*)';$/m) ?? [])[1];
 assert.ok(logFormat, 'the warehouse_redacted log format is in docker/nginx/nginx.conf');
+const REQUEST_ID = '0123456789abcdef0123456789abcdef';
 const gatewayLine = (status, seconds) => {
-  const values = { remote_addr: '172.18.0.1', time_local: '19/Oct/2026:10:00:00 +0000', request_method: 'GET', uri: '/rest/v1/x', server_protocol: 'HTTP/1.1', status: String(status), body_bytes_sent: '123', request_time: seconds };
+  const values = { remote_addr: '172.18.0.1', time_local: '19/Oct/2026:10:00:00 +0000', request_method: 'GET', uri: '/rest/v1/x', server_protocol: 'HTTP/1.1', status: String(status), body_bytes_sent: '123', request_time: seconds, request_id: REQUEST_ID };
   return logFormat.replace(/\$([a-z_]+)/g, (_, name) => { if (!(name in values)) throw new Error(`unknown log variable ${name}`); return values[name]; });
 };
 test('the gateway test line is in the shape the nginx log format produces, and the checker reads it', () => {
-  assert.equal(gatewayLine(200, '0.100'), '172.18.0.1 [19/Oct/2026:10:00:00 +0000] "GET /rest/v1/x HTTP/1.1" 200 123 0.100');
+  assert.equal(gatewayLine(200, '0.100'), '172.18.0.1 [19/Oct/2026:10:00:00 +0000] "GET /rest/v1/x HTTP/1.1" 200 123 0.100 0123456789abcdef0123456789abcdef');
   assert.deepEqual(W.parseGatewayLog(gatewayLine(502, '1.500')), [{ status: 502, seconds: 1.5 }]);
   assert.deepEqual(W.parseGatewayLog(gatewayLine(429, '0.000')), [{ status: 429, seconds: 0 }]);
+  // A line from before the id was added to the format still parses; so does one with the id, and a malformed id does not.
+  const old = '172.18.0.1 [19/Oct/2026:10:00:00 +0000] "GET /rest/v1/x HTTP/1.1" 503 123 2.500';
+  assert.deepEqual(W.parseGatewayLog(old), [{ status: 503, seconds: 2.5 }]);
+  assert.deepEqual(W.parseGatewayLog(`${old} ${REQUEST_ID}`), [{ status: 503, seconds: 2.5 }]);
+  assert.deepEqual(W.parseGatewayLog(`${old} not-an-id`), []);
   // nginx's own error log lines (also on the container's output) are not request lines and are skipped.
   assert.equal(W.parseGatewayLog('2026/10/26 10:00:00 [error] 30#30: *3 no live upstreams while connecting to upstream, client: 10.0.0.3, server: _, request: "GET /rest/v1/x HTTP/1.1", upstream: "http://rest_up/x", host: "gateway:8000"').length, 0);
 });

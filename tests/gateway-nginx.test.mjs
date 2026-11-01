@@ -84,7 +84,7 @@ test('nginx -t passes on the rendered configuration, in the image, with the flag
   assert.match(dump.stdout, new RegExp(`"${SERVICE.replace(/\./g, '\\.')}"\\s+"";`));
   assert.doesNotMatch(dump.stdout, /\$\{/);
   assert.match(dump.stdout, /limit_req_zone \$binary_remote_addr zone=rest:10m rate=30r\/s;/);
-  assert.match(dump.stdout, /log_format warehouse_redacted '\$remote_addr \[\$time_local\] "\$request_method \$uri \$server_protocol" \$status \$body_bytes_sent \$request_time';/);
+  assert.match(dump.stdout, /log_format warehouse_redacted '\$remote_addr \[\$time_local\] "\$request_method \$uri \$server_protocol" \$status \$body_bytes_sent \$request_time \$request_id';/);
   assert.equal((dump.stdout.match(/^\s*listen\s/gm) || []).length, 1);
   // The entrypoint's envsubst puts a value in for the bare form of a name too (a comment or a line that wrote `$ANON_KEY` would get the
   // key), and leaves other variables alone: tests/gateway-config.test.mjs forbids both forms outside the places meant for them.
@@ -132,8 +132,9 @@ const STUB_CONF = `server {
     add_header Access-Control-Allow-Origin "*" always;
     add_header Access-Control-Expose-Headers "X-Stub" always;
     add_header X-Content-Type-Options "nosniff" always;
+    add_header X-Request-Id "from-the-upstream" always;
     default_type text/plain;
-    return 200 "line=$request|host=$http_host|apikey=$http_apikey|cfip=$http_cf_connecting_ip|xri=$http_x_real_ip|xff=$http_x_forwarded_for|auth=$http_authorization";
+    return 200 "xrid=$http_x_request_id|line=$request|host=$http_host|apikey=$http_apikey|cfip=$http_cf_connecting_ip|xri=$http_x_real_ip|xff=$http_x_forwarded_for|auth=$http_authorization";
   }
 }
 `;
@@ -156,6 +157,13 @@ function request(path, { method = 'GET', headers = {}, body, port: target = port
   });
 }
 const echoed = text => Object.fromEntries(text.split('|').map(part => [part.slice(0, part.indexOf('=')), part.slice(part.indexOf('=') + 1)]));
+const REQUEST_ID = /^[0-9a-f]{32}$/;
+// The request id: the answer carries exactly one (the gateway's, not the upstream's), and the upstream saw that same id, never the client's.
+function assertRequestId(answer, label) {
+  assert.equal(answer.all('x-request-id').length, 1, `${label}: one X-Request-Id`);
+  assert.match(answer.headers['x-request-id'], REQUEST_ID, `${label}: the id is 32 hex characters`);
+  if (answer.status === 200 && answer.text.startsWith('xrid=')) assert.equal(echoed(answer.text).xrid, answer.headers['x-request-id'], `${label}: the upstream saw the same id`);
+}
 const address = () => `2001:db8:5eed::${randomBytes(2).toString('hex')}`;
 
 // A JSON document of at least `bytes` bytes (compressible, as a PostgREST answer is): an array of rows.
@@ -208,6 +216,10 @@ test('REST: the prefix comes off, the path and query arrive as written, the key 
   assert.deepEqual(answer.all('access-control-allow-credentials'), ['true']);
   assert.deepEqual(answer.all('access-control-expose-headers'), ['Content-Range,X-Request-Id']);
   assert.deepEqual(answer.all('vary'), ['Origin']);
+  assertRequestId(answer, 'REST');
+  assert.notEqual(answer.headers['x-request-id'], 'client-chosen');
+  assertRequestId(await request('/rest/v1/x', { headers: { apikey: ANON, 'X-Request-Id': 'client-chosen' } }), 'REST with a client-sent id');
+  assert.equal(echoed((await request('/rest/v1/x', { headers: { apikey: ANON, 'X-Request-Id': 'client-chosen' } })).text).xrid.length, 32, 'the client\'s id is overwritten');
   assert.equal(answer.headers.server, 'nginx', 'no version in the Server header');
   assert.equal(answer.headers['x-content-type-options'], 'nosniff', 'the upstream\'s other headers pass');
   // Several slashes in front are accepted; nothing is redirected.
@@ -270,7 +282,7 @@ test('CORS preflights: 204 with the origin, credentials, the route\'s lists and 
   assert.equal((await request('/rest/v1/rpc/x', { method: 'OPTIONS', headers: { 'CF-Connecting-IP': address() } })).status, 401);
   const plain = await request('/functions/v1/x', { method: 'OPTIONS', headers: { 'CF-Connecting-IP': address() } });
   assert.equal(plain.status, 200);
-  assert.match(plain.text, /^line=OPTIONS \/x HTTP\/1\.1\|/);
+  assert.match(plain.text, /^xrid=[0-9a-f]{32}\|line=OPTIONS \/x HTTP\/1\.1\|/);
 });
 
 test('storage: no client address reaches it, the signed-link query is passed on, and there is no rate limit', { skip }, async t => {
@@ -287,6 +299,8 @@ test('storage: no client address reaches it, the signed-link query is passed on,
   assert.equal(seen.xff, '');
   assert.equal(seen.apikey, 'client-key', 'Storage gets the header as sent (it has no key check here)');
   assert.deepEqual(answer.all('access-control-expose-headers'), ['Content-Range,X-Request-Id']);
+  assertRequestId(answer, 'storage');
+  assertRequestId(await request('/storage/v1/x', { headers: { 'X-Request-Id': 'client-chosen' } }), 'storage with a client-sent id');
   // 300 requests at once from one address are all answered (the other routes would refuse some at 100).
   const many = await Promise.all(Array.from({ length: 300 }, () => request('/storage/v1/object/x', { headers: { 'CF-Connecting-IP': ip } })));
   assert.deepEqual([...new Set(many.map(item => item.status))], [200]);
@@ -301,6 +315,7 @@ test('functions: the client address is the trusted hop\'s, or the connection\'s 
   assert.equal(given.cfip, '203.0.113.5');
   assert.equal(given.xri, '203.0.113.5');
   assert.equal(given.xff, '203.0.113.5');
+  assertRequestId(await request('/functions/v1/hello', { headers: { 'X-Request-Id': 'client-chosen' } }), 'functions');
   const none = echoed((await request('/functions/v1/hello', { headers: { 'X-Forwarded-For': '1.2.3.4' } })).text);
   assert.match(none.cfip, /^[0-9a-f:.]+$/, 'the connection\'s own address');
   assert.notEqual(none.cfip, '1.2.3.4');
@@ -317,7 +332,11 @@ test('paths that match no route, or match one only after clean-up, are answered 
     assert.equal(answer.status, 404, path);
     assert.equal(answer.text, '{"message":"no Route matched with those values"}', path);
     assert.match(answer.headers['content-type'], /^application\/json/, path);
+    assertRequestId(answer, `${path} (the 404 of the gateway)`);
   }
+  // Refusals made by the gateway itself carry the id as well: the key check and a preflight.
+  assertRequestId(await request('/rest/v1/x'), 'the 401');
+  assertRequestId(await request('/rest/v1/x', { method: 'OPTIONS', headers: { Origin: ORIGIN, 'Access-Control-Request-Method': 'POST' } }), 'a preflight');
 });
 
 test('/health answers the container\'s own check and nobody who comes through the tunnel; the Compose health check passes', { skip }, async t => {
@@ -464,10 +483,10 @@ test('the access log has the path and no query string, the line the checker read
   const marker = randomBytes(6).toString('hex');
   await request(`/storage/v1/object/sign/documents/log-${marker}.pdf?token=secret-${marker}&apikey=key-${marker}`, { headers: { 'CF-Connecting-IP': '198.51.100.12' } });
   const log = logLines();
-  assert.match(log, new RegExp(`^\\S+ \\[[^\\]]+\\] "GET /storage/v1/object/sign/documents/log-${marker}\\.pdf HTTP/1\\.1" 200 \\d+ [0-9.]+$`, 'm'));
+  assert.match(log, new RegExp(`^\\S+ \\[[^\\]]+\\] "GET /storage/v1/object/sign/documents/log-${marker}\\.pdf HTTP/1\\.1" 200 \\d+ [0-9.]+ [0-9a-f]{32}$`, 'm'));
   assert.doesNotMatch(log, new RegExp(`secret-${marker}|key-${marker}|token=`));
   // The 429s of the rate-limit test are access lines; none of them is in the error log (and so no request line with a query).
-  assert.match(log, / 429 \d+ [0-9.]+$/m);
+  assert.match(log, / 429 \d+ [0-9.]+ [0-9a-f]{32}$/m);
   assert.doesNotMatch(log, /limiting requests/);
   assert.doesNotMatch(log, /"GET \/health HTTP\/1\.1" 200 /, 'the container health check is not logged');
   assert.match(log, /"GET \/health HTTP\/1\.1" 404 /, 'an outside request for /health is refused, and that is logged like any 404');
@@ -621,7 +640,7 @@ test('LAN: the address is the connection\'s, whatever a client writes in a heade
   assert.equal((await request('/functions/v1/x', { headers: forged })).headers['x-warehouse-path'], 'public');
   // The log line is the checker's format with the connection's address in front.
   const log = docker(['logs', GATEWAY_LAN]);
-  assert.match(`${log.stdout}\n${log.stderr}`, new RegExp(`^${stubAddress.replace(/\./g, '\\.')} \\[[^\\]]+\\] "GET /functions/v1/get-public-config HTTP/1\\.1" 200 \\d+ [0-9.]+$`, 'm'));
+  assert.match(`${log.stdout}\n${log.stderr}`, new RegExp(`^${stubAddress.replace(/\./g, '\\.')} \\[[^\\]]+\\] "GET /functions/v1/get-public-config HTTP/1\\.1" 200 \\d+ [0-9.]+ [0-9a-f]{32}$`, 'm'));
   assert.doesNotMatch(`${log.stdout}\n${log.stderr}`, /203\.0\.113\.9|1\.2\.3\.4|\?a=1/);
 });
 
@@ -688,7 +707,7 @@ test('LAN: the key check, the body limit and the rate limit are the public path\
   assert.ok(big.status === 413 || big.status === 'ECONNRESET' || big.status === 'EPIPE', `HTTP ${big.status}`);
   if (big.status === 413) assert.equal(big.text, '{"message":"Request size limit exceeded"}');
   // The path header is on every kind of answer the routes make: success, 401, 404, the preflight and (below) 429.
-  for (const answer of [missing, unknown, preflight, await get('/functions/v1/x'), await get('/storage/v1/object/x')]) assert.equal(answer.headers['x-warehouse-path'], 'lan');
+  for (const answer of [missing, unknown, preflight, await get('/functions/v1/x'), await get('/storage/v1/object/x')]) { assert.equal(answer.headers['x-warehouse-path'], 'lan'); assertRequestId(answer, 'LAN'); }
   assert.deepEqual(missing.all('x-warehouse-path'), ['lan'], 'once');
   // /health answers the container itself only; a client gets the 404 of any unknown path (not the allow-list's 403: `return` is first).
   assert.equal(docker(['exec', GATEWAY_LAN, 'wget', '-q', '-T', '5', '-O', '-', 'http://127.0.0.1:8080/health']).stdout, 'ok\n');
@@ -858,7 +877,7 @@ test('maintenance mode: every API route answers 503 with the body that says upgr
   assert.doesNotMatch(open.text, /upgrading/);
   // The access log keeps the refusals as 503 in the line the checker reads, without a query string.
   const log = docker(['logs', GATEWAY_MAINT]);
-  assert.match(`${log.stdout}\n${log.stderr}`, /"GET \/storage\/v1\/object\/sign\/documents\/maintenance-[0-9a-f]+\.pdf HTTP\/1\.1" 503 \d+ [0-9.]+$/m);
+  assert.match(`${log.stdout}\n${log.stderr}`, /"GET \/storage\/v1\/object\/sign\/documents\/maintenance-[0-9a-f]+\.pdf HTTP\/1\.1" 503 \d+ [0-9.]+ [0-9a-f]{32}$/m);
   assert.doesNotMatch(`${log.stdout}\n${log.stderr}`, /token=abc/);
 });
 

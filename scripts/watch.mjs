@@ -786,10 +786,12 @@ export async function checkApiLan(ctx) {
 }
 // `sinceMs` (an epoch time) keeps only the lines that `docker logs -t` stamped at or after it: each such line starts with an
 // RFC 3339 time with nanoseconds ("2026-10-19T10:00:00.123456789Z "). A line with no readable stamp is kept (it cannot be placed).
+// A line ends with the seconds and, since the request id was added to the format, a 32-hex id (docs/MONITORING.md, "Finding one request");
+// a line written before that still parses.
 export function parseGatewayLog(text, { sinceMs = null } = {}) {
   const rows = [];
   for (const line of text.split('\n')) {
-    const m = line.match(/\[[^\]]+\] "[A-Z]+ \S+ [^"]*" (\d{3}) \d+ ([\d.]+)\s*$/);
+    const m = line.match(/\[[^\]]+\] "[A-Z]+ \S+ [^"]*" (\d{3}) \d+ ([\d.]+)(?: [0-9a-f]{32})?\s*$/);
     if (!m) continue;
     if (sinceMs !== null) {
       const stamp = Date.parse((/^(\d{4}-\d{2}-\d{2}T\S+) /.exec(line) ?? [])[1] ?? '');
