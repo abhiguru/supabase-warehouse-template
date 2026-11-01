@@ -2,10 +2,12 @@ import { documentRequestBody } from './request-body.ts';
 import { restClient } from './supabase-rest.ts';
 import { validateUserAccess, createAuthErrorResponse } from './auth-helpers.ts';
 import { securityHeaders } from './security-headers.ts';
-import { htmlToPdf } from './pdf-renderer-client.ts';
+import { renderDocumentPdf } from './pdf-renderer-client.ts';
 import { cancelledNotice, documentDate, documentHtml, kgEach, withNotice } from './document-html.ts';
 import { headerColumns, invoiceCancelColumns } from './document-columns.ts';
 import { publicBaseUrl } from './public-url.ts';
+import { readDocumentLines } from './document-lines.ts';
+import { estimatePages, MAX_PDF_PAGES, SOLO_PDF_PAGES } from './document-pages.ts';
 
 type Kind = 'grn' | 'dispatch' | 'invoice' | 'stock';
 const uuid = /^[a-f0-9]{8}-[a-f0-9]{4}-[a-f0-9]{4}-[a-f0-9]{4}-[a-f0-9]{12}$/i;
@@ -26,8 +28,8 @@ export const documentPdf = (kind: Kind) => async (req: Request): Promise<Respons
       const customer = await reader.from('customers').select('id,name').eq('id',body.customer_id).single();
       if (customer.error || !customer.data) throw { status: 404, message: 'Customer unavailable' };
       header = { ...customer.data, customer_name: customer.data.name };
-      details = await reader.from('goodsreceived_trl').select('item_name,packaging,stock,rack,package_mark,goodsreceived!inner(gr_no,customer_id,deleted_at)',{count:'exact'})
-        .eq('goodsreceived.customer_id',body.customer_id).is('goodsreceived.deleted_at',null).gt('stock',0).limit(1001);
+      details = await readDocumentLines(reader,kind,'goodsreceived_trl','item_name,packaging,stock,rack,package_mark,goodsreceived!inner(gr_no,customer_id,deleted_at)',
+        query => query.eq('goodsreceived.customer_id',body.customer_id).is('goodsreceived.deleted_at',null).gt('stock',0));
       columns = ['Item','Packaging','Stock','Rack','Mark'];
       rows = details.data?.map(line => [line.item_name,line.packaging,line.stock,line.rack,line.package_mark]);
       number = 'Current stock'; date = new Date().toISOString();
@@ -51,18 +53,18 @@ export const documentPdf = (kind: Kind) => async (req: Request): Promise<Respons
         if (cancel.data?.cancelled_at) notice = cancelledNotice(cancel.data.cancelled_at, cancel.data.cancel_reason);
       }
       if (kind === 'grn') {
-        details = await reader.from('goodsreceived_trl').select('item_name,packaging,qty,stock,weight,rack,package_mark',{count:'exact'}).eq('gr_id',header.id).limit(1001);
+        details = await readDocumentLines(reader,kind,'goodsreceived_trl','item_name,packaging,qty,stock,weight,rack,package_mark',query => query.eq('gr_id',header.id));
         columns = ['Item','Packaging','Quantity','Stock','Kg each','Rack','Mark'];
         rows = details.data?.map(line => [line.item_name,line.packaging,line.qty,line.stock,kgEach(line.weight),line.rack,line.package_mark]);
       } else if (kind === 'dispatch') {
-        details = await reader.from('dispatch_trl').select('disp_qty,goodsreceived_trl(item_name,packaging,package_mark)',{count:'exact'}).eq('disp_id',header.id).limit(1001);
+        details = await readDocumentLines(reader,kind,'dispatch_trl','disp_qty,goodsreceived_trl(item_name,packaging,package_mark)',query => query.eq('disp_id',header.id));
         columns = ['Item','Packaging','Quantity','Mark'];
         rows = details.data?.map(line => {
           const item = Array.isArray(line.goodsreceived_trl) ? line.goodsreceived_trl[0] : line.goodsreceived_trl;
           return [item?.item_name,item?.packaging,line.disp_qty,item?.package_mark];
         });
       } else {
-        details = await reader.from('invoice_trl').select('duration,no_of_days,labour_rate,charge,tax,dispatch_trl(disp_qty,goodsreceived_trl(item_name))',{count:'exact'}).eq('invoice_id',header.id).limit(1001);
+        details = await readDocumentLines(reader,kind,'invoice_trl','duration,no_of_days,labour_rate,charge,tax,dispatch_trl(disp_qty,goodsreceived_trl(item_name))',query => query.eq('invoice_id',header.id));
         columns = ['Item','Quantity','Duration','Days','Labour rate','Charge','Tax'];
         rows = details.data?.map(line => {
           const dispatch = Array.isArray(line.dispatch_trl) ? line.dispatch_trl[0] : line.dispatch_trl;
@@ -72,7 +74,9 @@ export const documentPdf = (kind: Kind) => async (req: Request): Promise<Respons
       }
     }
     if (details.error || !rows) throw { status: 503, message: 'Document items unavailable' };
-    if (rows.length > 1000 || (details.count || 0) > 1000) throw { status: 400, message: 'Document exceeds the starter limit of 1000 rows' };
+    // The renderer's memory, not the number of lines, is the limit: a document of many wrapped rows is as heavy as a longer one of short rows.
+    const pages = estimatePages(rows);
+    if (pages > MAX_PDF_PAGES) throw { status: 400, message: `Document is too long to print (about ${pages} pages; the limit is ${MAX_PDF_PAGES})` };
     const metadata: Record<string,unknown> = { Number: number, Date: documentDate(date), Customer: header.customer_name };
     if (kind === 'invoice') Object.assign(metadata, { 'Financial year': header.inv_fin_year, Labour: header.labour, Tax: header.tax_amount, Discount: header.discount, Total: header.total });
     // Installation and supported administration use the same company setting.
@@ -86,7 +90,7 @@ export const documentPdf = (kind: Kind) => async (req: Request): Promise<Respons
     // ignores a value that is not exactly a JPEG or PNG data URI.
     let html = documentHtml(kind.toUpperCase(),company.data.value,metadata,columns,rows,Deno.env.get('LETTERHEAD_DATA_URI') || undefined);
     if (notice) html = withNotice(html,notice);
-    const pdf = await htmlToPdf(html);
+    const pdf = await renderDocumentPdf(html,{ solo: pages > SOLO_PDF_PAGES });
     // Upload uses server authority only after document reads were authorized.
     const path = `${kind}/${header.id}/${crypto.randomUUID()}.pdf`;
     const upload = await writer.storage.from('documents').upload(path,pdf,{ contentType:'application/pdf',upsert:false });

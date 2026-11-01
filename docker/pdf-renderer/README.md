@@ -78,7 +78,7 @@ Answers immediately from a background probe (`Browser.getVersion` every 2 s, 5 s
 | --- | --- | --- |
 | Body size | 48 MiB exactly is accepted; refused by `Content-Length` before reading (413) above that. A missing length (chunked) is counted while streaming and aborted at the limit | `MAX_BODY_MB` |
 | Admission | queued + in-flight declared bytes at most 100 MiB, queue at most 10; otherwise 503 before the body is read. A chunked body counts as a large (8 MiB) one | `MAX_QUEUE_MB`, `MAX_QUEUE` |
-| Concurrency | 2 for bodies under 8 MiB; a body of 8 MiB or more runs alone and nothing starts beside it. No second job starts while Chrome's own memory is at or above 500 MB (large decoded images, shared memory) | `CONCURRENCY`, `SOLO_BODY_MB`, `SECOND_JOB_CHROME_MB` |
+| Concurrency | 2 for bodies under 8 MiB; a body of 8 MiB or more runs alone and nothing starts beside it, and so does a request with the header `X-Render-Solo: true` (a caller that knows its document is long, for example 100 pages or more, whose browser memory two such jobs would exceed). No second job starts while Chrome's own memory is at or above 500 MB (large decoded images, shared memory) | `CONCURRENCY`, `SOLO_BODY_MB`, `SECOND_JOB_CHROME_MB` |
 | Deadline | 25 s from request arrival (reading, queue and render). A queued job whose client disconnected is dropped | `DEADLINE_MS` |
 | Waiting for a browser | a restart or drain makes queued jobs wait (bounded by their own deadline); only when the browser cannot be launched at all does a queued job get 503, after 15 s | `RESTART_WAIT_MS` |
 | Server timeouts | `keepAliveTimeout` 65 s, `headersTimeout` 66 s | fixed |

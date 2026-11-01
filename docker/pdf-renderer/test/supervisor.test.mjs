@@ -39,6 +39,28 @@ test('a body of the solo size runs alone, and nothing starts beside it', () => w
   assert.ok(after.length === 0 || after[0].activeAtStart === 1, 'the job after the large one starts only when it has finished');
 }));
 
+test('a request with X-Render-Solo: true runs alone although its body is small; without the header it does not', () => withService({
+  behavior: { render: () => sleep(150).then(ok) },
+}, async (s) => {
+  const solo = { headers: { 'X-Render-Solo': 'true' } };
+  const results = await Promise.all([
+    render(s, { html: '<p>a</p>' }),
+    render(s, { html: '<p>solo</p>' }, solo),
+    render(s, { html: '<p>c</p>' }),
+    render(s, { html: '<p>d</p>' }),
+  ]);
+  assert.ok(results.every((r) => r.status === 200));
+  const started = s.behavior.started;
+  const soloStart = started.find((j) => j.bytes === '<p>solo</p>'.length);
+  assert.equal(soloStart.activeAtStart, 1, 'the solo job started with nothing else running');
+  const after = started.slice(started.indexOf(soloStart) + 1);
+  assert.ok(after.length === 0 || after[0].activeAtStart === 1, 'nothing starts beside it while it runs');
+  // The same four small jobs without the header run two at a time.
+  s.behavior.maxActive = 0;
+  await Promise.all(Array.from({ length: 4 }, (_, i) => render(s, { html: `<p>${i}</p>` })));
+  assert.equal(s.behavior.maxActive, 2);
+}));
+
 test('504 when the deadline passes while rendering, and the slot frees', () => withService({
   config: { deadlineMs: 250, concurrency: 1 },
   behavior: { render: (job, engine, signal) => new Promise((_, reject) => signal.addEventListener('abort', () => reject(new Error('closed')))) },

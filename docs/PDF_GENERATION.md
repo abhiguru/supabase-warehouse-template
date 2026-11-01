@@ -52,6 +52,56 @@ layout uses the warehouse name installed in `system_settings.app_name`. It
 omits private addresses, organization-specific terms and preprinted-paper
 positioning. Review the document terms/layout for your organization.
 
+**Long documents.** A GRN, dispatch, invoice or customer stock PDF reads its lines in pages of 1,000
+(`functions/_shared/document-lines.ts`), so a document is not limited by the 2,000 rows one PostgREST read may return. The paging is by key:
+each page is `id > <the last id of the page before>` ordered by `id` (the line tables have no sequence column), so lines added or removed
+while the document is read cannot leave a gap or print a line twice. The first page asks for the exact count; when the lines read are not
+that many at the end, the answer is 503 "The document changed while printing. Try again." Lines are then put in the order the screens
+show them: a GRN by line id (`get_grn_details`), a dispatch and an invoice by the time in the line's id, then the id
+(`get_dispatch_details`, `get_invoice_data`), the stock list by id.
+
+Two limits apply, both answered 400 before the render:
+
+- `MAX_PDF_ROWS` = 3,500 lines: "Document exceeds the limit of 3,500 lines" (after the first read when the count is known). The system
+  supports invoices of 3,055 lines.
+- `MAX_PDF_PAGES` = 120 estimated printed pages (`functions/_shared/document-pages.ts`): "Document is too long to print (about N
+  pages; the limit is 120)". The renderer's memory grows with the pages of one document, not the lines, and a row whose cell wraps takes
+  half as much room again. The estimate counts, for every row, the lines its longest cell needs (about 55 characters per line in the item
+  column, 24 in the others; Gujarati text sets a little taller) at about 31 one-line rows to a page. It agrees with the measurements
+  below within a page or two, and is a little high for Gujarati.
+
+The table's header row is repeated on every page and a row is never split across two pages (the browser's table defaults plus
+`tr{break-inside:avoid}`); `tests/golden-pdf/golden/invoice-paged`, a four-page invoice with wrapped rows, pins it.
+
+A document of more than 50 estimated pages (`SOLO_PDF_PAGES`) is rendered alone: the function sends `X-Render-Solo: true` and the renderer
+starts nothing beside it ([docker/pdf-renderer/README.md](../docker/pdf-renderer/README.md), "Limits and queueing"). Without it the renderer
+runs two jobs at once, and two jobs of 3,055 or 3,500 lines together failed 6 of 6 (503, the memory watchdog). The function sends a renderer failure
+of any kind as 503 "PDF renderer unavailable".
+
+Measured through the real renderer (the `pdf-renderer` image with the 1.5 GiB limit of `docker/docker-compose.yml`, one invoice, seven
+columns; HTML bytes are the `index.html` posted; single jobs, 2 to 3 s apart):
+
+| Lines and names | HTML | Pages | Render | Result |
+| --- | --- | --- | --- | --- |
+| 3,000, mixed lengths | 356 KB | 98 | about 1.1 s | 3 of 3 |
+| 3,055, mixed lengths | 354 KB | 99 | 0.9 to 1.5 s | 9 of 9 |
+| 3,500, mixed lengths | 416 KB | 114 | 1.5 to 2.3 s | 15 of 15 (with a quarter of the names three times as long, 122 pages: 6 of 6) |
+| 4,000 | 475 KB | about 130 | 2.9 to 4.4 s | 2 of 3 |
+| 4,500 | 534 KB | about 146 | about 3 s | 1 of 3 |
+| 5,000 | 594 KB | 162 | 2 to 3.5 s | 1 of 8 |
+| 3,055, every name 80 characters (invoice) | 516 KB | 146 | 1.0 to 1.4 s | 1 of 1 |
+| 3,055, every name 80 characters (GRN layout) | 536 KB | 146 | 1.1 s | 1 of 1 |
+| 3,055, 80-character Gujarati names (invoice) | 516 KB | 153 | 1.3 to 1.4 s | 3 of 3 |
+| 3,055, 80-character Gujarati names (GRN layout) | 536 KB | 153 | 1.2 to 1.5 s | 11 of 14 |
+
+Two jobs together (3,055 and 3,500 lines, mixed lengths): 6 of 6 failed without the solo header; with it 10 of 10 rendered, the second
+job waiting for the first, 3 to 11 s from the request to the PDF (the renderer allows 25 s). Two 49-page jobs without the header: 5 of 5.
+
+Time is not the limit; memory is. From about 130 pages Chrome reaches the renderer's 1,100 MB watchdog (`KILL_MEMORY_MB`) and the job fails
+with 503 "browser crashed"; a job just after another large one fails more often. The page limit is below the first failure, so a
+3,055-line invoice whose every name is 80 characters (146 pages) is refused rather than printed, as a 153-page one fails about one time in four; raise the limit only
+with a new measurement.
+
 **Letterhead (optional).** The GRN, dispatch, invoice and customer stock PDFs print the facility's letterhead image at the top, full
 width, when the operator supplied one with `setup.sh --letterhead-file` (a JPEG or PNG of at most 2 MiB, copied to
 `public/letterhead.jpg` or `.png` and named by `LETTERHEAD_FILE`; [OPERATOR_INSTALL.md](OPERATOR_INSTALL.md#letterhead-image-optional)).

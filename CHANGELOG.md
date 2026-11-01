@@ -52,6 +52,17 @@ file used to carry for earlier installations are in git: `git show b45ae0b:CHANG
   writers (`save_grn`, `update_grn`, `create_dispatch_with_stock_check`, `update_dispatch_smart`); stored rows are not changed. Tests:
   `tests/rules_130.sql`. No operator action.
 
+- **Document PDFs page their lines instead of refusing over 1,000 (review finding M12).** The GRN, dispatch, invoice and customer stock PDFs read
+  their lines 1,000 at a time by key (`id > last id`, ordered by `id`; a document that changed while it was read is answered 503 "The document
+  changed while printing. Try again.") and list them in the order of the screens (GRN by line id; dispatch and invoice by the time in the id,
+  then the id). A document of more than 3,500 lines is refused with 400 "Document exceeds the limit of 3,500 lines" (was "Document exceeds the
+  starter limit of 1000 rows" above 1,000), and one of more than about 120 printed pages (estimated from the length of the cells) with 400
+  "Document is too long to print"; the limits are below the 5,000 lines first planned because the renderer's memory fails a job of about 130 pages
+  or more (measurements: [PDF_GENERATION.md](docs/PDF_GENERATION.md), "Long documents"). A document of more than 50 estimated pages is
+  rendered alone: **Operator note:** the renderer image takes the new request header `X-Render-Solo: true` (without it, two long documents
+  rendered together fail), so the renderer image and the functions move together in one upgrade. A renderer failure is 503 "PDF renderer
+  unavailable". New golden case `invoice-paged` (4 pages); the ten existing goldens are unchanged. Tests: `tests/document-lines.test.mjs` (new),
+  `tests/pdf-renderer-footer.test.mjs`, `docker/pdf-renderer/test/supervisor.test.mjs`.
 - **Saving a GRN no longer deletes other people's photo uploads in progress (`update_grn`, no new migration).** When the photo list is sent, an
   unfinished (`pending`) photo that is not in the list used to be removed for an administrator or supervisor, whoever uploaded it. Now it is
   removed only if the saver uploaded it or it is older than 15 minutes; another person's recent pending upload survives and can still be

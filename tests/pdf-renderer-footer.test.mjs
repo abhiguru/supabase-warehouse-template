@@ -43,3 +43,24 @@ test('htmlToPdf posts to the renderer /render route and logs at most 2 KB of an 
     assert.ok(logged[0].length <= 2048 + 64, `log line is bounded (${logged[0].length})`);
   } finally { globalThis.Deno = oldDeno; globalThis.fetch = oldFetch; console.error = oldError; }
 });
+
+test('renderDocumentPdf asks for a solo run only when told to, and every failure is one 503 "PDF renderer unavailable"', async () => {
+  const oldDeno = globalThis.Deno;
+  const oldFetch = globalThis.fetch;
+  const oldError = console.error;
+  const calls = [];
+  globalThis.Deno = { env: { get: () => undefined } };
+  console.error = () => {};
+  try {
+    const { renderDocumentPdf } = await import('../functions/_shared/pdf-renderer-client.ts');
+    globalThis.fetch = async (url, init) => { calls.push(init); return new Response('%PDF-1.4 %%EOF', { status: 200 }); };
+    await renderDocumentPdf('<p>x</p>');
+    await renderDocumentPdf('<p>x</p>', { solo: true });
+    assert.equal(calls[0].headers, undefined);
+    assert.deepEqual(calls[1].headers, { 'X-Render-Solo': 'true' });
+    for (const failure of [() => new Response('{"error":"queue full"}', { status: 503 }), () => new Response('{}', { status: 500 }), () => { throw new TypeError('fetch failed'); }]) {
+      globalThis.fetch = async () => failure();
+      await assert.rejects(() => renderDocumentPdf('<p>x</p>'), { status: 503, message: 'PDF renderer unavailable' });
+    }
+  } finally { globalThis.Deno = oldDeno; globalThis.fetch = oldFetch; console.error = oldError; }
+});
