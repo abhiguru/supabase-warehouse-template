@@ -67,7 +67,7 @@ RESET ROLE;
 SELECT pg_temp.och_assert(:'receipt'::jsonb->>'success'='true','receipt saved: '||:'receipt');
 SELECT t.id AS lot FROM public.goodsreceived_trl t JOIN public.goodsreceived g ON g.id=t.gr_id WHERE g.gr_no='CNT1' \gset
 SELECT id AS admin_profile FROM public.user_profiles WHERE mobile='919888888821' \gset
-SELECT jsonb_build_object('disp_date',to_char(now(),'YYYY-MM-DD"T"12:00:00"Z"'),'customer_id',:'customer_id','customer_name','Counts Customer',
+SELECT jsonb_build_object('disp_date',to_char(now() AT TIME ZONE 'Asia/Kolkata','YYYY-MM-DD"T"12:00:00"Z"'),'customer_id',:'customer_id','customer_name','Counts Customer',
  'supervisor_id',:'admin_profile','supervisor_name','Counts Administrator') AS header \gset
 
 -- The order asks for 20 (the first add).
@@ -138,7 +138,7 @@ RESET ROLE;
 SELECT pg_temp.och_assert(:'receipt_b'::jsonb->>'success'='true' AND :'receipt_c'::jsonb->>'success'='true','receipts B and C saved');
 SELECT t.id AS lot_b FROM public.goodsreceived_trl t JOIN public.goodsreceived g ON g.id=t.gr_id WHERE g.gr_no='CNT2' \gset
 SELECT t.id AS lot_c FROM public.goodsreceived_trl t JOIN public.goodsreceived g ON g.id=t.gr_id WHERE g.gr_no='CNT3' \gset
-SELECT jsonb_build_object('disp_date',to_char(now(),'YYYY-MM-DD"T"12:00:00"Z"'),'customer_id',:'cust_b','customer_name','Counts Customer B',
+SELECT jsonb_build_object('disp_date',to_char(now() AT TIME ZONE 'Asia/Kolkata','YYYY-MM-DD"T"12:00:00"Z"'),'customer_id',:'cust_b','customer_name','Counts Customer B',
  'supervisor_id',:'admin_profile','supervisor_name','Counts Administrator') AS header_b \gset
 
 -- Order B: 20; D1 takes 12 (20 -> 8); D1 is deleted (20 again); D5 takes all 20 at once, no save in between.
