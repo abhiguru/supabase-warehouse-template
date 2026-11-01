@@ -815,6 +815,9 @@ jobs:
           # gateway the tunnel uses) is answered 503 "upgrading" at least once, and after it the route answers normally.
           freeze=no
           if grep -q 'scripts/maintenance.sh' upgrade.sh; then freeze=yes; fi
+          # Whether the upgrade.sh that is about to run keeps upgrade-last: read it BEFORE the run, because the run moves this checkout to the new release.
+          keeps_last=no
+          if grep -q 'upgrade-last' upgrade.sh; then keeps_last=yes; fi
           port="$(bash scripts/compose.sh port gateway 8000 | head -n 1 | sed 's/.*://')"
           anon="$(sed -n 's/^ANON_KEY=//p' "$WAREHOUSE_STATE_DIR/config/compose.env")"
           rpc() { curl -s -o "$RUNNER_TEMP/rpc-body" -w '%{http_code}' -X POST -H "apikey: $anon" -H 'Content-Type: application/json' -d '{"p_environment":"production"}' "http://127.0.0.1:$port/rest/v1/rpc/get_public_config" || true; }
@@ -856,7 +859,7 @@ jobs:
           # A finished upgrade leaves no record of an interrupted one, and no marker: the API is open.
           test ! -e "$WAREHOUSE_STATE_DIR/config/upgrade-in-progress"
           # It keeps the record as upgrade-last (when the upgrade.sh that ran has it) for `rollback --last`.
-          if grep -q 'upgrade-last' upgrade.sh; then
+          if [ "$keeps_last" = yes ]; then
             test -f "$WAREHOUSE_STATE_DIR/config/upgrade-last"
             grep -q '^result=ok$' "$WAREHOUSE_STATE_DIR/config/upgrade-last"
             node scripts/upgrade-record.mjs rollback --last > "$RUNNER_TEMP/rollback-last.txt"
