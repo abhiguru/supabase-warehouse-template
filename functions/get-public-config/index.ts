@@ -27,6 +27,8 @@ async function readInstanceManifest(origin: string): Promise<InstanceManifest> {
       Object.values(manifest.capabilities).some(value => typeof value !== 'boolean')) {
     throw new Error('Invalid instance manifest');
   }
+  // An instance.json written before the payments capability has no such key: it is off, the default of a new installation.
+  manifest.capabilities = { payments: false, ...manifest.capabilities };
   return manifest;
 }
 

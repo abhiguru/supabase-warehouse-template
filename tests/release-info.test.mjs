@@ -100,6 +100,18 @@ test('get-public-config: a manifest without minimumClientVersion is valid (the f
   assert.equal(body.data.minimumClientVersion, '1.4.0');
 });
 
+test('get-public-config: capabilities.payments is false when instance.json predates the key, and true only when the manifest says so', async () => {
+  const old = await publicConfig({ INSTANCE_MANIFEST_JSON: JSON.stringify(MANIFEST) });
+  assert.equal(old.status, 200);
+  assert.deepEqual(old.body.data.capabilities, { sensors: false, printing: false, payments: false });
+  const on = await publicConfig({ INSTANCE_MANIFEST_JSON: JSON.stringify({ ...MANIFEST, capabilities: { ...MANIFEST.capabilities, payments: true } }) });
+  assert.equal(on.body.data.capabilities.payments, true);
+  const off = await publicConfig({ INSTANCE_MANIFEST_JSON: JSON.stringify({ ...MANIFEST, capabilities: { ...MANIFEST.capabilities, payments: false } }) });
+  assert.equal(off.body.data.capabilities.payments, false);
+  // A non-boolean flag is still refused.
+  assert.equal((await publicConfig({ INSTANCE_MANIFEST_JSON: JSON.stringify({ ...MANIFEST, capabilities: { payments: 'yes' } }) })).status, 503);
+});
+
 test('get-config: reports backendRelease', async () => {
   const { status, body } = await fullConfig({});
   assert.equal(status, 200);

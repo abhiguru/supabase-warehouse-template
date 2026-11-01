@@ -52,7 +52,8 @@ BEGIN
           INTO v_grn_record
           FROM goodsreceived gr
           LEFT JOIN customers c ON c.id = gr.customer_id
-          WHERE gr.id = p_grn_id;
+          WHERE gr.id = p_grn_id
+          FOR UPDATE OF gr;
 
           IF NOT FOUND THEN
               RETURN jsonb_build_object(
@@ -112,6 +113,20 @@ BEGIN
                       'date', v_grn_record.date
                   ),
                   'instructions', 'Delete all dispatches manually before deleting this GRN'
+              );
+          END IF;
+
+          -- Migration 139: invoice.gr_id is a foreign key now. An invoice that refers to this GRN (also one with no dispatch line, and a cancelled one) blocks the deletion.
+          IF EXISTS (SELECT 1 FROM invoice WHERE gr_id = p_grn_id) THEN
+              RETURN jsonb_build_object(
+                  'success', false,
+                  'error', format('Cannot delete GRN %s: it has an invoice (cancelled invoices included); an invoiced GRN is kept.', v_grn_record.gr_no),
+                  'grn_info', jsonb_build_object(
+                      'gr_no', v_grn_record.gr_no,
+                      'customer_name', COALESCE(v_grn_record.customer_name, 'Unknown'),
+                      'date', v_grn_record.date
+                  ),
+                  'instructions', 'A GRN with an invoice, cancelled or not, is kept'
               );
           END IF;
 
