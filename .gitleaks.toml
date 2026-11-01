@@ -6,5 +6,5 @@ useDefault = true
 [[allowlists]]
 description = "fictional folder names in the service-diagnostics retention test"
 condition = "AND"
-paths = ['''^tests/service-diagnostics\.test\.mjs$''']
+paths = ['''tests/service-diagnostics\.test\.mjs$''']
 targetRules = ["generic-api-key"]
