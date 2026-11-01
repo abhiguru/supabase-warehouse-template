@@ -56,7 +56,7 @@ repeat; the line tables have no sequence column), so a document is no longer lim
 The first page asks for the exact count. A document of more than `MAX_PDF_ROWS` = 3,500 lines is answered 400
 "Document exceeds the limit of 3,500 lines" after that first read; the system supports invoices of 3,055 lines. The table's header row is
 repeated on every page and a row is never split across two pages (the browser's table defaults plus `tr{break-inside:avoid}`;
-`tests/golden-pdf/golden/invoice-long`, a 3,055-line invoice of 99 pages, pins it). Lines are listed in `id` order, not in the order they
+`tests/golden-pdf/golden/invoice-long`, a 1,100-line invoice, which crosses the 1,000-line page of the read, pins it). Lines are listed in `id` order, not in the order they
 were entered.
 
 Measured through the real renderer (the `pdf-renderer` image with the 1.5 GiB limit of `docker/docker-compose.yml`, one invoice, seven
