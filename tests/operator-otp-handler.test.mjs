@@ -121,6 +121,25 @@ test('passes only a well-formed CF-Connecting-IP to the database, for request an
   }
 });
 
+test('passes the user agent, cut to 300 characters, to the code sign-in and the break-glass sign-in; none when it is absent', async () => {
+  const withAgent = harness();
+  await withAgent.call('verify', { ...phone, otp_code: '123456' }, { 'User-Agent': 'WarehouseApp/1.2 (Android 15)' });
+  await withAgent.call('break-glass', { ...phone, code: '654321' }, { 'User-Agent': 'x'.repeat(500) });
+  assert.equal(withAgent.calls.find(entry => entry.name === 'operator_verify_otp').body.p_user_agent, 'WarehouseApp/1.2 (Android 15)');
+  assert.equal(withAgent.calls.find(entry => entry.name === 'operator_break_glass_sign_in').body.p_user_agent, 'x'.repeat(300));
+  const bare = harness();
+  await bare.call('verify', { ...phone, otp_code: '123456' }, { 'User-Agent': '' });
+  assert.equal(bare.calls.find(entry => entry.name === 'operator_verify_otp').body.p_user_agent, null);
+});
+
+test('a CF-Connecting-IP that is not one address is dropped, also a well-shaped one that is not an address', async () => {
+  for (const bad of ['999.999.999.999', '1.2.3.4.5', 'fe80::1%eth0', '::::', '203.0.113.10:443']) {
+    const { calls, call } = harness();
+    await call('verify', { ...phone, otp_code: '123456' }, { 'CF-Connecting-IP': bad });
+    assert.equal(calls.find(entry => entry.name === 'operator_verify_otp').body.p_ip_address, null, bad);
+  }
+});
+
 test('checks phone, code and token formats before any backend call', async () => {
   const { calls, call } = harness();
   const invalid = { status: 400, body: { success: false, error: 'Invalid request' } };
@@ -147,7 +166,7 @@ test('normalises the phone and sends only strings as names', async () => {
   await call('verify', { ...phone, otp_code: '123456', name: 42 });
   assert.equal(calls[0].body.p_phone_number, '919888888801');
   const verifications = calls.filter(entry => entry.name === 'operator_verify_otp').map(entry => entry.body);
-  assert.deepEqual(verifications[0], { p_phone_number: '919888888801', p_otp_code: '123456', p_name: 'Asha Patel', p_display_name: null, p_ip_address: null });
+  assert.deepEqual(verifications[0], { p_phone_number: '919888888801', p_otp_code: '123456', p_name: 'Asha Patel', p_display_name: null, p_ip_address: null, p_user_agent: null });
   assert.equal(verifications[1].p_name, null);
 });
 
@@ -343,7 +362,7 @@ test('break-glass: the code and the number go to operator_break_glass_sign_in wi
   const { calls, call } = harness({ operator_break_glass_sign_in: login });
   assert.deepEqual(await bodyOf(await call('break-glass', { phone_number: '+91 98888 88801', code: '654321' }, { 'CF-Connecting-IP': '203.0.113.9' })), { status: 200, body: login });
   assert.deepEqual(calls.map(entry => entry.name), ['operator_break_glass_sign_in'], 'no SMS request, no provider call');
-  assert.deepEqual(calls[0].body, { p_phone_number: '919888888801', p_code: '654321', p_ip_address: '203.0.113.9' });
+  assert.deepEqual(calls[0].body, { p_phone_number: '919888888801', p_code: '654321', p_ip_address: '203.0.113.9', p_user_agent: null });
   // Without the header the source is unknown (null), as for verify.
   const bare = harness({ operator_break_glass_sign_in: login });
   await bare.call('break-glass', { phone_number: '9888888801', code: '654321' });

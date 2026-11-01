@@ -15,7 +15,7 @@ BEGIN
   -- User management: administrators, and supervisors for other people who are
   -- not administrators. The four bodies refuse a supervisor who targets an
   -- administrator or the own profile, or who grants the administrator role.
-  IF rpc IN ('update_user_role','update_user_status','assign_customer_to_user','remove_customer_assignment') THEN
+  IF rpc IN ('update_user_role','update_user_status','assign_customer_to_user','remove_customer_assignment','list_user_sessions') THEN
     IF role_name NOT IN ('admin','supervisor') THEN RAISE EXCEPTION 'Administrator required' USING ERRCODE = '42501'; END IF;
     RETURN;
   END IF;
@@ -100,7 +100,8 @@ BEGIN
     RETURN;
   END IF;
 
-  IF rpc IN ('get_items','get_item','search_items_autocomplete','get_orders_list','delete_user_account') THEN RETURN; END IF;
+  -- revoke_session (migration 140): any signed-in account may sign out its own device; the body also lets an administrator or a supervisor act.
+  IF rpc IN ('get_items','get_item','search_items_autocomplete','get_orders_list','delete_user_account','revoke_session') THEN RETURN; END IF;
   -- get_stock_aging_report and get_item_wise_stock_list: with a customer id
   -- they are that customer's report; without one they are the all-customers
   -- report, which no customer account may run.

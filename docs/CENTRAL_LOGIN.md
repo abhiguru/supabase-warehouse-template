@@ -304,6 +304,11 @@ together with the phone number and can ask for access again.
 | `config/compose.env`: `CENTRAL_ISSUER`, `CENTRAL_JWKS_URL`, `CENTRAL_JWKS_FILE`, `CENTRAL_LOCAL_CODE` | The operator's settings. |
 | `public/central-jwks.json` in the state directory | The key file, when keys come from a file. Public keys only. `db:backup` copies it into the backup as `central-jwks.json` (checksummed and signed with the rest), `db:verify-restore` checks it and `db:restore-host` puts it back. A backup written before that holds no copy: `db:restore-host` then prints the `setup.sh` rerun that restores it. `doctor` fails while the file named by `CENTRAL_JWKS_FILE` is missing or not a usable key set. |
 
+A session made by a central sign-in records, like every session (migration 140), the source address (`CF-Connecting-IP`) and the user agent
+that `functions/central-exchange` passes to `operator_central_exchange` (`p_ip_address`, `p_user_agent`; the older nine-argument form
+passes no user agent). Administrators see them, the address masked, in `list_user_sessions` and can sign out a device with
+`revoke_session`; a person keeps at most their newest 10 sessions ([API_CONTRACT.md](API_CONTRACT.md), "Signed-in devices").
+
 The token itself is never stored or logged. The table `public.central_user_links`
 of an earlier design (migration 0) was never written and is dropped by
 migration 51; the link is the two profile columns above.
