@@ -703,8 +703,8 @@ app roles), and uses it in both and in three other readers of `grn_images`:
   got a pending upload's path, file name, size, type and uploader. The answer's
   shape is unchanged.
 - `update_grn` with a non-empty `p_images` removes only the omitted rows the
-  caller may read: an administrator or supervisor any omitted row, staff the
-  confirmed rows and their own pending ones (the rule of `delete_grn_image` and
+  caller may read: an administrator or supervisor any omitted row except another person's pending
+  upload younger than 15 minutes, staff the confirmed rows and their own pending ones (the rule of `delete_grn_image` and
   `cancel_grn_image_upload`). Another person's pending upload stays, and that
   person can still confirm it. A row the caller may not read that the list
   names (by id or path) is kept as it is: not moved to another line, not counted

@@ -666,7 +666,12 @@ BEGIN
             DELETE FROM grn_images
             WHERE grn_id = p_grn_id
             AND id NOT IN (SELECT unnest(v_kept_image_ids))
-            AND warehouse_security.grn_image_visible(grn_images.status, grn_images.uploaded_by);
+            AND warehouse_security.grn_image_visible(grn_images.status, grn_images.uploaded_by)
+            -- Owner decision 2026-11-01: an unfinished upload goes only if it is the caller's own or stale (over 15 minutes old);
+            -- another person's recent upload is still in progress and survives the save.
+            AND (grn_images.status IS DISTINCT FROM 'pending'
+                 OR grn_images.uploaded_by IS NOT DISTINCT FROM v_user_profile_id
+                 OR grn_images.created_at < now() - interval '15 minutes');
 
             GET DIAGNOSTICS v_images_deleted = ROW_COUNT;
 

@@ -16,7 +16,7 @@
 --         S1 sending [a] removes b (own pending) and d (confirmed) and keeps c (S2's pending; before, c
 --         was removed and S2 could not confirm it). S1 naming c (by its path, with line L2) keeps c as
 --         it is: not moved to L2, not inserted again, not counted. The answer's grn.images lists what S1
---         can see. S2 can then confirm c. An administrator omitting S2's pending photo removes it.
+--         can see. S2 can then confirm c. An administrator omitting S2's pending photo removes it when it is over 15 minutes old.
 --
 --   Also get_customer_items_for_order_selection (image_url), get_invoiceable_grns (gr_image_url) and
 --         get_customer_grn_activity (image_count, total_images) read only those rows: with S1's pending
@@ -291,7 +291,9 @@ SELECT pg_temp.giv_assert(public.confirm_grn_image_upload((:'reg_c'::jsonb->>'im
 SELECT public.register_grn_image_upload(:'grn'::uuid, 'header', 'e.webp', 32, 'image/webp') AS reg_e \gset
 RESET ROLE;
 INSERT INTO pg_temp.giv_photo VALUES ('e', (:'reg_e'::jsonb->>'image_id')::uuid);
--- An administrator sees every row, so omitting S2's pending e removes it.
+-- An administrator sees every row, so omitting S2's pending e removes it once it is stale (older than 15 minutes; a recent
+-- one survives the save, see tests/pending_photos_save.sql).
+UPDATE public.grn_images SET created_at = now() - interval '16 minutes' WHERE id = (:'reg_e'::jsonb->>'image_id')::uuid;
 SELECT set_config('request.jwt.claims', :'admin_claims', true);
 SET LOCAL ROLE authenticated;
 SELECT public.update_grn(p_grn_id => :'grn'::uuid, p_items => :'lines'::jsonb, p_images => jsonb_build_array(:'keep_a'::jsonb,
