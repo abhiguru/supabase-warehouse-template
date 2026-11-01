@@ -71,14 +71,18 @@ SELECT today, EXTRACT(YEAR FROM today)::integer - CASE WHEN EXTRACT(MONTH FROM t
  FROM (SELECT (now() AT TIME ZONE 'Asia/Kolkata')::date AS today) india \gset
 SELECT pg_temp.num_assert((SELECT count(*)=0 FROM public.invoice WHERE inv_fin_year=:this_year AND inv_no>=4242),
  'no invoice of this financial year is numbered 4242 or above');
+-- (The parent rows exist since migration 139 made invoice.gr_id and invoice.customer_id foreign keys.)
+INSERT INTO public.customers(name) VALUES ('Year Number Customer');
+INSERT INTO public.goodsreceived(gr_no,customer_id,date) SELECT 'YEARNO',id,now() FROM public.customers WHERE name='Year Number Customer';
 INSERT INTO public.invoice(inv_fin_year,inv_no,gr_id,gr_no,customer_id,customer_name,inv_date,labour,tax_amount,total,discount,deleted_at)
-SELECT f.fin_year,f.number,gen_random_uuid(),'YEARNO',gen_random_uuid(),'Year Number Customer',now(),0,0,0,0,
+SELECT f.fin_year,f.number,g.id,'YEARNO',g.customer_id,'Year Number Customer',now(),0,0,0,0,
        CASE WHEN f.deleted THEN now() END
-FROM (VALUES (2090,7,false),(2090,54,false),(2090,60,true),(2090,0,false),(2090,-3,false),
+FROM public.goodsreceived g, (VALUES (2090,7,false),(2090,54,false),(2090,60,true),(2090,0,false),(2090,-3,false),
              (2092,9,true),(2093,0,false),(2093,-5,false),
              (2094,99999999,false),(2095,3,false),(2095,99999999,true),
              (2096,8,false),(2096,2,true),
-             (:this_year,4242,false)) AS f(fin_year,number,deleted);
+             (:this_year,4242,false)) AS f(fin_year,number,deleted)
+WHERE g.gr_no='YEARNO';
 
 -- One function, one optional argument, returning text; the old no-argument
 -- signature is gone, so a call without an argument is not ambiguous.
@@ -139,7 +143,7 @@ CREATE FUNCTION pg_temp.num_insert(fin_year integer, number integer) RETURNS tex
 BEGIN
   BEGIN
     INSERT INTO public.invoice(inv_fin_year,inv_no,gr_id,gr_no,customer_id,customer_name,inv_date,labour,tax_amount,total,discount)
-    VALUES (fin_year,number,gen_random_uuid(),'YEARNO',gen_random_uuid(),'Year Number Customer',now(),0,0,0,0);
+    SELECT fin_year,number,g.id,'YEARNO',g.customer_id,'Year Number Customer',now(),0,0,0,0 FROM public.goodsreceived g WHERE g.gr_no='YEARNO';
   EXCEPTION WHEN unique_violation THEN RETURN 'taken: '||SQLERRM; END;
   RETURN 'saved';
 END $$;

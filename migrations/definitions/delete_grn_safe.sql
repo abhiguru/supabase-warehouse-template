@@ -115,6 +115,20 @@ BEGIN
               );
           END IF;
 
+          -- Migration 139: invoice.gr_id is a foreign key now. An invoice that refers to this GRN (also one with no dispatch line) blocks the deletion.
+          IF EXISTS (SELECT 1 FROM invoice WHERE gr_id = p_grn_id) THEN
+              RETURN jsonb_build_object(
+                  'success', false,
+                  'error', format('Cannot delete GRN %s: an invoice refers to it. Delete the invoice first.', v_grn_record.gr_no),
+                  'grn_info', jsonb_build_object(
+                      'gr_no', v_grn_record.gr_no,
+                      'customer_name', COALESCE(v_grn_record.customer_name, 'Unknown'),
+                      'date', v_grn_record.date
+                  ),
+                  'instructions', 'Delete the invoice of this GRN before deleting the GRN'
+              );
+          END IF;
+
           -- ✅ SAFE DELETION PROCESS - Handle dependencies in correct order
 
           -- Migration 128: the order lines of this GRN's lots before they are deleted, to name them in the answer.

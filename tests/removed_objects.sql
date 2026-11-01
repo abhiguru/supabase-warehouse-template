@@ -285,8 +285,9 @@ SELECT pg_temp.lf_assert(to_regprocedure('public.update_updated_at_column()') IS
 -- 4. The live path, written by the database owner
 -- ---------------------------------------------------------------------------
 INSERT INTO public.customers(name, mobile) VALUES ('Legacy Retire Juniper Cold', '9888887101') RETURNING id AS juniper \gset
+INSERT INTO public.goodsreceived(gr_no, customer_id, date) VALUES ('LRG71', :'juniper'::uuid, '2026-09-20T12:00:00Z') RETURNING id AS juniper_grn \gset
 INSERT INTO public.invoice(inv_fin_year, inv_no, gr_id, gr_no, customer_id, customer_name, inv_date, labour, tax_amount, total, discount)
-VALUES (2026, 71001, gen_random_uuid(), 'LRG71', :'juniper'::uuid, 'Legacy Retire Juniper Cold', '2026-09-20T12:00:00Z', 0, 0, 12, 0)
+VALUES (2026, 71001, :'juniper_grn'::uuid, 'LRG71', :'juniper'::uuid, 'Legacy Retire Juniper Cold', '2026-09-20T12:00:00Z', 0, 0, 12, 0)
 RETURNING id AS invoice_id \gset
 UPDATE public.invoice SET total = 14 WHERE id = :'invoice_id'::uuid;
 UPDATE public.customers SET name = 'Legacy Retire Juniper Cold Stores' WHERE id = :'juniper'::uuid;

@@ -272,6 +272,11 @@ details (hub addresses, the Tapo login), set it up as in [SENSORS.md](SENSORS.md
 database** ([SENSORS.md, step 6](SENSORS.md#run-it-as-a-profile-of-the-installation): the SQL there must show a row per hub and per sensor with readings). When Slack alerts are on, a separate sensor Slack webhook is also required: `--sensor-webhook-file`, see below. The doctor warning is
 only the quick check.
 
+**Payments are optional and off by default.** The app shows the Paid and Pending figures of invoices only where the facility turns the
+`payments` capability on (it has no payment entry screen). To turn it on: `node scripts/set-capability.mjs payments on` (it also adds the key to
+an `instance.json` written before it existed), then `bash scripts/compose.sh restart functions` so the app is told, and a new `db:backup`
+(`db:restore` refuses a backup whose `instance.json` differs). `payments off` reverses it.
+
 **Monitoring is not a Compose profile.** One small program, the checker (`scripts/watch.mjs`), runs from a systemd
 timer every 5 minutes, tells the facility's Slack channel when something is wrong, and once a day makes and verifies a
 backup and applies retention ([MONITORING.md](MONITORING.md)). Installing a unit needs root, which setup never uses, so

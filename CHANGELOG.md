@@ -22,6 +22,16 @@ file used to carry for earlier installations are in git: `git show b45ae0b:CHANG
   cancelled invoices and reports them as `skipped`; `get_invoice_data` and `get_grn_details` know the cancellation; customers read `cancelled_at` and
   `cancel_reason` but not `cancelled_by`. Tests: `tests/invoice_cancel_134.sql` (new), `tests/invoice-cancel.test.mjs` (new),
   and the suites that deleted invoices for set-up now cancel them. API: [API_CONTRACT.md](docs/API_CONTRACT.md), "Cancelling an invoice".
+- **Payments: foreign keys, positive amounts and a `payments` capability (migration 139).** Six foreign keys the schema never declared now exist:
+  `invoice.gr_id`, `invoice.customer_id`, `invoice_trl.invoice_id`, `dispatch.customer_id` and `payments.customer_id` (all `ON DELETE
+  RESTRICT`) and `payments.supervisor_id` (`ON DELETE SET NULL`), and `payments.amount` must be greater than zero. A guard refuses the
+  migration, changing nothing, while a row breaks a rule, and lists each rule with its count and the query to find the rows. The constraints are
+  added `NOT VALID` and validated, so locks stay short; every child column already had an index. `delete_grn_safe` now refuses, with a clear
+  answer, a GRN that an invoice refers to. New capability `payments` (`node scripts/set-capability.mjs payments on|off`; new manifests write
+  `payments: false`, and `get-public-config` serves false for a manifest without the key); the app shows Paid and Pending only when it is on.
+  Turning it on: [OPERATOR_INSTALL.md](docs/OPERATOR_INSTALL.md). Contract: [API_CONTRACT.md](docs/API_CONTRACT.md). Tests:
+  `tests/payments_integrity_139.sql` (new), the guard checks in `tests/migrations.sh`, `tests/configure.test.mjs`, `tests/release-info.test.mjs`.
+
 - **Break-glass codes for every facility worker, with their own sign-in (migration 132).** `scripts/break-glass-admin.sh` now makes a one-time code
   (10 minutes, once, five wrong tries) for an active, approved administrator, **supervisor or staff member** (never a customer) and prints the
   role. The app signs in with it through `POST /functions/v1/operator-otp/break-glass` `{phone_number, code}` (service-role RPC

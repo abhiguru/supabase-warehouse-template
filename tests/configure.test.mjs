@@ -31,7 +31,7 @@ test('operator state is private, outside checkout, stable on rerun, and has a pu
     assert.equal(statSync(envPath).mode & 0o777, 0o600);
     assert.equal(manifest.companyName, 'Acme Stores');
     assert.equal(manifest.canonicalOrigin, options.apiUrl);
-    assert.deepEqual(manifest.capabilities, { sensors: false, printing: false });
+    assert.deepEqual(manifest.capabilities, { sensors: false, printing: false, payments: false });
     assert.equal(readFileSync(manifestPath, 'utf8').includes('real-provider-key'), false);
     const env = readEnv(envPath);
     assert.equal(validateOperatorEnv(env, stateDir).origin, options.apiUrl);
@@ -561,7 +561,7 @@ test('set-capability flips one manifest flag in place, keeps every other byte an
     const flipped = readFileSync(manifestPath, 'utf8');
     // The same file with the one word changed: every other byte, the order and the indentation stay.
     assert.equal(flipped, original.replace('"sensors": false', '"sensors": true'));
-    assert.deepEqual(JSON.parse(flipped).capabilities, { sensors: true, printing: false });
+    assert.deepEqual(JSON.parse(flipped).capabilities, { sensors: true, printing: false, payments: false });
     assert.equal(statSync(manifestPath).mode & 0o777, mode, 'the mode is kept');
     assert.deepEqual(readFileSync(envPath), env, 'compose.env is not touched');
     assert.deepEqual(readdirSync(join(stateDir, 'public')), ['instance.json'], 'no staging file is left');
@@ -580,6 +580,24 @@ test('set-capability flips one manifest flag in place, keeps every other byte an
     assert.match(printing.stdout, /503/);
     assert.equal(readFileSync(manifestPath, 'utf8'), original.replace('"printing": false', '"printing": true'));
     assert.equal(run(['printing', 'off']).status, 0);
+    // payments: accepted like the others, and written into a manifest that predates the key.
+    const payments = run(['payments', 'on']);
+    assert.equal(payments.status, 0, payments.stderr);
+    assert.match(payments.stdout, /Set capabilities\.payments on/);
+    assert.equal(readFileSync(manifestPath, 'utf8'), original.replace('"payments": false', '"payments": true'));
+    assert.equal(run(['payments', 'off']).status, 0);
+    assert.equal(readFileSync(manifestPath, 'utf8'), original, 'off restores the original bytes');
+    const legacy = original.replace(/,\n\s*"payments": false/, '');
+    assert.doesNotMatch(legacy, /payments/);
+    writeFileSync(manifestPath, legacy);
+    const already = run(['payments', 'off']);
+    assert.equal(already.status, 0, already.stderr);
+    assert.match(already.stdout, /already off/);
+    assert.equal(readFileSync(manifestPath, 'utf8'), legacy, 'an absent key already means off');
+    assert.equal(run(['payments', 'on']).status, 0);
+    assert.deepEqual(JSON.parse(readFileSync(manifestPath, 'utf8')).capabilities, { sensors: false, printing: false, payments: true });
+    assert.equal(readFileSync(manifestPath, 'utf8'), original.replace('"payments": false', '"payments": true'), 'the key is added in the file\'s own layout');
+    writeFileSync(manifestPath, original);
 
     for (const args of [['alarms', 'on'], ['sensors', 'yes'], ['sensors', 'true'], ['Sensors', 'on'], ['sensors'], ['sensors', 'on', 'extra'], []]) {
       const refused = run(args);

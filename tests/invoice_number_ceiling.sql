@@ -133,11 +133,15 @@ SELECT pg_temp.inc_assert(:'edit_in_range'::jsonb->>'success'='true' AND (SELECT
 --   2024  20260929 (the invoice above), 100000000 and 2147483647 live  -> 20260930
 --   2098  2147483647 only                                             -> 1
 --   2099  99999999 live, 2147483647 deleted                           -> refused (99999999 is the ceiling)
+-- (The parent rows exist since migration 139 made invoice.gr_id and invoice.customer_id foreign keys.)
+INSERT INTO public.customers(name) VALUES ('Ceiling Legacy Customer');
+INSERT INTO public.goodsreceived(gr_no,customer_id,date) SELECT 'INCOLD',id,now() FROM public.customers WHERE name='Ceiling Legacy Customer';
 INSERT INTO public.invoice(inv_fin_year,inv_no,gr_id,gr_no,customer_id,customer_name,inv_date,labour,tax_amount,total,discount,deleted_at)
-SELECT f.fin_year,f.number,gen_random_uuid(),'INCOLD',gen_random_uuid(),'Ceiling Legacy Customer',now(),0,0,0,0,
+SELECT f.fin_year,f.number,g.id,'INCOLD',g.customer_id,'Ceiling Legacy Customer',now(),0,0,0,0,
        CASE WHEN f.deleted THEN now() END
-FROM (VALUES (2024,100000000,false),(2024,2147483647,false),(2098,2147483647,false),
-             (2099,99999999,false),(2099,2147483647,true)) AS f(fin_year,number,deleted);
+FROM public.goodsreceived g, (VALUES (2024,100000000,false),(2024,2147483647,false),(2098,2147483647,false),
+             (2099,99999999,false),(2099,2147483647,true)) AS f(fin_year,number,deleted)
+WHERE g.gr_no='INCOLD';
 SELECT set_config('request.jwt.claims',:'staff_claims',true);
 SET LOCAL ROLE authenticated;
 SELECT pg_temp.inc_assert(pg_temp.inc_call(c.statement)=jsonb_build_object('answer',c.expected),
