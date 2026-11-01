@@ -34,6 +34,8 @@ BEGIN
     'suggest_document_number',
     -- The rack presets of the GRN item form (migration 131); changing them is for administrators and supervisors, which the lines above admit.
     'get_rack_presets',
+    -- The items of a GRN being entered that have no default rate yet (migration 133); no figure is returned.
+    'get_items_without_rate',
     -- The GRN edit form's version and locks (migration 121); customers stay refused by the final ELSE.
     'get_grn_edit_state','get_grn_item_dispatches',
     'get_grn_prefixes_with_stock','get_all_grn_activity',

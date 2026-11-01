@@ -1262,9 +1262,12 @@ person saves, and again in the answer. Every list below is `order_effects`, an a
 changed line, sorted by customer name, item name, GRN number:
 
 ```
-{customer_id, customer_name, order_id, order_no, order_item_id, grn_item_id, item_name, package_mark, grn_no,
+{customer_id, customer_name, order_id, order_no, order_item_id, grn_item_id, item_name, package_mark, packaging, grn_no,
  old_quantity, new_quantity, removed, change, available_stock, order_lines_left}
 ```
+
+`packaging` (migration 133) is the packaging text the order line captured when it was added (`Bag`, `Box`, `Crate`, ...; `''` when none), so the app can
+say "boxes" or "crates" instead of always "bags".
 
 `change` is `reduced`, `increased`, `added` (the line is new, `old_quantity` 0), `removed` (`new_quantity` 0, `removed` true) or, for a GRN
 edit only, `exceeds_stock` (the order line is unchanged, `old_quantity` = `new_quantity` = what it asks for, `available_stock` = what the lot
@@ -1457,3 +1460,36 @@ still a 200 `{success:false, error_code:'DEVICE_NOT_FOUND'|'INVALID_PERIOD'}`.
 
 `record_sensor_reading` and `update_sensor` were dropped: they were granted to
 the service role only and nothing called them.
+
+### Order history counts (migration 133)
+
+`get_order_change_log` (same arguments and shape):
+
+- An entry with `change_details.action = 'dispatch_deleted'` now also carries `change_details.total_quantity_restored`: the bags given back
+  to the line that entry is about (one entry per restored line; the same number as `restoration_details.quantity_restored`). The app reads
+  this key, which was missing, so it showed 0.
+- A dispatch take (`quantity_reduced_by_dispatch`) takes its "before" quantity from the `previous_quantity` its own revision stored, and the
+  give-back of a dispatch delete counts in the line's chain, so the entries after a delete start from the right quantity.
+- A line put back after it was removed (0 before) has `quantity_change.change_type = 'added'`, like a first add (`previous_quantity` stays 0).
+
+`get_grn_prefixes_with_stock(p_customer_id uuid DEFAULT NULL)` (migration 133): unchanged arguments and shape (`data: [{prefix, grn_count}]`, ordered by prefix).
+`prefix` is now the whole run of non-digit characters at the start of the GRN number, trimmed and upper-cased: `DV0102` gives `DV`, `X0001` gives `X`, `T-12` gives `T-`,
+`G 14` gives `G`, `dv01` joins `DV`, `GRN/26-27/0001` gives `GRN/`. A number that starts with a digit has no such run: its prefix is its first character (`0001` gives `0`,
+`26-27/0001` gives `2`, as before 133), so no GRN with stock is left without a button. A prefix is a real leading part of the number, so the app's case-insensitive
+"contains" search for it finds the GRNs. An older app that shows the prefix as given keeps working.
+
+### `get_items_without_rate(p_customer_id uuid, p_item_ids uuid[], p_on date DEFAULT today (India day), p_weights integer[] DEFAULT NULL, p_pricing_mode text DEFAULT 'monthly', p_grn_id uuid DEFAULT NULL)` (migration 133)
+
+For the GRN Review step: which of the items being entered have no rate yet. Administrators, supervisors and staff; a customer is refused (`Staff access required`, SQLSTATE `42501`).
+It uses `find_storage_price`, the lookup of the "every line has a rate" check (`RATE_MISSING`): the customer's own rate, else the item's default rate, including the item's first
+rate for the days before it began. No figure is returned. `p_weights` (optional) is the weight of each line in the order of `p_item_ids` (0 where missing, as the check does);
+`p_pricing_mode` is the GRN's mode (`ONE_TIME`, anything else is monthly). `p_on` defaults to today's date in India (the day the saves use).
+`p_grn_id` (optional): the GRN being edited; its own GRN-only rates (`grn_rates`, the type of the mode, the line's weight inside the band) count as a rate, as in the save's check.
+At most 200 items in one dimension, and no more weights than items (`{success:false, message:'At most 200 items at a time, and no more weights than items'}`).
+
+`{success:true, data:{item_ids:[uuid,...], items:[{item_id, item_name},...]}, message:null}`, ordered by item name; both lists are empty when every item has a rate. An older backend answers PGRST202 (the app shows no notice).
+
+### Dispatch lists: packaging of each line (migration 133)
+
+`get_dispatch_list_with_items` (with `p_include_items`) and `get_recent_dispatched_orders` add `packaging` to each item object: the GRN item's current packaging text (`Bag`, `Box`, `Crate`, ...; `''` when none).
+`order_effects[].packaging` is the value the order line captured when it was added, so the two differ after a GRN item's packaging is edited. Additive; nothing else changes.
