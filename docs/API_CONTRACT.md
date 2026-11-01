@@ -220,13 +220,14 @@ Additive only: every key that was there is unchanged. The value is `goodsreceive
 
 ### The packaging rule of stock and preview rows (migration 142)
 
-Additive only; `null` still means "the lots differ". One rule (`warehouse_security.shared_packaging`) decides the word of a set of lots: `NULL` or blank packaging is the default word `Bag`; words are compared after trim and case folding, with `Bag`/`Bags`, `Box`/`Boxes` and `Crate`/`Crates` counted as one word each; the answer is that one word (`Bag`, `Box`, `Crate`, or the trimmed text of any other word) when every lot agrees, and `null` when they differ (`Box` next to a `NULL` lot is mixed). Migration 141 answered `null` for an item whose lots all had `NULL` packaging and compared the raw text.
+Additive only; `null` still means "the lots differ". One rule (`warehouse_security.shared_packaging`) decides the word of a set of lots, as the app reads a packaging word: `Box`/`Boxes` is `Box`, `Crate`/`Crates` is `Crate`, and everything else (`Bag`, `Unit`, `Sack`, any other text, `NULL`, blank) is `Bag`, compared after trim (tabs, line breaks and no-break spaces included) and case folding. The answer is `Bag`, `Box` or `Crate` when every lot agrees, and `null` when they differ (`Box` next to a `NULL` lot is mixed). Migration 141 answered `null` for an item whose lots all had `NULL` packaging and compared the raw text.
 
 | RPC | Where | Key |
 |---|---|---|
 | `get_customer_activity_detail` | `top_stock_items[]` | `packaging` (now by the rule) |
 | `get_customer_activity_detail` | `recent_grns[]` | `packaging` (new; the receipt's lots) |
 | `get_customer_activity_detail` | `recent_dispatches[]` | `packaging` (new; the receipt lots the dispatch took from) |
+| `get_customer_activity_detail` | `data.summary` | `current_stock_packaging` (new; the rule over every lot the customer still holds, the same lots as `summary.current_stock`; `Bag` at zero stock; `null` when they differ) |
 
 Test: `tests/packaging_rule_142.sql`.
 

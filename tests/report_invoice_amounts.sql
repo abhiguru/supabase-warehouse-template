@@ -436,7 +436,7 @@ SELECT pg_temp.ria_assert(pg_temp.ria_col(:'staff_detail'::jsonb#>'{data,recent_
 -- Key sets.
 SELECT pg_temp.ria_assert(pg_temp.ria_keys(:'staff_detail'::jsonb) = 'data,metadata,success'
   AND pg_temp.ria_keys(:'staff_detail'::jsonb->'data') = 'by_bucket,customer_city,customer_id,customer_name,monthly_trends,recent_dispatches,recent_grns,recent_invoices,summary,top_stock_items'
-  AND pg_temp.ria_keys(:'staff_detail'::jsonb#>'{data,summary}') = 'average_stock_age_days,cancelled_count,current_stock,total_dispatch_quantity,total_dispatches,total_grn_quantity,total_grns,total_invoice_amount,total_paid_amount,total_pending_amount'
+  AND pg_temp.ria_keys(:'staff_detail'::jsonb#>'{data,summary}') = 'average_stock_age_days,cancelled_count,current_stock,current_stock_packaging,total_dispatch_quantity,total_dispatches,total_grn_quantity,total_grns,total_invoice_amount,total_paid_amount,total_pending_amount'
   AND pg_temp.ria_keys(:'staff_detail'::jsonb#>'{data,monthly_trends,0}') = 'dispatch_count,dispatch_quantity,grn_count,grn_quantity,invoice_amount,month,stock_level_end'
   AND pg_temp.ria_keys(:'staff_detail'::jsonb#>'{data,recent_invoices,0}') = 'invoice_date,invoice_id,invoice_number,net_total,status',
   'staff: the keys of the activity detail: ' || :'staff_detail');

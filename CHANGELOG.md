@@ -12,10 +12,11 @@ file used to carry for earlier installations are in git: `git show b45ae0b:CHANG
 
 - **The packaging word of stock and preview rows follows one rule (migration 142, review follow-up to migration 141).** `get_customer_activity_detail`:
   `top_stock_items[].packaging` was `null` ("lots differ") also when every lot had no packaging, and "Bag" next to "bags" counted as different, so such items read
-  "units", and Box next to a lot with no packaging read boxes. Now a `NULL` or blank packaging is `Bag`, words are compared after trim and case folding
-  (Bag/Bags, Box/Boxes, Crate/Crates are one word each), and the answer is the one word, or `null` when the lots truly differ. New additive key `packaging` on
-  `recent_grns[]` and `recent_dispatches[]` (the rows of the app's GRN and dispatch previews), by the same rule. No app change is needed for the top stock
-  rows. New internal function `warehouse_security.shared_packaging(text[])` (no app role may call it). Test: `tests/packaging_rule_142.sql`. Operator action: none.
+  "units", and Box next to a lot with no packaging read boxes. Now the word is read as the app reads it: Box/Boxes is Box, Crate/Crates is Crate, everything else
+  (Bag, Unit, Sack, `NULL`, blank) is Bag, compared after trim and case folding, and the answer is that one word, or `null` when the lots truly differ. New additive keys:
+  `packaging` on `recent_grns[]` and `recent_dispatches[]` (the rows of the app's GRN and dispatch previews), and `summary.current_stock_packaging` (the rule over every
+  lot the customer still holds, so the head of the report no longer depends on the five rows of `top_stock_items`; `Bag` at zero stock). No app change is needed
+  for the top stock rows. New internal function `warehouse_security.shared_packaging(text[])` (no app role may call it). Test: `tests/packaging_rule_142.sql`. Operator action: none.
 - **An invoice is cancelled, not deleted; the invoice records are audited and the audit trail is kept 8 years (migration 134, review finding H5).**
   New `cancel_invoice(p_invoice_id, p_reason, p_expected_updated_at)` (administrators and supervisors): the invoice keeps its number and its lines,
   gets `cancelled_at`, `cancelled_by` and `cancel_reason`, frees its GRN for a new invoice, and is refused with `INVOICE_HAS_PAYMENTS`,

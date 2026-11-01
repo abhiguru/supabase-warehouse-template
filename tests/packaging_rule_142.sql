@@ -65,7 +65,15 @@ SELECT pg_temp.pr_assert(warehouse_security.shared_packaging(ARRAY['Box',NULL]::
 SELECT pg_temp.pr_assert(warehouse_security.shared_packaging(ARRAY['Box','Crate']::text[]) IS NULL,'Box and Crate differ');
 SELECT pg_temp.pr_assert(warehouse_security.shared_packaging(ARRAY['Crate']::text[])='Crate','a single word');
 SELECT pg_temp.pr_assert(warehouse_security.shared_packaging(ARRAY['boxes','BOX']::text[])='Box','boxes and BOX are one word');
-SELECT pg_temp.pr_assert(warehouse_security.shared_packaging(ARRAY[' Carton','carton']::text[])='Carton','another word keeps its text');
+SELECT pg_temp.pr_assert(warehouse_security.shared_packaging(ARRAY[' Carton','carton']::text[])='Bag','any word but box and crate is Bag, as the app reads it');
+SELECT pg_temp.pr_assert(warehouse_security.shared_packaging(ARRAY['Unit','Unit']::text[])='Bag','all Unit reads Bag');
+SELECT pg_temp.pr_assert(warehouse_security.shared_packaging(ARRAY['Bag','Unit']::text[])='Bag','Bag and Unit are one word');
+SELECT pg_temp.pr_assert(warehouse_security.shared_packaging(ARRAY['Unit','Units']::text[])='Bag','Unit and Units are one word');
+SELECT pg_temp.pr_assert(warehouse_security.shared_packaging(ARRAY['Unit',NULL]::text[])='Bag','Unit and NULL are one word');
+SELECT pg_temp.pr_assert(warehouse_security.shared_packaging(ARRAY['Sack','Bag']::text[])='Bag','Sack and Bag are one word');
+SELECT pg_temp.pr_assert(warehouse_security.shared_packaging(ARRAY['Carton','Box']::text[]) IS NULL,'Carton (Bag) and Box differ');
+SELECT pg_temp.pr_assert(warehouse_security.shared_packaging(ARRAY[E'Box\t','Box',chr(160)||'box'||chr(160)]::text[])='Box','tabs and no-break spaces around a word are trimmed');
+SELECT pg_temp.pr_assert(warehouse_security.shared_packaging(ARRAY[E'\t',E' \n']::text[])='Bag','a lot holding only white space reads Bag');
 SELECT pg_temp.pr_assert(warehouse_security.shared_packaging(ARRAY[]::text[]) IS NULL,'no lots: null');
 SET LOCAL ROLE authenticated;
 
@@ -125,4 +133,38 @@ SELECT pg_temp.pr_assert(:'d2'::jsonb->>'success'='true','dispatch PRD2: '||:'d2
 SELECT public.get_customer_activity_detail(:'cust'::uuid,'2026-05-01'::date,'2026-05-31'::date) AS adet2 \gset
 SELECT pg_temp.pr_assert(pg_temp.pr_row(:'adet2'::jsonb,'recent_dispatches','PRD2')->>'packaging'='Bag','dispatch row from a Bag lot reads Bag: '||:'adet2');
 SELECT pg_temp.pr_assert(pg_temp.pr_row(:'adet2'::jsonb,'recent_dispatches','PRD1') ? 'packaging' AND pg_temp.pr_row(:'adet2'::jsonb,'recent_dispatches','PRD1')->'packaging'='null'::jsonb,'dispatch row from Box and NULL lots: null');
+
+-- summary.current_stock_packaging: the rule over every lot with stock, beyond the five rows of top_stock_items.
+CREATE FUNCTION pg_temp.pr_six(cname text, words text[]) RETURNS jsonb LANGUAGE plpgsql AS $$
+DECLARE cid uuid; i integer; iid uuid;
+BEGIN
+  PERFORM pg_temp.pr_assert(public.create_customer(cname, '98777'||lpad((abs(hashtext(cname))%100000)::text,5,'0'))->>'success'='true','customer '||cname);
+  SELECT id INTO cid FROM public.customers WHERE name=cname;
+  FOR i IN 1 .. array_length(words,1) LOOP
+    SELECT id INTO iid FROM public.items WHERE name='Rule Six '||i;
+    PERFORM pg_temp.pr_assert(public.replace_item_rates(iid,cid,'monthly','2026-01-01'::date,jsonb_build_array(jsonb_build_object('weight_min',0,'weight_max',100,'unit_price',5,'labour_rate',2,'tax_percent',5)))->>'success'='true','rate '||cname||i);
+    -- Stock falls with the number, so the last item is the smallest and is outside the top five.
+    PERFORM pg_temp.pr_grn_for(cname, cname||i, jsonb_build_array(jsonb_strip_nulls(jsonb_build_object('item_id',iid,'item_name','Rule Six '||i,'packaging',words[i],'qty',100-i,'weight',10,'rack','S'||i))));
+  END LOOP;
+  RETURN public.get_customer_activity_detail(cid,'2026-05-01'::date,'2026-05-31'::date);
+END $$;
+CREATE FUNCTION pg_temp.pr_grn_for(cname text, no text, lots jsonb) RETURNS void LANGUAGE plpgsql AS $$
+BEGIN
+  PERFORM pg_temp.pr_assert(public.save_grn(p_gr_no=>('S'||substr(md5(no),1,10))::varchar,p_date=>'2026-04-01T12:00:00Z'::timestamptz,p_customer_id=>(SELECT id FROM public.customers WHERE name=cname),
+    p_customer_name=>cname::varchar,p_pricing_mode=>'ONE_TIME',p_idempotency_key=>'pr6-'||no,p_items=>lots)->>'success'='true','receipt '||no);
+END $$;
+SELECT pg_temp.pr_assert(public.create_item('Rule Six '||n,'Bag')->>'success'='true','catalog item six '||n) FROM generate_series(1,6) n;
+SELECT pg_temp.pr_six('Six Bags Customer', ARRAY['Bag',NULL,'bags','Unit','Sack','Bag']) AS six_bag \gset
+SELECT pg_temp.pr_assert(jsonb_array_length(COALESCE(:'six_bag'::jsonb#>'{data,top_stock_items}',:'six_bag'::jsonb->'top_stock_items'))=5
+  AND COALESCE(:'six_bag'::jsonb#>>'{data,summary,current_stock_packaging}',:'six_bag'::jsonb#>>'{summary,current_stock_packaging}')='Bag','six items in bags: Bag: '||:'six_bag');
+SELECT pg_temp.pr_six('Six Boxes Customer', ARRAY['Box','box','Boxes','Box','BOX','Box ']) AS six_box \gset
+SELECT pg_temp.pr_assert(COALESCE(:'six_box'::jsonb#>>'{data,summary,current_stock_packaging}',:'six_box'::jsonb#>>'{summary,current_stock_packaging}')='Box','six items in boxes: Box: '||:'six_box');
+SELECT pg_temp.pr_six('Six Mixed Customer', ARRAY['Box','Box','Box','Box','Box','Crate']) AS six_mix \gset
+SELECT pg_temp.pr_assert(COALESCE(:'six_mix'::jsonb#>'{data,summary}',:'six_mix'::jsonb->'summary') ? 'current_stock_packaging'
+  AND COALESCE(:'six_mix'::jsonb#>'{data,summary,current_stock_packaging}',:'six_mix'::jsonb#>'{summary,current_stock_packaging}')='null'::jsonb
+  AND NOT EXISTS (SELECT 1 FROM jsonb_array_elements(COALESCE(:'six_mix'::jsonb#>'{data,top_stock_items}',:'six_mix'::jsonb->'top_stock_items')) e WHERE e->>'packaging'='Crate'),
+  'five Box and a sixth Crate outside the top five: null: '||:'six_mix');
+SELECT pg_temp.pr_assert(public.create_customer('Zero Stock Customer','9877711111')->>'success'='true','zero-stock customer');
+SELECT public.get_customer_activity_detail((SELECT id FROM public.customers WHERE name='Zero Stock Customer'),'2026-05-01'::date,'2026-05-31'::date) AS zero_stock \gset
+SELECT pg_temp.pr_assert(COALESCE(:'zero_stock'::jsonb#>>'{data,summary,current_stock_packaging}',:'zero_stock'::jsonb#>>'{summary,current_stock_packaging}')='Bag','zero stock reads Bag: '||:'zero_stock');
 ROLLBACK;
