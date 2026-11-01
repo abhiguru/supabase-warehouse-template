@@ -213,7 +213,8 @@ already.) The operations dashboard is not shown to staff by the app and
 **Staff — item pricing.** Opened by migration 45 (`get_item_storage_prices` and the four price writers) and taken away
 again by migration 90; see "Staff lose item pricing, 16 October 2026".
 
-**Staff — sensors.** `get_sensor_polling_data` and `get_sensor_history`. The
+**Staff — sensors.** `get_sensor_polling_data`, `get_sensor_history` and
+`get_sensor_hourly` (the hourly summary kept 24 months, migration 136). The
 sensor tables stay closed to staff.
 
 **Staff — photo removal in the receipt and dispatch edit forms.**

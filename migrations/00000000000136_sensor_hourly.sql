@@ -4,14 +4,15 @@
 --  * public.sensor_hourly: per device and UTC hour the number of readings and the minimum, maximum and average of temperature and
 --    humidity. A value that no reading of the hour carries is NULL. Readable only through get_sensor_hourly (no app-role grant) and
 --    service_role.
---  * warehouse_maintenance.rollup_sensor_hourly(p_now, p_apply): rolls up completed UTC hours only. It starts at each device's first
---    reading from its last rolled hour on (that hour is rolled again, so a reading that arrived late is folded in; an hour whose raw
---    rows have been partly removed never replaces a larger count), rolls at most 2,000 hours (that have readings) per call (sensor_hourly_window gives its end) and is safe to repeat. With
---    p_apply false it only counts the rows it would write.
+--  * warehouse_maintenance.rollup_sensor_hourly(p_now, p_apply): rolls up completed UTC hours only. Per device it starts at the first
+--    reading from the earlier of its last rolled hour and 31 days before p_now (the bridge's readings may be 30 days old when they
+--    arrive), so a late reading is folded in; an hour whose raw rows have been partly removed never replaces a larger count. It rolls
+--    at most 2,000 hours (that have readings) per call and is safe to repeat. With p_apply false it only counts the device-hours it
+--    would write. Helpers: sensor_hourly_starts, sensor_hourly_window, sensor_hourly_aggregate.
 --  * run_database_retention rolls up first, then removes the raw readings older than the sensor_readings policy, but only up to the
---    hour already rolled for that device, so a long backlog is never deleted before it is summarized. It also removes sensor_hourly
---    rows older than the new policy row sensor_hourly (730 days) and reports sensor_hourly_rolled and sensor_hourly. The preview
---    reports the same counts and writes nothing.
+--    hour already rolled for that device, so a long backlog is never deleted before it is summarized; then it removes sensor_hourly
+--    rows older than the new policy row sensor_hourly (730 days). It reports sensor_hourly_rolled (device-hours) and sensor_hourly.
+--    The preview reports the same counts and writes nothing.
 --  * public.get_sensor_hourly(p_device_id, p_from, p_to): the hourly rows of one device for a date range, for administrators,
 --    supervisors and staff (authorize_rpc, definition file 00_authorize_rpc.sql); customers are refused.
 SET LOCAL maintenance_work_mem = '256MB';
@@ -40,38 +41,69 @@ VALUES ('sensor_hourly', 730, 'Hourly sensor summary (min, max and average per d
 ON CONFLICT (key) DO NOTHING;
 
 -- ===== 2. The roll-up =====
--- The end (exclusive) of the hours the next roll-up would summarize, or NULL when there is nothing to roll. Per device the roll-up
--- starts at its first reading from its last rolled hour on (all readings for a device never rolled); a call does at most the first
--- 2,000 hours that have readings, oldest first, so it is bounded on a large backlog and a long gap without readings never stops it.
--- Only hours that are over count: the end is the start of the UTC hour that contains p_now.
-CREATE FUNCTION warehouse_maintenance.sensor_hourly_window(p_now timestamptz DEFAULT now()) RETURNS timestamptz
+-- Per device, the hour a roll-up starts at: its first reading from the earlier of its last rolled hour and 31 days before p_now (the
+-- bridge's readings may be up to 30 days old when they arrive: record_sensor_batch), or its first reading when it was never rolled.
+-- So a late reading is folded in for every hour a reading can still arrive for.
+CREATE FUNCTION warehouse_maintenance.sensor_hourly_starts(p_now timestamptz DEFAULT now())
+ RETURNS TABLE (device_id uuid, start_hour timestamptz)
  LANGUAGE sql
  STABLE
  SECURITY DEFINER
  SET search_path TO 'pg_catalog', 'public', 'warehouse_maintenance'
 AS $function$
   WITH last_rolled AS (
-    SELECT device_id, max(hour) AS last_hour FROM public.sensor_hourly GROUP BY device_id
-  ), starts AS (
-    SELECT r.device_id, date_trunc('hour', min(r.measured_at), 'UTC') AS start_hour
-      FROM public.sensor_readings r LEFT JOIN last_rolled l ON l.device_id = r.device_id
-     WHERE l.last_hour IS NULL OR r.measured_at >= l.last_hour
-     GROUP BY r.device_id
-  ), hrs AS (
+    SELECT h.device_id, max(h.hour) AS last_hour FROM public.sensor_hourly h GROUP BY h.device_id
+  )
+  SELECT r.device_id, date_trunc('hour', min(r.measured_at), 'UTC')
+    FROM public.sensor_readings r LEFT JOIN last_rolled l ON l.device_id = r.device_id
+   WHERE l.last_hour IS NULL
+      OR r.measured_at >= LEAST(l.last_hour, date_trunc('hour', COALESCE(p_now, now()) - interval '30 days 1 hour', 'UTC'))
+   GROUP BY r.device_id
+$function$;
+
+-- The end (exclusive) of the hours the next roll-up summarizes, or NULL when there is nothing to roll: only hours that are over (the
+-- start of the UTC hour that contains p_now is the limit), and the first 2,000 hours that have readings, oldest first, so a call does
+-- a bounded amount of work on a large backlog and a long gap without readings never stops it.
+CREATE FUNCTION warehouse_maintenance.sensor_hourly_window(p_now timestamptz DEFAULT now()) RETURNS timestamptz
+ LANGUAGE sql
+ STABLE
+ SECURITY DEFINER
+ SET search_path TO 'pg_catalog', 'public', 'warehouse_maintenance'
+AS $function$
+  WITH st AS MATERIALIZED (SELECT * FROM warehouse_maintenance.sensor_hourly_starts(p_now)),
+  hrs AS (
     SELECT DISTINCT date_trunc('hour', r.measured_at, 'UTC') AS hour
-      FROM public.sensor_readings r JOIN starts s ON s.device_id = r.device_id
-     WHERE r.measured_at >= s.start_hour AND r.measured_at < date_trunc('hour', COALESCE(p_now, now()), 'UTC')
+      FROM public.sensor_readings r JOIN st s ON s.device_id = r.device_id
+     WHERE r.measured_at >= (SELECT min(start_hour) FROM st)
+       AND r.measured_at >= s.start_hour AND r.measured_at < date_trunc('hour', COALESCE(p_now, now()), 'UTC')
      ORDER BY 1 LIMIT 2000
   )
   SELECT max(hour) + interval '1 hour' FROM hrs
 $function$;
-ALTER FUNCTION warehouse_maintenance.sensor_hourly_window(timestamptz) OWNER TO supabase_admin;
-REVOKE ALL ON FUNCTION warehouse_maintenance.sensor_hourly_window(timestamptz) FROM PUBLIC;
-GRANT EXECUTE ON FUNCTION warehouse_maintenance.sensor_hourly_window(timestamptz) TO service_role;
 
--- Rolls the window up (INSERT ... ON CONFLICT DO UPDATE: safe to repeat; the last rolled hour is rolled again so a late reading is
--- folded in, and a recount that is smaller than the stored row, because raw rows were removed, never replaces it). Returns the rows
--- written, or with p_apply false the rows it would write, and changes nothing.
+-- The device-hours of the window: what a roll-up writes.
+CREATE FUNCTION warehouse_maintenance.sensor_hourly_aggregate(p_now timestamptz DEFAULT now())
+ RETURNS TABLE (device_id uuid, hour timestamptz, n integer, t_min numeric, t_max numeric, t_avg numeric, h_min numeric, h_max numeric, h_avg numeric)
+ LANGUAGE sql
+ STABLE
+ SECURITY DEFINER
+ SET search_path TO 'pg_catalog', 'public', 'warehouse_maintenance'
+AS $function$
+  WITH st AS MATERIALIZED (SELECT * FROM warehouse_maintenance.sensor_hourly_starts(p_now)),
+  w AS MATERIALIZED (SELECT warehouse_maintenance.sensor_hourly_window(p_now) AS window_end)
+  SELECT r.device_id, date_trunc('hour', r.measured_at, 'UTC'), count(*)::integer,
+         round(min(r.temperature), 2), round(max(r.temperature), 2), round(avg(r.temperature), 2),
+         round(min(r.humidity), 2), round(max(r.humidity), 2), round(avg(r.humidity), 2)
+    FROM public.sensor_readings r
+    JOIN st s ON s.device_id = r.device_id CROSS JOIN w
+   WHERE r.measured_at >= (SELECT min(start_hour) FROM st)
+     AND r.measured_at >= s.start_hour AND r.measured_at < w.window_end
+   GROUP BY r.device_id, date_trunc('hour', r.measured_at, 'UTC')
+$function$;
+
+-- Rolls the window up (INSERT ... ON CONFLICT DO UPDATE: safe to repeat; a recount that is smaller than the stored row, because raw
+-- rows were removed, never replaces it). Returns the device-hours written; with p_apply false the device-hours it would write, and it
+-- changes nothing.
 CREATE FUNCTION warehouse_maintenance.rollup_sensor_hourly(p_now timestamptz DEFAULT now(), p_apply boolean DEFAULT true)
  RETURNS bigint
  LANGUAGE plpgsql
@@ -79,39 +111,36 @@ CREATE FUNCTION warehouse_maintenance.rollup_sensor_hourly(p_now timestamptz DEF
  SET search_path TO 'pg_catalog', 'public', 'warehouse_maintenance'
 AS $function$
 DECLARE
-  v_end timestamptz := warehouse_maintenance.sensor_hourly_window(p_now);
   v_n bigint;
 BEGIN
-  IF v_end IS NULL THEN RETURN 0; END IF;
-  WITH last_rolled AS (
-    SELECT device_id, max(hour) AS last_hour FROM public.sensor_hourly GROUP BY device_id
-  ), starts AS (
-    SELECT r.device_id, date_trunc('hour', min(r.measured_at), 'UTC') AS start_hour
-      FROM public.sensor_readings r LEFT JOIN last_rolled l ON l.device_id = r.device_id
-     WHERE l.last_hour IS NULL OR r.measured_at >= l.last_hour
-     GROUP BY r.device_id
-  ), agg AS (
-    SELECT r.device_id, date_trunc('hour', r.measured_at, 'UTC') AS hour, count(*)::integer AS n,
-           round(min(r.temperature), 2) AS t_min, round(max(r.temperature), 2) AS t_max, round(avg(r.temperature), 2) AS t_avg,
-           round(min(r.humidity), 2) AS h_min, round(max(r.humidity), 2) AS h_max, round(avg(r.humidity), 2) AS h_avg
-      FROM public.sensor_readings r
-      JOIN starts s ON s.device_id = r.device_id
-     WHERE r.measured_at >= s.start_hour AND r.measured_at < v_end
-     GROUP BY r.device_id, date_trunc('hour', r.measured_at, 'UTC')
-  ), written AS (
+  IF NOT p_apply THEN
+    SELECT count(*) INTO v_n FROM warehouse_maintenance.sensor_hourly_aggregate(p_now);
+    RETURN v_n;
+  END IF;
+  WITH written AS (
     INSERT INTO public.sensor_hourly AS h (device_id, hour, n, t_min, t_max, t_avg, h_min, h_max, h_avg)
-    SELECT device_id, hour, n, t_min, t_max, t_avg, h_min, h_max, h_avg FROM agg WHERE p_apply
+    SELECT a.device_id, a.hour, a.n, a.t_min, a.t_max, a.t_avg, a.h_min, a.h_max, a.h_avg
+      FROM warehouse_maintenance.sensor_hourly_aggregate(p_now) a
     ON CONFLICT (device_id, hour) DO UPDATE
       SET n = EXCLUDED.n, t_min = EXCLUDED.t_min, t_max = EXCLUDED.t_max, t_avg = EXCLUDED.t_avg,
           h_min = EXCLUDED.h_min, h_max = EXCLUDED.h_max, h_avg = EXCLUDED.h_avg
       WHERE EXCLUDED.n >= h.n
     RETURNING 1
   )
-  SELECT CASE WHEN p_apply THEN (SELECT count(*) FROM written) ELSE (SELECT count(*) FROM agg) END INTO v_n;
+  SELECT count(*) INTO v_n FROM written;
   RETURN v_n;
 END $function$;
+ALTER FUNCTION warehouse_maintenance.sensor_hourly_starts(timestamptz) OWNER TO supabase_admin;
+ALTER FUNCTION warehouse_maintenance.sensor_hourly_window(timestamptz) OWNER TO supabase_admin;
+ALTER FUNCTION warehouse_maintenance.sensor_hourly_aggregate(timestamptz) OWNER TO supabase_admin;
 ALTER FUNCTION warehouse_maintenance.rollup_sensor_hourly(timestamptz, boolean) OWNER TO supabase_admin;
+REVOKE ALL ON FUNCTION warehouse_maintenance.sensor_hourly_starts(timestamptz) FROM PUBLIC;
+REVOKE ALL ON FUNCTION warehouse_maintenance.sensor_hourly_window(timestamptz) FROM PUBLIC;
+REVOKE ALL ON FUNCTION warehouse_maintenance.sensor_hourly_aggregate(timestamptz) FROM PUBLIC;
 REVOKE ALL ON FUNCTION warehouse_maintenance.rollup_sensor_hourly(timestamptz, boolean) FROM PUBLIC;
+GRANT EXECUTE ON FUNCTION warehouse_maintenance.sensor_hourly_starts(timestamptz) TO service_role;
+GRANT EXECUTE ON FUNCTION warehouse_maintenance.sensor_hourly_window(timestamptz) TO service_role;
+GRANT EXECUTE ON FUNCTION warehouse_maintenance.sensor_hourly_aggregate(timestamptz) TO service_role;
 GRANT EXECUTE ON FUNCTION warehouse_maintenance.rollup_sensor_hourly(timestamptz, boolean) TO service_role;
 
 -- ===== 3. run_database_retention: roll up before the raw readings go, delete the old summary rows =====
@@ -124,16 +153,18 @@ DECLARE
     -- 1. one more variable
     ARRAY[E'  sensor_cutoff timestamptz;\n  audit_cutoff timestamptz;',
           E'  sensor_cutoff timestamptz;\n  rolled bigint;\n  audit_cutoff timestamptz;'],
-    -- 2. apply: roll up, delete the old summary rows, then delete the raw readings that are rolled up
-    ARRAY[E'    DELETE FROM public.sensor_readings WHERE measured_at < sensor_cutoff;\n',
+    -- 2. apply: roll up, delete the raw readings that are rolled up (the summary rows still all there), then the old summary rows
+    ARRAY[E'    DELETE FROM public.sensor_readings WHERE measured_at < sensor_cutoff;\n'
+       || E'    GET DIAGNOSTICS affected = ROW_COUNT; result := result || jsonb_build_object(\'sensor_readings\', affected);\n',
           E'    rolled := warehouse_maintenance.rollup_sensor_hourly(p_now, true);\n'
-       || E'    result := result || jsonb_build_object(''sensor_hourly_rolled'', rolled);\n'
-       || E'    DELETE FROM public.sensor_hourly WHERE hour < (SELECT p_now - make_interval(days => days)\n'
-       || E'      FROM warehouse_maintenance.retention_policy WHERE key = ''sensor_hourly'');\n'
-       || E'    GET DIAGNOSTICS affected = ROW_COUNT; result := result || jsonb_build_object(''sensor_hourly'', affected);\n'
-       || E'    DELETE FROM public.sensor_readings r USING (SELECT device_id, max(hour) + interval ''1 hour'' AS rolled_to\n'
+       || E'    result := result || jsonb_build_object(\'sensor_hourly_rolled\', rolled);\n'
+       || E'    DELETE FROM public.sensor_readings r USING (SELECT device_id, max(hour) + interval \'1 hour\' AS rolled_to\n'
        || E'      FROM public.sensor_hourly GROUP BY device_id) m\n'
-       || E'     WHERE m.device_id = r.device_id AND r.measured_at < LEAST(sensor_cutoff, m.rolled_to);\n'],
+       || E'     WHERE r.measured_at < sensor_cutoff AND m.device_id = r.device_id AND r.measured_at < LEAST(sensor_cutoff, m.rolled_to);\n'
+       || E'    GET DIAGNOSTICS affected = ROW_COUNT; result := result || jsonb_build_object(\'sensor_readings\', affected);\n'
+       || E'    DELETE FROM public.sensor_hourly WHERE hour < (SELECT p_now - make_interval(days => days)\n'
+       || E'      FROM warehouse_maintenance.retention_policy WHERE key = \'sensor_hourly\');\n'
+       || E'    GET DIAGNOSTICS affected = ROW_COUNT; result := result || jsonb_build_object(\'sensor_hourly\', affected);\n'],
     -- 3. preview: the same counts, nothing written; the raw rows counted are the ones the apply run deletes (rolled by this run or before)
     ARRAY[E'\'sensor_readings\', (SELECT count(*) FROM public.sensor_readings WHERE measured_at < sensor_cutoff)\n    ) INTO result;',
           E'\'sensor_readings\', (SELECT count(*) FROM public.sensor_readings r WHERE r.measured_at < sensor_cutoff\n'
@@ -180,7 +211,7 @@ BEGIN
     RETURN jsonb_build_object('success', false, 'error', 'Device not found', 'error_code', 'DEVICE_NOT_FOUND');
   END IF;
   SELECT COALESCE(jsonb_agg(jsonb_build_object(
-           'hour', h.hour, 'sample_count', h.n,
+           'hour', to_char(h.hour AT TIME ZONE 'UTC', 'YYYY-MM-DD"T"HH24:MI:SS"Z"'), 'sample_count', h.n,
            'temperature_min', h.t_min, 'temperature_max', h.t_max, 'temperature_avg', h.t_avg,
            'humidity_min', h.h_min, 'humidity_max', h.h_max, 'humidity_avg', h.h_avg
          ) ORDER BY h.hour ASC), '[]'::jsonb)
@@ -191,7 +222,8 @@ BEGIN
     'success', true,
     'data', jsonb_build_object(
       'device_id', v_device.id, 'device_name', v_device.device_name, 'location', v_device.location,
-      'from', p_from, 'to', p_to, 'hours', v_rows),
+      'from', to_char(p_from AT TIME ZONE 'UTC', 'YYYY-MM-DD"T"HH24:MI:SS.MS"Z"'),
+      'to', to_char(p_to AT TIME ZONE 'UTC', 'YYYY-MM-DD"T"HH24:MI:SS.MS"Z"'), 'hours', v_rows),
     'metadata', jsonb_build_object('row_count', jsonb_array_length(v_rows), 'bucket', 'hour', 'timezone', 'UTC'));
 END $function$;
 ALTER FUNCTION public.get_sensor_hourly(uuid, timestamptz, timestamptz) OWNER TO supabase_admin;

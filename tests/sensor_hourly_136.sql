@@ -24,6 +24,11 @@ BEGIN
      OR NOT has_function_privilege('service_role', 'warehouse_maintenance.rollup_sensor_hourly(timestamptz,boolean)', 'EXECUTE') THEN
     RAISE EXCEPTION 'sensor hourly: function grants are wrong';
   END IF;
+  IF EXISTS (SELECT 1 FROM unnest(ARRAY['sensor_hourly_starts(timestamptz)', 'sensor_hourly_window(timestamptz)', 'sensor_hourly_aggregate(timestamptz)']) f
+       WHERE has_function_privilege('authenticated', 'warehouse_maintenance.' || f, 'EXECUTE') OR has_function_privilege('anon', 'warehouse_maintenance.' || f, 'EXECUTE')
+          OR NOT has_function_privilege('service_role', 'warehouse_maintenance.' || f, 'EXECUTE')) THEN
+    RAISE EXCEPTION 'sensor hourly: the roll-up helpers are not for service_role alone';
+  END IF;
   IF NOT (SELECT prosrc ~ 'authorize_rpc\(''get_sensor_hourly''' FROM pg_proc WHERE oid = 'public.get_sensor_hourly(uuid,timestamptz,timestamptz)'::regprocedure) THEN
     RAISE EXCEPTION 'sensor hourly: get_sensor_hourly does not call authorize_rpc first';
   END IF;
@@ -72,8 +77,8 @@ SELECT pg_temp.sh_assert(NOT EXISTS (SELECT 1 FROM public.sensor_hourly WHERE ho
 -- Idempotent: the next run changes no value (it only reads the last rolled hour again).
 SELECT md5(string_agg(h::text, '|' ORDER BY device_id, hour)) AS before_hash FROM public.sensor_hourly h \gset
 SELECT warehouse_maintenance.rollup_sensor_hourly('2026-11-01T10:30:00Z') AS again \gset
-SELECT pg_temp.sh_assert(:again <= 2 AND (SELECT md5(string_agg(h::text, '|' ORDER BY device_id, hour)) FROM public.sensor_hourly h) = :'before_hash'
-  AND (SELECT count(*) FROM public.sensor_hourly) = 4, 'a second run changes nothing');
+SELECT pg_temp.sh_assert(:again = 4 AND (SELECT md5(string_agg(h::text, '|' ORDER BY device_id, hour)) FROM public.sensor_hourly h) = :'before_hash'
+  AND (SELECT count(*) FROM public.sensor_hourly) = 4, 'a second run re-rolls the 4 device-hours of the last 31 days and changes nothing');
 -- A late reading in the last rolled hour is folded in.
 INSERT INTO public.sensor_readings(device_id, temperature, humidity, measured_at)
  VALUES ('00000000-0000-4000-8000-0000000136d1', 1.00, 50.00, '2026-11-01T09:30:00Z');
@@ -81,6 +86,90 @@ SELECT warehouse_maintenance.rollup_sensor_hourly('2026-11-01T10:30:00Z');
 SELECT pg_temp.sh_assert(EXISTS (SELECT 1 FROM public.sensor_hourly WHERE device_id = '00000000-0000-4000-8000-0000000136d1'
     AND hour = '2026-11-01T09:00:00Z' AND n = 2 AND t_min = 1.00 AND t_max = 6.00 AND t_avg = 3.50 AND h_min = 50.00 AND h_max = 55.00 AND h_avg = 52.50),
   'a late reading in the last rolled hour is folded in');
+-- A reading that arrives up to 30 days late is folded in whatever hour it belongs to: 3 hours before the last rolled hour (a new hour), and
+-- into an hour that was rolled yesterday.
+INSERT INTO public.sensor_readings(device_id, temperature, humidity, measured_at) VALUES
+ ('00000000-0000-4000-8000-0000000136d1', 9.00, 80.00, '2026-11-01T06:30:00Z'),
+ ('00000000-0000-4000-8000-0000000136d1', 9.00, 80.00, '2026-10-31T08:45:00Z');
+SELECT warehouse_maintenance.rollup_sensor_hourly('2026-11-01T10:30:00Z');
+SELECT pg_temp.sh_assert(EXISTS (SELECT 1 FROM public.sensor_hourly WHERE device_id = '00000000-0000-4000-8000-0000000136d1'
+    AND hour = '2026-11-01T06:00:00Z' AND n = 1 AND t_avg = 9.00 AND h_avg = 80.00), 'a reading 3 hours before the last rolled hour gets its hour');
+SELECT pg_temp.sh_assert(EXISTS (SELECT 1 FROM public.sensor_hourly WHERE device_id = '00000000-0000-4000-8000-0000000136d1'
+    AND hour = '2026-10-31T08:00:00Z' AND n = 4 AND t_max = 9.00 AND h_max = 80.00), 'a reading for an hour rolled yesterday is folded in');
+-- The hour that has just ended is rolled at its end (boundary).
+SELECT warehouse_maintenance.rollup_sensor_hourly('2026-11-01T11:00:00Z');
+SELECT pg_temp.sh_assert(EXISTS (SELECT 1 FROM public.sensor_hourly WHERE device_id = '00000000-0000-4000-8000-0000000136d1'
+    AND hour = '2026-11-01T10:00:00Z' AND n = 1 AND t_avg = 7.00), 'at 11:00:00 the hour 10:00 is rolled');
+-- An hour whose raw rows were partly removed never replaces a larger count.
+DELETE FROM public.sensor_readings WHERE measured_at = '2026-11-01T09:30:00Z';
+UPDATE public.sensor_hourly SET n = 2, t_min = 1.00 WHERE device_id = '00000000-0000-4000-8000-0000000136d1' AND hour = '2026-11-01T10:00:00Z';
+SELECT warehouse_maintenance.rollup_sensor_hourly('2026-11-01T11:00:00Z');
+SELECT pg_temp.sh_assert(EXISTS (SELECT 1 FROM public.sensor_hourly WHERE device_id = '00000000-0000-4000-8000-0000000136d1'
+    AND hour = '2026-11-01T10:00:00Z' AND n = 2 AND t_min = 1.00), 'a smaller recount does not replace a larger row');
+ROLLBACK;
+
+-- 1b. The same under a session time zone of Asia/Kolkata (hours are UTC hours whatever the session says).
+BEGIN;
+SET LOCAL TimeZone = 'Asia/Kolkata';
+CREATE FUNCTION pg_temp.sh_assert(ok boolean, label text) RETURNS void LANGUAGE plpgsql AS $$
+BEGIN IF NOT COALESCE(ok, false) THEN RAISE EXCEPTION 'sensor hourly: %', label; END IF; END $$;
+DELETE FROM public.sensor_readings;
+DELETE FROM public.sensor_hourly;
+INSERT INTO public.sensor_devices(id, device_name, location) VALUES
+ ('00000000-0000-4000-8000-0000000136d1', 'Hourly Chamber One', 'Chamber 1'),
+ ('00000000-0000-4000-8000-0000000136d2', 'Hourly Chamber Two', 'Chamber 2');
+INSERT INTO public.sensor_readings(device_id, temperature, humidity, measured_at) VALUES
+ ('00000000-0000-4000-8000-0000000136d1', 3.00, 60.00, '2026-10-31T08:05:00Z'),
+ ('00000000-0000-4000-8000-0000000136d1', 5.00, 70.00, '2026-10-31T08:25:00Z'),
+ ('00000000-0000-4000-8000-0000000136d1', 4.00, 65.50, '2026-10-31T08:55:00Z'),
+ ('00000000-0000-4000-8000-0000000136d1', 2.50, NULL,  '2026-10-31T09:10:00Z'),
+ ('00000000-0000-4000-8000-0000000136d1', 6.00, 55.00, '2026-11-01T09:59:00Z'),
+ ('00000000-0000-4000-8000-0000000136d1', 7.00, 56.00, '2026-11-01T10:05:00Z'),
+ ('00000000-0000-4000-8000-0000000136d2', 10.00, NULL, '2026-10-31T08:30:00Z'),
+ ('00000000-0000-4000-8000-0000000136d2', 12.00, NULL, '2026-10-31T08:40:00Z');
+
+-- The preview counts and writes nothing: 3 hours of device one and 1 of device two; 10:30 is inside the hour 10:00, which is not over.
+SELECT pg_temp.sh_assert(warehouse_maintenance.rollup_sensor_hourly('2026-11-01T10:30:00Z', false) = 4
+  AND (SELECT count(*) FROM public.sensor_hourly) = 0, 'preview counts 4 hours and writes nothing');
+SELECT pg_temp.sh_assert(warehouse_maintenance.rollup_sensor_hourly('2026-11-01T10:30:00Z') = 4, 'apply rolls 4 hours');
+SELECT pg_temp.sh_assert((SELECT count(*) FROM public.sensor_hourly) = 4, 'four rows');
+-- Values per device and hour.
+SELECT pg_temp.sh_assert(EXISTS (SELECT 1 FROM public.sensor_hourly WHERE device_id = '00000000-0000-4000-8000-0000000136d1'
+    AND hour = '2026-10-31T08:00:00Z' AND n = 3 AND t_min = 3.00 AND t_max = 5.00 AND t_avg = 4.00
+    AND h_min = 60.00 AND h_max = 70.00 AND h_avg = 65.17), 'device one 08:00: n, min, max, avg of both values');
+SELECT pg_temp.sh_assert(EXISTS (SELECT 1 FROM public.sensor_hourly WHERE device_id = '00000000-0000-4000-8000-0000000136d1'
+    AND hour = '2026-10-31T09:00:00Z' AND n = 1 AND t_min = 2.50 AND t_max = 2.50 AND t_avg = 2.50
+    AND h_min IS NULL AND h_max IS NULL AND h_avg IS NULL), 'device one 09:00: no humidity gives NULLs');
+SELECT pg_temp.sh_assert(EXISTS (SELECT 1 FROM public.sensor_hourly WHERE device_id = '00000000-0000-4000-8000-0000000136d1'
+    AND hour = '2026-11-01T09:00:00Z' AND n = 1 AND t_avg = 6.00 AND h_avg = 55.00), 'device one on 1 Nov 09:00');
+SELECT pg_temp.sh_assert(EXISTS (SELECT 1 FROM public.sensor_hourly WHERE device_id = '00000000-0000-4000-8000-0000000136d2'
+    AND hour = '2026-10-31T08:00:00Z' AND n = 2 AND t_min = 10.00 AND t_max = 12.00 AND t_avg = 11.00), 'device two has its own row');
+-- The hour in progress is not rolled, at 10:59:59 as at 10:30.
+SELECT pg_temp.sh_assert(NOT EXISTS (SELECT 1 FROM public.sensor_hourly WHERE hour = '2026-11-01T10:00:00Z'), 'the current partial hour is not rolled');
+SELECT warehouse_maintenance.rollup_sensor_hourly('2026-11-01T10:59:59Z');
+SELECT pg_temp.sh_assert(NOT EXISTS (SELECT 1 FROM public.sensor_hourly WHERE hour = '2026-11-01T10:00:00Z'), 'still not rolled at 10:59:59');
+-- Idempotent: the next run changes no value (it only reads the last rolled hour again).
+SELECT md5(string_agg(h::text, '|' ORDER BY device_id, hour)) AS before_hash FROM public.sensor_hourly h \gset
+SELECT warehouse_maintenance.rollup_sensor_hourly('2026-11-01T10:30:00Z') AS again \gset
+SELECT pg_temp.sh_assert(:again = 4 AND (SELECT md5(string_agg(h::text, '|' ORDER BY device_id, hour)) FROM public.sensor_hourly h) = :'before_hash'
+  AND (SELECT count(*) FROM public.sensor_hourly) = 4, 'a second run re-rolls the 4 device-hours of the last 31 days and changes nothing');
+-- A late reading in the last rolled hour is folded in.
+INSERT INTO public.sensor_readings(device_id, temperature, humidity, measured_at)
+ VALUES ('00000000-0000-4000-8000-0000000136d1', 1.00, 50.00, '2026-11-01T09:30:00Z');
+SELECT warehouse_maintenance.rollup_sensor_hourly('2026-11-01T10:30:00Z');
+SELECT pg_temp.sh_assert(EXISTS (SELECT 1 FROM public.sensor_hourly WHERE device_id = '00000000-0000-4000-8000-0000000136d1'
+    AND hour = '2026-11-01T09:00:00Z' AND n = 2 AND t_min = 1.00 AND t_max = 6.00 AND t_avg = 3.50 AND h_min = 50.00 AND h_max = 55.00 AND h_avg = 52.50),
+  'a late reading in the last rolled hour is folded in');
+-- A reading that arrives up to 30 days late is folded in whatever hour it belongs to: 3 hours before the last rolled hour (a new hour), and
+-- into an hour that was rolled yesterday.
+INSERT INTO public.sensor_readings(device_id, temperature, humidity, measured_at) VALUES
+ ('00000000-0000-4000-8000-0000000136d1', 9.00, 80.00, '2026-11-01T06:30:00Z'),
+ ('00000000-0000-4000-8000-0000000136d1', 9.00, 80.00, '2026-10-31T08:45:00Z');
+SELECT warehouse_maintenance.rollup_sensor_hourly('2026-11-01T10:30:00Z');
+SELECT pg_temp.sh_assert(EXISTS (SELECT 1 FROM public.sensor_hourly WHERE device_id = '00000000-0000-4000-8000-0000000136d1'
+    AND hour = '2026-11-01T06:00:00Z' AND n = 1 AND t_avg = 9.00 AND h_avg = 80.00), 'a reading 3 hours before the last rolled hour gets its hour');
+SELECT pg_temp.sh_assert(EXISTS (SELECT 1 FROM public.sensor_hourly WHERE device_id = '00000000-0000-4000-8000-0000000136d1'
+    AND hour = '2026-10-31T08:00:00Z' AND n = 4 AND t_max = 9.00 AND h_max = 80.00), 'a reading for an hour rolled yesterday is folded in');
 -- The hour that has just ended is rolled at its end (boundary).
 SELECT warehouse_maintenance.rollup_sensor_hourly('2026-11-01T11:00:00Z');
 SELECT pg_temp.sh_assert(EXISTS (SELECT 1 FROM public.sensor_hourly WHERE device_id = '00000000-0000-4000-8000-0000000136d1'
@@ -173,6 +262,52 @@ SELECT pg_temp.sh_assert((SELECT count(*) FROM public.sensor_hourly) = 2005 AND 
   'the next run summarizes the rest and removes the raw rows');
 ROLLBACK;
 
+-- 4b. Two devices: a device that is rolled up to yesterday must not let the raw readings of a new device with a long backlog go.
+BEGIN;
+CREATE FUNCTION pg_temp.sh_assert(ok boolean, label text) RETURNS void LANGUAGE plpgsql AS $$
+BEGIN IF NOT COALESCE(ok, false) THEN RAISE EXCEPTION 'sensor hourly: %', label; END IF; END $$;
+DELETE FROM public.sensor_readings;
+DELETE FROM public.sensor_hourly;
+INSERT INTO public.sensor_devices(id, device_name) VALUES ('00000000-0000-4000-8000-0000000136da', 'Hourly A'), ('00000000-0000-4000-8000-0000000136db', 'Hourly B');
+-- A is up to date: rolled up to the hour of 31 October 08:00.
+INSERT INTO public.sensor_readings(device_id, temperature, measured_at) VALUES
+ ('00000000-0000-4000-8000-0000000136da', 3.00, '2026-10-30T10:10:00Z'), ('00000000-0000-4000-8000-0000000136da', 5.00, '2026-10-30T10:40:00Z'),
+ ('00000000-0000-4000-8000-0000000136da', 4.00, '2026-10-31T08:10:00Z');
+SELECT warehouse_maintenance.rollup_sensor_hourly('2026-11-01T10:30:00Z') AS a_rolled \gset
+SELECT pg_temp.sh_assert(:a_rolled = 2, 'A is rolled: ' || :a_rolled);
+-- B is new, with 2,005 hours of raw readings, all older than the 90 days (from 1 April).
+INSERT INTO public.sensor_readings(device_id, temperature, measured_at)
+  SELECT '00000000-0000-4000-8000-0000000136db', 4.00, timestamptz '2026-04-01T00:10:00Z' + g * interval '1 hour' FROM generate_series(0, 2004) g;
+SELECT warehouse_maintenance.run_database_retention('2026-11-01T10:30:00Z', true);
+SELECT pg_temp.sh_assert((SELECT count(*) FROM public.sensor_hourly WHERE device_id = '00000000-0000-4000-8000-0000000136db') = 2000
+  AND (SELECT count(*) FROM public.sensor_readings WHERE device_id = '00000000-0000-4000-8000-0000000136db') = 5,
+  'B: 2,000 hours summarized and the 5 raw rows not summarized yet are kept');
+SELECT warehouse_maintenance.run_database_retention('2026-11-01T10:30:00Z', true);
+SELECT pg_temp.sh_assert((SELECT count(*) FROM public.sensor_hourly WHERE device_id = '00000000-0000-4000-8000-0000000136db') = 2005
+  AND (SELECT count(*) FROM public.sensor_readings WHERE device_id = '00000000-0000-4000-8000-0000000136db') = 0,
+  'B catches up on the next run and its raw rows go');
+SELECT pg_temp.sh_assert((SELECT count(*) FROM public.sensor_hourly WHERE device_id = '00000000-0000-4000-8000-0000000136da') = 2
+  AND (SELECT count(*) FROM public.sensor_readings WHERE device_id = '00000000-0000-4000-8000-0000000136da') = 3
+  AND EXISTS (SELECT 1 FROM public.sensor_hourly WHERE device_id = '00000000-0000-4000-8000-0000000136da' AND hour = '2026-10-30T10:00:00Z' AND n = 2 AND t_avg = 4.00),
+  'A is unchanged');
+ROLLBACK;
+
+-- 4c. A summary policy shorter than the raw one does not strand raw readings: the raw rows go first, then the old summary rows.
+BEGIN;
+CREATE FUNCTION pg_temp.sh_assert(ok boolean, label text) RETURNS void LANGUAGE plpgsql AS $$
+BEGIN IF NOT COALESCE(ok, false) THEN RAISE EXCEPTION 'sensor hourly: %', label; END IF; END $$;
+DELETE FROM public.sensor_readings;
+DELETE FROM public.sensor_hourly;
+INSERT INTO public.sensor_devices(id, device_name) VALUES ('00000000-0000-4000-8000-0000000136dc', 'Hourly Short Policy');
+UPDATE warehouse_maintenance.retention_policy SET days = 30 WHERE key = 'sensor_hourly';
+-- 104 days old: older than the raw policy (90 days) and than the summary policy (30 days).
+INSERT INTO public.sensor_readings(device_id, temperature, measured_at) VALUES ('00000000-0000-4000-8000-0000000136dc', 5.00, '2026-07-20T12:10:00Z');
+SELECT warehouse_maintenance.run_database_retention('2026-11-01T10:30:00Z', true) AS applied \gset
+SELECT pg_temp.sh_assert((SELECT count(*) FROM public.sensor_readings) = 0 AND (SELECT count(*) FROM public.sensor_hourly) = 0
+  AND (:'applied'::jsonb#>>'{rows,sensor_readings}')::int = 1 AND (:'applied'::jsonb#>>'{rows,sensor_hourly}')::int = 1,
+  'the raw reading is gone and so is its summary row: ' || :'applied');
+ROLLBACK;
+
 -- 5. get_sensor_hourly: grants, roles, range errors, order.
 BEGIN;
 CREATE FUNCTION pg_temp.sh_assert(ok boolean, label text) RETURNS void LANGUAGE plpgsql AS $$
@@ -232,8 +367,8 @@ SELECT pg_temp.sh_assert(:'answer'::jsonb->>'success'='true'
   AND jsonb_array_length(:'answer'::jsonb#>'{data,hours}')=3
   AND :'answer'::jsonb#>>'{metadata,row_count}'='3' AND :'answer'::jsonb#>>'{metadata,bucket}'='hour' AND :'answer'::jsonb#>>'{metadata,timezone}'='UTC',
   'staff read the range (from included, to excluded): '||:'answer');
-SELECT pg_temp.sh_assert(:'answer'::jsonb#>>'{data,hours,0,hour}'='2026-10-02T03:00:00+00:00'
-  AND :'answer'::jsonb#>>'{data,hours,1,hour}'='2026-10-02T04:00:00+00:00' AND :'answer'::jsonb#>>'{data,hours,2,hour}'='2026-10-02T05:00:00+00:00',
+SELECT pg_temp.sh_assert(:'answer'::jsonb#>>'{data,hours,0,hour}'='2026-10-02T03:00:00Z'
+  AND :'answer'::jsonb#>>'{data,hours,1,hour}'='2026-10-02T04:00:00Z' AND :'answer'::jsonb#>>'{data,hours,2,hour}'='2026-10-02T05:00:00Z',
   'rows are ordered by hour: '||:'answer');
 SELECT pg_temp.sh_assert((:'answer'::jsonb#>>'{data,hours,0,sample_count}')::int=12 AND (:'answer'::jsonb#>>'{data,hours,0,temperature_min}')::numeric=2.5
   AND (:'answer'::jsonb#>>'{data,hours,0,temperature_max}')::numeric=3.5 AND (:'answer'::jsonb#>>'{data,hours,0,temperature_avg}')::numeric=3.0
@@ -241,6 +376,13 @@ SELECT pg_temp.sh_assert((:'answer'::jsonb#>>'{data,hours,0,sample_count}')::int
   AND (:'answer'::jsonb#>>'{data,hours,2,humidity_min}')::numeric=60 AND (:'answer'::jsonb#>>'{data,hours,2,humidity_max}')::numeric=70
   AND (:'answer'::jsonb#>>'{data,hours,2,humidity_avg}')::numeric=65,
   'row fields: '||:'answer');
+-- The times are UTC whatever the session time zone is.
+SET LOCAL TimeZone = 'Asia/Kolkata';
+SELECT pg_temp.sh_call($q$SELECT public.get_sensor_hourly('00000000-0000-4000-8000-0000000136d4','2026-10-02T03:00:00Z','2026-10-02T06:00:00Z')$q$) AS answer \gset
+SELECT pg_temp.sh_assert(:'answer'::jsonb#>>'{data,hours,0,hour}'='2026-10-02T03:00:00Z' AND :'answer'::jsonb#>>'{data,hours,2,hour}'='2026-10-02T05:00:00Z'
+  AND :'answer'::jsonb#>>'{data,from}'='2026-10-02T03:00:00.000Z' AND :'answer'::jsonb#>>'{data,to}'='2026-10-02T06:00:00.000Z',
+  'times are UTC under a session time zone of Asia/Kolkata: '||:'answer');
+SET LOCAL TimeZone = 'UTC';
 -- An empty range gives an empty list, an unknown device is answered.
 SELECT pg_temp.sh_call($q$SELECT public.get_sensor_hourly('00000000-0000-4000-8000-0000000136d4','2026-09-01T00:00:00Z','2026-09-02T00:00:00Z')$q$) AS answer \gset
 SELECT pg_temp.sh_assert(:'answer'::jsonb->>'success'='true' AND :'answer'::jsonb#>'{data,hours}'='[]'::jsonb, 'an empty range gives an empty list: '||:'answer');

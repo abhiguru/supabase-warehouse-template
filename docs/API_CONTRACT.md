@@ -1438,7 +1438,7 @@ What the app reads:
   included, `p_to` excluded; rows are ordered by `hour`. Answer:
   `{success:true, data:{device_id, device_name, location, from, to, hours:[{hour, sample_count, temperature_min,
   temperature_max, temperature_avg, humidity_min, humidity_max, humidity_avg}]}, metadata:{row_count, bucket:'hour',
-  timezone:'UTC'}}`; `hour` is an ISO timestamp (`2026-10-02T03:00:00+00:00`), the figures are numbers with two decimals, and a
+  timezone:'UTC'}}`; `hour` is always UTC, whatever the session time zone: `2026-10-02T03:00:00Z` (`from` and `to` echo the range as `2026-10-02T03:00:00.000Z`), the figures are numbers with two decimals, and a
   temperature or humidity that no reading of the hour carried is `null`. Hours without readings have no row. A 200
   `{success:false, error, error_code}` for `INVALID_RANGE` (a null bound, or `p_to` not after `p_from`), `RANGE_TOO_LARGE` (more
   than 400 days) and `DEVICE_NOT_FOUND`.
