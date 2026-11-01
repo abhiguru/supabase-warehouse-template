@@ -90,6 +90,7 @@ The current role table comes first; the sections after it record how each role's
 | The order effect of a dispatch or GRN save before it is made (`preview_create_dispatch`, `preview_update_dispatch`, `preview_update_grn`, migration 128) | yes | yes | yes | **no** (`Staff access required`) |
 | The order effect of a GRN delete before it is made (`preview_delete_grn`, migration 128) | yes | yes | **no** (`Staff access required`) | no |
 | A customer's order read without making one (`get_customer_order`, migration 128): the customer's own for a customer account | yes | yes | yes | own customer only |
+| Which items have no rate yet (`get_items_without_rate`, migration 133) | yes | yes | yes | **no** (`Staff access required`) |
 | Read the rack presets of the GRN item form (`get_rack_presets`, migration 131) | yes | yes | yes | **no** (`Staff access required`) |
 | Change the rack presets (`set_rack_presets`, migration 131) | yes | yes | **no** (`Staff access required`) | no |
 | Supervisor's mobile number on a receipt or dispatch | yes | yes | yes | **no** (name only) |

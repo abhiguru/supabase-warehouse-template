@@ -76,6 +76,7 @@ DECLARE
     v_order_before jsonb;
     v_order_lots uuid[];
     v_order_effects jsonb;
+    v_registration_sent boolean := false;
 BEGIN
   PERFORM warehouse_security.authorize_rpc('update_grn',jsonb_build_object('p_grn_id',p_grn_id,'p_customer_id',p_customer_id));
   -- Migration 90: rates typed on the GRN sheet are an administrator's or a supervisor's.
@@ -99,7 +100,9 @@ BEGIN
   END IF;
     -- Migration 121 (D13): the registration fits the column (20 characters), as the item name and packaging fit theirs.
     -- Migration 130: surrounding white space (spaces, tabs, line breaks, non-breaking spaces) is not stored, a blank one is NULL; the length is checked on the trimmed value.
-    p_registration := NULLIF(regexp_replace(p_registration, '^[\s ]+|[\s ]+$', '', 'g'), '');
+    -- A blank that is sent clears the vehicle; an omitted one (NULL) keeps it.
+    v_registration_sent := p_registration IS NOT NULL;
+    p_registration := NULLIF(regexp_replace(regexp_replace(p_registration, '^[\s ]+|[\s ]+$', '', 'g'), '[\s ]+', ' ', 'g'), '');
     IF p_registration IS NOT NULL AND char_length(p_registration) > 20 THEN
         RETURN warehouse_security.grn_rate_failure('registration_too_long',
           'Registration can have at most 20 characters', jsonb_build_object('limit', 20));
@@ -439,7 +442,7 @@ BEGIN
             sender_name = COALESCE(p_sender_name, sender_name),
             supervisor_id = COALESCE(p_supervisor_id, supervisor_id),
             supervisor_name = COALESCE(p_supervisor_name, supervisor_name),
-            registration = COALESCE(p_registration, registration),
+            registration = CASE WHEN v_registration_sent THEN p_registration ELSE registration END,
             note = COALESCE(p_note, note),
             leon = COALESCE(p_leon, leon),
             pricing_mode = COALESCE(p_pricing_mode, pricing_mode),

@@ -17,6 +17,8 @@ the subsequent private upload.
 
 `generate-report-pdf` renders one of the seven report screens
 (`{ "report": "...", "customer_id"?, "from"?, "to"?, "sort"?, "lang"?, "status"?, "invoicing"?, "bucket"?, "search"? }`;
+`lang` is still accepted (`en` or `gu`, default `en`) for any caller that sends it, but the app sends none: report PDFs are English only, like every other
+document, and the Gujarati label tables stay in `functions/_shared/report-definitions.ts` unused by the app.
 `status` is `paid` or `pending` and only for the invoice history of one
 customer; `invoicing` is `invoiced` or `not_invoiced` and only for the GRN
 activity of one customer; `bucket` is `0-120`, `121-240`, `241-364` or

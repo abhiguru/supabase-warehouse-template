@@ -1143,6 +1143,8 @@ deploy; nothing purges `audit_log`. `save_grn` and `update_grn` also refuse a re
 `varchar(20)`; before, a database text). `warehouse_security.ascii_digits(text)` turns Gujarati, Devanagari, Arabic-Indic and extended
 Arabic-Indic digits into 0-9; `save_grn` and `update_grn` store `rack` and `package_mark` through it. Rows already stored are not converted.
 
+The vehicle number (`registration`) of `save_grn`, `update_grn`, `create_dispatch_with_stock_check` and `update_dispatch_smart` is cleaned the same way (migration 130 and the definition files): spaces, tabs, line breaks and non-breaking spaces at either end are removed, each run of white space inside becomes one space (`GJ01   AB1234` is stored as `GJ01 AB1234`), and a blank value is stored as NULL. The 20-character limit counts the cleaned value. On `update_grn` and `update_dispatch_smart`, a vehicle that is sent blank clears the stored one (NULL); a call that leaves the vehicle out (parameter omitted, key absent, or JSON null on a dispatch) keeps it. Rows already stored are not converted.
+
 ### GRN lists by receipt, and low stock (migration 98, 2026-10-18)
 
 `get_all_grn_items(p_date_from, p_date_to, p_filters, p_sort_by, p_sort_order, p_limit, p_offset)` (staff;
@@ -1251,7 +1253,7 @@ deleting that line as a create does, and records it in `cart_quantity_consumed` 
 dispatch's `updated_at` too (migration 122), so the answered token is always new. `delete_dispatch_with_order_cleanup` gives back
 `LEAST(cart_quantity_consumed, disp_qty)` per line, and writes the `dispatch_deleted` entry of the order's change log for **every** cart
 that got something back (`restored_items` lists the lines actually given back to it, with the amount given back; the source order
-keeps its entry, empty when nothing went back, and its status reset as before). The order change log (`get_order_change_log`, unchanged)
+keeps its entry, empty when nothing went back, and its status reset as before). The order change log (`get_order_change_log`; its entries changed in migrations 128 and 133, see "Order history counts" below)
 also shows what a dispatch took (`order_revisions` action `auto_quantity_reduction`, new format `{action, timestamp, by, dispatch_id,
 dispatch_no, grn_item_id, previous_quantity, new_quantity}`, from create from an order, a direct create that reduces a line and an
 edit that raises) and what an edit gave back (one `UPDATE` entry per order, `changes.source = 'dispatch_edit'`). A dispatch-driven change
@@ -1332,6 +1334,12 @@ document can be entered again; `I1` and `I0001` are different strings. A number 
 `confirm_dispatch_image_upload` and `confirm_grn_image_upload` lock the pending row and answer `{success:false, code:'NOT_FOUND'}` when
 it went away; `update_order_item_quantity` and `remove_item_from_order` answer `Order item not found` for a cart line that no
 longer exists (the guard lets a missing line through; a line of another customer is still refused with `Customer access denied`).
+
+### Searching a customer's items for an order (migration 130)
+
+`search_customer_items_for_order`: a search of only digits (search type `auto`, no weight given) finds the lots of that exact weight and also the
+lots whose item name, package mark or GRN number contains the digits (`4455` finds the mark `MK4455`; `50` still lists the 50 kg lots). The type
+`weight`, asked for by name, stays an exact-weight search. The count follows the same rule.
 
 ## Invoices and invoice data
 
@@ -1465,7 +1473,10 @@ the service role only and nothing called them.
 
 ### Order history counts (migration 133)
 
-`get_order_change_log` (same arguments and shape):
+`get_order_change_log` (same arguments and shape). Since migration 128 an entry of a quantity change or of a dispatch reduction looks up the GRN
+quantity, rack, weight and packaging by the entry's own GRN number, item name and package mark (before, any line of the GRN could be returned), and an
+entry whose previous and new quantity are equal is left out (every order save writes the whole cart, so an unchanged line used to appear as "30 -> 30"); the
+first appearance of a line stays, and the count and the paging follow the filter. Migration 133 adds:
 
 - An entry with `change_details.action = 'dispatch_deleted'` now also carries `change_details.total_quantity_restored`: the bags given back
   to the line that entry is about (one entry per restored line; the same number as `restoration_details.quantity_restored`). The app reads
@@ -1477,8 +1488,7 @@ the service role only and nothing called them.
 `get_grn_prefixes_with_stock(p_customer_id uuid DEFAULT NULL)` (migration 133): unchanged arguments and shape (`data: [{prefix, grn_count}]`, ordered by prefix).
 `prefix` is now the whole run of non-digit characters at the start of the GRN number, trimmed and upper-cased: `DV0102` gives `DV`, `X0001` gives `X`, `T-12` gives `T-`,
 `G 14` gives `G`, `dv01` joins `DV`, `GRN/26-27/0001` gives `GRN/`. A number that starts with a digit has no such run: its prefix is its first character (`0001` gives `0`,
-`26-27/0001` gives `2`, as before 133), so no GRN with stock is left without a button. A prefix is a real leading part of the number, so the app's case-insensitive
-"contains" search for it finds the GRNs. An older app that shows the prefix as given keeps working.
+`26-27/0001` gives `2`, as before 133), so no GRN with stock is left without a button. A prefix is a real leading part of the number, so the app's search for it (the anchored, case-insensitive pattern `<prefix>%<digits>%`, not a "contains" search) finds the GRNs. An older app that shows the prefix as given keeps working.
 
 ### `get_items_without_rate(p_customer_id uuid, p_item_ids uuid[], p_on date DEFAULT today (India day), p_weights integer[] DEFAULT NULL, p_pricing_mode text DEFAULT 'monthly', p_grn_id uuid DEFAULT NULL)` (migration 133)
 

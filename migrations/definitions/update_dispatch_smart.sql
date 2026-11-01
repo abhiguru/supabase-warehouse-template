@@ -56,6 +56,7 @@ DECLARE
     v_order_before jsonb;
     v_order_lots uuid[];
     v_order_effects jsonb;
+    v_registration_sent boolean := false;
 BEGIN
   PERFORM warehouse_security.authorize_rpc('update_dispatch_smart',jsonb_build_object('p_dispatch_id',p_dispatch_id));
     -- The list-refresh lock comes before any row lock (migration 46).
@@ -136,7 +137,8 @@ BEGIN
     -- Migration 130 (D17): the vehicle number fits the column (20 characters, as on a GRN); beyond that a plain refusal.
     -- Migration 130: surrounding white space (spaces, tabs, line breaks, non-breaking spaces) is not stored, a blank one is NULL; the length is checked on the trimmed value.
     IF jsonb_typeof(p_dispatch_data->'registration') = 'string' THEN
-        p_dispatch_data := jsonb_set(p_dispatch_data, '{registration}', COALESCE(to_jsonb(NULLIF(regexp_replace(p_dispatch_data->>'registration', '^[\s ]+|[\s ]+$', '', 'g'), '')), 'null'::jsonb));
+        v_registration_sent := true;
+        p_dispatch_data := jsonb_set(p_dispatch_data, '{registration}', COALESCE(to_jsonb(NULLIF(regexp_replace(regexp_replace(p_dispatch_data->>'registration', '^[\s ]+|[\s ]+$', '', 'g'), '[\s ]+', ' ', 'g'), '')), 'null'::jsonb));
     END IF;
     IF p_dispatch_data->>'registration' IS NOT NULL AND char_length(p_dispatch_data->>'registration') > 20 THEN
         RETURN warehouse_security.grn_rate_failure('registration_too_long',
@@ -349,7 +351,7 @@ BEGIN
         UPDATE dispatch SET
             disp_no = COALESCE(p_dispatch_data->>'disp_no', disp_no),
             disp_date = CASE WHEN v_day_changed THEN v_sent_day::timestamptz ELSE disp_date END,
-            registration = COALESCE(p_dispatch_data->>'registration', registration),
+            registration = CASE WHEN v_registration_sent THEN p_dispatch_data->>'registration' ELSE registration END,
             customer_id = COALESCE((p_dispatch_data->>'customer_id')::uuid, customer_id),
             -- The stored names stay unless the customer or the supervisor changes; then they are the master
             -- tables' names, never the client's and never the old person's (migration 120). The old values are

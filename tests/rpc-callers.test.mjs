@@ -53,6 +53,23 @@ test('every RPC the app calls is in the list of rpc_callers_exist.sql', { skip: 
   } finally { rmSync(scratch, { recursive: true, force: true }); }
 });
 
+// The scanner cannot see a call made with fetch to `/rest/v1/rpc/<name>` (the print-job calls do): read those paths from the app's own files.
+test('every RPC the app reaches by a fetch path is in the list of rpc_callers_exist.sql', { skip: !process.env.MOBILE_CHECKOUT || !existsSync(process.env.MOBILE_CHECKOUT || '') }, () => {
+  const called = new Set();
+  const walk = (dir) => {
+    if (!existsSync(dir)) return;
+    for (const entry of readdirSync(dir, { withFileTypes: true })) {
+      const path = join(dir, entry.name);
+      if (entry.isDirectory()) { if (entry.name !== '__tests__' && entry.name !== 'node_modules') walk(path); continue; }
+      if (!/\.(ts|tsx|js|jsx)$/.test(entry.name) || /\.test\./.test(entry.name)) continue;
+      for (const m of readFileSync(path, 'utf8').matchAll(/\/rest\/v1\/rpc\/([a-z_0-9]+)/g)) called.add(m[1]);
+    }
+  };
+  for (const dir of ['src', 'app']) walk(join(process.env.MOBILE_CHECKOUT, dir));
+  assert.ok(called.has('get_print_jobs'), 'the fetch-path calls were found: ' + [...called]);
+  assert.deepEqual([...called].filter(name => !appListed.has(name)), []);
+});
+
 // The scanner reads DROP FUNCTION: a migration that drops a function the app calls makes it exit 1 and name the function. (It used to
 // read CREATE statements only, so such a drop passed.) Same gate as above: needs the app's TypeScript.
 test('the contract scanner reports a function the app calls that a later migration drops', { skip: !process.env.MOBILE_CHECKOUT || !existsSync(process.env.MOBILE_CHECKOUT || '') }, () => {
