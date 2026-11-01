@@ -25,6 +25,10 @@ set -euo pipefail
 umask 077
 ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 source_db="${1:?usage: verify-restore-drill.sh MIGRATION_TEST_CONTAINER}"
+# Other runs on the same host (another checkout's tests) start restore containers with the same purpose label: this run finds its own by a
+# label of its own, which verify-restore.sh adds from this variable.
+export WAREHOUSE_RESTORE_RUN_ID="drill-$$-$(date +%s%N)"
+own_containers() { docker ps "$@" --filter label=purpose=warehouse-restore-test --filter "label=warehouse.restore-run=$WAREHOUSE_RESTORE_RUN_ID"; }
 sql() { docker exec -i -e PGPASSWORD=disposable-test-database-only "$source_db" psql -X -q -v ON_ERROR_STOP=1 -U supabase_admin "$@"; }
 dump() { docker exec -e PGPASSWORD=disposable-test-database-only "$source_db" pg_dump -U supabase_admin --format=custom --compress=6 "$@"; }
 
@@ -103,10 +107,10 @@ verify() {
 
 # 1. Hold a session on template1 in the verifier's container for as long as it runs.
 #    The container is found by its label; containers that existed before are ignored.
-existing="$(docker ps -aq --filter label=purpose=warehouse-restore-test | sort)"
+existing="$(own_containers -aq | sort)"
 (
   while :; do
-    target="$(comm -13 <(printf '%s\n' "$existing") <(docker ps -q --filter label=purpose=warehouse-restore-test | sort) | head -n1)"
+    target="$(comm -13 <(printf '%s\n' "$existing") <(own_containers -q | sort) | head -n1)"
     if [[ -n "$target" ]] && docker exec -e PGPASSWORD=disposable-restore-only "$target" psql -X -q -h 127.0.0.1 -U supabase_admin -d template1 -c 'SELECT 1' >/dev/null 2>&1; then
       date -u +%H:%M:%S.%N >> "$work/held"
       docker exec -e PGPASSWORD=disposable-restore-only "$target" psql -X -q -h 127.0.0.1 -U supabase_admin -d template1 -c 'SELECT pg_sleep(900)' >/dev/null 2>&1 || true
@@ -187,7 +191,7 @@ mkdir -p "$state/config" "$state/backups" "$state/data"
 cp -a "$backup" "$state/backups/"
 cp "$work/backup.key" "$state/config/backup.key"
 printf '%s 1\n' "$(basename "$backup")" > "$state/config/backups-verified.list"
-existing_after="$(docker ps -aq --filter label=purpose=warehouse-restore-test | sort)"
+existing_after="$(own_containers -aq | sort)"
 rehearse() { env WAREHOUSE_VERIFY_STORAGE=tmpfs WAREHOUSE_DIAGNOSTICS_DIR="$work/diagnostics" STATE="$state" TO_LABEL="drill-target" bash "$1/scripts/upgrade-rehearse.sh"; }
 passed="$(rehearse "$ROOT" 2>&1)" || { echo "Restore drill: the rehearsal of this checkout's own migrations failed: $passed" >&2; exit 1; }
 grep -Eq 'Rehearsal of the migrations: passed \(0 to apply, [0-9]+ already applied\) on a copy of warehouse-20260101T000000Z; applying them took [0-9]+ s\.' <<<"$passed" \
@@ -201,7 +205,7 @@ if refused="$(rehearse "$tree" 2>&1)"; then echo "Restore drill: a migration tha
 grep -q 'the migration 00000000000999_rehearsal_fixture.sql does not apply to a copy of your data' <<<"$refused" \
   && grep -q 'rehearsal fixture refuses these rows' <<<"$refused" && grep -q 'Nothing was changed' <<<"$refused" \
   || { echo "Restore drill: the rehearsal refused for another reason, or without naming the file: $refused" >&2; exit 1; }
-[[ "$(docker ps -aq --filter label=purpose=warehouse-restore-test | sort)" == "$existing_after" ]] || { echo 'Restore drill: the rehearsal left its container behind.' >&2; exit 1; }
+[[ "$(own_containers -aq | sort)" == "$existing_after" ]] || { echo 'Restore drill: the rehearsal left its container behind.' >&2; exit 1; }
 echo 'Restore drill 4b passed: the rehearsal applies the migrations of a tree to a restored copy and refuses, naming the file, one that raises.'
 
 # 3. A history row fewer than the backup recorded is a failed verification.

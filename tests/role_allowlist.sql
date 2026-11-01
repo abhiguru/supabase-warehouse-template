@@ -126,7 +126,7 @@ INSERT INTO ra_rpc(name,staff,customer) VALUES
  ('replace_item_rates',false,'no'),('undo_rate_change',false,'no'),
  -- migration 85: the standard rate (staff refused by the guard since migration 90)
  ('get_standard_rate',false,'no'),('set_standard_rate',false,'no'),
- ('get_sensor_polling_data',true,'no'),('get_sensor_history',true,'no'),
+ ('get_sensor_polling_data',true,'no'),('get_sensor_history',true,'no'),('get_sensor_hourly',true,'no'),
  -- migration 74: one sensor
  ('get_sensor_device',true,'no'),('get_print_jobs',true,'no'),('cancel_print_job',true,'no'),
  ('delete_grn_image',true,'no'),('delete_dispatch_image',true,'no'),
@@ -463,6 +463,7 @@ FROM (VALUES ('SELECT public.get_all_stock_summary()'),
   ('SELECT public.get_item_wise_stock_list()'),
   ('SELECT public.get_item_storage_prices()'),
   ('SELECT public.get_sensor_polling_data()'),
+  ('SELECT public.get_sensor_hourly(gen_random_uuid(), now() - interval ''1 day'', now())'),
   ('SELECT public.get_operations_dashboard(CURRENT_DATE-30,CURRENT_DATE)'),
   ('SELECT public.get_users_list()'),
   ('SELECT public.get_supervisors()')) s(statement);

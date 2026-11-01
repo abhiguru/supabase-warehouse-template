@@ -14,7 +14,7 @@ BEGIN
   END IF;
   answer := warehouse_maintenance.run_database_retention('2026-10-21T10:00:00Z', false);
   IF NOT (answer ?& ARRAY['applied', 'as_of', 'rows', 'audit_log'] AND (answer->'rows') ?& ARRAY['consumed_refresh_tokens', 'refresh_sessions',
-      'central_token_use', 'otp_verifications', 'otp_rate_limits', 'ip_rate_limits', 'idempotency_keys', 'sensor_readings', 'audit_log']
+      'central_token_use', 'otp_verifications', 'otp_rate_limits', 'ip_rate_limits', 'idempotency_keys', 'sensor_readings', 'audit_log', 'sensor_hourly_rolled', 'sensor_hourly']
      AND (answer->'audit_log') ?& ARRAY['partitions_created', 'partitions_dropped', 'default_rows_moved', 'default_rows_deleted']) THEN
     RAISE EXCEPTION 'audit_log retention: the answer lost or lacks a key: %', answer;
   END IF;

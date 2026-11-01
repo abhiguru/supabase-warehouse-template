@@ -297,7 +297,11 @@ fi
 # The init scripts run as the image's postgres user, so the file it reads must be world-readable whatever the umask of the caller
 # (this script's own is 077, and so is the one of an operator whose tree was unpacked by git archive): it is mounted from a 0644 copy.
 install -m 0644 -- "$ROOT/docker/volumes/db/00-bootstrap.sql" "$scratch/00-bootstrap.sql"
+# A caller that runs several verifications at once (tests/verify-restore-drill.sh) names its run, to find its own containers by it.
+run_label=()
+[[ -z "${WAREHOUSE_RESTORE_RUN_ID:-}" ]] || run_label=(--label "warehouse.restore-run=$WAREHOUSE_RESTORE_RUN_ID")
 docker run -d --pull missing --name "$container" --label purpose=warehouse-restore-test --label "warehouse.restore-disk-dir=$disk_dir" \
+  ${run_label[@]+"${run_label[@]}"} \
   --network none --memory "${memory_mb}m" --cpus 1 \
   "${data_args[@]}" \
   -e JWT_SECRET=isolated-restore-secret-not-for-deployment-12345 -e JWT_EXP=3600 \
