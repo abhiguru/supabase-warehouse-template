@@ -300,6 +300,10 @@ SELECT public.update_dispatch_smart(:'disp_one'::uuid, '{"registration":{"a":1}}
        public.update_dispatch_smart(:'disp_one'::uuid, '{"registration":true}'::jsonb, NULL) AS disp_edit_bool,
        public.create_dispatch_with_stock_check(:'header'::jsonb || '{"disp_no":"R130D6","registration":{"a":1}}',
          ARRAY[jsonb_build_object('gr_trl_id', :'lot_id', 'disp_qty', 1)], false, 0, 'r130-reg-obj') AS disp_create_obj,
+       public.create_dispatch_with_stock_check(:'header'::jsonb || '{"disp_no":"R130D8","registration":["x"]}',
+         ARRAY[jsonb_build_object('gr_trl_id', :'lot_id', 'disp_qty', 1)], false, 0, 'r130-reg-arr') AS disp_create_arr,
+       public.create_dispatch_with_stock_check(:'header'::jsonb || '{"disp_no":"R130D9","registration":true}',
+         ARRAY[jsonb_build_object('gr_trl_id', :'lot_id', 'disp_qty', 1)], false, 0, 'r130-reg-bool') AS disp_create_bool,
        public.create_dispatch_with_stock_check(:'header'::jsonb || '{"disp_no":"R130D7","registration":1234}',
          ARRAY[jsonb_build_object('gr_trl_id', :'lot_id', 'disp_qty', 1)], false, 0, 'r130-reg-num') AS disp_create_num \gset
 RESET ROLE;
@@ -307,6 +311,9 @@ SELECT pg_temp.r130_assert(:'disp_edit_obj'::jsonb->>'error_code' = 'registratio
   AND :'disp_edit_bool'::jsonb->>'error_code' = 'registration_invalid' AND :'disp_create_obj'::jsonb->>'error_code' = 'registration_invalid'
   AND (SELECT registration = '12345' FROM public.dispatch WHERE id = :'disp_one'::uuid),
   'an object, array or boolean vehicle is refused (edit and create) and the stored vehicle stays: '||:'disp_edit_obj'||' '||:'disp_edit_arr'||' '||:'disp_edit_bool'||' '||:'disp_create_obj');
+SELECT pg_temp.r130_assert(:'disp_create_arr'::jsonb->>'error_code' = 'registration_invalid' AND :'disp_create_bool'::jsonb->>'error_code' = 'registration_invalid'
+  AND NOT EXISTS (SELECT 1 FROM public.dispatch WHERE disp_no IN ('R130D8', 'R130D9')),
+  'a new dispatch with an array or boolean vehicle is refused and nothing is saved: '||:'disp_create_arr'||' '||:'disp_create_bool');
 SELECT pg_temp.r130_assert(:'disp_create_num'::jsonb->>'success' = 'true' AND (SELECT registration = '1234' FROM public.dispatch WHERE disp_no = 'R130D7'),
   'a new dispatch with a number as the vehicle stores it as text: '||:'disp_create_num');
 
