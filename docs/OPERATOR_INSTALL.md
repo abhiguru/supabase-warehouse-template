@@ -28,6 +28,7 @@ Sections: [host prerequisites](#host-prerequisites),
 
 ## Host prerequisites
 
+- git 2.34 or newer and `ssh-keygen` (OpenSSH), to check the signature of a release tag when `upgrade.sh` runs (Ubuntu 22.04 and 24.04 have both).
 - Linux x86-64 with Docker Engine and the Compose plugin, enabled at boot; Ubuntu 24.04 is the tested baseline. ARM64 is
   not supported. The requirement is a Compose plugin whose `docker compose up` accepts
   `--wait-timeout`: setup, start and the backup scripts wait for services with it, and `doctor` stops with a message
@@ -2228,6 +2229,14 @@ bash upgrade.sh vX.Y.Z                 # then the real run, once you have done w
 sudo bash scripts/backup-usb.sh setup --state "$WAREHOUSE_STATE_DIR"   # only if you use a USB backup drive
 ```
 
+**Signed releases.** A release tag is signed by the maintainer. Once your checkout lists a signing key (`.github/allowed_signers`),
+`upgrade.sh` checks the tag against that list, as committed in the checkout you run now (never the list of the release it installs), and
+refuses with "is not signed by a key listed in .github/allowed_signers of this checkout ... Nothing was changed" when the tag is unsigned,
+signed by another key, signed with PGP or X.509 instead of SSH, a lightweight tag, or a signed object published under another name; it also refuses a release that lists no signing key when your checkout lists one (a dropped key list), and refuses on git older than 2.34. Do not work around the refusal:
+a tag that fails the check is not the maintainer's release; report it (SECURITY.md) and ask which release to use. A checkout from before signed releases lists no key: `upgrade.sh`
+prints a warning that shows the fingerprint(s) of the key(s) the release lists, to compare with the fingerprint published in the README ("Security") and in the release note, and goes on; the checkout it installs checks the releases after it. `--ref` is for development and is not verified.
+The upgrade record keeps `signature=checked|unchecked|ref`; a resumed upgrade says "Signature: not checked again" and shows it.
+
 **Run the dry run first, and do what it lists under "before".** `upgrade.sh` holds the operator lock from start to end (the monitoring checker
 judges nothing meanwhile; its `operator_lock_stuck` alert fires after 2 hours, or after twice the time of the last backup plus the last verify when that is longer) and prints the operator actions of `CHANGELOG.md` between your
 release and the new one **twice**: first, before anything is changed, as part of the release's preflight (below), and again at the end. The first
@@ -2256,6 +2265,7 @@ recorded: the nightly pass does that, and so does `upgrade.sh` for the backup it
 be restored, the refusal quotes the restore's own last message: the host (free disk space or memory, a database image that has to be pulled
 while the host is offline) is as likely a cause as the backup. With no verified backup on record it warns that it did not rehearse and the
 upgrade goes on (the migrations then run for the first time on the live database, after the checkout).
+*Pre-pull.* Last of its checks, for a release tag, the preflight pulls the release's images while the facility still serves (below, "An upgrade pulls the release's images before it closes the API").
 Any refusal says "Nothing was changed". The facility is closed to phones for the backup, the proof that it restores and
 the setup of the release (*While it upgrades*, below). **Run it inside `tmux` or `screen` when you are connected over SSH:** a dropped connection stops it
 half way (the rerun below finishes it, but there is no reason to need that). Run it as the installation user, not with `sudo`.
@@ -2316,7 +2326,7 @@ example `bash upgrade.sh v0.8.0 -- --alert-webhook-file /secure/slack.txt --gate
 *If it stops.* Before its first change `upgrade.sh` writes `$WAREHOUSE_STATE_DIR/config/upgrade-in-progress` (mode 0600): the old
 commit, the target, the setup inputs and the current step, whether the release had a preflight (`preflight=ok` or `absent`) and the tag of the
 saved images (`pre_images=`), whether it closed the API (`maintenance=on`; `maintenance=opened` once it was opened and only the health check after that failed); once the backup has been proved to restore, also the path of that backup.
-The file is deleted when the upgrade succeeds, and while it exists `doctor`, `start.sh`, `bash scripts/watch-timer.sh status` and
+The file is renamed to `config/upgrade-last` when the upgrade succeeds (see [Found a problem after the upgrade](#found-a-problem-after-the-upgrade)), and while it exists `doctor`, `start.sh`, `bash scripts/watch-timer.sh status` and
 `node scripts/watch.mjs status` say "an upgrade from X to Y was interrupted at step Z" (a run killed by a power cut or a lost SSH
 connection leaves it too). A failed step prints the same facts, then both ways out.
 
@@ -2360,6 +2370,41 @@ connection leaves it too). A failed step prints the same facts, then both ways o
 Every run that gets past the checks adds a line to `$WAREHOUSE_STATE_DIR/config/upgrades.log` (UTC time, from, to, the old commit,
 the backup, `resumed` for a rerun, then `ok` or the step it failed at).
 
+### Found a problem after the upgrade
+
+An upgrade that finished can still turn out wrong a day later. The first choice is **the next patch release of the release you moved
+to**: it fixes forward and loses nothing, and `bash upgrade.sh vX.Y.Z` takes you there. Going back is the last resort, because it puts the
+database back to the backup that `upgrade.sh` took before the upgrade, and everything the facility recorded after that backup is gone:
+every receipt, dispatch, invoice and order entered on phones since the upgrade finished.
+
+When a successful upgrade ends, `upgrade.sh` keeps its record as `$WAREHOUSE_STATE_DIR/config/upgrade-last` (mode 0600: the same facts as
+`upgrade-in-progress`, with `finished=` and `result=ok`; the next successful upgrade replaces it). `doctor`, `start.sh` and the checker
+do not report it, because it is history, not a warning. To see the way back and what it costs:
+
+```bash
+cd /path/to/installed/backend
+node scripts/upgrade-record.mjs rollback --last
+```
+
+It only prints; it changes nothing. The printout starts with a warning that names the time the backup was taken and the loss, then the
+same list as [If it stops](#rerun-and-upgrade) (old commit, `stop.sh`, the saved images put back, the in-place restore of the backup,
+the old release's setup, the `functions` recreate, `doctor`), with three differences. Its **first line is
+`cp -p .../config/upgrade-last .../config/upgrade-in-progress`**: it puts the finished upgrade back on record as an interrupted one, so
+that from then on `doctor`, `start.sh` and the checker say "an upgrade was interrupted" and name the way out, and the checker repairs
+nothing meanwhile (the mode 0600 is kept). The second line is `bash scripts/maintenance.sh on`, which closes the API so that phones record
+nothing more that the restore would then lose, and `bash scripts/maintenance.sh off` opens it again before the `doctor`. The last line
+removes both `config/upgrade-in-progress` and `config/upgrade-last`; run it when `doctor` is green on the old release. When the images the
+upgrade saved (`pre-<release>`) are no longer on the host, the printout leaves out the two image lines and says the old release's setup builds
+its images again, which needs the network. `rollback --last` exists from the release after the one that introduced `upgrade-last`: an
+installation whose last upgrade was made by an older `upgrade.sh` has no `upgrade-last`, and the command says so. The command
+refuses, with one sentence, when there is no finished upgrade on record, when an upgrade is recorded as interrupted (use `rollback`
+without `--last`), when the backup folder is gone (the nightly pruning keeps the verified backup of an upgrade for 60 days), or when the
+checkout is not at the release that upgrade installed. Report the problem with the release number, whichever way you go.
+
+CI drills this list on every change: its `operator-upgrade` job makes an upgrade fail inside setup, runs the lines that
+`node scripts/upgrade-record.mjs rollback` prints, exactly as printed, and requires the previous release to be running again with the same
+rows.
+
 <details>
 <summary>What upgrade.sh does (the manual sequence, when you want each step by hand)</summary>
 
@@ -2399,7 +2444,7 @@ sudo bash scripts/backup-usb.sh setup --state "$WAREHOUSE_STATE_DIR"   # only if
    the API through them.
    Then `scripts/maintenance.sh off` of the new release opens the API and runs the health check.
 7. The public `node scripts/doctor.mjs`, which `upgrade.sh` leaves to you.
-8. A line in `upgrades.log`, the record deleted, and the `pre-` image tags of earlier upgrades removed.
+8. A line in `upgrades.log`, the record renamed to `config/upgrade-last`, and the `pre-` image tags of earlier upgrades removed.
 
 The last manual line keeps the USB choices of your earlier setup (`--no-encrypt` if you typed it, `--daily`, `--no-fresh-backup`, `--keep`); it prints them, so
 check that line. Database migrations need no separate step: setup applies them. If setup prints a
@@ -2419,6 +2464,18 @@ start then replaces only the containers whose image changed. What to expect:
   every image in use once. That needs the network and can take a good while on
   a small machine; later reruns print "Images match their recipes; nothing to
   rebuild." and need no network.
+- **An upgrade pulls the release's images before it closes the API.** The preflight of the release you move to
+  (`scripts/upgrade-prepull.sh`, after the rehearsal of the migrations) downloads that release's `release-images.json` the same way,
+  checks it against the release's commit, and runs `docker pull` of every image it lists by digest, and of the Docker Hub images that
+  `docker/docker-compose.yml` of the release names by digest (PostgREST, for example), while the facility still serves. It prints
+  `Pre-pull of images: done (N image(s) of vX.Y.Z, M base image(s))`. It only pulls: it tags nothing, so the images that run now stay
+  what they are until setup, and the way back still puts the old ones back. Setup then finds the images on the host and does not need
+  the registry during the downtime. A download or a pull that fails, or an image of another digest or commit, refuses the upgrade with
+  "Nothing was changed"; run the command again when the network answers. `--ref` and a host that is not x86-64 pull nothing, and
+  `--dry-run` only downloads and checks the list. A release that published no `release-images.json` (the download answers 404) is not
+refused: the preflight says so in one warning and setup pulls or builds inside the downtime, as before. The pull runs under the same
+operator lock as the rest of the upgrade; if a later check refuses, or you stop, the pulled images stay on the host (they are not tagged
+and cost only disk; `docker image rm <ref>` removes one).
 - **At a release tag, an image that needs building is pulled when the release published it.** A checkout exactly at a tag
   (`vX.Y.Z`, which is what `upgrade.sh vX.Y.Z` leaves and what a fresh clone of the tag is) downloads that release's
   `release-images.json` from the GitHub Release (https, one file, 60 seconds). The release workflow built every image of the tag
@@ -2427,7 +2484,7 @@ start then replaces only the containers whose image changed. What to expect:
   its recipe. For each service setup would build whose fingerprint equals the one in the file, it runs `docker pull` of
   `<service>@sha256:<digest>`, checks that the image on the host carries that digest, tags it `<project>-<service>` and records it as a build
   would, so nothing downstream differs. It prints which services were pulled and which built, for example
-  `Pulled 4 image(s) from the release (db functions pdf-renderer storage) and built 1 here (gateway).` Everything else builds here as
+  `Taken from the release: 4 (0 already on this host) (db functions pdf-renderer storage); built 1 here (gateway).` ("already on this host" counts the images the upgrade preflight pulled ahead) Everything else builds here as
   always, with one line that says why: a checkout that is not at a tag (`main`, a branch, a copy you changed), a release whose file
   is missing or cannot be read (the release is still a draft, GitHub or `ghcr.io` cannot be reached), a file that names another
   commit or release, or a reference outside `ghcr.io/abhiguru/supabase-warehouse-template`, a recipe in your checkout that is not

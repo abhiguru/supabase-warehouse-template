@@ -20,7 +20,9 @@ they go in the operator's secret store. Nothing here authorizes production deplo
   ([MONITORING.md](MONITORING.md)); the checker's one CI pass does not establish delivery. Incident contacts and an
   escalation policy are the operator's.
 - **Paired upgrade and rollback.** A backend and app upgrade done together, with the preflight and a rehearsed rollback
-  (the in-place restore). Redacted diagnostics for a failed upgrade.
+  (the in-place restore). Redacted diagnostics for a failed upgrade. CI drills the printed way back on every change (the
+  `operator-upgrade` job makes an upgrade fail inside setup and runs the lines `node scripts/upgrade-record.mjs rollback` prints), and
+  `rollback --last` prints it for an upgrade that finished; the paired backend-and-app rehearsal on the facility's own data is still owed.
 - **Retention policy.** The operator or legal owner approves retention, deletion and legal-hold rules for business
   documents, invoices, PDFs, images and backups. The owner approved the sign-in rows and generated PDFs older than 7 days (2026-10-19);
   the daily pass (`watch.mjs daily`) applies exactly that with `retention:apply` when the daily timer is installed, and never touches business

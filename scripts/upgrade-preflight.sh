@@ -14,7 +14,7 @@
 # a temporary copy; the facility's own checkout is never changed by it. Its standard input is upgrade.sh's.
 #   1. prints what CHANGELOG.md asks of the operator between the two releases, so that a "before" action is read before anything changes;
 #      when that text lists operator actions, the run is real (not --dry-run), no --yes was given and standard input is a terminal,
-#      it then waits for Enter ("Press Enter to continue, Ctrl-C to stop") as the LAST step, after steps 2 to 5 and just before "passed": the
+#      it then waits for Enter ("Press Enter to continue, Ctrl-C to stop") as the LAST step, after steps 2 to 6 and just before "passed": the
 #      one moment an action that says "before" can still be done. No Enter within 30 minutes (UPGRADE_PAUSE_SECONDS) refuses, so a forgotten
 #      prompt does not hold the operator lock for ever
 #   2. the host minimums of this release: the Node.js floor, then `node scripts/doctor.mjs --host-preflight` of this release (Docker
@@ -25,6 +25,8 @@
 #   5. the rehearsal of the migrations (scripts/upgrade-rehearse.sh): the migrations of this release are applied to a disposable copy
 #      of the newest verified backup, so that one that fails on the facility's own data refuses the upgrade now, before the backup and
 #      before any change; it also prints how long it took. A facility with no verified backup yet is told that nothing was rehearsed.
+#   6. the images of a release tag, pulled while the facility still serves (scripts/upgrade-prepull.sh): the setup inside the downtime
+#      window and the way back then need no registry. A pull that fails refuses, as the other steps do; --dry-run only fetches and checks the list
 # Exit 0: go on. Any other exit refuses the upgrade; the message is on standard error and nothing has been changed.
 set -euo pipefail
 
@@ -150,6 +152,12 @@ fi
 # With --dry-run too: the live database and its files are only read (the backup is restored into a disposable container).
 say
 STATE="$STATE" TO_LABEL="$TO_LABEL" bash "$HERE/upgrade-rehearse.sh" || exit 1
+
+# --- 6. the images of the release, pulled before the API is closed ----------------------------------------------------------
+# After every check that can refuse without needing the network, and before the pause: an operator is not asked to confirm a run that the
+# registry would then refuse. It pulls by digest and never tags (upgrade.sh tags the images that run now as pre-<release> after this).
+say
+STATE="$STATE" TO_SHA="$TO_SHA" TO_LABEL="$TO_LABEL" DRY="$DRY" bash "$HERE/upgrade-prepull.sh" || exit 1
 
 say
 if [[ "$pause" == yes ]]; then

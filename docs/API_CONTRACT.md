@@ -74,6 +74,12 @@ version ("requires app version ..."). Where a section below says an older app ke
 before, a check that is skipped when the argument is absent), that describes behaviour kept for other callers such as fas-sync; it is
 not a promise to older builds, and the policy decides.
 
+The minimum is a window, not a pin: `minimumClientVersion` is the oldest build the release still answers, and CI checks the app commits that
+carry it (`MOBILE_MIN_REF` in `.github/workflows/ci.yml`, one per build handed out with that version) against every release, so nothing those
+builds call is dropped without the minimum being raised first
+([CONTRIBUTING.md](../CONTRIBUTING.md#the-oldest-supported-apps-mobile_min_ref)). CI compares names; changed argument names and grants are
+caught only by the live comparison of the release checklist, which runs against each of those commits.
+
 `get-public-config` (no sign-in) answers, besides the fields of the instance manifest:
 
 | Field | Where it comes from |

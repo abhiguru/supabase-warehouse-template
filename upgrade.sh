@@ -44,8 +44,9 @@
 # upgrade-in-progress (mode 0600; scripts/upgrade-record.mjs reads it): the old commit, the target, the setup inputs and the
 # current step, whether the release had a preflight (preflight=ok|absent) and the tag of the saved images (pre_images=); once the
 # backup is verified, also the backup's path. A rerun of the same command (the database may be down)
-# reads it, reuses that backup and takes no new one of the half-upgraded database, and names the right old commit. Success deletes
-# it; doctor, start.sh and the status commands report it while it exists. When a step fails the script prints the way forward and
+# reads it, reuses that backup and takes no new one of the half-upgraded database, and names the right old commit. Success removes it
+# and keeps a copy as config/upgrade-last (which only `node scripts/upgrade-record.mjs rollback --last` reads: the way back from a problem found
+# after the upgrade, with what it loses); doctor, start.sh and the status commands report the record while it exists. When a step fails the script prints the way forward and
 # the complete way back (the old commit, stop, the saved images put back, the in-place restore of that backup with --restore-config,
 # the old release's setup, the functions recreate, doctor).
 #
@@ -91,6 +92,9 @@ RECORD_LIVE=no
 RECORD_STARTED=''
 VERIFIED=no
 RESUME=no
+SIGNERS_TMP=''
+# Whether the release tag's signature was checked by this upgrade: checked | unchecked (no key listed here) | ref (not a tag); kept in the record.
+SIGNATURE=''
 ADMIN_PHONE=''
 ADMIN_NAME=''
 WEBHOOK_OFF=no
@@ -107,7 +111,7 @@ CMD_TEXT=''
 ORIG_ARGS=()
 # What load_record found: none, unverified (the old release was only being backed up), verified, invalid.
 REC=none
-R_FROM_SHA='' R_FROM_LABEL='' R_FROM_TAG='' R_TO_SHA='' R_TO_LABEL='' R_BACKUP='' R_STARTED='' R_STEP='' R_ADMIN_PHONE='' R_ADMIN_NAME='' R_WEBHOOK_OFF='' R_PREFLIGHT='' R_PRE_IMAGES=''
+R_FROM_SHA='' R_FROM_LABEL='' R_FROM_TAG='' R_TO_SHA='' R_TO_LABEL='' R_BACKUP='' R_STARTED='' R_STEP='' R_ADMIN_PHONE='' R_ADMIN_NAME='' R_WEBHOOK_OFF='' R_PREFLIGHT='' R_PRE_IMAGES='' R_SIGNATURE=''
 
 say() { printf '%s\n' "$*"; }
 warn() { printf 'Warning: %s\n' "$*" >&2; }
@@ -148,11 +152,28 @@ record_write() {
     printf 'backup=%s\n' "$(one_line "$BACKUP_DIR")"
     printf 'preflight=%s\n' "$PREFLIGHT"
     printf 'pre_images=%s\n' "$(one_line "$PRE_IMAGES")"
+    printf 'signature=%s\n' "$SIGNATURE"
     printf 'maintenance=%s\n' "$MAINTENANCE"
     printf 'step=%s\n' "$(one_line "$STEP")"
   } > "$tmp" || { rm -f -- "$tmp"; return 1; }
   sync -- "$tmp" 2>/dev/null || true
   mv -f -- "$tmp" "$RECORD" || { rm -f -- "$tmp"; return 1; }
+}
+
+# A successful upgrade keeps its record as config/upgrade-last (the same lines, plus when it finished and that it succeeded): it is history, not a
+# warning, and only `node scripts/upgrade-record.mjs rollback --last` reads it, to print the way back when a problem shows after the upgrade. The
+# next successful upgrade replaces it. A failure only warns: the upgrade itself stands.
+record_keep_last() {
+  [[ "$RECORD_LIVE" == yes && -f "$RECORD" ]] || return 0
+  # The same release again (a repeated setup) is not an upgrade: its way back would be to itself, and it must not replace the note of the real one.
+  [[ "$FROM_SHA" != "$TO_SHA" ]] || return 0
+  local tmp
+  if ! tmp="$(umask 077; mktemp "$STATE/config/.upgrade-last.XXXXXX")" \
+    || ! { cat -- "$RECORD"; printf 'finished=%s\nresult=ok\n' "$(date -u +%Y-%m-%dT%H:%M:%SZ)"; } > "$tmp" \
+    || ! mv -f -- "$tmp" "$STATE/config/upgrade-last"; then
+    [[ -z "${tmp:-}" ]] || rm -f -- "$tmp"
+    warn "could not keep the record of this upgrade as $STATE/config/upgrade-last (node scripts/upgrade-record.mjs rollback --last will not know it)"
+  fi
 }
 
 record_remove() {
@@ -171,7 +192,7 @@ load_record() {
   R_TO_SHA="$(rec_get to_sha)"; R_TO_LABEL="$(rec_get to_label)"; R_BACKUP="$(rec_get backup)"
   R_STARTED="$(rec_get started)"; R_STEP="$(rec_get step)"
   R_ADMIN_PHONE="$(rec_get admin_phone)"; R_ADMIN_NAME="$(rec_get admin_name)"; R_WEBHOOK_OFF="$(rec_get webhook_off)"
-  R_PREFLIGHT="$(rec_get preflight)"; R_PRE_IMAGES="$(rec_get pre_images)"
+  R_PREFLIGHT="$(rec_get preflight)"; R_PRE_IMAGES="$(rec_get pre_images)"; R_SIGNATURE="$(rec_get signature)"
   if ! [[ "$R_FROM_SHA" =~ ^[0-9a-f]{40}$ && "$R_TO_SHA" =~ ^[0-9a-f]{40}$ ]]; then REC=invalid; return 0; fi
   if [[ "$(rec_get verified)" == yes ]]; then
     [[ "$R_BACKUP" == /* ]] || { REC=invalid; return 0; }
@@ -211,11 +232,13 @@ finish() {
   local code=$?
   trap - EXIT
   rm -f -- "$BACKUP_OUT" "$DB_ERR"
+  [[ -z "$SIGNERS_TMP" ]] || rm -rf -- "$SIGNERS_TMP"
   if [[ "$LOGGING" == yes ]]; then
     local result=ok
     ((code == 0)) || result="failed at: $STEP (exit $code)"
     log_line "$result"
     if ((code == 0)); then
+      record_keep_last
       record_remove
     else
       # Nothing of the facility changed: no half-done upgrade to report, and a rerun takes a fresh backup. The API this run closed is opened again
@@ -423,7 +446,7 @@ main() {
   for ARG in "${ORIG_ARGS[@]}"; do CMD_TEXT+="$(printf '%q' "$ARG") "; done
   CMD_TEXT="${CMD_TEXT% }"
 
-  trap 'rm -f -- "$BACKUP_OUT" "$DB_ERR"; [[ -z "$PREFLIGHT_TREE" ]] || rm -rf -- "$PREFLIGHT_TREE"' EXIT
+  trap 'rm -f -- "$BACKUP_OUT" "$DB_ERR"; [[ -z "$SIGNERS_TMP" ]] || rm -rf -- "$SIGNERS_TMP"; [[ -z "$PREFLIGHT_TREE" ]] || rm -rf -- "$PREFLIGHT_TREE"' EXIT
   DB_ERR="$(mktemp)"
   ((EUID != 0)) || refuse 'upgrade.sh must run as the installation user (the owner of this checkout and of the state, a member of the docker group), not as root and not with sudo: root cannot read the files the way the installation does, and git refuses a checkout it does not own.'
   ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
@@ -459,6 +482,7 @@ main() {
   fi
   if [[ -n "$REF" ]]; then
     warn "--ref $REF is not a release tag. Only tagged releases are supported: security fixes, the support window and the upgrade notes apply to tags, and a branch can hold changes that were never released."
+    warn "--ref $REF: its signature is not checked."
   fi
 
   say "Installation: $STATE"
@@ -499,6 +523,38 @@ main() {
     RECORD_STARTED="$R_STARTED"; VERIFIED=yes
     [[ -d "$BACKUP_DIR" ]] || refuse "the backup recorded for this upgrade is gone: $BACKUP_DIR. It is the way back to $FROM_LABEL, and a new backup of a half-upgraded database would not be. Put it back (the USB drive holds copies of recent backups), or, if you accept going on without a way back, remove $RECORD and run the command again (it then takes a new backup of the database as it is now)."
     say "Resuming:     the upgrade from $FROM_LABEL to $TO_LABEL stopped at step \"$R_STEP\" (started $R_STARTED)"
+  fi
+
+  # A release tag must be signed by a key listed in the .github/allowed_signers this checkout has NOW (as committed at HEAD, never the
+  # target's own copy: a release cannot name its own signers), and a release may not drop the list (a downgrade). A checkout whose file lists
+  # no key is from before signed releases: warn, show the keys the release lists, and go on, so that the first signed release can be reached.
+  # A resumed upgrade was checked by its first run.
+  if [[ -n "$REF" ]]; then
+    SIGNATURE=ref
+  elif [[ "$RESUME" == yes ]]; then
+    SIGNATURE="${R_SIGNATURE:-unknown}"
+    say "Signature:    not checked again (the first run of this upgrade did that; record: signature=$SIGNATURE)"
+  else
+    local sig_problem fingerprints
+    SIGNERS_TMP="$(mktemp -d)"
+    git show "$FROM_SHA:.github/allowed_signers" > "$SIGNERS_TMP/current" 2>/dev/null || : > "$SIGNERS_TMP/current"
+    git show "$TO_SHA:.github/allowed_signers" > "$SIGNERS_TMP/target" 2>/dev/null || : > "$SIGNERS_TMP/target"
+    if signers_have_key "$SIGNERS_TMP/current"; then
+      signers_have_key "$SIGNERS_TMP/target" || refuse "$TAG lists no release signing key in .github/allowed_signers although this checkout does: a release that drops the key list is refused. Nothing was changed."
+      sig_problem="$(tag_signature_problem "$TAG" "$SIGNERS_TMP/current" "$TO_SHA")"
+      [[ -z "$sig_problem" ]] || refuse "$sig_problem. A release tag must be signed by a key that this checkout trusts (docs/OPERATOR_INSTALL.md, \"Rerun and upgrade\"). Nothing was changed."
+      SIGNATURE=checked
+      say "Signature:    $TAG is signed by a key listed in .github/allowed_signers"
+    else
+      SIGNATURE=unchecked
+      if signers_have_key "$SIGNERS_TMP/target"; then
+        fingerprints="$(signers_fingerprints "$SIGNERS_TMP/target" | tr '\n' ';' | sed 's/;$//; s/;/; /g')"
+        warn "this checkout ($FROM_LABEL) lists no release signing key in .github/allowed_signers, so the signature of $TAG is not checked. $TAG lists the signing key(s) ${fingerprints:-(fingerprints could not be read)}: compare them with the fingerprint published in the README (Security) and in the release note before you go on. The checkout that follows this one checks the releases after it."
+      else
+        warn "this checkout ($FROM_LABEL) lists no release signing key in .github/allowed_signers, so the signature of $TAG is not checked ($TAG lists none either)."
+      fi
+    fi
+    rm -rf -- "$SIGNERS_TMP"; SIGNERS_TMP=''
   fi
 
   git cat-file -e "$TO_SHA:upgrade.sh" 2>/dev/null || refuse "$TO_LABEL does not contain upgrade.sh, so its setup.sh cannot run under the lock this command holds. upgrade.sh moves to releases that ship it. For an earlier release use the manual sequence in docs/OPERATOR_INSTALL.md (\"Rerun and upgrade\", \"What upgrade.sh does\"). Nothing was changed."

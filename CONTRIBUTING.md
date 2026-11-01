@@ -41,6 +41,24 @@ RPC names with `tests/rpc_callers_exist.sql`. The live comparison before a relea
 [docs/RELEASE_CHECKLIST.md](docs/RELEASE_CHECKLIST.md#mobile-contract-before-a-release). Do not merge a backend change that
 needs a mobile change until the mobile commit exists and the pin points at it.
 
+### The oldest supported apps (`MOBILE_MIN_REF`)
+
+Compatibility with the app is a window, not a single pin. `minimumClientVersion` in `app-compat.json` names the oldest app build this
+backend answers. The oldest supported app is not one commit but **every build handed out with that version**, so the workflow-level
+`env: MOBILE_MIN_REF` is a space-separated list of full SHAs: the app commit that first carried the version, and the commit of every
+later build handed out with it. `scripts/check-min-apps.sh` checks each commit (`contract` job and `release.yml`): the contract scanner,
+`tests/rpc-callers.test.mjs` with `MOBILE_MIN_CHECKOUT`, and `scripts/check-app-compat.mjs`, which refuses a listed app whose version is not the
+minimum, a minimum lower than in the previous final release, and a function, table or edge function that app calls and that was dropped
+since that release.
+
+The rule: **dropping, renaming or re-signing (changing the argument names of) a function, table or edge function that an app at a
+`MOBILE_MIN_REF` commit calls is allowed only in a change that raises `minimumClientVersion` above that version and replaces the list with
+the commits of the new minimum.** Every app build handed out gets its own version bump and tag, and its commit joins `MOBILE_MIN_REF` until
+the minimum passes it. To retire something: first stop calling it in an app release, raise the minimum in a later backend release, drop
+it after that. Builds older than the minimum are told to update by `get-public-config`. Locally, before changing either value, run
+`node scripts/check-mobile-contract.mjs <app checkout> --output <file>` and
+`node scripts/check-app-compat.mjs --report <file> --app-json <app checkout>/app.json --previous auto` for each listed commit.
+
 ## Releases
 
 Operators follow release tags, not `main` ([SECURITY.md](SECURITY.md) has the support window). The flow, step by step in
@@ -48,7 +66,8 @@ Operators follow release tags, not `main` ([SECURITY.md](SECURITY.md) has the su
 `## vX.Y.Z (date)`; `upgrade.sh` prints the sections by that heading), tag `vX.Y.Z-rc.N` on `main` (`release.yml` validates the tag,
 including what the release must contain for `upgrade.sh`, then builds, scans and publishes the release images and leaves a draft release with their list), rehearse `bash upgrade.sh vX.Y.Z-rc.N` from the previous tag on a test
 install, tag the same commit `vX.Y.Z` (so a failed rehearsal never leaves a published tag that has to be moved), publish the GitHub
-release note (the draft the workflow made), and operators run `bash upgrade.sh vX.Y.Z`.
+release note (the draft the workflow made), and operators run `bash upgrade.sh vX.Y.Z`. Tags are signed with `git tag -s`
+([docs/RELEASE_CHECKLIST.md](docs/RELEASE_CHECKLIST.md#signing-the-tag)); never change `.github/allowed_signers` in a pull request that is not about the key.
 
 ### How a security fix ships
 
@@ -118,7 +137,10 @@ Rules that keep `upgrade.sh` working for the installed base:
 - **`upgrade.sh` leaves a record while it runs** (`$WAREHOUSE_STATE_DIR/config/upgrade-in-progress`, read by
   `scripts/upgrade-record.mjs`; doctor, `start.sh` and the status commands report it; the checker raises `upgrade_interrupted` when it exists and
   the lock is free, and does no self-healing meanwhile). Keep its format (`format=1`, `key=value` lines)
-  readable by every later release: add fields, never rename or remove one (`maintenance=on` is the latest).
+  readable by every later release: add fields, never rename or remove one (`maintenance=on` is the latest). A successful upgrade renames it to
+  `config/upgrade-last` (the same lines plus `finished=` and `result=ok`), which only `scripts/upgrade-record.mjs rollback --last` reads; keep the
+  checker, doctor and `start.sh` reading `upgrade-in-progress` only. CI drills the printed `rollback` list (`operator-upgrade`), so a change to that list
+  must keep every command line indented by two spaces and its notes by six.
 - **Every release carries `scripts/upgrade-preflight.sh` and `scripts/upgrade-floor.txt`, and they are how a release tells the installed
   `upgrade.sh` what it needs.** `upgrade.sh` is the script of the release an installation runs now, so a check that must happen before the
   backup (a higher host minimum, a "before" operator action, the oldest release it accepts an upgrade from) cannot live in it. It reads the

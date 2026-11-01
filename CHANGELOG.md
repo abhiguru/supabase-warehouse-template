@@ -74,6 +74,28 @@ file used to carry for earlier installations are in git: `git show b45ae0b:CHANG
   date of the running line when they can be told; it is information, never an alert. Tests: `tests/release-check.test.mjs` (new),
   `tests/alert-webhook.test.mjs`, `tests/configure.test.mjs`, `tests/doctor.test.mjs`, `tests/watch.test.mjs`, `tests/restore-host.test.mjs`.
 
+- **A repeatable 5-year scale check.** `tests/seed/make-seed.mjs --years N` writes a scale fixture (per year 12,000 receipts, 9,000 dispatches, 2,400 invoices, 3 lines per document, 200 customers of which 20% hold 80%, 1,500 items, 90 days of sensor readings; the default seed is unchanged), and the new `scale-check` CI job (weekly and on demand, not a required check) loads five years of it into a fictional installation and runs `tests/scale-check.mjs`: 20 workers for 60 seconds as an administrator, a staff member and a customer, calling the list and polled RPCs as the app does. It uploads `scale-check.json` (p50, p95, max per RPC) and warns when a p95 is above `SCALE_P95_MS` (300); `SCALE_ENFORCE=1` makes that a failure. Operator action: none.
+- **A release needs green end-to-end CI on its commit.** `operator-install` and `operator-upgrade` are not required checks on `main`, so a tag
+  could land on a commit where they failed or never ran. `release.yml` now runs `scripts/check-release-ci.mjs` first: it asks the GitHub API for the
+  check runs of the tagged commit and fails, naming the missing or failed one, unless the newest run of each is a completed success. It does not
+  wait or poll, and adds one job permission, `checks: read` (it reads the public endpoint anonymously when the token is refused, and only counts check runs made by GitHub Actions on the commit the tag names). Operator action: none.
+- **Release tags are SSH-signed, and `upgrade.sh` verifies them.** `.github/allowed_signers` lists the keys that may sign a release tag (it ships
+  with no key yet: the maintainer adds one before the first signed tag). A checkout that lists a key makes `upgrade.sh vX.Y.Z` run
+  `git verify-tag` against ITS OWN list and refuse, before anything is changed, a tag that is unsigned, lightweight, signed by another key or
+  published under another name; git 2.34 or newer and `ssh-keygen` are then needed. A checkout that lists no key (every release so far) warns and
+  goes on, so the first signed release can be reached; `--ref` is not verified. Only an SSH signature counts (PGP and X.509 are refused whatever the host keyring holds), a release that drops the key list is refused, the warning of a checkout without a key shows the fingerprints the release lists, and the upgrade record keeps `signature=checked|unchecked|ref`. `release.yml` checks the pushed tag against the previous release's
+  list (`scripts/check-release-signature.sh`). Operator action: none.
+- **The way back from an upgrade is drilled in CI, kept after success, and the images are pulled before the freeze.** (1) The `operator-upgrade` job makes an
+  upgrade fail inside setup (a throwaway commit with a migration that raises only on the facility's database) and runs the lines that
+  `node scripts/upgrade-record.mjs rollback` prints, exactly as printed; the previous release must be running again, healthy, with the same
+  rows. (2) A successful `upgrade.sh` keeps its record as `config/upgrade-last`; `node scripts/upgrade-record.mjs rollback --last` prints the way
+  back from a finished upgrade, headed with what it loses (everything recorded since the backup) and that the next patch release is preferred, and
+  starting with `bash scripts/maintenance.sh on`. It only prints. `doctor`, `start.sh` and the checker do not report `upgrade-last`.
+  (3) The release's preflight (`scripts/upgrade-prepull.sh`) pulls the release's images by digest, and the Docker Hub images its compose file
+  names, before the API is closed; `scripts/build-images.sh` does not pull an image of the released digest that is already on the host. A
+  download (other than a 404: a release with no `release-images.json` is skipped with a warning) or pull that fails refuses the upgrade with "Nothing was changed". `rollback --last` first copies `upgrade-last` back to `upgrade-in-progress`, so that doctor and the checker report an interrupted upgrade until the list has been run, and leaves out the image lines when the saved images are gone; the setup summary now reads "Taken from the release: N (M already on this host)". Operator actions: none. Tests: `tests/upgrade-prepull.test.mjs`
+  (new), `tests/upgrade-preflight.test.mjs`, `tests/upgrade.test.mjs`, `tests/upgrade-record.test.mjs`, `tests/build-images.test.mjs`,
+  `tests/workflows.test.mjs`.
 - **Break-glass codes for every facility worker, with their own sign-in (migration 132).** `scripts/break-glass-admin.sh` now makes a one-time code
   (10 minutes, once, five wrong tries) for an active, approved administrator, **supervisor or staff member** (never a customer) and prints the
   role. The app signs in with it through `POST /functions/v1/operator-otp/break-glass` `{phone_number, code}` (service-role RPC
@@ -143,6 +165,13 @@ file used to carry for earlier installations are in git: `git show b45ae0b:CHANG
   `config/usb-backup.last` to `usb-backup.last.uninstalled`. Also: on Mondays the daily status adds a note when only one USB drive wrote in the last 30 days
   (`config/usb-backup.history`, kept by `backup-usb.sh`); `restore.sh` and `restore-host.sh` append per-phase seconds to `<state>/restores.log`.
   Tests: `tests/declined-marker.test.mjs`, `tests/backup-usb.test.mjs`, `tests/backup-usb-drive.test.mjs`, `tests/watch.test.mjs`, `tests/restore.test.mjs`, `tests/restore-host.test.mjs`.
+- **The oldest supported app is a window, not a pin.** `minimumClientVersion` in `app-compat.json` was still `0.1.0` although migration 123 had
+  dropped functions that older builds call. It is now `0.6.0`, the first build with the update screen. CI checks every app build handed out
+  with that version (`MOBILE_MIN_REF` in `ci.yml`, a list of commits) with the contract scanner and the `rpc-callers` test, and
+  `scripts/check-app-compat.mjs` (run by the `contract` job and, with the previous final tag required, by `release.yml`) refuses a minimum that
+  does not match a listed app or falls below the previous release, and a function, table or edge function such an app calls that was dropped
+  since the previous release unless the minimum rose. Operator note: staff on app v0.5.0 or older (those builds report version 0.1.0) must
+  install a 0.6.0 or newer build; they are told to update when they open this facility. No operator action on the server.
 - **Saving a GRN no longer deletes other people's photo uploads in progress (`update_grn`, no new migration).** When the photo list is sent, an
   unfinished (`pending`) photo that is not in the list used to be removed for an administrator or supervisor, whoever uploaded it. Now it is
   removed only if the saver uploaded it or it is older than 15 minutes; another person's recent pending upload survives and can still be
