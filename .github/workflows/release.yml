@@ -114,6 +114,26 @@ jobs:
   # gets a fresh Docker config and Trivy cache in its temp folder, which does not protect against a compromise of the runner account
   # (the docker group is root-equivalent) or of the VM. The owner accepted that risk on 2026-10-30 (docs/DEVELOPER_HANDOFF.md,
   # "A self-hosted runner for `operator-install`"). To build on GitHub-hosted runners instead, delete the CI_RUNNER variable.
+      - name: The oldest supported app still works with this release (app-compat.json)
+        # MOBILE_MIN_REF in ci.yml is the app commit that first carried minimumClientVersion. A tag fails when that app would lose a function,
+        # table or edge function since the previous final release, or when the minimum fell or does not match the pinned app, whatever CI said
+        # earlier (CONTRIBUTING.md, "Mobile companion pin"). Last in the job, so the app's files are not in the tree the other steps read.
+        id: pin
+        run: |
+          ref="$(sed -n 's/^  MOBILE_MIN_REF: //p' .github/workflows/ci.yml)"
+          [[ "$ref" =~ ^[0-9a-f]{40}$ ]] || { echo "::error title=MOBILE_MIN_REF::ci.yml must declare MOBILE_MIN_REF once, as a full 40-digit commit SHA."; exit 1; }
+          echo "ref=$ref" >> "$GITHUB_OUTPUT"
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          repository: abhiguru/rn-warehouse-template
+          ref: ${{ steps.pin.outputs.ref }}
+          path: mobile-min
+          persist-credentials: false
+      - run: npm ci
+        working-directory: mobile-min
+      - run: node scripts/check-mobile-contract.mjs mobile-min --output "$RUNNER_TEMP/min-report.json"
+      - run: node scripts/check-app-compat.mjs --report "$RUNNER_TEMP/min-report.json" --app-json mobile-min/app.json --previous auto --require-previous
+
   publish-images:
     needs: release
     # A fork has no right to this registry namespace; its tags are still validated by the job above.

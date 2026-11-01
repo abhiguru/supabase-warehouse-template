@@ -42,6 +42,21 @@ RPC names with `tests/rpc_callers_exist.sql`. The live comparison before a relea
 [docs/RELEASE_CHECKLIST.md](docs/RELEASE_CHECKLIST.md#mobile-contract-before-a-release). Do not merge a backend change that
 needs a mobile change until the mobile commit exists and the pin points at it.
 
+### The oldest supported app (`MOBILE_MIN_REF`)
+
+Compatibility with the app is a window, not a single pin. `minimumClientVersion` in `app-compat.json` names the oldest app build this
+backend answers, and the workflow-level `env: MOBILE_MIN_REF` is the full SHA of the app commit that **first** carried that version. The
+`contract` job checks that commit as well (`check-mobile-contract.mjs`, `tests/rpc-callers.test.mjs` with `MOBILE_MIN_CHECKOUT`), and
+`scripts/check-app-compat.mjs` (also run by `release.yml` on every tag) refuses a minimum that does not match the app at the pin, a minimum
+lower than in the previous final release, and a function, table or edge function that app calls and that was dropped since that release.
+
+The rule: **dropping, renaming or re-signing (changing the argument names of) a function, table or edge function that the app at
+`MOBILE_MIN_REF` calls is allowed only in a change that raises `minimumClientVersion` above that app's version and moves `MOBILE_MIN_REF`
+to the first app commit of the new minimum.** To retire something: first stop calling it in an app release, raise the minimum in a later
+backend release, drop it after that. Builds older than the minimum are told to update by `get-public-config`. Run
+`node scripts/check-mobile-contract.mjs <app checkout at MOBILE_MIN_REF> --output <file>` and
+`node scripts/check-app-compat.mjs --report <file> --app-json <app checkout>/app.json --previous auto` locally before changing either value.
+
 ## Releases
 
 Operators follow release tags, not `main` ([SECURITY.md](SECURITY.md) has the support window). The flow, step by step in

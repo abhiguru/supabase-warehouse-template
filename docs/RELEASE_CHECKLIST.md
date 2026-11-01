@@ -29,6 +29,12 @@ The `contract` CI job compares names only against the pinned app commit
       (overloads, argument names and the grant to signed-in users).
 - [ ] Set `minimumClientVersion` in `app-compat.json` to the oldest app build this release still answers (a backend release supports the newest
       app release; older builds are told to update, [API_CONTRACT.md](API_CONTRACT.md#which-app-builds-a-release-supports-and-what-the-backend-tells-the-app)).
+- [ ] If the minimum is raised, move `MOBILE_MIN_REF` (`.github/workflows/ci.yml`) to the first app commit that carries the new
+      `minimumClientVersion` in the same pull request; otherwise leave it. With that commit checked out, `node scripts/check-mobile-contract.mjs <app checkout> --output <file>` and
+      `node scripts/check-app-compat.mjs --report <file> --app-json <app checkout>/app.json --previous auto` must pass (the `contract` job and
+      `release.yml` run them too). A function, table or edge function that app calls cannot be dropped in a release that does not raise the
+      minimum ([CONTRIBUTING.md](../CONTRIBUTING.md#the-oldest-supported-app-mobile_min_ref)). Say in the release note that builds below the
+      minimum are told to update.
 - [ ] Record the backend and app commit pair in the pull request.
 
 ## Image scan before a release
