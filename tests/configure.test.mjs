@@ -6,7 +6,7 @@ import { join } from 'node:path';
 import { createHmac } from 'node:crypto';
 import { createServer } from 'node:net';
 import { spawnSync } from 'node:child_process';
-import { configure, parseConfigureArgs, centralKeysFault, centralKeysWarning } from '../scripts/configure.mjs';
+import { configure, dbMemoryValues, parseConfigureArgs, centralKeysFault, centralKeysWarning } from '../scripts/configure.mjs';
 import { validateOperatorEnv } from '../scripts/doctor.mjs';
 import { gatewayPortText, readEnv } from '../scripts/doctor-common.mjs';
 
@@ -377,7 +377,7 @@ test('setup and the edge function apply the same key set rules', () => {
 
 test('setup.sh passes the central options on and applies the issuer to the database after the auth settings', () => {
   const setup = readFileSync(new URL('../setup.sh', import.meta.url), 'utf8');
-  assert.match(setup, /--admin-name\|--central-issuer\|--central-jwks-url\|--central-jwks-file\|--central-local-code\|--alert-webhook-file\|--sensor-webhook-file\|--heartbeat-url-file\|--letterhead-file\|--gateway-port\)/);
+  assert.match(setup, /--admin-name\|--central-issuer\|--central-jwks-url\|--central-jwks-file\|--central-local-code\|--alert-webhook-file\|--sensor-webhook-file\|--heartbeat-url-file\|--letterhead-file\|--gateway-port\|--db-memory\)/);  // deliberate pin update: --db-memory joins the value options
   const auth = setup.indexOf('scripts/configure-auth.sql');
   const central = setup.indexOf('scripts/configure-central.sql');
   assert.ok(auth > 0 && central > auth && central < setup.indexOf('scripts/configure-sms.sql'));
@@ -749,6 +749,53 @@ test('gateway port (--gateway-port): written on a fresh state, kept on a rerun, 
     const refused = cli('--state-dir', join(scratch, 'cli'), '--gateway-port', '80');
     assert.notEqual(refused.status, 0);
     assert.match(refused.stderr, /--gateway-port must be a whole number/);
+  } finally { rmSync(scratch, { recursive: true, force: true }); }
+});
+
+test('database memory (--db-memory): written on a fresh state, replaced alone while stopped, refused when running or out of range', () => {
+  const scratch = mkdtempSync(join(tmpdir(), 'warehouse-config-dbmem-'));
+  const root = join(scratch, 'checkout');
+  const providerEnv = join(scratch, 'provider.env');
+  try {
+    mkdirSync(root);
+    copyFileSync(new URL('../.env.example', import.meta.url), join(root, '.env.example'));
+    writeFileSync(providerEnv, 'SMS_PROVIDER=msg91\nMSG91_AUTH_KEY=provider-key\nMSG91_TEMPLATE_ID=flow-id\nMSG91_PE_ID=pe-id\nMSG91_SENDER_ID=WHOUSE\n', { mode: 0o600 });
+    const base = { apiUrl: 'https://api.example.com', company: 'Acme Stores', providerEnv };
+    const hooks = { portFree: () => true, containersRunning: () => false };
+    const envPath = dir => join(dir, 'config/compose.env');
+    const vars = dir => readEnv(envPath(dir));
+    // The template carries the defaults of docker-compose.yml.
+    const plain = join(scratch, 'plain');
+    configure(root, { ...base, stateDir: plain, ...hooks });
+    assert.deepEqual([vars(plain).DB_MEMORY_LIMIT, vars(plain).DB_SHARED_BUFFERS, vars(plain).DB_EFFECTIVE_CACHE_SIZE], ['1G', '128MB', '512MB']);
+    const state = join(scratch, 'state');
+    assert.equal(configure(root, { ...base, stateDir: state, dbMemory: '8', ...hooks }).created, true);
+    assert.deepEqual([vars(state).DB_MEMORY_LIMIT, vars(state).DB_SHARED_BUFFERS, vars(state).DB_EFFECTIVE_CACHE_SIZE], ['8G', '2048MB', '4096MB']);
+    const before = readFileSync(envPath(state), 'utf8');
+    assert.equal(configure(root, { stateDir: state, dbMemory: '8', containersRunning: () => { throw new Error('same values must not ask'); } }).dbMemoryChanged, false);
+    assert.equal(configure(root, { stateDir: state, ...hooks }).dbMemoryChanged, false);
+    assert.equal(readFileSync(envPath(state), 'utf8'), before);
+    // Refused while running; nothing changes.
+    assert.throws(() => configure(root, { stateDir: state, dbMemory: '16', portFree: () => true, containersRunning: () => true }), /containers are running; stop them \(stop\.sh\) before changing --db-memory/);
+    assert.equal(readFileSync(envPath(state), 'utf8'), before);
+    // Replaced alone while stopped.
+    assert.equal(configure(root, { stateDir: state, dbMemory: '16', ...hooks }).dbMemoryChanged, true);
+    assert.equal(readFileSync(envPath(state), 'utf8'), before.replace('DB_MEMORY_LIMIT=8G', 'DB_MEMORY_LIMIT=16G').replace('DB_SHARED_BUFFERS=2048MB', 'DB_SHARED_BUFFERS=4096MB').replace('DB_EFFECTIVE_CACHE_SIZE=4096MB', 'DB_EFFECTIVE_CACHE_SIZE=8192MB'));
+    // A state from before the keys existed gets them appended.
+    const old = join(scratch, 'old');
+    configure(root, { ...base, stateDir: old, ...hooks });
+    writeFileSync(envPath(old), readFileSync(envPath(old), 'utf8').replace(/^DB_.*\n/gm, ''), { mode: 0o600 });
+    assert.equal(vars(old).DB_MEMORY_LIMIT, undefined);
+    assert.equal(configure(root, { stateDir: old, dbMemory: '4', ...hooks }).dbMemoryChanged, true);
+    assert.deepEqual([vars(old).DB_MEMORY_LIMIT, vars(old).DB_SHARED_BUFFERS, vars(old).DB_EFFECTIVE_CACHE_SIZE], ['4G', '1024MB', '2048MB']);
+    // Boundaries.
+    assert.deepEqual(dbMemoryValues('1'), { DB_MEMORY_LIMIT: '1G', DB_SHARED_BUFFERS: '256MB', DB_EFFECTIVE_CACHE_SIZE: '512MB' });
+    assert.equal(dbMemoryValues('256').DB_MEMORY_LIMIT, '256G');
+    assert.equal(dbMemoryValues(undefined), null);
+    for (const bad of ['0', '257', '-1', '1.5', 'abc', '8G', '', '0x10', '0008x']) assert.throws(() => dbMemoryValues(bad), /--db-memory must be a whole number of GiB from 1 to 256/, bad);
+    assert.throws(() => configure(root, { ...base, stateDir: join(scratch, 'bad'), dbMemory: '257', ...hooks }), /--db-memory must be/);
+    assert.equal(existsSync(join(scratch, 'bad')), false);
+    assert.deepEqual(parseConfigureArgs(['--state-dir', state, '--db-memory', '8']), { stateDir: state, dbMemory: '8' });
   } finally { rmSync(scratch, { recursive: true, force: true }); }
 });
 

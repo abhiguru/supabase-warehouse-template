@@ -10,6 +10,7 @@ file used to carry for earlier installations are in git: `git show b45ae0b:CHANG
 
 ### Added
 
+- **`setup.sh --db-memory <GiB>`** (1 to 256) sets the database container's memory limit and, from it, `shared_buffers` (a quarter) and `effective_cache_size` (half) through `DB_MEMORY_LIMIT`, `DB_SHARED_BUFFERS` and `DB_EFFECTIVE_CACHE_SIZE` in `config/compose.env`; refused while the containers run. Without it the values are the old fixed ones (1G, 128MB, 512MB).
 - **Host minimum checked.** `doctor --host-preflight` warns (never refuses) below 4 vCPU, 7.5 GiB of memory and 55 GiB of disk in total on the state's filesystem; "Host prerequisites" states 4 vCPU / 8 GiB / SSD / 60 GB.
 - **A request id on every API answer, and logs saved before restarts.** The gateway makes a random `$request_id` (32 hex characters, no user
   data) for each request: the last field of its access line, an `X-Request-Id` header passed to PostgREST, Storage and the functions (a

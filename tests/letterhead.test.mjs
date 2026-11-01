@@ -147,7 +147,7 @@ test('the command line takes --letterhead-file, prints one confirmation, and the
     const refused = run(['--letterhead-file', join(scratch, 'nope')]);
     assert.equal(refused.status, 1); assert.match(refused.stderr, /Configure: --letterhead-file must be a readable regular file/);
     const setup = readFileSync(new URL('../setup.sh', import.meta.url), 'utf8');
-    assert.match(setup, /--letterhead-file\|--gateway-port\)/);
+    assert.match(setup, /--letterhead-file\|--gateway-port\|--db-memory\)/);
   } finally { rmSync(scratch, { recursive: true, force: true }); }
 });
 
