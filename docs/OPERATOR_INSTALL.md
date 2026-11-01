@@ -2148,6 +2148,11 @@ the restore recreates its role, schema and `_supabase` database, and `bash scrip
 
 ## Rerun and upgrade
 
+A recreated container starts with an empty log, so `upgrade.sh`, `setup.sh` (on a state that already has containers), `rotate-keys.sh` and
+`scripts/rotate-db-passwords.sh` first save the last 48 hours of each service's log, redacted, in `$WAREHOUSE_STATE_DIR/diagnostics/pre-<label>-<utc>/`
+(the newest five directories are kept; a failure to save prints one line and does not stop the command). They can hold client addresses,
+so keep the directory private. [MONITORING.md](MONITORING.md#finding-one-request) says how to search them.
+
 A rerun is the same `setup.sh --operator ...` command with the same inputs against the same state directory. It
 regenerates nothing that already exists: identity, signing keys, database, stored files, the administrator and the provider
 lines are preserved (a different `--provider-env` file replaces only the MSG91 lines; the `--central-…` options set or

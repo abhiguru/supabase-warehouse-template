@@ -157,6 +157,8 @@ rollback() {
   fi
   exit 1
 }
+# The recreate below empties the logs of these services: keep the last 48 hours first (best effort, redacted; <state>/diagnostics/pre-rotate-db-passwords-*).
+node "$ROOT/scripts/service-diagnostics.mjs" save rotate-db-passwords || true
 if ((${#recreate[@]})) && ! compose --profile '*' up -d --force-recreate --wait --wait-timeout 180 "${recreate[@]}"; then rollback; fi
 bash "$ROOT/scripts/db-roles.sh" check || rollback
 node "$ROOT/scripts/doctor.mjs" --local || rollback

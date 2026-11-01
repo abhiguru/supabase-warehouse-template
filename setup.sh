@@ -129,6 +129,11 @@ bash "$ROOT/scripts/db-version-preflight.sh"
 # an upgraded checkout does not keep the images of the first installation. A checkout at a release tag pulls the images the
 # release workflow built and scanned (by digest) where the recipe is the released one, and builds the rest here.
 bash "$ROOT/scripts/build-images.sh" --from-release
+# A state that already has containers is about to have them recreated (an upgrade, or a rerun), and a recreated container starts with an
+# empty log: keep the last 48 hours of each service first (best effort, redacted; <state>/diagnostics/pre-setup-*). A first install has none.
+if [[ -n "$(bash "$ROOT/scripts/compose.sh" ps -a -q 2>/dev/null || true)" ]]; then
+  node "$ROOT/scripts/service-diagnostics.mjs" save setup || true
+fi
 # Setup brings the stack up: the boot unit and the checker's self-healing may act again (stop.sh wrote this file).
 rm -f -- "$STATE/config/stopped-by-operator"
 # --remove-orphans stops the old realtime container before the baseline reload's cluster replaces the old one.

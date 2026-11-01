@@ -55,6 +55,10 @@ secret="$(sed -n 's/^JWT_SECRET=//p' "$staged")"
 # rename below, rerunning the command stages and applies a newer secret again.
 mv -f "$staged" "$live"
 
+# A recreated container starts with an empty log: keep the last 48 hours of each service first (best effort, redacted;
+# <state>/diagnostics/pre-rotate-keys-*, docs/MONITORING.md, "Finding one request").
+node "$ROOT/scripts/service-diagnostics.mjs" save rotate-keys || true
+
 # Recreate only the running key consumers so an intentionally stopped optional
 # service is not started. db is included so its environment matches on reruns.
 recreate=()

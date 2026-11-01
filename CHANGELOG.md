@@ -10,6 +10,16 @@ file used to carry for earlier installations are in git: `git show b45ae0b:CHANG
 
 ### Added
 
+- **A request id on every API answer, and logs saved before restarts.** The gateway makes a random `$request_id` (32 hex characters, no user
+  data) for each request: the last field of its access line, an `X-Request-Id` header passed to PostgREST, Storage and the functions (a
+  client-sent one is replaced) and returned on every answer, error answers included. The function helpers write `request_id=` on their
+  server-side error lines (only an id of exactly that form is repeated). `scripts/watch.mjs` still reads old lines. Before an upgrade, `setup.sh`
+  on an existing state, `rotate-keys.sh` and `scripts/rotate-db-passwords.sh` recreate containers, they save the last 48 hours of each
+  service log, redacted, in `<state>/diagnostics/pre-<label>-<utc>/` (`node scripts/service-diagnostics.mjs save <label>`, the newest 5 kept, best
+  effort). The gateway services keep 10 log files instead of 3. See [MONITORING.md](docs/MONITORING.md#finding-one-request). Operator action: none.
+  Tests: `tests/gateway-config.test.mjs`, `tests/gateway-nginx.test.mjs`, `tests/watch.test.mjs`, `tests/access.test.mjs`,
+  `tests/pdf-renderer-footer.test.mjs`, `tests/service-diagnostics.test.mjs`, `tests/compose-networks.test.mjs`, `tests/diagnostics-wiring.test.mjs`.
+
 - **Outside observer and release notice.** `setup.sh --operator --heartbeat-url-file ABSOLUTE|off` stores the ping URL of an external
   dead-man switch as `config/heartbeat-url` (mode 0600; kept when the option is left out); `npm run doctor` warns while there is none, unless
   the facility records `config/heartbeat-declined` ("We have decided not to use an external heartbeat."). The restore-host "Next" steps

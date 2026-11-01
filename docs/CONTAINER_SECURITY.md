@@ -318,7 +318,10 @@ front; the checker reads both logs together (`checkApiLogs`).
 ## Logs
 
 What a service log may hold, for the 3 x 10 MB of `json-file` log each service keeps (`docker/docker-compose.yml`,
-`x-logging`; the oldest file is dropped when the third fills, and a recreated container starts with an empty log).
+`x-logging`; the oldest file is dropped when the third fills, and a recreated container starts with an empty log). The gateway services
+(`gateway`, `gateway-lan`) keep 10 files of 10 MB instead of 3, since they write a line per request. Before an upgrade, a key rotation or a
+database password rotation recreates containers, `node scripts/service-diagnostics.mjs save <label>` writes the last 48 hours of each service log, through
+the same redaction as the other diagnostics, to `<state>/diagnostics/pre-<label>-<utc>/` (directory 0700, files 0600, the newest 5 kept).
 
 - **The rule.** No log line holds a token, a key, an OTP, a password or a query string. A signed storage link
   (`?token=`) is a credential in a query string: a retained log that holds one can replay a still-valid document link.
@@ -326,8 +329,12 @@ What a service log may hold, for the 3 x 10 MB of `json-file` log each service k
   identifies a person: no user agent, no referer, no phone number, no session.
 - **Gateway access log** (`docker/nginx/nginx.conf`, `log_format warehouse_redacted`, on the container's stdout): a short
   format that replaces nginx's default `combined` one, which writes the whole request line, query string and all. A line is
-  `client-address [time] "METHOD /path HTTP/x" status bytes seconds`, for example
-  `203.0.113.7 [17/Oct/2026:17:43:35 +0000] "GET /storage/v1/object/sign/docs/a.pdf HTTP/1.1" 200 478 0.034`. `$uri` is
+  `client-address [time] "METHOD /path HTTP/x" status bytes seconds request-id`, for example
+  `203.0.113.7 [17/Oct/2026:17:43:35 +0000] "GET /storage/v1/object/sign/docs/a.pdf HTTP/1.1" 200 478 0.034 0123456789abcdef0123456789abcdef`. The
+  request id (`$request_id`) is 32 random hexadecimal characters made for each request: it is random and carries no user data. The gateway
+  also sends it to PostgREST, Storage and the functions (replacing any `X-Request-Id` the client wrote) and returns it in the `X-Request-Id`
+  answer header, so one request can be followed through the logs ([MONITORING.md](MONITORING.md#finding-one-request)); the function logs write
+  only an id of exactly this form. `$uri` is
   the path without the query. Do not add `$request`, `$request_uri`, `$args`, `$query_string`, `$http_referer` or
   `$http_user_agent`; `tests/gateway-config.test.mjs` fails if one appears, and `npm run test:gateway` sends a fictional
   signed-link request and fails if the running gateway's log holds `token=`. The

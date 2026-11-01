@@ -446,6 +446,25 @@ postgres -c "SELECT calls, round(total_exec_time) AS ms, left(query, 80) FROM pg
 The API roles are cut off by the database itself: `anon` after
 3 seconds, `authenticated` after 8 (an answer with `canceling statement due to statement timeout`; [CONTAINER_SECURITY.md](CONTAINER_SECURITY.md#database-roles)).
 
+## Finding one request
+
+Every answer of the gateway carries an `X-Request-Id` header: 32 random hexadecimal characters, made by the gateway for that request
+(a value the client sent is replaced). It is also the last field of the gateway's access line, and the gateway passes it to PostgREST,
+Storage and the functions. To follow one request that failed on a phone, take the id from the app's report or from the response
+(browser tools show response headers), then search the logs for it:
+
+```bash
+ID=0123456789abcdef0123456789abcdef   # the id from the phone or the response
+bash scripts/compose.sh logs --since 48h gateway | grep "$ID"
+bash scripts/compose.sh logs --since 48h functions | grep "$ID"
+```
+
+The gateway line gives the time, path, status and duration; the functions log writes `request_id=<id>` on its server-side error lines
+(the profile lookup and the PDF renderer among them). The id carries no user data, so it is safe to paste into a message. The gateway keeps ten
+10 MB log files, and a recreated container starts with an empty log; before an upgrade, a key rotation or a database password rotation the
+last 48 hours of each service's log are saved, redacted, in `$WAREHOUSE_STATE_DIR/diagnostics/pre-<label>-<utc>/` (the newest five stay), so
+search there too when the request is older than the restart. By hand: `node scripts/service-diagnostics.mjs save <label>`.
+
 ## What it does not cover
 
 There is no metric history and no dashboard: the checker keeps only its state (`config/watch-state.json`,

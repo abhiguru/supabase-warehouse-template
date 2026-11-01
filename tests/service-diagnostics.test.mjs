@@ -1,6 +1,10 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { diagnoseService, redactServiceLog, showUnhealthyServices } from '../scripts/service-diagnostics.mjs';
+import { mkdtempSync, mkdirSync, readdirSync, readFileSync, statSync, rmSync, existsSync } from 'node:fs';
+import { tmpdir } from 'node:os';
+import { join } from 'node:path';
+import { spawnSync } from 'node:child_process';
+import { diagnoseService, redactServiceLog, saveLogs, showUnhealthyServices } from '../scripts/service-diagnostics.mjs';
 
 test('service diagnostics redact literal, URL and JSON encoded credentials', () => {
   const secret = 'fictional p@ss"\\word';
@@ -74,4 +78,71 @@ test('the unhealthy-service listing skips healthy services and redacts the last 
   const quiet = [];
   showUnhealthyServices({ run: () => ({ status: 1 }), env: () => ({}), report: line => quiet.push(line) });
   assert.deepEqual(quiet, []);
+});
+
+// ---- saveLogs: the logs kept before a recreate ----
+const SECRET = 'fictional-save-secret-value';
+const freshState = () => mkdtempSync(join(tmpdir(), 'save-logs-'));
+const modeOf = path => statSync(path).mode & 0o777;
+const okRun = calls => (command, args) => { calls.push(args); return { status: 0, stdout: `2026-11-01T10:00:00Z ${args.at(-1)} line ${SECRET}\n`, stderr: '' }; };
+
+test('saveLogs writes each allowed service log, redacted, in a private pre-<label>-<utc> directory under the state', () => {
+  const state = freshState();
+  const calls = [], said = [];
+  try {
+    saveLogs({ label: 'upgrade', stateDir: state, run: okRun(calls), env: () => ({ JWT_SECRET: SECRET }), now: () => new Date('2026-11-01T10:20:30.123Z'), report: line => said.push(line) });
+    const dir = join(state, 'diagnostics', 'pre-upgrade-20261101T102030Z');
+    assert.deepEqual(readdirSync(dir).sort(), ['functions.log', 'gateway-lan.log', 'gateway.log', 'rest.log', 'supavisor.log']);
+    assert.equal(modeOf(join(state, 'diagnostics')), 0o700);
+    assert.equal(modeOf(dir), 0o700);
+    for (const name of readdirSync(dir)) {
+      assert.equal(modeOf(join(dir, name)), 0o600, name);
+      const text = readFileSync(join(dir, name), 'utf8');
+      assert.ok(!text.includes(SECRET), `${name} is redacted`);
+      assert.match(text, /\[REDACTED\]/);
+    }
+    for (const args of calls) assert.deepEqual(args.slice(args.indexOf('logs')).slice(0, 5), ['logs', '--timestamps', '--no-color', '--since', '48h']);
+    assert.ok(calls.some(args => args.includes('--profile') && args.includes('pooler')) && calls.some(args => args.includes('lan')), 'profile services are asked with their profile');
+    assert.equal(said.length, 1);
+  } finally { rmSync(state, { recursive: true, force: true }); }
+});
+
+test('saveLogs keeps the newest 5 pre-* directories and leaves other entries alone', () => {
+  const state = freshState();
+  try {
+    const base = join(state, 'diagnostics');
+    mkdirSync(base, { recursive: true });
+    for (let day = 1; day <= 6; day += 1) mkdirSync(join(base, `pre-rotate-keys-2026100${day}T010000Z`));
+    mkdirSync(join(base, 'notes'));
+    saveLogs({ label: 'upgrade', stateDir: state, run: okRun([]), env: () => ({}), now: () => new Date('2026-11-01T10:00:00Z'), report: () => {} });
+    const left = readdirSync(base).sort();
+    assert.deepEqual(left, ['notes', 'pre-rotate-keys-20261003T010000Z', 'pre-rotate-keys-20261004T010000Z', 'pre-rotate-keys-20261005T010000Z', 'pre-rotate-keys-20261006T010000Z', 'pre-upgrade-20261101T100000Z']);
+  } finally { rmSync(state, { recursive: true, force: true }); }
+});
+
+test('saveLogs is best effort: a failing compose, a bad label or a bad state print one line, leave nothing behind and do not throw', () => {
+  const state = freshState();
+  try {
+    const said = [];
+    saveLogs({ label: 'upgrade', stateDir: state, run: () => ({ status: 1, stdout: '', stderr: 'no such service' }), env: () => ({}), report: line => said.push(line) });
+    assert.equal(said.length, 1);
+    assert.deepEqual(readdirSync(join(state, 'diagnostics')), [], 'an empty attempt is not kept');
+    saveLogs({ label: '../x', stateDir: state, run: okRun([]), env: () => ({}), report: line => said.push(line) });
+    saveLogs({ label: 'ok', stateDir: 'relative/path', run: okRun([]), env: () => ({}), report: line => said.push(line) });
+    saveLogs({ label: 'ok', stateDir: state, run: () => { throw new Error('docker missing'); }, env: () => ({}), report: line => said.push(line) });
+    saveLogs({ label: 'ok', stateDir: state, run: okRun([]), env: () => { throw new Error('no env'); }, report: line => said.push(line) });
+    assert.equal(said.length, 5);
+    assert.ok(said.every(line => !line.includes('\n')));
+    assert.deepEqual(readdirSync(join(state, 'diagnostics')), []);
+  } finally { rmSync(state, { recursive: true, force: true }); }
+});
+
+test('the save command exits 0 even when it can save nothing', () => {
+  const state = freshState();
+  try {
+    const result = spawnSync(process.execPath, ['scripts/service-diagnostics.mjs', 'save', 'upgrade'], { encoding: 'utf8', env: { PATH: '/nonexistent', WAREHOUSE_STATE_DIR: state }, timeout: 60000 });
+    assert.equal(result.status, 0, result.stderr);
+    assert.equal(result.stderr.trim().split('\n').length, 1);
+    assert.equal(existsSync(join(state, 'diagnostics')) ? readdirSync(join(state, 'diagnostics')).length : 0, 0);
+  } finally { rmSync(state, { recursive: true, force: true }); }
 });

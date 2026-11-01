@@ -15,6 +15,13 @@ x-logging: &default-logging
   options:
     max-size: "10m"
     max-file: "3"
+# The gateway writes one line per request, so three files cover only a few hours of a busy day; it keeps ten of the same size
+# (max-size is copied from the anchor above and must stay equal to it). A request id found in an app report is then still in the log.
+x-gateway-logging: &gateway-logging
+  driver: "json-file"
+  options:
+    max-size: "10m"
+    max-file: "10"
 
 services:
 
@@ -26,7 +33,7 @@ services:
     build:
       context: ./nginx
     restart: unless-stopped
-    logging: *default-logging
+    logging: *gateway-logging
     # nginx runs as the user `nginx` (101) of the image: no capability is needed for port 8000, the root file system is
     # read-only, and the only writable places are two small tmpfs: /tmp (the pid file and nginx's temporary paths, which
     # stay empty: request bodies and answers are never written to a file, docker/nginx/nginx.conf) and the directory
@@ -98,7 +105,7 @@ services:
     pull_policy: never
     restart: unless-stopped
     profiles: ["lan"]
-    logging: *default-logging
+    logging: *gateway-logging
     # As the gateway: read-only root, no capability, tmpfs for the pid file and the rendered configuration.
     read_only: true
     tmpfs:
