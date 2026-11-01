@@ -474,7 +474,8 @@ main() {
     refuse "'$TAG' is not a release tag. Give a tag such as v0.7.0 (the list is on the GitHub releases page; 'git tag --list \"v*\"' after 'git fetch --tags'). Only tagged releases are supported; --ref COMMIT_OR_BRANCH is for tests and development."
   fi
   if [[ -n "$REF" ]]; then
-    warn "--ref $REF is not a release tag and its signature is not checked. Only tagged releases are supported: security fixes, the support window and the upgrade notes apply to tags, and a branch can hold changes that were never released."
+    warn "--ref $REF is not a release tag. Only tagged releases are supported: security fixes, the support window and the upgrade notes apply to tags, and a branch can hold changes that were never released."
+    warn "--ref $REF: its signature is not checked."
   fi
 
   say "Installation: $STATE"
@@ -525,9 +526,12 @@ main() {
     git show "$FROM_SHA:.github/allowed_signers" > "$SIGNERS_TMP" 2>/dev/null || : > "$SIGNERS_TMP"
     if signers_have_key "$SIGNERS_TMP"; then
       SIG_PROBLEM="$(tag_signature_problem "$TAG" "$SIGNERS_TMP" "$TO_SHA")"
+      rm -f -- "$SIGNERS_TMP"; SIGNERS_TMP=''
       [[ -z "$SIG_PROBLEM" ]] || refuse "$SIG_PROBLEM. A release tag must be signed by a key that this checkout trusts (docs/OPERATOR_INSTALL.md, \"Rerun and upgrade\"). Nothing was changed."
       say "Signature:    $TAG is signed by a key listed in .github/allowed_signers"
+      rm -f -- "$SIGNERS_TMP"; SIGNERS_TMP=''
     else
+      rm -f -- "$SIGNERS_TMP"; SIGNERS_TMP=''
       warn "this checkout ($FROM_LABEL) lists no release signing key in .github/allowed_signers, so the signature of $TAG is not checked. Releases signed from now on are checked by the checkout that follows this one."
     fi
   elif [[ -n "$TAG" ]]; then
