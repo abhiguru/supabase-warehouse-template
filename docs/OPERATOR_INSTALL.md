@@ -28,6 +28,7 @@ Sections: [host prerequisites](#host-prerequisites),
 
 ## Host prerequisites
 
+- git 2.34 or newer and `ssh-keygen` (OpenSSH), to check the signature of a release tag when `upgrade.sh` runs (Ubuntu 22.04 and 24.04 have both).
 - Linux x86-64 with Docker Engine and the Compose plugin, enabled at boot; Ubuntu 24.04 is the tested baseline. ARM64 is
   not supported. The requirement is a Compose plugin whose `docker compose up` accepts
   `--wait-timeout`: setup, start and the backup scripts wait for services with it, and `doctor` stops with a message
@@ -2142,6 +2143,14 @@ bash upgrade.sh --dry-run vX.Y.Z       # first: runs every check, prints what th
 bash upgrade.sh vX.Y.Z                 # then the real run, once you have done what the dry run listed under "before"
 sudo bash scripts/backup-usb.sh setup --state "$WAREHOUSE_STATE_DIR"   # only if you use a USB backup drive
 ```
+
+**Signed releases.** A release tag is signed by the maintainer. Once your checkout lists a signing key (`.github/allowed_signers`),
+`upgrade.sh` checks the tag against that list, as committed in the checkout you run now (never the list of the release it installs), and
+refuses with "is not signed by a key listed in .github/allowed_signers of this checkout ... Nothing was changed" when the tag is unsigned,
+signed by another key, a lightweight tag, or a signed object published under another name; it also refuses on git older than 2.34. Do not work around the refusal:
+a tag that fails the check is not the maintainer's release; report it (SECURITY.md) and ask which release to use. A checkout from before signed releases lists no key: `upgrade.sh`
+prints a warning and goes on, and the checkout it installs checks the releases after it. `--ref` is for development and is not verified.
+A resumed upgrade says "Signature: not checked again" (the first run checked it).
 
 **Run the dry run first, and do what it lists under "before".** `upgrade.sh` holds the operator lock from start to end (the monitoring checker
 judges nothing meanwhile; its `operator_lock_stuck` alert fires after 2 hours, or after twice the time of the last backup plus the last verify when that is longer) and prints the operator actions of `CHANGELOG.md` between your

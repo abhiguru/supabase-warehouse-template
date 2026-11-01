@@ -443,7 +443,10 @@ checks the digest of the image it got and that its revision label is its checkou
 candidate), a published release's tag and assets, `release-images.json` among them, cannot be changed or deleted afterwards; (4) the
 revision label: the facility refuses an image built from any other commit than its own checkout's, which closes the substitution of an older
 release's genuine image for a current one in a replaced list. It also refuses a file for another release or commit and any reference
-outside `ghcr.io/abhiguru/supabase-warehouse-template`. **What it does not do:** no cryptographic signature of the images or the list is
+outside `ghcr.io/abhiguru/supabase-warehouse-template`. **Release tags are SSH-signed** ([RELEASE_CHECKLIST.md](RELEASE_CHECKLIST.md#signing-the-tag)): once a release lists a key in
+`.github/allowed_signers`, `upgrade.sh` refuses a tag not signed by a key of the installed checkout's own list, so a taken-over account
+or a moved tag alone does not reach a facility that already trusts that key (the first upgrade into the signed era has nothing to check
+against, and `--ref` is not verified). **What it does not do:** no cryptographic signature of the images or the list is
 checked on the host (no `cosign` or attestation tool is installed there), so the label is a statement by whoever pushed the image, not proof
 of who built it; a maintainer account that is taken over can publish a new release with images of its own, exactly as it could publish new
 code. Before immutable releases are switched on, the list is an ordinary release asset that anyone with write access to the repository's

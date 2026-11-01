@@ -95,3 +95,30 @@ changelog_between() {
     END { flush() }
   ' "$file"
 }
+
+# --- Signed release tags (docs/RELEASE_CHECKLIST.md, "Signing the tag") ----------------------------------------------------------------
+# True when SIGNERS_FILE lists at least one key: a line that is neither empty nor a comment. A file with none is the placeholder that
+# ships before the first signed release; there is nothing to verify against yet.
+signers_have_key() { [[ -f "$1" ]] && grep -qvE '^[[:space:]]*(#|$)' "$1"; }
+
+# tag_signature_problem TAG SIGNERS_FILE EXPECTED_COMMIT: prints why TAG cannot be trusted, nothing when it can. TAG must be an annotated
+# tag whose own name is TAG, that points at EXPECTED_COMMIT, and that carries an SSH signature by a key listed in SIGNERS_FILE
+# (ssh-keygen "allowed signers" format). Run in the git checkout that holds the tag. Needs git 2.34 or newer and ssh-keygen.
+tag_signature_problem() {
+  local tag="$1" signers="$2" expect="$3" ver major minor header out
+  ver="$(git version 2>/dev/null | sed -n 's/^git version \([0-9][0-9]*\)\.\([0-9][0-9]*\).*/\1 \2/p')"
+  read -r major minor <<< "$ver"
+  if [[ -z "${major:-}" ]] || ((major < 2 || (major == 2 && minor < 34))); then
+    echo "git 2.34 or newer is needed to check the signature of a release tag (this is: $(git version 2>&1 | head -n 1)). Update git"
+    return 0
+  fi
+  command -v ssh-keygen >/dev/null || { echo 'ssh-keygen (the OpenSSH client package) is needed to check the signature of a release tag, and is not installed'; return 0; }
+  [[ "$(git cat-file -t "refs/tags/$tag" 2>/dev/null)" == tag ]] || { echo "$tag is not an annotated, signed tag"; return 0; }
+  header="$(git cat-file tag "refs/tags/$tag" | sed -n '1,/^$/p')"
+  [[ "$(sed -n 's/^tag //p' <<< "$header")" == "$tag" ]] || { echo "the signed tag object behind $tag carries another tag name (a signed tag published under a different name)"; return 0; }
+  [[ "$(sed -n 's/^object //p' <<< "$header")" == "$expect" ]] || { echo "the signed tag object behind $tag points at another commit than the release"; return 0; }
+  if ! out="$(git -c gpg.format=ssh -c "gpg.ssh.allowedSignersFile=$signers" verify-tag "$tag" 2>&1)"; then
+    echo "$tag is not signed by a key listed in .github/allowed_signers of this checkout (git said: $(tr '\n' ' ' <<< "$out" | sed 's/  */ /g; s/ $//'))"
+  fi
+  return 0
+}

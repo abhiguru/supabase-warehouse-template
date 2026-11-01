@@ -182,7 +182,7 @@ test('restore-host loads the images saved beside the backup, adopts their build 
 // At a release tag the recovered checkout pulls the release's images before restore.sh builds what is missing (build-images.sh --from-release).
 // The stand-in build-images.sh records its arguments and state, and whether restore.sh had run yet.
 function releaseCheckout(f, { tag }) {
-  const git = (...args) => assert.equal(spawnSync('git', ['-C', f.root, '-c', 'user.name=t', '-c', 'user.email=t@example.test', ...args], { encoding: 'utf8' }).status, 0, args.join(' '));
+  const git = (...args) => assert.equal(spawnSync('git', ['-C', f.root, '-c', 'user.name=t', '-c', 'user.email=t@example.test', '-c', 'commit.gpgsign=false', '-c', 'tag.gpgsign=false', ...args], { encoding: 'utf8' }).status, 0, args.join(' '));
   git('init', '-q'); git('add', 'scripts/restore.sh'); git('commit', '-q', '-m', 'release');
   if (tag) git('tag', tag);
   writeFileSync(join(f.root, 'scripts/build-images.sh'), `#!/usr/bin/env bash

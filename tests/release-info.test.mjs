@@ -132,7 +132,7 @@ test('the router hands the two files to get-public-config and the release to get
 // ---- scripts/release-info.mjs ------------------------------------------------------------------------------------------
 function checkout() {
   const root = mkdtempSync(join(tmpdir(), 'release-info-root-'));
-  const git = (...args) => execFileSync('git', ['-C', root, '-c', 'user.name=t', '-c', 'user.email=t@example.test', ...args], { stdio: 'pipe' });
+  const git = (...args) => execFileSync('git', ['-C', root, '-c', 'user.name=t', '-c', 'user.email=t@example.test', '-c', 'commit.gpgsign=false', '-c', 'tag.gpgsign=false', ...args], { stdio: 'pipe' });
   git('init', '-q');
   writeFileSync(join(root, 'app-compat.json'), JSON.stringify({ minimumClientVersion: '0.3.0', note: 'x' }));
   git('add', 'app-compat.json');
@@ -200,7 +200,7 @@ test('the repository\'s own app-compat.json is valid, and setup.sh and restore.s
 test('release-info.mjs: a tag with a slash is written in a form the function accepts; a modified checkout says -dirty; a checkout git cannot read is "unknown" with a warning', () => {
   const { root } = checkout();
   try {
-    const git = (...args) => execFileSync('git', ['-C', root, '-c', 'user.name=t', '-c', 'user.email=t@example.test', ...args], { stdio: 'pipe' });
+    const git = (...args) => execFileSync('git', ['-C', root, '-c', 'user.name=t', '-c', 'user.email=t@example.test', '-c', 'commit.gpgsign=false', '-c', 'tag.gpgsign=false', ...args], { stdio: 'pipe' });
     const quiet = () => { throw new Error('no warning expected'); };
     assert.equal(releaseRecord({ root, schemaHead: 'a.sql', warn: quiet }).backendRelease, 'v9.9.9');
     // A tag with a slash would be refused by parseRelease (and shown as "unknown" in the app).

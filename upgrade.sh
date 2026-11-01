@@ -92,6 +92,7 @@ RECORD_LIVE=no
 RECORD_STARTED=''
 VERIFIED=no
 RESUME=no
+SIGNERS_TMP=''
 ADMIN_PHONE=''
 ADMIN_NAME=''
 WEBHOOK_OFF=no
@@ -438,7 +439,7 @@ main() {
   for ARG in "${ORIG_ARGS[@]}"; do CMD_TEXT+="$(printf '%q' "$ARG") "; done
   CMD_TEXT="${CMD_TEXT% }"
 
-  trap 'rm -f -- "$BACKUP_OUT" "$DB_ERR"; [[ -z "$PREFLIGHT_TREE" ]] || rm -rf -- "$PREFLIGHT_TREE"' EXIT
+  trap 'rm -f -- "$BACKUP_OUT" "$DB_ERR" "$SIGNERS_TMP"; [[ -z "$PREFLIGHT_TREE" ]] || rm -rf -- "$PREFLIGHT_TREE"' EXIT
   DB_ERR="$(mktemp)"
   ((EUID != 0)) || refuse 'upgrade.sh must run as the installation user (the owner of this checkout and of the state, a member of the docker group), not as root and not with sudo: root cannot read the files the way the installation does, and git refuses a checkout it does not own.'
   ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
@@ -473,7 +474,7 @@ main() {
     refuse "'$TAG' is not a release tag. Give a tag such as v0.7.0 (the list is on the GitHub releases page; 'git tag --list \"v*\"' after 'git fetch --tags'). Only tagged releases are supported; --ref COMMIT_OR_BRANCH is for tests and development."
   fi
   if [[ -n "$REF" ]]; then
-    warn "--ref $REF is not a release tag. Only tagged releases are supported: security fixes, the support window and the upgrade notes apply to tags, and a branch can hold changes that were never released."
+    warn "--ref $REF is not a release tag and its signature is not checked. Only tagged releases are supported: security fixes, the support window and the upgrade notes apply to tags, and a branch can hold changes that were never released."
   fi
 
   say "Installation: $STATE"
@@ -514,6 +515,23 @@ main() {
     RECORD_STARTED="$R_STARTED"; VERIFIED=yes
     [[ -d "$BACKUP_DIR" ]] || refuse "the backup recorded for this upgrade is gone: $BACKUP_DIR. It is the way back to $FROM_LABEL, and a new backup of a half-upgraded database would not be. Put it back (the USB drive holds copies of recent backups), or, if you accept going on without a way back, remove $RECORD and run the command again (it then takes a new backup of the database as it is now)."
     say "Resuming:     the upgrade from $FROM_LABEL to $TO_LABEL stopped at step \"$R_STEP\" (started $R_STARTED)"
+  fi
+
+  # A release tag must be signed by a key listed in the .github/allowed_signers this checkout has NOW (as committed at HEAD, never the
+  # target's own copy: a release cannot name its own signers). A checkout whose file lists no key is from before signed releases: warn
+  # and go on, so that the first signed release can be reached. A resumed upgrade was checked by its first run.
+  if [[ -n "$TAG" && "$RESUME" == no ]]; then
+    SIGNERS_TMP="$(mktemp)"
+    git show "$FROM_SHA:.github/allowed_signers" > "$SIGNERS_TMP" 2>/dev/null || : > "$SIGNERS_TMP"
+    if signers_have_key "$SIGNERS_TMP"; then
+      SIG_PROBLEM="$(tag_signature_problem "$TAG" "$SIGNERS_TMP" "$TO_SHA")"
+      [[ -z "$SIG_PROBLEM" ]] || refuse "$SIG_PROBLEM. A release tag must be signed by a key that this checkout trusts (docs/OPERATOR_INSTALL.md, \"Rerun and upgrade\"). Nothing was changed."
+      say "Signature:    $TAG is signed by a key listed in .github/allowed_signers"
+    else
+      warn "this checkout ($FROM_LABEL) lists no release signing key in .github/allowed_signers, so the signature of $TAG is not checked. Releases signed from now on are checked by the checkout that follows this one."
+    fi
+  elif [[ -n "$TAG" ]]; then
+    say 'Signature:    not checked again (the first run of this upgrade checked it)'
   fi
 
   git cat-file -e "$TO_SHA:upgrade.sh" 2>/dev/null || refuse "$TO_LABEL does not contain upgrade.sh, so its setup.sh cannot run under the lock this command holds. upgrade.sh moves to releases that ship it. For an earlier release use the manual sequence in docs/OPERATOR_INSTALL.md (\"Rerun and upgrade\", \"What upgrade.sh does\"). Nothing was changed."

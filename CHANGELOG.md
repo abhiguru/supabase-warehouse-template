@@ -10,6 +10,12 @@ file used to carry for earlier installations are in git: `git show b45ae0b:CHANG
 
 ### Added
 
+- **Release tags are SSH-signed, and `upgrade.sh` verifies them.** `.github/allowed_signers` lists the keys that may sign a release tag (it ships
+  with no key yet: the maintainer adds one before the first signed tag). A checkout that lists a key makes `upgrade.sh vX.Y.Z` run
+  `git verify-tag` against ITS OWN list and refuse, before anything is changed, a tag that is unsigned, lightweight, signed by another key or
+  published under another name; git 2.34 or newer and `ssh-keygen` are then needed. A checkout that lists no key (every release so far) warns and
+  goes on, so the first signed release can be reached; `--ref` is not verified. `release.yml` checks the pushed tag against the previous release's
+  list (`scripts/check-release-signature.sh`). Operator action: none.
 - **The way back from an upgrade is drilled in CI, kept after success, and the images are pulled before the freeze.** (1) The `operator-upgrade` job makes an
   upgrade fail inside setup (a throwaway commit with a migration that raises only on the facility's database) and runs the lines that
   `node scripts/upgrade-record.mjs rollback` prints, exactly as printed; the previous release must be running again, healthy, with the same

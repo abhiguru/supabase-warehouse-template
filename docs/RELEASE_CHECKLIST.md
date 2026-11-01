@@ -74,6 +74,31 @@ fresh build and scan before each release instead). Before every release tag:
       the `functions` container (the steps that depend on the release live in its `setup.sh`: `CONTRIBUTING.md`, "Releases").
       `scripts/check-release-contents.sh` checks these and the `CHANGELOG.md` section when the tag is pushed.
 
+## Signing the tag
+
+Release tags are signed with an SSH key, and `upgrade.sh` refuses a tag that no key in the `.github/allowed_signers` of the installed
+checkout signed. One-time setup (the maintainer, once):
+
+- [ ] Create the signing key on the maintainer's own machine, **not** on the CI runner or any host that builds releases, with a passphrase
+      (a hardware key, `ssh-keygen -t ed25519-sk`, is better), and keep a copy of the private key away from that machine:
+      `ssh-keygen -t ed25519 -C "warehouse-release-signing" -f ~/.ssh/warehouse_release_signing`.
+- [ ] Add the public key to `.github/allowed_signers` as one line (`release namespaces="git" ssh-ed25519 AAAA... warehouse-release-signing`,
+      the file's comment shows the form), in a commit of its own, **before** the first signed tag, and release that commit. Never change this
+      file in a pull request that is not about the key.
+- [ ] In the clone used for tagging only (not globally): `git config gpg.format ssh`,
+      `git config user.signingkey ~/.ssh/warehouse_release_signing.pub`.
+- [ ] GitHub's immutable releases are switched on for the repository (see [Image publication](#image-publication)).
+
+Every release: sign with `git tag -s vX.Y.Z-rc.N <commit> -m "..."` (instead of `git tag -a`), then check it before the push:
+`git -c gpg.ssh.allowedSignersFile=.github/allowed_signers tag -v vX.Y.Z-rc.N`.
+
+How it is checked. Until a release lists a key, nothing is checked: `upgrade.sh` warns that the checkout lists no key and goes on, and
+`release.yml` prints a notice. From the first release that lists a key, a checkout at that release (or later) refuses any tag not signed by
+a key of ITS OWN list, and `release.yml` checks the pushed tag against the list of the previous final release, as an operator at that
+release would. A release therefore cannot add its own signers: **key rotation** needs one release signed with the old key that carries the
+new key line; keep the old line for at least two releases. A lost key means releases cannot be verified until such a bridge release signed
+by a still-listed key. `--ref` is not verified.
+
 ## Tag validation
 
 A `v*` tag runs `release.yml`: the semantic-version gate (`scripts/check-release.sh`), the release contents gate
@@ -81,7 +106,7 @@ A `v*` tag runs `release.yml`: the semantic-version gate (`scripts/check-release
 functions recreate in `setup.sh`), `npm test`, the dependency advisories this release adds over the previous tag (`scripts/audit-compare.mjs --with-root`), the
 Chrome for Testing freshness check of the PDF renderer (`scripts/check-cft-freshness.mjs --mode warn`: a Chrome more than 14 days
 behind Stable is a warning on the run and never blocks the tag; the weekly issue is the signal) and a Compose validation against
-generated operator state. Then its second job, `publish-images`, builds, scans and publishes the images ([below](#image-publication)).
+generated operator state. Before the tests it checks that the tag is signed by a key the previous release lists ([above](#signing-the-tag)). Then its second job, `publish-images`, builds, scans and publishes the images ([below](#image-publication)).
 Wait for both to pass before the next sections.
 
 ## Image publication
@@ -148,7 +173,7 @@ commit afterwards: a failed rehearsal never leaves a published `vX.Y.Z` that has
 
 - [ ] The `operator-upgrade` job's rollback drill passed for this commit (it makes an upgrade fail inside setup and runs the way back that
       `node scripts/upgrade-record.mjs rollback` prints; a notice that it was skipped is not a pass).
-- [ ] Tag the release commit `vX.Y.Z-rc.N` (`git tag -a vX.Y.Z-rc.N <commit>`, push it) and wait for `release.yml` to pass. The
+- [ ] Tag the release commit `vX.Y.Z-rc.N` (`git tag -s vX.Y.Z-rc.N <commit> -m "..."`, push it) and wait for `release.yml` to pass. The
       `CHANGELOG.md` section is `## vX.Y.Z (date)`; `upgrade.sh` prints it for the candidate too.
 - [ ] On a **throwaway** installation of the previous release (its own state and project name; never a facility's), with some data
       in it, run `bash upgrade.sh --dry-run vX.Y.Z-rc.N` and then `bash upgrade.sh vX.Y.Z-rc.N`. Both must end well; the last line of
@@ -164,7 +189,7 @@ commit afterwards: a failed rehearsal never leaves a published `vX.Y.Z` that has
       section; rehearse that procedure instead.
 - [ ] Once, for the first release that has the upgrade record: stop a rehearsal in the middle (`kill -9` of `upgrade.sh` while `setup.sh`
       runs), check that `node scripts/doctor.mjs --local` reports the interrupted upgrade, and finish it with the same command.
-- [ ] Rehearsal passed: tag the same commit `vX.Y.Z` (`git tag -a vX.Y.Z vX.Y.Z-rc.N^{commit}`), push it, wait for `release.yml`.
+- [ ] Rehearsal passed: tag the same commit `vX.Y.Z` (`git tag -s vX.Y.Z vX.Y.Z-rc.N^{commit} -m "..."`), push it, wait for `release.yml`.
       Failed: fix on `main` and start again with `-rc.N+1`; do not move a tag.
 - [ ] Record in the release pull request or the release note: the previous tag, the candidate, the tag, the date and the result.
 

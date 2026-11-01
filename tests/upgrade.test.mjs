@@ -134,7 +134,9 @@ const S005 = '## v0.0.5 (2025-12-01)\n\nAn older release: OLDER-THAN-BACKPORT-LI
 const S0216 = '## v0.2.16 (2026-05-01)\n\n### Changed\n\n- A change that asks nothing of the operator: NOTHING-TO-DO-LINE.\n\n';
 
 // `at` is the release the installed checkout sits on.
-function world({ at = 'v0.1.0' } = {}) {
+// `sign` makes the releases a signed world: { allowed } is the text of .github/allowed_signers committed in every release, and
+// { keys: { v0.2.0: privateKeyPath } } signs that tag with that key (a tag not listed is made unsigned, explicitly).
+function world({ at = 'v0.1.0', sign = null } = {}) {
   const scratch = mkdtempSync(join(tmpdir(), 'warehouse-upgrade-'));
   const src = join(scratch, 'src');
   const origin = join(scratch, 'origin.git');
@@ -151,6 +153,7 @@ function world({ at = 'v0.1.0' } = {}) {
     }
     put(src, 'docker/postgres/Dockerfile', extra.dockerfile ?? dockerfile(18));
     put(src, 'CHANGELOG.md', extra.changelog);
+    if (sign?.allowed !== undefined) put(src, '.github/allowed_signers', sign.allowedBy?.[version] ?? sign.allowed);
     for (const name of extra.migrations ?? ['00000000000000_baseline.sql']) put(src, `migrations/${name}`, `-- ${name}\n`);
     // Files of a release that has a preflight: its own text, and real files of this repository (the preflight and the library it sources).
     for (const [path, text] of Object.entries(extra.files ?? {})) put(src, path, text);
@@ -175,7 +178,9 @@ function world({ at = 'v0.1.0' } = {}) {
   base('v0.1.1', { upgrade: true, changelog: changelog(S011 + S010) });
   git(src, 'tag', 'v0.1.1');                       // a lightweight tag
   base('v0.2.0', { upgrade: true, changelog: changelog(S020 + S011 + S010 + S005), migrations: ['00000000000000_baseline.sql', '00000000000001_more.sql'] });
-  git(src, 'tag', '-a', '-m', 'release 0.2.0', 'v0.2.0');
+  const key = sign?.keys?.['v0.2.0'];
+  if (key) git(src, '-c', 'gpg.format=ssh', '-c', `user.signingkey=${key}`, 'tag', '-s', '-m', 'release 0.2.0', 'v0.2.0');
+  else git(src, 'tag', '-a', '-m', 'release 0.2.0', 'v0.2.0');
   git(src, 'branch', 'squash');
   // A release on a new PostgreSQL major.
   base('v0.3.0', { upgrade: true, changelog: changelog(S020 + S011 + S010), dockerfile: dockerfile(19), migrations: ['00000000000000_baseline.sql', '00000000000001_more.sql'] });
@@ -1473,4 +1478,100 @@ test('a successful upgrade keeps its record as config/upgrade-last (0600, with f
     assert.equal(w.run(['--dry-run', 'v0.2.16']).status, 0);
     assert.equal(existsSync(last), false);
   } finally { w.cleanup(); }
+});
+
+// --- Signed release tags -------------------------------------------------------------------------------------------------------------
+// Keys are made in a scratch directory with ssh-keygen; nothing outside it is read or written.
+const makeKey = (dir, name) => {
+  const file = join(dir, name);
+  const r = spawnSync('ssh-keygen', ['-q', '-t', 'ed25519', '-N', '', '-C', name, '-f', file], { encoding: 'utf8' });
+  assert.equal(r.status, 0, r.stderr);
+  return { file, line: `release namespaces="git" ${readFileSync(`${file}.pub`, 'utf8').trim()}\n` };
+};
+const withKeys = fn => {
+  const dir = mkdtempSync(join(tmpdir(), 'warehouse-keys-'));
+  try { return fn(dir, makeKey(dir, 'good'), makeKey(dir, 'other')); } finally { rmSync(dir, { recursive: true, force: true }); }
+};
+
+test('signed release tags: a tag signed by a listed key proceeds, any other is refused, --ref is not verified', () => {
+  withKeys((dir, good, other) => {
+    // The installed checkout lists the good key; v0.2.0 is signed by it.
+    const ok = world({ sign: { allowed: `# keys\n${good.line}`, keys: { 'v0.2.0': good.file } } });
+    try {
+      const r = ok.run(['--dry-run', 'v0.2.0']);
+      assert.equal(r.status, 0, r.stderr);
+      assert.match(r.stdout, /Signature: +v0\.2\.0 is signed by a key listed in \.github\/allowed_signers/);
+    } finally { ok.cleanup(); }
+
+    // Signed by a key that is not listed.
+    const wrong = world({ sign: { allowed: good.line, keys: { 'v0.2.0': other.file } } });
+    try { refusing(wrong)(['v0.2.0'], /v0\.2\.0 is not signed by a key listed in \.github\/allowed_signers[^]*Nothing was changed/); } finally { wrong.cleanup(); }
+
+    // Unsigned, with a key listed.
+    const unsigned = world({ sign: { allowed: good.line, keys: {} } });
+    try {
+      const refused = refusing(unsigned);
+      refused(['v0.2.0'], /not signed by a key listed[^]*Nothing was changed/);
+      // A lightweight tag is no signed tag either.
+      refused(['v0.1.1'], /not an annotated, signed tag[^]*Nothing was changed/);
+      // --ref names no release: nothing is verified, and the warning says so.
+      const ref = unsigned.run(['--dry-run', '--ref', unsigned.tag('v0.2.0')]);
+      assert.equal(ref.status, 0, ref.stderr);
+      assert.match(ref.stderr, /its signature is not checked/);
+      assert.doesNotMatch(ref.stdout, /Signature: +v/);
+    } finally { unsigned.cleanup(); }
+
+    // The target's own list cannot add its signer: the list of the checkout that runs counts (here the installed one lists only the good key,
+    // the release is signed by the other key and its own .github/allowed_signers would list that key).
+    const own = world({ sign: { allowed: good.line, allowedBy: { 'v0.2.0': good.line + other.line }, keys: { 'v0.2.0': other.file } } });
+    try {
+      refusing(own)(['v0.2.0'], /not signed by a key listed/);
+    } finally { own.cleanup(); }
+
+    // A signed tag object published under another tag name is refused.
+    const renamed = world({ sign: { allowed: good.line, keys: { 'v0.2.0': good.file } } });
+    try {
+      git(renamed.origin, 'update-ref', 'refs/tags/v0.2.1', git(renamed.origin, 'rev-parse', 'refs/tags/v0.2.0'));
+      refusing(renamed)(['v0.2.1'], /carries another tag name[^]*Nothing was changed/);
+    } finally { renamed.cleanup(); }
+
+    // git older than 2.34 is refused when a signature has to be checked (a stand-in git earlier in PATH).
+    const old = world({ sign: { allowed: good.line, keys: { 'v0.2.0': good.file } } });
+    try {
+      const bin = join(dir, 'bin'); mkdirSync(bin);
+      const realGit = spawnSync('bash', ['-c', 'command -v git'], { encoding: 'utf8' }).stdout.trim();
+      put(bin, 'git', `#!/usr/bin/env bash\n[[ "$1" == version ]] && { echo 'git version 2.30.2'; exit 0; }\nexec ${realGit} "$@"\n`, 0o755);
+      refusing(old)(['v0.2.0'], /git 2\.34 or newer is needed[^]*Nothing was changed/, { PATH: `${bin}:${process.env.PATH}` });
+    } finally { old.cleanup(); }
+  });
+});
+
+test('signed release tags: a checkout whose allowed_signers lists no key warns and goes on (the transition to the first signed release)', () => {
+  // No file at all (every release before this one) and the shipped placeholder (comments only) behave the same.
+  for (const sign of [null, { allowed: '# placeholder, no key\n\n' }]) {
+    const w = world({ sign });
+    try {
+      const r = w.run(['--dry-run', 'v0.2.0']);
+      assert.equal(r.status, 0, r.stderr);
+      assert.match(r.stderr, /lists no release signing key in \.github\/allowed_signers, so the signature of v0\.2\.0 is not checked/);
+    } finally { w.cleanup(); }
+  }
+  const placeholder = readFileSync(join(root, '.github/allowed_signers'), 'utf8');
+  assert.match(placeholder, /PLACEHOLDER/);
+  assert.equal(placeholder.split('\n').filter(l => l.trim() && !l.trim().startsWith('#')).length, 0, 'the committed file ships with no key line');
+});
+
+test('every test that makes tags with git says explicitly that they are unsigned', () => {
+  // A maintainer with tag.gpgsign=true (or a signing key that asks for a passphrase) would otherwise sign inside every fixture.
+  const dir = new URL('./', import.meta.url).pathname;
+  const files = readdirSync(dir).filter(name => name.endsWith('.test.mjs'));
+  let checked = 0;
+  for (const name of files) {
+    const text = readFileSync(join(dir, name), 'utf8');
+    if (name === 'upgrade.test.mjs' || !/(spawnSync|execFileSync)\('git'/.test(text) || !/git\([^)]*'tag'|'tag', '-[a-z]/.test(text)) continue;
+    checked += 1;
+    assert.match(text, /tag\.gpgsign=false/, `${name} makes tags with git without 'tag.gpgsign=false'`);
+  }
+  assert.ok(checked >= 3, `the guard looked at ${checked} files`);
+  assert.match(readFileSync(new URL('./upgrade.test.mjs', import.meta.url), 'utf8'), /'-c', 'tag\.gpgsign=false', '-C'/);
 });

@@ -298,7 +298,7 @@ test('the release-branch guard runs: a numbered migration is refused, a changed 
   // The step's script, without the fetch (the repository below is complete).
   const script = step.slice(step.indexOf('        run: |\n') + '        run: |\n'.length, step.indexOf('      - uses: actions/setup-node')).replace(/^ {10}/gm, '').replace(/^git fetch .*\n/m, '');
   const dir = mkdtempSync(join(tmpdir(), 'warehouse-guard-'));
-  const git = (...args) => { const r = spawnSync('git', ['-c', 'user.name=t', '-c', 'user.email=t@example.invalid', ...args], { cwd: dir, encoding: 'utf8' }); assert.equal(r.status, 0, r.stderr); return r.stdout.trim(); };
+  const git = (...args) => { const r = spawnSync('git', ['-c', 'user.name=t', '-c', 'user.email=t@example.invalid', '-c', 'commit.gpgsign=false', '-c', 'tag.gpgsign=false', ...args], { cwd: dir, encoding: 'utf8' }); assert.equal(r.status, 0, r.stderr); return r.stdout.trim(); };
   try {
     git('init', '-q', '-b', 'release-base');
     mkdirSync(join(dir, 'migrations', 'definitions'), { recursive: true });
@@ -725,7 +725,7 @@ test('migration ordering step: on a pull request a base that cannot be fetched i
 function baseTagFor(tag, build) {
   const dir = mkdtempSync(join(tmpdir(), 'warehouse-release-base-'));
   try {
-    const git = (...args) => { const r = spawnSync('git', ['-C', dir, '-c', 'user.name=T', '-c', 'user.email=t@example.test', ...args], { encoding: 'utf8' }); assert.equal(r.status, 0, `git ${args.join(' ')}: ${r.stderr}`); return r.stdout; };
+    const git = (...args) => { const r = spawnSync('git', ['-C', dir, '-c', 'user.name=T', '-c', 'user.email=t@example.test', '-c', 'commit.gpgsign=false', '-c', 'tag.gpgsign=false', ...args], { encoding: 'utf8' }); assert.equal(r.status, 0, `git ${args.join(' ')}: ${r.stderr}`); return r.stdout; };
     git('init', '-q', '-b', 'main');
     let n = 0;
     const commit = () => git('commit', '-q', '--allow-empty', '-m', `c${++n}`);
@@ -761,4 +761,18 @@ test('release.yml audits against the newest FINAL tag of another version: a rele
   assert.equal(line('v1.0.2-rc.1').base, 'v1.0.1');
   assert.equal(baseTagFor('v1.0.0', ({ commit, git }) => { commit(); git('tag', 'v1.0.0'); }).status, 1, 'no other final tag: an error');
   assert.match(baseTagFor('v1.0.0-rc.1', ({ commit, git }) => { commit(); git('tag', 'v1.0.0-rc.1'); }).out, /No previous release tag/);
+});
+
+test('release.yml checks the signature of the tag in the release job, before Node is set up, with no new permission', () => {
+  const release = readFileSync(new URL('../.github/workflows/release.yml', import.meta.url), 'utf8');
+  const releaseJob = release.slice(release.indexOf('\n  release:\n'), release.indexOf('\n  publish-images:\n'));
+  const name = '      - name: Release tag is signed by a key the previous release trusts\n';
+  assert.ok(releaseJob.includes(name), 'the step is in the release job');
+  assert.ok(releaseJob.indexOf(name) > releaseJob.indexOf('bash scripts/check-release-contents.sh'), 'after the contents gate');
+  assert.ok(releaseJob.indexOf(name) < releaseJob.indexOf('uses: actions/setup-node@'), 'before Node is set up');
+  const step = releaseJob.slice(releaseJob.indexOf(name) + name.length).split(/\n {6}- /)[0];
+  assert.match(step, /\n {8}run: \|\n {10}git fetch --force --no-tags origin "refs\/tags\/\$GITHUB_REF_NAME:refs\/tags\/\$GITHUB_REF_NAME"\n {10}bash scripts\/check-release-signature\.sh "\$GITHUB_REF_NAME"\n?$/, 'the tag object is fetched, then checked; the tag name is quoted');
+  assert.doesNotMatch(step, /\n {8}uses:|\$\{\{|secrets\./);
+  assert.match(release, /\npermissions:\n {2}contents: read\n\njobs:\n/, 'the workflow permissions are unchanged');
+  assert.ok(!/\n {4}permissions:/.test(releaseJob), 'the release job has no permissions of its own');
 });
