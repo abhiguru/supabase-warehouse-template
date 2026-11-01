@@ -1,0 +1,10 @@
+# Gitleaks reads this file from the scanned tree (scripts/scan-secrets.sh). It keeps the default rules.
+[extend]
+useDefault = true
+
+# The public fingerprint of the release-signing key (README "Security", CHANGELOG, .github/allowed_signers). It is the hash of a PUBLIC key, published on purpose
+# so that operators can compare it; it is not a secret.
+[[allowlists]]
+description = "published fingerprint of the release-signing public key"
+regexTarget = "match"
+regexes = ['''SHA256:JfbT0\+bW7PmoB/HA7HsW\+K150PQgTMimV2pPijMC8vM''']
