@@ -41,12 +41,6 @@ B ^function\|public\.delete_grn_safe\(
 # Migration 129 (2026-10-31): apply_grn_rates refuses a customer or everyone entry for an invoiced GRN (GRN_INVOICED).
 A ^function\|warehouse_security\.apply_grn_rates\(
 B ^function\|warehouse_security\.apply_grn_rates\(
-
-# Migration 132 (break-glass sign-in for staff, supervisors and administrators): operator_verify_otp redeems a code through
-# warehouse_security.redeem_break_glass and shortens the session of such a sign-in.
-A ^function\|public\.operator_verify_otp\(
-B ^function\|public\.operator_verify_otp\(
-
 # Migration 134 (invoice cancel, 2026-11-01): get_invoice_data answers the same fields; get_invoice_detail answers cancelled_at, cancel_reason and (for staff and above) the name of
 # who cancelled; update_grn and update_dispatch_smart (already listed above) no longer count a cancelled invoice as an invoice of the GRN or
 # of the dispatch; authorize_rpc (listed above) names cancel_invoice in a comment.

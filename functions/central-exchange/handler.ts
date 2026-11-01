@@ -3,6 +3,7 @@ import { createLocalJWKSet, decodeProtectedHeader, jwtVerify } from '../vendor/j
 import { securityHeaders } from '../_shared/security-headers.ts';
 import { httpsAddress } from '../_shared/https-address.ts';
 import { publicBaseUrl } from '../_shared/public-url.ts';
+import { clientAddress, clientUserAgent } from '../_shared/client-info.ts';
 import { readBoundedJson } from '../operator-otp/body.ts';
 import { KEY_SET_MAX_BYTES, usableKeys } from './key-set.mjs';
 
@@ -94,13 +95,6 @@ async function rpc(deps: HandlerDeps, name: string, params: Record<string, unkno
   });
   if (!response.ok) throw new Error(`Auth database unavailable (${response.status})`);
   return await response.json();
-}
-
-// Same trust boundary as operator-otp: Cloudflare writes CF-Connecting-IP and
-// the gateway forwards it. It only feeds the new-access-request limit.
-function clientAddress(req: Request): string | null {
-  const clientIp = req.headers.get('CF-Connecting-IP');
-  return clientIp && /^[0-9a-fA-F:.]{3,45}$/.test(clientIp) ? clientIp : null;
 }
 
 async function readBounded(response: Response, maxBytes: number): Promise<string> {
@@ -292,6 +286,8 @@ export async function handle(req: Request, overrides: Partial<HandlerDeps> = {})
       p_display_name: typeof body.display_name === 'string' ? body.display_name : null,
       p_ip_address: clientAddress(req),
       p_otp_code: typeof body.otp_code === 'string' ? body.otp_code : null,
+      // Shown beside the signed-in device (migration 140).
+      p_user_agent: clientUserAgent(req),
     });
     if (result.success) return respond(result);
     deps.log(`central-exchange: refused by the facility (${typeof result.code === 'string' && /^[a-z_]{1,40}$/.test(result.code) ? result.code : 'unknown'})`);

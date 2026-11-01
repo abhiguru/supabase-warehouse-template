@@ -39,6 +39,15 @@ file used to carry for earlier installations are in git: `git show b45ae0b:CHANG
   (device-hours) and `sensor_hourly`. New RPC `get_sensor_hourly(p_device_id, p_from, p_to)` for administrators, supervisors and staff (range up to
   400 days; `INVALID_RANGE`, `RANGE_TOO_LARGE`, `DEVICE_NOT_FOUND`); shape in [API_CONTRACT.md](docs/API_CONTRACT.md). Tests:
   `tests/sensor_hourly_136.sql` (new), `tests/role_allowlist.sql`, `tests/audit_log_retention.sql`.
+- **Signed-in devices: list and sign out one device (migration 140, review finding M10).** Each session now records the sign-in's source address,
+  its user agent (300 characters) and when it was last refreshed, and a person keeps at most their **newest 10 sessions** (an 11th sign-in
+  deletes the oldest session and its recorded tokens). New RPCs `list_user_sessions(p_user_id)` (administrators; supervisors except for
+  administrators' sessions; address masked to /24 or /48) and `revoke_session(p_session_id)` (the owner, an administrator, or a supervisor
+  except for administrators' sessions). `operator_verify_otp`, `operator_central_exchange` and `operator_break_glass_sign_in` take a last
+  `p_user_agent`; the old signatures stay as wrappers, so an edge function that is not updated keeps working. The edge functions send
+  `CF-Connecting-IP` (now checked as one real IPv4 or IPv6 address) and the user agent. Needs the app batch that shows the list. Shapes:
+  [API_CONTRACT.md](docs/API_CONTRACT.md), "Signed-in devices"; privacy: [TELEMETRY_AND_PRIVACY.md](docs/TELEMETRY_AND_PRIVACY.md), section 4.
+  Tests: `tests/session_devices_140.sql` (new), `tests/operator-otp-handler.test.mjs`, `tests/central-exchange.test.mjs`.
 - **Break-glass codes for every facility worker, with their own sign-in (migration 132).** `scripts/break-glass-admin.sh` now makes a one-time code
   (10 minutes, once, five wrong tries) for an active, approved administrator, **supervisor or staff member** (never a customer) and prints the
   role. The app signs in with it through `POST /functions/v1/operator-otp/break-glass` `{phone_number, code}` (service-role RPC

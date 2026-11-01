@@ -1,5 +1,6 @@
 import { restBaseUrl } from '../_shared/rest-url.ts';
 import { securityHeaders } from '../_shared/security-headers.ts';
+import { clientAddress, clientUserAgent } from '../_shared/client-info.ts';
 import { readBoundedJson } from './body.ts';
 import { deliverOtp, type Delivery, Msg91DeliveryError } from './provider.ts';
 
@@ -62,19 +63,6 @@ function failure(result: { code?: string; retry_at?: string }): Response {
   // The facility-code answers (and the missing provider) carry their code, so the app can tell them apart without reading the text.
   const named = ['sms_not_configured', 'invalid_code', 'code_expired', 'code_used', 'code_locked'].includes(code);
   return respond(named ? { success: false, error, code } : { success: false, error }, status);
-}
-
-// Trust boundary: Cloudflare Tunnel is the only ingress and the gateway is
-// published on loopback only, so every external request carries a
-// CF-Connecting-IP written by Cloudflare's edge. The gateway trusts that header
-// from the tunnel hop (real_ip_header in docker/nginx/templates/gateway.conf.template),
-// keys its per-client rate limits on it, and sets it again from the address it settled on, so it
-// is read here instead of X-Forwarded-For. A direct loopback caller could
-// set it, but such a caller is already inside the host trust boundary.
-// Phone and warehouse limits still apply if it is absent.
-function clientAddress(req: Request): string | null {
-  const clientIp = req.headers.get('CF-Connecting-IP');
-  return clientIp && /^[0-9a-fA-F:.]{3,45}$/.test(clientIp) ? clientIp : null;
 }
 
 export async function handle(req: Request, overrides: Partial<HandlerDeps> = {}): Promise<Response> {
@@ -145,6 +133,8 @@ export async function handle(req: Request, overrides: Partial<HandlerDeps> = {})
         p_display_name: typeof body.display_name === 'string' ? body.display_name : null,
         // The source address separates the requester's wrong-attempt budget from everyone else's.
         p_ip_address: clientAddress(req),
+        // Shown beside the signed-in device (migration 140).
+        p_user_agent: clientUserAgent(req),
       });
       return result.success ? respond(result) : failure(result);
     }
@@ -155,7 +145,7 @@ export async function handle(req: Request, overrides: Partial<HandlerDeps> = {})
       if (typeof body.phone_number !== 'string' || typeof body.code !== 'string') return failure({ code: 'invalid_request' });
       const phone = body.phone_number.replace(/\D/g, '');
       if (!/^(?:91)?[0-9]{10}$/.test(phone) || !/^[0-9]{6}$/.test(body.code)) return failure({ code: 'invalid_request' });
-      const result = await rpc(deps, 'operator_break_glass_sign_in', { p_phone_number: phone, p_code: body.code, p_ip_address: clientAddress(req) });
+      const result = await rpc(deps, 'operator_break_glass_sign_in', { p_phone_number: phone, p_code: body.code, p_ip_address: clientAddress(req), p_user_agent: clientUserAgent(req) });
       return result.success ? respond(result) : failure(result);
     }
     if (typeof body.enrollment_token !== 'string' || !/^[0-9a-f]{64}$/.test(body.enrollment_token)) return failure({ code: 'invalid_request' });

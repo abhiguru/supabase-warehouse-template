@@ -92,7 +92,7 @@ test('a good token reaches the RPC with the verified identity and its login answ
     p_issuer: ISSUER, p_subject: 'central-user-0001', p_phone_number: '919000000101', p_token_id: 'token-id-0000000000000001',
     // exp plus the 30 s tolerance: the single-use record lasts as long as the token is acceptable.
     p_token_expires_at: new Date(START + 330_000).toISOString(),
-    p_name: 'Asha Central', p_display_name: 'Asha', p_ip_address: '203.0.113.9', p_otp_code: null,
+    p_name: 'Asha Central', p_display_name: 'Asha', p_ip_address: '203.0.113.9', p_otp_code: null, p_user_agent: null,
   });
   assert.equal(call.method, 'POST');
   assert.equal(call.redirect, 'error');
@@ -111,6 +111,16 @@ test('with SUPABASE_REST_URL set the RPC goes to PostgREST directly, with the sa
   assert.equal(h.rpcCalls.length, 1);
   assert.deepEqual(Object.keys(h.rpcCalls[0].headers).sort(), ['Authorization', 'Content-Type', 'apikey']);
   assert.equal(h.rpcCalls[0].body.p_ip_address, '203.0.113.9');
+});
+
+test('the user agent goes to the exchange, cut to 300 characters; none when it is absent', async () => {
+  const h = harness();
+  await h.exchange(await sign(claims(START)), {}, { 'User-Agent': 'WarehouseApp/1.2 (Android 15)' });
+  await h.exchange(await sign(claims(START, { jti: 'token-id-0000000000000002' })), {}, { 'User-Agent': 'y'.repeat(400) });
+  await h.exchange(await sign(claims(START, { jti: 'token-id-0000000000000003' })), {});
+  assert.equal(h.rpcCalls[0].body.p_user_agent, 'WarehouseApp/1.2 (Android 15)');
+  assert.equal(h.rpcCalls[1].body.p_user_agent, 'y'.repeat(300));
+  assert.equal(h.rpcCalls[2].body.p_user_agent, null);
 });
 
 test('names: the body wins over the token, and a missing or malformed address is not passed on', async () => {

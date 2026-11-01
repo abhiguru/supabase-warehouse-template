@@ -233,6 +233,43 @@ has the link "Sign in with a code from your facility", which asks for the facili
 - **Also.** `operator-otp/verify` (the older SMS code screen) accepts the same codes for the same workers and gives the same 24 hour session. `operator-otp/request` on an installation with no SMS provider (central sign-in alone) answers 503 `{success:false, code:'sms_not_configured', error:'SMS sign-in is not set up on this facility. Use the association sign-in.'}`.
 - **Database.** `public.operator_break_glass_sign_in(p_phone_number, p_code, p_ip_address)` is for the service role only (the edge function), like `operator_verify_otp`, and is not in `authorize_rpc`; the function that makes a code, `warehouse_security.break_glass_code`, is for `supabase_admin` alone and is not an API.
 
+### Signed-in devices: list and sign out one device (migration 140)
+
+A person keeps at most the **newest 10 sessions** (one per signed-in device). A sign-in first deletes that person's expired sessions, and
+one that would still make an 11th deletes the session used least recently (and the tokens recorded for it, so neither its current nor an earlier refresh token is accepted again); the app shows the
+Sign in screen on that device the next time it calls. A refresh never creates or deletes a session. Each session records the sign-in's
+source address (`CF-Connecting-IP`, IPv4 or IPv6, else none), the user agent (cut to 300 characters) and when it was last refreshed.
+
+- **Sign-in parameters (all optional).** `operator_verify_otp`, `operator_central_exchange` and `operator_break_glass_sign_in` take a last
+  parameter `p_user_agent text`; the source address is the `p_ip_address` they already take. The edge functions (`operator-otp/verify`,
+  `operator-otp/break-glass`, `central-exchange`) send both from the request headers. The previous signatures stay (they pass no user
+  agent), so an edge function that was not updated keeps working; answers are unchanged. These are service-role RPCs, not app calls.
+- **`list_user_sessions(p_user_id uuid)`** (`user_profiles.id`). Administrators; supervisors for everyone but administrators. Others:
+  42501 `Administrator required`. Answer, newest session first, unexpired sessions only:
+
+  ```json
+  {"success": true, "data": {"sessions": [
+    {"id": "uuid", "user_agent": "WarehouseApp/1.2 (Android 15)",
+     "created_ip": "203.0.113.0/24", "created_at": "2026-11-01T10:00:00+00:00",
+     "last_refreshed_at": "2026-11-01T10:30:00+00:00", "expires_at": "2026-12-01T10:30:00+00:00", "is_current": true}]}}
+  ```
+
+  `created_ip` is masked (IPv4 to its /24 as `a.b.c.0/24`, IPv6 to its /48 as `x:y:z::/48`; the full address is never returned) and `null`
+  when none was recorded. `last_refreshed_at` is the sign-in time for a session never refreshed. `is_current` is true for the session the
+  request itself is signed in with (`session_id` of the access token), so for another person's list it is false everywhere. Refusals are
+  `{success:false, error, message}`: `NOT_FOUND` (unknown or deleted person), `INVALID_INPUT` (null id), `PERMISSION_DENIED` (a supervisor
+  asking for an administrator's sessions).
+- **`revoke_session(p_session_id uuid)`** (`id` from the list). The session's owner (any role, customers included), an administrator, or a
+  supervisor for a session of anyone but an administrator. Deletes the session and the tokens recorded for it; the access token of that device
+  fails `check_session` (42501 `Session expired or revoked`) at once. Answer `{success:true, revoked_current:<bool>}`, where
+  `revoked_current` is true when the session signed out is the one making the request (the app then goes to the Sign in screen). An unknown
+  id, and a session the caller may not revoke, get `{success:true, revoked_current:false}` and nothing changes, so the answer does not tell
+  whether a session exists; to an administrator (or the service key) an unknown id is `{success:false, error:'NOT_FOUND', message}`. `null`
+  is `INVALID_INPUT`. Each deletion is written to `audit_log` (`table_name='refresh_sessions'`, `action='REVOKE'`, `user_id` = the caller,
+  `old_data` = session id and owner).
+- Both are granted to `authenticated` and the service role, guarded by `authorize_rpc` (`list_user_sessions` with the user-management
+  group, `revoke_session` for any signed-in account), and classified in `tests/role_allowlist.sql`. Tests: `tests/session_devices_140.sql`.
+
 ### The LAN address in `get-config` (`urls.lan`, 2026-10-26)
 
 `get-config` (signed-in users only) carries one more field in `data.urls` while the operator has the LAN fallback on
