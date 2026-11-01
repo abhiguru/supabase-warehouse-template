@@ -93,18 +93,26 @@ export function interruptedMessage(record, { own = false } = {}) {
 // `last`: the way back from an upgrade that finished (config/upgrade-last). The API was open for phones since, so what they recorded since the
 // backup is lost as well; the list therefore starts by closing the API (the first thing, so that nothing more is recorded that is then lost),
 // opens it again before the doctor, and ends with the removal of upgrade-last, not of the record of an interrupted upgrade.
-export function rollbackLines(record, { last = false } = {}) {
+export function rollbackLines(record, { last = false, imagesGone = false } = {}) {
   const phone = mask(record.adminPhone);
   // An upgrade-last of an upgrade.sh from before maintenance mode has no maintenance= line: its old release may have no scripts/maintenance.sh.
   const closes = last ? record.maintenanceKnown : record.maintenance;
+  // The saved images of the old release (pre-<release>) were removed since (docker image prune, a later upgrade): no restore or save line, and setup builds.
+  if (imagesGone) record = { ...record, preImages: '' };
   const headline = last
-    ? `To go back to ${record.fromLabel} (${record.fromSha}) after the upgrade to ${record.toLabel} that finished${record.finished ? ` at ${record.finished}` : ''}, run these in the checkout, in this order. WARNING: everything the facility recorded after the backup${backupTime(record.backup) ? ` (taken ${backupTime(record.backup)} UTC)` : ''} is lost, and phones have been recording since the upgrade finished: every receipt, dispatch, invoice and order entered since is NOT in the backup and is gone after this. This is the last resort: when the problem can be fixed by a patch release of ${record.toLabel}, wait for that and upgrade to it instead.`
+    ? `To go back to ${record.fromLabel} (${record.fromSha}) after the upgrade to ${record.toLabel} that finished${record.finished ? ` at ${record.finished}` : ''}, run these in the checkout, in this order. WARNING: everything the facility recorded after the backup${backupTime(record.backup) ? ` (taken ${backupTime(record.backup)} UTC)` : ''} is lost, and phones have been recording since the upgrade finished: every receipt, dispatch, invoice and order entered since is NOT in the backup and is gone after this. This is the last resort: when the problem can be fixed by a patch release of ${record.toLabel}, wait for that and upgrade to it instead.${imagesGone ? ` The images of ${record.fromLabel} that the upgrade saved are no longer on this host, so the old release's setup builds its images again (that needs the network).` : ''}`
     : `To go back to ${record.fromLabel} (${record.fromSha}) instead, run these in the checkout, in this order. ${record.maintenance
       ? 'The API has been closed to phones since before the backup, so phones recorded nothing after it; what reached the database another way (fas-sync, if it was not paused, or a psql session) is lost:'
       : 'Everything the facility recorded after the backup was taken is lost:'}`;
   const setup = `bash setup.sh --operator --state-dir ${quote(record.state)} --admin-phone 91XXXXXXXXXX --admin-name NAME${record.webhookOff ? ' --alert-webhook-file off' : ''}`;
   return [
     headline,
+    // The finished upgrade is put back on record as an interrupted one first: until the list has been run to its end, doctor, start.sh and the
+    // checker report an interrupted upgrade with the way out, and the checker's self-heal stays paused (mode 0600 is kept).
+    ...(last ? [
+      `  cp -p ${quote(join(record.state, LAST_FILE))} ${quote(join(record.state, RECORD_FILE))}`,
+      '      (puts the record of the upgrade back as the report of an interrupted one: from here doctor and the checker say so, and the checker does not repair anything meanwhile)',
+    ] : []),
     ...(last && closes ? [
       '  bash scripts/maintenance.sh on',
       '      (closes the API to phones first: from here nothing more is recorded that the restore would lose; it stays closed until the line that opens it)',
@@ -128,23 +136,31 @@ export function rollbackLines(record, { last = false } = {}) {
       `      (opens the API to phones again: ${last ? 'the first line of this list' : 'the upgrade'} closed it, and it stays closed, through the restore and the setup above, until this line; it ends with the health check)`,
     ] : []),
     '  node scripts/doctor.mjs --local',
-    `  rm -f ${quote(join(record.state, last ? LAST_FILE : RECORD_FILE))}`,
+    last ? `  rm -f ${quote(join(record.state, RECORD_FILE))} ${quote(join(record.state, LAST_FILE))}` : `  rm -f ${quote(join(record.state, RECORD_FILE))}`,
     last
-      ? 'The last line only removes the note of the finished upgrade (config/upgrade-last); run it when the doctor is green on the old release. docs/OPERATOR_INSTALL.md, "Found a problem after the upgrade", explains each line.'
+      ? 'The last line removes the report of an interrupted upgrade that the first line made, and the note of the finished one (config/upgrade-last); run it when the doctor is green on the old release. docs/OPERATOR_INSTALL.md, "Found a problem after the upgrade", explains each line.'
       : 'The last line only ends the report of an interrupted upgrade; run it when the facility is healthy on the old release. docs/OPERATOR_INSTALL.md, "If it stops", explains each line.',
   ];
 }
 
+// Whether images tagged <something>:<tag> of an installation (warehouse-...) exist on this host: `docker image ls` lists them. No Docker, or an answer
+// that is not understood, is "no": the restore line would fail then.
+function savedImagesPresent(tag) {
+  const listed = spawnSync('docker', ['image', 'ls', '--format', '{{.Repository}} {{.Tag}}'], { encoding: 'utf8' });
+  if (listed.status !== 0) return false;
+  return listed.stdout.split('\n').some(line => { const [repository, imageTag] = line.trim().split(' '); return imageTag === tag && /^warehouse-/.test(repository ?? ''); });
+}
+
 // The way back from the upgrade that finished last (config/upgrade-last): { text } or { refusal } (one sentence). `head` is the commit the checkout
 // is at now (the caller asks git); the list is for the release that upgrade installed, so a checkout anywhere else is refused.
-export function lastRollbackText(state, { head, exists = existsSync } = {}) {
+export function lastRollbackText(state, { head, exists = existsSync, imagesPresent = savedImagesPresent } = {}) {
   const record = readUpgradeRecord(state, LAST_FILE);
   if (!record) return { refusal: `No finished upgrade is recorded (${LAST_FILE} does not exist: upgrade.sh writes it when an upgrade succeeds).` };
   if (record.invalid) return { refusal: `${record.invalid}; read it, and remove it when it is of no use.` };
   if (lstatSync(join(state, RECORD_FILE), { throwIfNoEntry: false })) return { refusal: `An upgrade is recorded as interrupted (${RECORD_FILE}); use "node scripts/upgrade-record.mjs rollback" for that one, and finish or undo it first.` };
   if (!record.backup || !exists(record.backup)) return { refusal: `The backup of that upgrade (${record.backup || 'none recorded'}) is not on this host any more, so there is nothing to go back to.` };
   if (head !== record.toSha) return { refusal: `This checkout is at ${head ? head.slice(0, 12) : 'an unknown commit'}, not at ${record.toLabel} (${record.toSha.slice(0, 12)}) that the last upgrade installed, so its way back does not fit this facility.` };
-  return { text: rollbackLines(record, { last: true }).join('\n') };
+  return { text: rollbackLines(record, { last: true, imagesGone: Boolean(record.preImages) && !imagesPresent(record.preImages) }).join('\n') };
 }
 
 // For doctor and the status commands. Quiet while upgrade.sh itself runs (it sets WAREHOUSE_UPGRADE_RUNNING for its children).

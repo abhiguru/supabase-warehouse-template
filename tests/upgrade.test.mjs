@@ -1446,9 +1446,10 @@ test('a successful upgrade keeps its record as config/upgrade-last (0600, with f
     const printed = rollbackLast();
     assert.equal(printed.status, 0, printed.stderr);
     const lines = printed.stdout.split('\n').filter(line => line.startsWith('  ') && !line.startsWith('      '));
-    assert.equal(lines[0], '  bash scripts/maintenance.sh on', 'the API is closed first');
-    assert.equal(lines[1], `  (umask 022; git checkout --detach ${from})`);
-    assert.ok(lines.includes(`  rm -f '${last}'`) && lines.at(-1) === `  rm -f '${last}'`);
+    assert.equal(lines[0], `  cp -p '${last}' '${w.recordPath}'`, 'the finished upgrade is put back on record as an interrupted one first');
+    assert.equal(lines[1], '  bash scripts/maintenance.sh on', 'then the API is closed');
+    assert.equal(lines[2], `  (umask 022; git checkout --detach ${from})`);
+    assert.equal(lines.at(-1), `  rm -f '${w.recordPath}' '${last}'`);
     // A failed run of the next upgrade leaves it alone and writes none of its own; while the interrupted record exists, --last refuses.
     const before = lastText();
     const failed = w.run(['v0.2.12'], { FAKE_FAIL: 'setup' });

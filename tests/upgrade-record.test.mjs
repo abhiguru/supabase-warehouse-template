@@ -235,14 +235,18 @@ test('rollbackLines with last: a warning that names the loss and prefers the nex
     assert.match(lines[0], /^To go back to v0\.6\.0 \(a{40}\) after the upgrade to v0\.7\.0 that finished at 2026-10-26T11:30:00Z, run these in the checkout, in this order\. WARNING: everything the facility recorded after the backup \(taken 2026-10-26 10:00:00 UTC\) is lost/);
     assert.match(lines[0], /every receipt, dispatch, invoice and order entered since is NOT in the backup/);
     assert.match(lines[0], /last resort: when the problem can be fixed by a patch release of v0\.7\.0, wait for that and upgrade to it instead\./);
-    assert.equal(lines[1], '  bash scripts/maintenance.sh on', 'the first command closes the API');
+    assert.equal(lines[1], `  cp -p '${w.state}/config/upgrade-last' '${w.state}/config/upgrade-in-progress'`, 'the first command puts the finished upgrade back on record as an interrupted one (cp -p keeps mode 0600)');
+    assert.equal(lines.filter(line => /^ {2}\S/.test(line))[1], '  bash scripts/maintenance.sh on', 'then the API is closed');
     const commands = lines.filter(line => /^ {2}\S/.test(line));
-    assert.deepEqual(commands.map(line => line.trim().split(' ').slice(0, 3).join(' ').replace(/^rm -f .*/, 'rm -f')), [
-      'bash scripts/maintenance.sh on', '(umask 022; git', 'bash stop.sh', 'bash scripts/pre-images.sh restore', 'npm run db:restore', 'bash setup.sh --operator',
+    assert.deepEqual(commands.map(line => line.trim().split(' ').slice(0, 3).join(' ').replace(/^rm -f .*/, 'rm -f').replace(/^cp -p .*/, 'cp -p')), [
+      'cp -p', 'bash scripts/maintenance.sh on', '(umask 022; git', 'bash stop.sh', 'bash scripts/pre-images.sh restore', 'npm run db:restore', 'bash setup.sh --operator',
       'bash scripts/build-images.sh --save', 'bash scripts/compose.sh up', 'bash scripts/maintenance.sh off', 'node scripts/doctor.mjs --local', 'rm -f',
     ]);
-    assert.equal(commands.at(-1), `  rm -f '${w.state}/config/upgrade-last'`);
-    assert.doesNotMatch(lines.join('\n'), /upgrade-in-progress/);
+    assert.equal(commands.at(-1), `  rm -f '${w.state}/config/upgrade-in-progress' '${w.state}/config/upgrade-last'`, 'the last line ends the report of an interrupted upgrade that the first line made');
+    // Without the saved images on the host: no restore or save line, and the headline says setup builds.
+    const gone = rollbackLines(last, { last: true, imagesGone: true });
+    assert.ok(!gone.join('\n').includes('pre-images.sh') && !gone.join('\n').includes('build-images.sh --save'));
+    assert.match(gone[0], /images of v0\.6\.0 that the upgrade saved are no longer on this host, so the old release's setup builds its images again/);
     // The plain list of an interrupted upgrade is unchanged by the new option.
     const plain = rollbackLines(readUpgradeRecord(w.state, 'config/upgrade-last'));
     assert.doesNotMatch(plain.join('\n'), /WARNING|maintenance\.sh on/);
@@ -287,7 +291,8 @@ test('the command line: rollback --last prints the list for a finished upgrade; 
   try {
     const last = cli('rollback', '--last');
     assert.equal(last.status, 0, last.stderr);
-    assert.equal(commandsOf(last.stdout)[0], '  bash scripts/maintenance.sh on');
+    assert.match(commandsOf(last.stdout)[0], /^ {2}cp -p '.*\/config\/upgrade-last' '.*\/config\/upgrade-in-progress'$/);
+    assert.equal(commandsOf(last.stdout)[1], '  bash scripts/maintenance.sh on');
     assert.match(last.stdout, /WARNING: everything the facility recorded after the backup/);
     const plain = cli('rollback');
     assert.equal(plain.status, 1);
@@ -305,4 +310,24 @@ test('the command line: rollback --last prints the list for a finished upgrade; 
     assert.match(elsewhere.stderr, /This checkout is at [0-9a-f]{12}, not at v0\.7\.0/);
     assert.equal(elsewhere.stdout, '');
   } finally { w.cleanup(); }
+});
+
+test('lastRollbackText drops the image lines when the saved images are gone from the host, and keeps them when they are there', () => {
+  const w = lastWorld({ pre_images: 'pre-v0.6.0' });
+  try {
+    const asked = [];
+    const there = lastRollbackText(w.state, { head: TO, imagesPresent: tag => { asked.push(tag); return true; } });
+    assert.deepEqual(asked, ['pre-v0.6.0']);
+    assert.match(there.text, /pre-images\.sh restore 'v0\.6\.0'[^]*build-images\.sh --save/);
+    const gone = lastRollbackText(w.state, { head: TO, imagesPresent: () => false });
+    assert.doesNotMatch(gone.text, /pre-images\.sh|build-images\.sh --save/);
+    assert.match(gone.text, /no longer on this host/);
+  } finally { w.cleanup(); }
+  const none = lastWorld();
+  try {
+    let asked = false;
+    const text = lastRollbackText(none.state, { head: TO, imagesPresent: () => { asked = true; return false; } }).text;
+    assert.equal(asked, false, 'nothing to look for when the upgrade saved no images');
+    assert.doesNotMatch(text, /no longer on this host/);
+  } finally { none.cleanup(); }
 });

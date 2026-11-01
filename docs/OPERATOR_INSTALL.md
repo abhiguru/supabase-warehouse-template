@@ -2294,9 +2294,15 @@ node scripts/upgrade-record.mjs rollback --last
 
 It only prints; it changes nothing. The printout starts with a warning that names the time the backup was taken and the loss, then the
 same list as [If it stops](#rerun-and-upgrade) (old commit, `stop.sh`, the saved images put back, the in-place restore of the backup,
-the old release's setup, the `functions` recreate, `doctor`), with two differences: its **first line is `bash scripts/maintenance.sh on`**,
-which closes the API so that phones record nothing more that the restore would then lose, and `bash scripts/maintenance.sh off` opens it
-again before the `doctor`. The last line removes `config/upgrade-last`; run it when `doctor` is green on the old release. The command
+the old release's setup, the `functions` recreate, `doctor`), with three differences. Its **first line is
+`cp -p .../config/upgrade-last .../config/upgrade-in-progress`**: it puts the finished upgrade back on record as an interrupted one, so
+that from then on `doctor`, `start.sh` and the checker say "an upgrade was interrupted" and name the way out, and the checker repairs
+nothing meanwhile (the mode 0600 is kept). The second line is `bash scripts/maintenance.sh on`, which closes the API so that phones record
+nothing more that the restore would then lose, and `bash scripts/maintenance.sh off` opens it again before the `doctor`. The last line
+removes both `config/upgrade-in-progress` and `config/upgrade-last`; run it when `doctor` is green on the old release. When the images the
+upgrade saved (`pre-<release>`) are no longer on the host, the printout leaves out the two image lines and says the old release's setup builds
+its images again, which needs the network. `rollback --last` exists from the release after the one that introduced `upgrade-last`: an
+installation whose last upgrade was made by an older `upgrade.sh` has no `upgrade-last`, and the command says so. The command
 refuses, with one sentence, when there is no finished upgrade on record, when an upgrade is recorded as interrupted (use `rollback`
 without `--last`), when the backup folder is gone (the nightly pruning keeps the verified backup of an upgrade for 60 days), or when the
 checkout is not at the release that upgrade installed. Report the problem with the release number, whichever way you go.
@@ -2372,7 +2378,10 @@ start then replaces only the containers whose image changed. What to expect:
   what they are until setup, and the way back still puts the old ones back. Setup then finds the images on the host and does not need
   the registry during the downtime. A download or a pull that fails, or an image of another digest or commit, refuses the upgrade with
   "Nothing was changed"; run the command again when the network answers. `--ref` and a host that is not x86-64 pull nothing, and
-  `--dry-run` only downloads and checks the list.
+  `--dry-run` only downloads and checks the list. A release that published no `release-images.json` (the download answers 404) is not
+refused: the preflight says so in one warning and setup pulls or builds inside the downtime, as before. The pull runs under the same
+operator lock as the rest of the upgrade; if a later check refuses, or you stop, the pulled images stay on the host (they are not tagged
+and cost only disk; `docker image rm <ref>` removes one).
 - **At a release tag, an image that needs building is pulled when the release published it.** A checkout exactly at a tag
   (`vX.Y.Z`, which is what `upgrade.sh vX.Y.Z` leaves and what a fresh clone of the tag is) downloads that release's
   `release-images.json` from the GitHub Release (https, one file, 60 seconds). The release workflow built every image of the tag
