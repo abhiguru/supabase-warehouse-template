@@ -3,8 +3,8 @@ import { restClient } from './supabase-rest.ts';
 import { validateUserAccess, createAuthErrorResponse } from './auth-helpers.ts';
 import { securityHeaders } from './security-headers.ts';
 import { htmlToPdf } from './pdf-renderer-client.ts';
-import { documentDate, documentHtml, kgEach } from './document-html.ts';
-import { headerColumns } from './document-columns.ts';
+import { cancelledNotice, documentDate, documentHtml, kgEach, withNotice } from './document-html.ts';
+import { headerColumns, invoiceCancelColumns } from './document-columns.ts';
 import { publicBaseUrl } from './public-url.ts';
 
 type Kind = 'grn' | 'dispatch' | 'invoice' | 'stock';
@@ -20,7 +20,7 @@ export const documentPdf = (kind: Kind) => async (req: Request): Promise<Respons
     const publicUrl = publicBaseUrl(Deno.env.get('SUPABASE_PUBLIC_URL'));
     // Every business-data read uses the caller's token and row-level security.
     const reader = restClient(internal, Deno.env.get('SUPABASE_ANON_KEY')!, { authorization: req.headers.get('Authorization')! });
-    let header; let details; let number; let date; let columns; let rows;
+    let header; let details; let number; let date; let columns; let rows; let notice: string | undefined;
     if (kind === 'stock') {
       if (typeof body.customer_id !== 'string' || !uuid.test(body.customer_id)) throw { status: 400, message: 'customer_id must be a UUID' };
       const customer = await reader.from('customers').select('id,name').eq('id',body.customer_id).single();
@@ -44,6 +44,12 @@ export const documentPdf = (kind: Kind) => async (req: Request): Promise<Respons
       const result = await query.single();
       if (result.error || !result.data) throw { status: 404, message: 'Document unavailable' };
       header = result.data; number = String(value); date = header.date || header.disp_date || header.inv_date;
+      if (kind === 'invoice') {
+        // Only a cancelled invoice gets the line; an invoice that is not cancelled prints as it always did.
+        const cancel = await reader.from('invoice').select(invoiceCancelColumns).eq('id',header.id).single();
+        if (cancel.error) throw { status: 503, message: 'Document status unavailable' };
+        if (cancel.data?.cancelled_at) notice = cancelledNotice(cancel.data.cancelled_at, cancel.data.cancel_reason);
+      }
       if (kind === 'grn') {
         details = await reader.from('goodsreceived_trl').select('item_name,packaging,qty,stock,weight,rack,package_mark',{count:'exact'}).eq('gr_id',header.id).limit(1001);
         columns = ['Item','Packaging','Quantity','Stock','Kg each','Rack','Mark'];
@@ -78,7 +84,8 @@ export const documentPdf = (kind: Kind) => async (req: Request): Promise<Respons
     }
     // The optional letterhead: the router read the file and passed the data URI. Nothing here can fail a PDF; documentHtml
     // ignores a value that is not exactly a JPEG or PNG data URI.
-    const html = documentHtml(kind.toUpperCase(),company.data.value,metadata,columns,rows,Deno.env.get('LETTERHEAD_DATA_URI') || undefined);
+    let html = documentHtml(kind.toUpperCase(),company.data.value,metadata,columns,rows,Deno.env.get('LETTERHEAD_DATA_URI') || undefined);
+    if (notice) html = withNotice(html,notice);
     const pdf = await htmlToPdf(html);
     // Upload uses server authority only after document reads were authorized.
     const path = `${kind}/${header.id}/${crypto.randomUUID()}.pdf`;
