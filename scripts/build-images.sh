@@ -287,7 +287,8 @@ for service in "${order[@]}"; do
   fingerprint="${plan_fingerprint[$service]}"; image="${plan_image[$service]}"; reason="${plan_reason[$service]}"
   if [[ -n "${release_ref[$service]:-}" ]]; then
     if pull_release_image "$service" "${release_ref[$service]}" "$image"; then
-      echo "Pulled the $service image from release $release_tag_used: $reason (${release_ref[$service]})."
+      pull_reason="$reason"; [[ "$pull_reason" != 'image missing' ]] || pull_reason='not on this host'
+      echo "Pulled the $service image from release $release_tag_used: $pull_reason (${release_ref[$service]})."
       pulled+=("$service"); built+=("$service=$fingerprint=$image")
       continue
     fi

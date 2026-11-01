@@ -3,6 +3,9 @@
 // 8 customers, a staff member, 12 items, 300 goods receipts, 200 dispatches, 40 invoices, 3 orders with 4 lines, and 6 photos (3 receipt photos, 3
 // dispatch photos) with their rows in grn_images / dispatch_images and storage.objects. Every name and number is invented. The SQL is
 // written for supabase_admin (direct inserts; the rules of the RPCs are not in the way) and is the same on every run.
+// It is a drill fixture, not a copy of a facility the app made: it is not app-consistent. It writes no stock_movements rows, leaves the invoice
+// figures (the stored totals the RPCs fill in) NULL, and its financial years do not always match the document dates. Use it to prove that an
+// upgrade and a restore carry the rows over; never to judge what a list, a report or a total shows (the SQL tests make their data with the RPCs).
 //   node tests/seed/make-seed.mjs [--clash] [--photos DIR] > seed.sql
 //   --clash   customers 7 and 8 get names that differ only in capitals and spaces ("Seed Harbour Traders" and " seed  HARBOUR traders"),
 //             which migration 117 (unique customers_name_norm_key) refuses to index. The seed loads only into a database without that index.

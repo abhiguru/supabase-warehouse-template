@@ -1344,6 +1344,13 @@ export function lockIsHeld(ctx) {
 // whatever is there counts, even a file that cannot be read.
 export const upgradeRecordExists = state => lstatSync(join(state, RECORD_FILE), { throwIfNoEntry: false }) !== undefined;
 export const maintenancePath = state => join(state, 'config/maintenance');
+// The tag scripts/backup.sh writes next to the marker while it owns maintenance mode ("backup <pid> <start time>"); null when there is none.
+function readOwnerTag(state) {
+  try {
+    const text = readFileSync(join(state, 'config/maintenance-owner'), 'utf8').trim();
+    return /^backup \d+ [0-9TZ:-]+$/.test(text) ? text.replace(/^backup /, 'pid ').replace(/^pid (\d+) /, 'pid $1, started ') : null;
+  } catch { return null; }
+}
 export const maintenanceMarked = state => lstatSync(maintenancePath(state), { throwIfNoEntry: false }) !== undefined;
 
 // How long the newest backup that says so took (duration_seconds= in its metadata.txt), or null.
@@ -1376,7 +1383,17 @@ export function upgradeStuckMs(state) {
 // the lock is held the check says nothing (null: the alert stays as it is); a run of upgrade.sh that is too slow is operator_lock_stuck.
 export function checkUpgrade(ctx) {
   if (lockIsHeld(ctx)) return null;
-  if (!upgradeRecordExists(ctx.state)) return [result('upgrade', UPGRADE_ALERT, true, 'No upgrade is left half done')];
+  if (!upgradeRecordExists(ctx.state)) {
+    // No upgrade is recorded and nothing holds the operator lock, yet the API is closed: a backup that was killed (SIGKILL, out of memory, power
+    // loss) or a maintenance mode somebody left on. Every Compose start reads the marker, so phones see "being updated" until a person opens it.
+    if (maintenanceMarked(ctx.state)) {
+      const owner = readOwnerTag(ctx.state);
+      const who = owner ? `It was turned on by a backup (${owner}) that no longer runs` : 'Nothing that runs owns it (no upgrade is recorded)';
+      return [result('upgrade', UPGRADE_ALERT, false, 'Maintenance mode is on and nothing is running that owns it',
+        `${who}. The API is closed to phones (they see "being updated"). If no backup or upgrade is meant to be running: bash scripts/maintenance.sh off`, { immediate: true })];
+    }
+    return [result('upgrade', UPGRADE_ALERT, true, 'No upgrade is left half done')];
+  }
   let record = null;
   try { record = readUpgradeRecord(ctx.state); } catch { record = { invalid: `${RECORD_FILE} cannot be read` }; }
   if (record?.invalid) {

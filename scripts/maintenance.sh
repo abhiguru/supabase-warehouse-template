@@ -109,7 +109,7 @@ case "$command" in
     ;;
   off)
     marker_exists || echo "Maintenance mode was not on (no $marker); the gateways are recreated anyway."
-    rm -f -- "$marker"
+    rm -f -- "$marker" "$state/config/maintenance-owner"
     # Created again, without the word: one that runs is replaced, and one that is stopped or was removed (by `on`, after a refused or failed upgrade)
     # comes back. Without this a facility whose upgrade was refused would stay down, and this command would be the advice that does not help.
     if ! exists gateway; then

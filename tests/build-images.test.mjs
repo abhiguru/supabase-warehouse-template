@@ -730,7 +730,7 @@ test('--from-release at a release tag pulls each image that needs building by di
     assert.equal(result.builds, '', 'nothing is built');
     assert.equal(result.pulls, `${refOf('db')}\n${refOf('functions')}`, 'by digest, only the images that need building (the optional ones have no container)');
     assert.equal(result.tags, `${refOf('db')} ${PROJECT}-db\n${refOf('functions')} ${PROJECT}-functions`, 'tagged as Compose tags a build');
-    assert.match(result.stdout, new RegExp(`Pulled the db image from release v1\\.2\\.3: image missing \\(${refOf('db').replace(/[.]/g, '\\.')}\\)\\.`));
+    assert.match(result.stdout, new RegExp(`Pulled the db image from release v1\\.2\\.3: not on this host \\(${refOf('db').replace(/[.]/g, '\\.')}\\)\\.`));
     assert.match(result.stdout, /Pulled 2 image\(s\) from the release \(db functions\) and built 0 here \(none\)\./);
     // The URL is the release's asset over https, and the call refuses anything else.
     assert.equal(result.curls.split('\n').length, 1);
@@ -1274,7 +1274,7 @@ test('--retag re-tags each image of the pre-release by digest as a carbon copy, 
     assert.equal(pulled.status, 0, pulled.stderr);
     assert.equal(pulled.pulls, `${refOf('db')}\n${refOf('functions')}`);
     assert.match(pulled.stdout, /Pulled 2 image\(s\) from the release \(db functions\) and built 0 here \(none\)\./);
-    assert.match(pulled.stdout, /Pulled the db image from release v1\.2\.3: image missing/);
+    assert.match(pulled.stdout, /Pulled the db image from release v1\.2\.3: not on this host/);
   } finally { cleanup(f); }
 });
 

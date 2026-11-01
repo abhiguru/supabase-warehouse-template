@@ -76,12 +76,14 @@ const cartB = await rpc('get_or_create_cart', tokenB, { p_customer_id: b });
 assert.ok(cartB.ok && typeof cartB.data === 'string', 'B cart created');
 // The orders table has no direct read for an app role (migration 123): the queue is read through get_orders_list.
 assert.equal((await api('/rest/v1/orders?select=id,customer_id', admin)).status, 403, 'orders are not readable directly');
+// Migration 128: an order without a line is not listed. A's cart was used up by the dispatch above and B's was never filled, so neither
+// customer's queue holds an order, and any order that is listed has a line.
 for (const customer of [a, b]) {
   const queue = success(await rpc('get_orders_list', admin, { p_customer_id: customer }), 'staff queue of one fictional customer');
-  assert.ok(queue.data.orders.length >= 1, 'staff queue sees the fictional customer');
+  assert.ok(queue.data.orders.every(row => row.items.length > 0), 'no order without a line is in the staff queue');
 }
-const staffOrders = success(await rpc('get_orders_list', admin, { p_customer_id: a }), 'staff order queue');
-assert.ok(staffOrders.data.orders.length >= 1, 'staff queue includes A order after dispatch');
+assert.ok(!(success(await rpc('get_orders_list', admin, { p_customer_id: b }), 'staff queue of B').data.orders.some(row => row.id === cartB.data)),
+  'the empty cart of B is not in the staff queue');
 const grn = (await api('/rest/v1/goodsreceived?gr_no=eq.A0901&select=id', admin)).data[0].id;
 const dispatch = (await api('/rest/v1/dispatch?disp_no=eq.I0901&select=id', admin)).data[0].id;
 
@@ -111,6 +113,16 @@ for (const [kind, args] of [
   }
   assert.ok(!(await api(path, tokenB)).ok, 'B cannot read A image');
   assert.ok(!(await api(path, anon)).ok, 'anonymous image read denied');
+  if (kind === 'grn') {
+    // A GRN keeps its last confirmed book photo, so a second one is confirmed before the first is deleted.
+    const second = success(await rpc('register_grn_image_upload', admin, { ...args,
+      p_file_name: 'backend-test-2.jpg', p_file_size: 1024, p_mime_type: 'image/jpeg' }), 'second grn image registration');
+    const secondUpload = await fetch(`${base}/storage/v1/object/grn-images/${second.storage_path}`, { method: 'POST', headers: {
+      apikey: anon, Authorization: `Bearer ${admin}`, 'Content-Type': 'image/jpeg',
+    }, body: Buffer.alloc(1024), signal: AbortSignal.timeout(30000) });
+    assert.equal(secondUpload.status, 200, 'second grn image uploaded');
+    success(await rpc('confirm_grn_image_upload', admin, { p_image_id: second.image_id, p_upload_token: second.upload_token }), 'second grn image confirmed');
+  }
   success(await rpc(`delete_${kind}_image`, admin, { p_image_id: registration.image_id }), `${kind} image deleted`);
   assert.ok(!(await api(path, tokenA)).ok, 'deleted metadata revokes A image read');
   assert.ok((await api(`/storage/v1/object/${kind}-images`, admin,

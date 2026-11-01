@@ -247,19 +247,26 @@ New people (a pending request, no code), pending profiles, rejected, disabled
 and service-account profiles never get `link_required`. The next sign-in of the
 same person asks again.
 
-**When the association's SMS is down.** The facility's break-glass sign-in
-(`scripts/break-glass-admin.sh`, [OPERATOR_INSTALL.md](OPERATOR_INSTALL.md#break-glass-administrator-sign-in))
-replaces this facility's own SMS code only. It cannot help a build in which
-people sign in through the association: the app sends everyone who is not signed
-in to the association's sign-in first, so if the association's service cannot
-send codes there is no screen on which a facility break-glass code could be typed.
-With `central_local_code` on, the break-glass code stands in for the facility's
-code in step 2 above, but only after an association sign-in that succeeded.
-What keeps people in during such an outage is the sessions that are already open:
-a session of an approved profile slides (30 days idle, 90 days at most, by default),
-so it keeps being renewed while it is used. A person whose session has ended has to
-wait for the association's SMS to work again. A break-glass sign-in on the
-association's side is not built (see "Built, and not built").
+**When the association's SMS is down.** A facility that signs in through the association needs no SMS provider of its own (no MSG91
+file: `setup.sh --central-issuer` without `--provider-env`; the facility's own extra code, `--central-local-code on`, does need one).
+When the association's service cannot send codes, a worker whose session has ended signs in with a **break-glass code from the facility**:
+
+1. *The operator* (anyone who can open a terminal on the facility's server) runs
+   `bash scripts/break-glass-admin.sh <the worker's 10-digit number>` ([OPERATOR_INSTALL.md](OPERATOR_INSTALL.md#break-glass-administrator-sign-in)).
+   It works for an active, approved administrator, supervisor or staff member and never for a customer, and prints a six-digit code once.
+   The operator gives it to the worker in person or by a call they trust.
+2. *The worker*, on the app's **Sign in** screen (the one that asks for the association sign-in), taps **Sign in with a code from your
+   facility**, chooses the facility from **My facilities** (its stored local address is used, so this works on the facility Wi-Fi with no
+   internet), enters their mobile number and the code. The app calls `operator-otp/break-glass` of that facility
+   ([API_CONTRACT.md](API_CONTRACT.md), "Break-glass sign-in") and, on success, holds the facility's own session exactly as after a
+   central sign-in. No association token is involved.
+3. The code works once, for 10 minutes, and ends after five wrong tries. The session lasts **24 hours** from that sign-in, whatever the
+   use, and then the worker signs in again, through the association if it works, else with a new code. It works over the plain-HTTP LAN
+   path as the LAN fallback does (the code crosses the Wi-Fi in clear; it is single use).
+
+Sessions that are already open are unaffected: a session of an approved profile slides (30 days idle, 90 days at most, by default).
+Making and using a code are written to `public.audit_log` (`table_name` `break_glass`). A break-glass sign-in on the association's side
+is not built (see "Built, and not built").
 
 ## What the facility administrator does
 

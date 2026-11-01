@@ -1,6 +1,6 @@
 // Shared fixtures for the backup, verify-restore and in-place restore tests.
 // Everything runs against a fake `docker` on PATH; no container is started.
-import { mkdirSync, writeFileSync, copyFileSync, existsSync, readdirSync, readFileSync, mkdtempSync, rmSync, statSync, lstatSync } from 'node:fs';
+import { mkdirSync, writeFileSync, copyFileSync, existsSync, readdirSync, readFileSync, mkdtempSync, rmSync, statSync, lstatSync, symlinkSync } from 'node:fs';
 import { createHmac, createHash } from 'node:crypto';
 import { spawnSync } from 'node:child_process';
 import { tmpdir } from 'node:os';
@@ -331,4 +331,26 @@ export function scriptRoot(scratch) {
     ].join('\n'));
   }
   return root;
+}
+
+// scripts/backup.sh as the tests run it: the real script and every other script of the checkout (symlinks) in a private root, except
+// scripts/maintenance.sh, which is a stand-in that keeps the marker and logs "maintenance on" / "maintenance off" to FAKE_DOCKER_LOG (the
+// real one recreates the gateways and runs the health check; tests/maintenance.test.mjs covers it). FAKE_MAINT=on or off makes the
+// stand-in fail for that command (with exit status FAKE_MAINT_RC, default 1). The root is made once per test process and removed when it ends.
+let backupRoot;
+export function backupScript() {
+  if (!backupRoot) {
+    backupRoot = mkdtempSync(join(tmpdir(), 'warehouse-backup-root-'));
+    process.on('exit', () => { try { rmSync(backupRoot, { recursive: true, force: true }); } catch { /* best effort */ } });
+    for (const name of readdirSync(repo)) if (name !== 'scripts') symlinkSync(join(repo, name), join(backupRoot, name));
+    mkdirSync(join(backupRoot, 'scripts'), { mode: 0o700 });
+    for (const name of readdirSync(join(repo, 'scripts'))) if (name !== 'maintenance.sh') symlinkSync(join(repo, 'scripts', name), join(backupRoot, 'scripts', name));
+    writeFileSync(join(backupRoot, 'scripts/maintenance.sh'), `#!/usr/bin/env bash
+printf 'maintenance %s\\n' "$1" >> "\${FAKE_DOCKER_LOG:-/dev/null}"
+[[ "\${FAKE_MAINT:-}" != "$1" ]] || { echo "maintenance $1 failed (fake)" >&2; exit "\${FAKE_MAINT_RC:-1}"; }
+marker="$WAREHOUSE_STATE_DIR/config/maintenance"
+case "$1" in on) printf 'upgrading\\n' > "$marker" ;; off) rm -f -- "$marker" ;; esac
+`, { mode: 0o755 });
+  }
+  return join(backupRoot, 'scripts/backup.sh');
 }

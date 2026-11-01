@@ -370,12 +370,14 @@ services:
       JWT_EXP: ${JWT_EXPIRY}
       AUTH_MODE: ${AUTH_MODE:?Operator mode required}
       APP_ENV: ${APP_ENV:?Operator environment required}
-      SMS_PROVIDER: ${SMS_PROVIDER:?MSG91 provider required}
+      # Empty on an installation that signs in through the association alone (setup.sh --central-issuer without --provider-env):
+      # scripts/configure-sms.sql then stores no SMS provider. scripts/doctor.mjs checks the lines are all given or all empty.
+      SMS_PROVIDER: ${SMS_PROVIDER:-}
       SMS_PRODUCTION_MODE: ${SMS_PRODUCTION_MODE:?Production SMS mode required}
-      MSG91_AUTH_KEY: ${MSG91_AUTH_KEY:?MSG91 auth key required}
-      MSG91_TEMPLATE_ID: ${MSG91_TEMPLATE_ID:?MSG91 Flow ID required}
-      MSG91_PE_ID: ${MSG91_PE_ID:?MSG91 PE ID required}
-      MSG91_SENDER_ID: ${MSG91_SENDER_ID:?MSG91 sender ID required}
+      MSG91_AUTH_KEY: ${MSG91_AUTH_KEY:-}
+      MSG91_TEMPLATE_ID: ${MSG91_TEMPLATE_ID:-}
+      MSG91_PE_ID: ${MSG91_PE_ID:-}
+      MSG91_SENDER_ID: ${MSG91_SENDER_ID:-}
     # Logging (docs/MONITORING.md, "Finding a slow query"): the log shares its 3 x 10 MB with everything else, so it carries what
     # a diagnosis needs and not one line per connection. A statement slower than 1 s is logged with its text but never its
     # parameter values (log_parameter_max_length=0: PostgREST sends the request body as a parameter, and a sign-in code is in

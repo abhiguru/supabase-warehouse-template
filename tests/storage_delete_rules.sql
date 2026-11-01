@@ -81,6 +81,12 @@ SELECT pg_temp.sd_assert((SELECT count(*)=5 FROM storage.objects),'admin still r
 SELECT pg_temp.sd_assert(pg_temp.sd_delete('grn-images','headers/'||:'grn_1'||'/loose.webp')=1,'admin deletes an unreferenced GRN object');
 SELECT pg_temp.sd_assert(pg_temp.sd_delete('dispatch-images','customer-a/logo.webp')=1,'admin deletes an unreferenced dispatch-images object');
 -- Metadata first through the RPC, then the object.
+-- A GRN keeps its last confirmed book photo (migration 130), so a second one is on file when the first is deleted.
+RESET ROLE;
+INSERT INTO public.grn_images(grn_id,image_type,storage_path,original_filename,file_size,mime_type,status,uploaded_by)
+ VALUES (:'grn_1'::uuid,'header','headers/'||:'grn_1'||'/second.webp','second.webp',32,'image/webp','confirmed',:'admin_profile'::uuid);
+SELECT set_config('request.jwt.claims',:'admin_claims',true);
+SET LOCAL ROLE authenticated;
 SELECT pg_temp.sd_assert(public.delete_grn_image(:'grn_image'::uuid)->>'success'='true','admin deletes the GRN image row');
 SELECT pg_temp.sd_assert(public.delete_dispatch_image(:'disp_image'::uuid)->>'success'='true','admin deletes the dispatch image row');
 SELECT pg_temp.sd_assert(pg_temp.sd_delete('grn-images',:'grn_path')=1,'admin deletes the GRN object after its row is gone');

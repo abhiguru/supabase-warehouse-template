@@ -80,6 +80,8 @@ INSERT INTO ra_rpc(name,staff,customer) VALUES
  ('update_order_item_quantity',true,'own'),('remove_item_from_order',true,'own'),('get_order_change_log',true,'own'),
  ('get_or_create_cart',true,'own'),('search_customer_items_for_order',true,'own'),
  ('get_customer_items_for_order_selection',true,'own'),
+ -- migration 128: the customer's order read without making one
+ ('get_customer_order',true,'own'),
  ('get_customer_grn_activity',true,'own'),('get_customer_grn_items',true,'own'),
  ('get_customer_grns_with_stock_dispatch_sorted',true,'own'),
  ('get_customer_dispatch_list',true,'own'),('get_customer_dispatch_items',true,'own'),
@@ -94,6 +96,8 @@ INSERT INTO ra_rpc(name,staff,customer) VALUES
  ('save_grn',true,'no'),('update_grn',true,'no'),('check_grn_exists',true,'no'),('get_next_grn_number',true,'no'),
  -- the numbering rules (migration 127): staff are suggested the next number; supervisors read the rules, administrators change them
  ('suggest_document_number',true,'no'),('get_document_numbering',false,'no'),('set_document_numbering',false,'no'),
+ -- the rack presets of the GRN item form (migration 131): staff read the buttons, administrators and supervisors change them
+ ('get_rack_presets',true,'no'),('set_rack_presets',false,'no'),
  ('get_all_grn_items',true,'no'),('get_grn_list',true,'no'),
  ('get_grn_prefixes_with_stock',true,'no'),('get_all_grn_activity',true,'no'),
  ('search_customers',true,'no'),('get_supervisors',true,'no'),('get_vehicle_suggestions',true,'no'),
@@ -102,6 +106,8 @@ INSERT INTO ra_rpc(name,staff,customer) VALUES
  ('register_dispatch_image_upload',true,'no'),('confirm_dispatch_image_upload',true,'no'),
  ('cancel_dispatch_image_upload',true,'no'),
  ('create_dispatch_with_stock_check',true,'no'),('update_dispatch_smart',true,'no'),
+ -- migration 128: the order effect of a dispatch or GRN save, told before it is made (a GRN delete is for administrators and supervisors, like the delete)
+ ('preview_create_dispatch',true,'no'),('preview_update_dispatch',true,'no'),('preview_update_grn',true,'no'),('preview_delete_grn',false,'no'),
  ('check_dispatch_exists',true,'no'),('get_next_dispatch_number',true,'no'),('get_dispatch_autocomplete',true,'no'),
  ('get_dispatch_list_with_items',true,'no'),
  ('get_all_dispatch_items',true,'no'),('get_all_dispatch_activity',true,'no'),('get_recent_dispatched_orders',true,'no'),
@@ -227,7 +233,7 @@ SELECT pg_temp.ra_assert((SELECT bool_and(pg_get_functiondef(p.oid) NOT LIKE '%a
 SELECT pg_temp.ra_assert((SELECT array_agg(p.proname::text ORDER BY p.proname)=ARRAY['check_session','get_public_config','logout_session','refresh_jwt_token']
   FROM pg_proc p WHERE p.pronamespace='public'::regnamespace AND has_function_privilege('anon',p.oid,'EXECUTE')),
  'the anonymous function list is the session functions and get_public_config (migration 123)');
--- Migration 126: the break-glass sign-in code can be made by the installer (supabase_admin) alone. No signed-in or anonymous role executes it
+-- Migrations 126 and 132: the break-glass sign-in code can be made by the installer (supabase_admin) alone. No signed-in or anonymous role executes it
 -- or reads its table, so it needs no row in the classification above; the edge function's question whether a code is open is for the service role only.
 SELECT pg_temp.ra_assert(NOT has_function_privilege('anon','warehouse_security.break_glass_code(text)','EXECUTE')
   AND NOT has_function_privilege('authenticated','warehouse_security.break_glass_code(text)','EXECUTE')
@@ -235,6 +241,11 @@ SELECT pg_temp.ra_assert(NOT has_function_privilege('anon','warehouse_security.b
   AND NOT has_function_privilege('anon','public.operator_break_glass_open(text)','EXECUTE')
   AND NOT has_function_privilege('authenticated','public.operator_break_glass_open(text)','EXECUTE')
   AND has_function_privilege('service_role','public.operator_break_glass_open(text)','EXECUTE')
+  AND NOT has_function_privilege('anon','public.operator_break_glass_sign_in(text,text,inet)','EXECUTE')
+  AND NOT has_function_privilege('authenticated','public.operator_break_glass_sign_in(text,text,inet)','EXECUTE')
+  AND has_function_privilege('service_role','public.operator_break_glass_sign_in(text,text,inet)','EXECUTE')
+  AND NOT has_function_privilege('service_role','warehouse_security.redeem_break_glass(text,text,inet)','EXECUTE')
+  AND NOT has_function_privilege('service_role','warehouse_security.limit_break_glass_session(jsonb)','EXECUTE')
   AND NOT has_table_privilege('authenticated','warehouse_security.break_glass_codes','SELECT'),
  'no app role makes or reads a break-glass code (tests/break_glass.sql proves the rest)');
 -- is_admin_or_supervisor() is true for staff as well, so it keeps staff out of

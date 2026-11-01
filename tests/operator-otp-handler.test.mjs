@@ -274,7 +274,10 @@ test('a provider failure seals the challenge before the 503 is returned', async 
     const finish = calls.at(-1);
     assert.equal(finish.name, 'operator_finish_otp', expected);
     assert.deepEqual(finish.body, { p_request_id: requestId, p_delivered: false, p_provider_id: expected, p_attempts: sent[expected] });
-    assert.deepEqual(await bodyOf(response), { status: 503, body: { success: false, error: 'SMS delivery unavailable. Try again later.' } });
+    // No stored provider (or a fixture one) is told apart from a provider that refuses: it has its own code.
+    assert.deepEqual(await bodyOf(response), expected === 'provider_configuration'
+      ? { status: 503, body: { success: false, error: 'SMS sign-in is not set up on this facility. Use the association sign-in.', code: 'sms_not_configured' } }
+      : { status: 503, body: { success: false, error: 'SMS delivery unavailable. Try again later.' } });
   }
 });
 
@@ -333,4 +336,45 @@ test('verification answers pass the database result through', async () => {
   const login = { success: true, data: { action: 'login', user: { id: 'u' }, session: { access_token: 'a', refresh_token: 'r' } } };
   const { call } = harness({ operator_verify_otp: login });
   assert.deepEqual(await bodyOf(await call('verify', { ...phone, otp_code: '123456' })), { status: 200, body: login });
+});
+
+test('break-glass: the code and the number go to operator_break_glass_sign_in with the source address, and the database answer passes through', async () => {
+  const login = { success: true, data: { action: 'login', user: { id: 'u', role: 'staff' }, session: { access_token: 'a', refresh_token: 'r', session_ends_at: '2026-11-02T09:00:00Z' } } };
+  const { calls, call } = harness({ operator_break_glass_sign_in: login });
+  assert.deepEqual(await bodyOf(await call('break-glass', { phone_number: '+91 98888 88801', code: '654321' }, { 'CF-Connecting-IP': '203.0.113.9' })), { status: 200, body: login });
+  assert.deepEqual(calls.map(entry => entry.name), ['operator_break_glass_sign_in'], 'no SMS request, no provider call');
+  assert.deepEqual(calls[0].body, { p_phone_number: '919888888801', p_code: '654321', p_ip_address: '203.0.113.9' });
+  // Without the header the source is unknown (null), as for verify.
+  const bare = harness({ operator_break_glass_sign_in: login });
+  await bare.call('break-glass', { phone_number: '9888888801', code: '654321' });
+  assert.equal(bare.calls[0].body.p_ip_address, null);
+});
+
+test('break-glass: refusals carry their code and the right status, and the closed gate and bad input call nothing', async () => {
+  const cases = [
+    ['invalid_code', 400, 'Invalid facility code'],
+    ['code_expired', 400, 'This facility code has expired. Ask the facility for a new one.'],
+    ['code_used', 400, 'This facility code was already used. Ask the facility for a new one.'],
+    ['code_locked', 400, 'Too many wrong tries for this facility code. Ask the facility for a new one.'],
+    ['rate_limited', 429, 'Too many OTP requests. Try again later.'],
+    ['unavailable', 503, 'OTP service unavailable'],
+  ];
+  for (const [code, status, error] of cases) {
+    const answered = await bodyOf(await harness({ operator_break_glass_sign_in: { success: false, code } }).call('break-glass', { ...phone, code: '654321' }));
+    assert.equal(answered.status, status, code);
+    assert.equal(answered.body.success, false);
+    assert.equal(answered.body.error, error, code);
+    if (code !== 'rate_limited' && code !== 'unavailable') assert.equal(answered.body.code, code);
+  }
+  const { calls, call } = harness();
+  for (const body of [{ ...phone }, { code: '654321' }, { ...phone, code: 654321 }, { ...phone, code: '65432' }, { ...phone, code: '65432a' }, { phone_number: '98888', code: '654321' }]) {
+    assert.deepEqual(await bodyOf(await call('break-glass', body)), { status: 400, body: { success: false, error: 'Invalid request' } }, JSON.stringify(body));
+  }
+  assert.equal(calls.length, 0);
+  const closed = harness({}, { ...environment, AUTH_MODE: 'demo' });
+  assert.equal((await closed.call('break-glass', { ...phone, code: '654321' })).status, 503);
+  assert.equal(closed.calls.length, 0);
+  const broken = Response.json({ message: 'relation "x" does not exist' }, { status: 500 });
+  assert.deepEqual(await bodyOf(await harness({ operator_break_glass_sign_in: broken }).call('break-glass', { ...phone, code: '654321' })),
+    { status: 503, body: { success: false, error: 'Authentication service unavailable' } });
 });

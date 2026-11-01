@@ -2,6 +2,7 @@
 -- (scripts/migration-plan.mjs, table warehouse_migrations.definitions). Edit the function here, never in a new migration.
 -- Starts as the function migrations 000 to 127 leave: migration 127's refusal of a changed number outside the facility's numbering is
 -- in this file (the numbered files that patched the function earlier stay as they are, never edited).
+-- Migration 128 adds the order effect of the save (order_effects in the answer) to this file; see the section 3 note of migration 128.
 CREATE OR REPLACE FUNCTION public.update_dispatch_smart(p_dispatch_id uuid, p_dispatch_data jsonb, p_dispatch_items jsonb[])
  RETURNS jsonb
  LANGUAGE plpgsql
@@ -52,6 +53,9 @@ DECLARE
     v_line_fulfilled integer;
     v_new_line_qty integer;
     v_new_updated_at timestamptz;
+    v_order_before jsonb;
+    v_order_lots uuid[];
+    v_order_effects jsonb;
 BEGIN
   PERFORM warehouse_security.authorize_rpc('update_dispatch_smart',jsonb_build_object('p_dispatch_id',p_dispatch_id));
     -- The list-refresh lock comes before any row lock (migration 46).
@@ -120,6 +124,25 @@ BEGIN
         RAISE EXCEPTION 'disp_no is required' USING ERRCODE = 'WH409';
     END IF;
 
+    -- Migration 130: a number that is changed has no space, tab or other whitespace in it. The stored number sent back as it
+    -- is stays (existing rows are untouched).
+    IF p_dispatch_data->>'disp_no' ~ '[[:space:]]|\u00a0'
+       AND NOT warehouse_security.is_blank_text(p_dispatch_data->>'disp_no')
+       AND p_dispatch_data->>'disp_no' IS DISTINCT FROM v_stored_disp_no THEN
+        RETURN warehouse_security.refuse('DISPATCH_NUMBER_SPACES', 'A dispatch number can''t contain spaces.',
+            jsonb_build_object('number', p_dispatch_data->>'disp_no'));
+    END IF;
+
+    -- Migration 130 (D17): the vehicle number fits the column (20 characters, as on a GRN); beyond that a plain refusal.
+    -- Migration 130: surrounding white space (spaces, tabs, line breaks, non-breaking spaces) is not stored, a blank one is NULL; the length is checked on the trimmed value.
+    IF jsonb_typeof(p_dispatch_data->'registration') = 'string' THEN
+        p_dispatch_data := jsonb_set(p_dispatch_data, '{registration}', COALESCE(to_jsonb(NULLIF(regexp_replace(p_dispatch_data->>'registration', '^[\s ]+|[\s ]+$', '', 'g'), '')), 'null'::jsonb));
+    END IF;
+    IF p_dispatch_data->>'registration' IS NOT NULL AND char_length(p_dispatch_data->>'registration') > 20 THEN
+        RETURN warehouse_security.grn_rate_failure('registration_too_long',
+            'Registration can have at most 20 characters', jsonb_build_object('limit', 20));
+    END IF;
+
     -- A list that is sent is never empty: an edit cannot leave a dispatch without lines (migration 120).
     IF p_dispatch_items IS NOT NULL AND cardinality(p_dispatch_items) = 0 THEN
         RAISE EXCEPTION 'A dispatch needs at least one line' USING ERRCODE = 'WH409';
@@ -129,7 +152,7 @@ BEGIN
     -- (migration 120). dispatch_disp_no_key covers every row, so the check does too.
     -- Migration 127: a changed number follows this facility's numbering (the stored number may be sent back as it is).
     IF p_dispatch_data->>'disp_no' IS NOT NULL AND p_dispatch_data->>'disp_no' IS DISTINCT FROM v_stored_disp_no THEN
-        v_number_failure := warehouse_security.document_number_failure('dispatch', p_dispatch_data->>'disp_no', COALESCE((p_dispatch_data->>'disp_date')::date, warehouse_security.business_date(v_stored_disp_date)));
+        v_number_failure := warehouse_security.document_number_failure('dispatch', p_dispatch_data->>'disp_no', COALESCE(warehouse_security.business_date((p_dispatch_data->>'disp_date')::timestamptz), warehouse_security.business_date(v_stored_disp_date)));
         IF v_number_failure IS NOT NULL THEN
             RETURN v_number_failure;
         END IF;
@@ -254,7 +277,8 @@ BEGIN
     -- stored date; when it is not changed the stored date is kept as it is (the header update below), so a legacy row with an
     -- odd time of day is not rewritten by the app sending its own day back. The number is changed when it differs from the
     -- stored text. Nothing is written before these checks.
-    v_sent_day := (p_dispatch_data->>'disp_date')::date;
+    -- Migration 130: a date with a time is the IST day of that moment (a plain 'YYYY-MM-DD' is that day), and that day is stored.
+    v_sent_day := warehouse_security.business_date((p_dispatch_data->>'disp_date')::timestamptz);
     IF v_sent_day IS NOT NULL THEN
         v_day_changed := v_sent_day IS DISTINCT FROM warehouse_security.business_date(v_stored_disp_date);
     END IF;
@@ -324,7 +348,7 @@ BEGIN
     IF p_dispatch_data IS NOT NULL THEN
         UPDATE dispatch SET
             disp_no = COALESCE(p_dispatch_data->>'disp_no', disp_no),
-            disp_date = CASE WHEN v_day_changed THEN (p_dispatch_data->>'disp_date')::date::timestamptz ELSE disp_date END,
+            disp_date = CASE WHEN v_day_changed THEN v_sent_day::timestamptz ELSE disp_date END,
             registration = COALESCE(p_dispatch_data->>'registration', registration),
             customer_id = COALESCE((p_dispatch_data->>'customer_id')::uuid, customer_id),
             -- The stored names stay unless the customer or the supervisor changes; then they are the master
@@ -478,6 +502,13 @@ BEGIN
         INTO v_old_lines
         FROM dispatch_trl dt
         WHERE dt.disp_id = p_dispatch_id AND dt.gr_trl_id IS NOT NULL;
+
+        -- Migration 128: the order lines of the old and the new lots as they are before the edit writes anything (the lines are
+        -- locked above), to tell afterwards what the edit changed.
+        v_order_lots := ARRAY(SELECT dt.gr_trl_id FROM dispatch_trl dt WHERE dt.disp_id = p_dispatch_id AND dt.gr_trl_id IS NOT NULL
+                              UNION
+                              SELECT (ni->>'gr_trl_id')::uuid FROM unnest(p_dispatch_items) AS ni);
+        v_order_before := warehouse_security.order_lines_snapshot(v_order_lots);
 
         -- ========== STEP 5: BULK restore stock for DELETED items ==========
         UPDATE goodsreceived_trl gt
@@ -799,12 +830,16 @@ BEGIN
 
     SELECT d.updated_at INTO v_new_updated_at FROM dispatch d WHERE d.id = p_dispatch_id;
 
+    -- Migration 128: what the edit did to the customer's order lines ([] when no line was touched).
+    v_order_effects := warehouse_security.order_effects(v_order_lots, v_order_before);
+
     v_result := jsonb_build_object(
         'success', true,
         'dispatch_id', p_dispatch_id,
         'dispatch_items', v_dispatch_items_result,
         'updated_at', v_new_updated_at,
-        'order_sync', jsonb_build_object('given_back', v_given_back, 'taken', v_taken)
+        'order_sync', jsonb_build_object('given_back', v_given_back, 'taken', v_taken),
+        'order_effects', v_order_effects
     );
 
     -- The answer is kept for the 7 days a resend is answered from it, as the dispatch create answer is (migration

@@ -87,6 +87,11 @@ The current role table comes first; the sections after it record how each role's
 | The next GRN, dispatch or invoice number under the facility's numbering rule (`suggest_document_number`, migration 127) | yes | yes | yes | **no** (`Staff access required`) |
 | Read the numbering rules (`get_document_numbering`, migration 127) | yes | yes | **no** (`Staff access required`) | no |
 | Change a numbering rule (`set_document_numbering`, migration 127) | yes | **no** (`Administrator required`) | no | no |
+| The order effect of a dispatch or GRN save before it is made (`preview_create_dispatch`, `preview_update_dispatch`, `preview_update_grn`, migration 128) | yes | yes | yes | **no** (`Staff access required`) |
+| The order effect of a GRN delete before it is made (`preview_delete_grn`, migration 128) | yes | yes | **no** (`Staff access required`) | no |
+| A customer's order read without making one (`get_customer_order`, migration 128): the customer's own for a customer account | yes | yes | yes | own customer only |
+| Read the rack presets of the GRN item form (`get_rack_presets`, migration 131) | yes | yes | yes | **no** (`Staff access required`) |
+| Change the rack presets (`set_rack_presets`, migration 131) | yes | yes | **no** (`Staff access required`) | no |
 | Supervisor's mobile number on a receipt or dispatch | yes | yes | yes | **no** (name only) |
 | `printer_status` (direct read removed in 123: the edge function reads it with the service key) | yes | yes | yes | **no** (and no longer without sign-in) |
 

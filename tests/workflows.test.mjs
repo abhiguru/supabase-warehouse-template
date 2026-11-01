@@ -73,7 +73,12 @@ test('no workflow names a self-hosted runner; CI jobs take their runner from a r
   assert.match(releaseText, /install -d -m 700 "\$RUNNER_TEMP\/docker-config" "\$RUNNER_TEMP\/trivy-cache"/);
   assert.match(releaseText, /echo "DOCKER_CONFIG=\$RUNNER_TEMP\/docker-config" >> "\$GITHUB_ENV"/);
   assert.match(releaseText, /echo "TRIVY_CACHE_DIR=\$RUNNER_TEMP\/trivy-cache" >> "\$GITHUB_ENV"/);
+  // Both jobs run on a runner that keeps state, so each makes its own Docker config (the images job also a Trivy cache); one set in a job does not reach the other.
+  const releaseJob = releaseText.slice(releaseText.indexOf('\n  release:\n'), releaseText.indexOf('\n  publish-images:\n'));
+  assert.ok(releaseJob.length > 100 && !releaseJob.includes('publish-images'), 'the release job section is found');
+  assert.match(releaseJob, /echo "DOCKER_CONFIG=\$RUNNER_TEMP\/docker-config" >> "\$GITHUB_ENV"/, 'the release job sets DOCKER_CONFIG itself');
   const images = releaseText.slice(releaseText.indexOf('\n  publish-images:\n'));
+  assert.match(images, /echo "DOCKER_CONFIG=\$RUNNER_TEMP\/docker-config" >> "\$GITHUB_ENV"/, 'the images job sets DOCKER_CONFIG itself');
   assert.ok(images.indexOf('DOCKER_CONFIG=') < images.indexOf('docker login'), 'the fresh Docker config comes before the login');
   assert.match(images, /for t in jq gh curl sha256sum; do command -v "\$t"/);
   assert.match(images, /\n {10}docker buildx version\n/);

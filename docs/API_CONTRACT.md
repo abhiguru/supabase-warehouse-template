@@ -63,7 +63,7 @@ The answer carries the CORS headers and `X-Warehouse-Path` like every answer the
 always, so a browser can send the request whose answer it reads; `/health` is unchanged. `code` is the word to test (`upgrading`; it will not
 change), `message` can be shown as it is. Do not sign the user out on it (a stale key is also answered 503 then, not 401), and do not retry faster
 than `Retry-After`. Any other 503 from the gateway keeps the body `{"message":"The upstream server is unavailable"}` and has no `Retry-After`.
-It lasts for the backup, its verification and the migrations of one upgrade ([OPERATOR_INSTALL.md](OPERATOR_INSTALL.md#rerun-and-upgrade), "While it
+It lasts for the backup, its verification and the migrations of one upgrade, and for the few seconds a stand-alone backup (`db:backup`, the nightly one) holds the services stopped: the gateways stay up in maintenance mode for that time, so a phone gets this answer and not a refused connection (a 502 from the tunnel) ([OPERATOR_INSTALL.md](OPERATOR_INSTALL.md#rerun-and-upgrade), "While it
 upgrades"). The edge functions' own 503 bodies (below and in [CENTRAL_LOGIN.md](CENTRAL_LOGIN.md)) are unrelated.
 
 ### Which app builds a release supports, and what the backend tells the app
@@ -178,7 +178,7 @@ migrations. About 115 functions that nothing called are dropped (116 `DROP FUNCT
   one of those tables or columns holds data (it names each and says to export or empty it first).
 
 `build_invoice_recalculation_rows` stays (tests and the lot-rate reader use it). The invoice-save path, `create_dispatch_with_stock_check`
-(four-argument form, called by fas-sync) and `trg_restore_stock_on_dispatch_delete` are kept on purpose.
+(four-argument form, called by fas-sync) and `trg_restore_stock_on_dispatch_delete` are kept on purpose. Since migration 130 the trigger refuses any `DELETE` on `dispatch` that does not come from `delete_dispatch_with_order_cleanup` (SQLSTATE `WH409`, "Delete dispatches with delete_dispatch_with_order_cleanup."); the function marks its own delete with the transaction-local setting `warehouse.dispatch_delete_via_rpc`.
 
 **`get_public_config(p_environment text)`** returns `json {app_version, maintenance_mode, feature_flags}` (`feature_flags` an object of
 name to enabled), or NULL when the environment has no active row (the edge function `get-public-config` then answers 503, "not
@@ -206,6 +206,19 @@ No function changes its arguments or the shape of an answer; the app needs no ch
 - **Session lifetime.** `refresh_jwt_token` and the sign-in answers (`operator_verify_otp`, `operator_central_exchange`) return the same fields as before (`access_token`, `expires_at` and `expires_in` of the access token, `refresh_token`; the refresh token's own end is not an answer field and the app does not read it). A session of an active, approved profile now ends `session_idle_seconds` (default 30 days) after its last refresh, never later than `session_max_seconds` (default 90 days) after sign-in; before, it ended 7 days after sign-in whatever the use. Any other active profile keeps the fixed 7 days. A refresh of a session past its absolute end answers by raising `Session expired` (`P0001`), the definitive answer the app already treats as "sign in again" (`isDefinitiveRefreshException`); every other rejection is still the data answer `{success:false, message:'Invalid refresh token'}`. Switching a user off (`update_user_status(false)`) deletes their sessions as before. Operator view and the two keys: [OPERATOR_INSTALL.md](OPERATOR_INSTALL.md), "Authentication and OTP limits", Sessions.
 - **Per-source limits.** The answers of `operator-otp/request` and `/verify` are unchanged (429 "Too many OTP requests. Try again later."); the two limits per address (30 requests, 20 failed verifications an hour) are now `auth_config` keys, and a listed address gets more requests ([OPERATOR_INSTALL.md](OPERATOR_INSTALL.md), "The facility's own Wi-Fi address").
 - **Break-glass code.** `operator-otp/verify` (`operator_verify_otp`) also accepts a six-digit code the operator made for an active administrator with `scripts/break-glass-admin.sh`: the same request, the same `{success:true, data:{action:'login', user, session}}` answer, and `invalid_otp` (400 "Invalid or expired OTP") for a wrong, used, expired or ended code. While such a code is open for the number, `operator-otp/request` answers `{success:true, ...}` ("OTP sent successfully") even when the SMS provider refuses the request (otherwise 503 "SMS delivery unavailable"), so the app reaches its code screen. `public.operator_break_glass_open(p_phone_number)` (service role only) is what the edge function asks; the function that makes a code, `warehouse_security.break_glass_code`, is for `supabase_admin` alone and is not an API.
+
+### Break-glass sign-in (`operator-otp/break-glass`, migration 132)
+
+For a worker whose session has ended while neither the association's sign-in nor SMS can be used. The operator makes a one-time code on the
+facility's server (`scripts/break-glass-admin.sh <number>`: administrator, supervisor or staff, never a customer); the app's Sign in screen
+has the link "Sign in with a code from your facility", which asks for the facility, the mobile number and the code.
+
+- **Request.** `POST {facility}/functions/v1/operator-otp/break-glass`, no session needed (public like `verify`), JSON `{"phone_number": "9XXXXXXXXX" (10 digits, `91` or `+91` allowed), "code": "NNNNNN" (six digits)}`. It may go over the LAN path (plain HTTP): the code is single use and valid 10 minutes, and nothing else restricts the transport.
+- **Success, 200.** The shape of `verify`: `{"success": true, "data": {"action": "login", "user": {...the user_profiles row...}, "session": {"access_token", "expires_at", "expires_in", "token_type", "refresh_token", "session_ends_at"}}}`. The app stores it as after any facility sign-in.
+- **Session length the app must respect.** The session ends **24 hours** after this sign-in (`session.session_ends_at`, an ISO timestamp), whatever the use. `refresh_jwt_token` keeps working until then and never extends the end; afterwards a refresh is refused (the data answer `{success:false, message:'Invalid refresh token'}` or the raised `Session expired`, both already "sign in again"), and signed-in calls answer 42501 "Session expired or revoked". The app signs the worker out at `session_ends_at` (or on that refusal) and shows the Sign in screen.
+- **Refusals.** `{"success": false, "error": "<text>", "code": "<code>"}`: `invalid_code` 400 (wrong code, no code open, an unknown number, or the number of a customer or other non-worker, all answered alike so that a probe learns nothing; "Invalid facility code"), `code_used` 400, `code_expired` 400, `code_locked` 400 (five wrong tries ended it; all three: ask the operator for a new code; these three are answered only to someone who presents the code that was issued, a wrong code always gets `invalid_code`). There is no `customer_not_allowed`: a customer can never sign in with a code, and gets `invalid_code`. `rate_limited` 429 (the per-address failed-verification limit, as `verify`: "Too many OTP requests. Try again later."), `invalid_request` 400 (the number or code is malformed), 503 when the facility is not in operator mode or the database does not answer. Every refusal except `rate_limited` and `invalid_request` counts as a failed verification of the caller's address.
+- **Also.** `operator-otp/verify` (the older SMS code screen) accepts the same codes for the same workers and gives the same 24 hour session. `operator-otp/request` on an installation with no SMS provider (central sign-in alone) answers 503 `{success:false, code:'sms_not_configured', error:'SMS sign-in is not set up on this facility. Use the association sign-in.'}`.
+- **Database.** `public.operator_break_glass_sign_in(p_phone_number, p_code, p_ip_address)` is for the service role only (the edge function), like `operator_verify_otp`, and is not in `authorize_rpc`; the function that makes a code, `warehouse_security.break_glass_code`, is for `supabase_admin` alone and is not an API.
 
 ### The LAN address in `get-config` (`urls.lan`, 2026-10-26)
 
@@ -266,8 +279,8 @@ are stable: they are the interface, and a change to them is announced here.
    - `429` and 5xx are answers from the server, not transport failures: they do not trigger a switch of path.
 6. **Limits on the LAN path are per phone**: REST is a burst of 1800, then 30 a second; functions a burst of 100, then one every
    0.6 s. `429` carries `Retry-After: 1`.
-7. **Sign-in.** `central-exchange` goes over the public path only. **`operator-otp` (`request` and `verify`) may go over the LAN path, for
-   an administrator's break-glass sign-in during an outage:** with no internet the SMS provider cannot be reached, and while the operator has
+7. **Sign-in.** `central-exchange` goes over the public path only. **`operator-otp` (`request`, `verify` and, since migration 132, `break-glass`) may go over the LAN path, for
+   a worker's break-glass sign-in during an outage (the app's own entry is `break-glass`, which needs no SMS request):** with no internet the SMS provider cannot be reached, and while the operator has
    made a break-glass code for the number, `operator-otp/request` answers the normal success body ("OTP sent successfully") even though no
    SMS was sent, as in the break-glass item above, so the app reaches its code screen; any other number gets 503 "SMS delivery
    unavailable". The request can take up to 10 seconds to answer in that case (the provider call has a 10-second limit). The code
@@ -302,7 +315,7 @@ The app switches on `reason`, not on the English. It is built by `warehouse_secu
 app role). A refusal is returned before the function's first write. The refusals that can only be known after a write (`RATES_NEED_MANAGER`,
 `RATES_WOULD_DROP`, `TOTAL_CHANGED`) are raised as `rate_fail` with the refusal in `DETAIL`; the handler of `update_grn`, `update_invoice`
 and `save_invoice_internal` rolls the whole block back and answers it (nothing is saved). The three legacy length refusals of the GRN
-(`item_name_too_long`, `packaging_too_long`, and new `registration_too_long`) keep the older shape `{success:false, error, error_code, data:{limit, index?}, message}`.
+(`item_name_too_long`, `packaging_too_long`, and new `registration_too_long`, which the dispatch create and `update_dispatch_smart` also answer, limit 20 since migration 130) keep the older shape `{success:false, error, error_code, data:{limit, index?}, message}`.
 
 | `reason` | Returned by | Fields (top level) | English `error` |
 |---|---|---|---|
@@ -311,6 +324,10 @@ and `save_invoice_internal` rolls the whole block back and answers it (nothing i
 | `LOT_DISPATCHED` | `update_grn` | `line_id`, `item_name`, `fields` (`item`, `packaging`) | {item} has been dispatched. Its item and packing can't be changed. |
 | `DISPATCH_INVOICED` | `update_dispatch_smart` | `dispatch_no`, `invoice_no`, `inv_fin_year`, `fields` (`disp_date`, `disp_no`) | Dispatch {no} is on invoice {inv}. Its date and number can't be changed. Delete or edit the invoice first. |
 | `DISPATCH_DATE_FUTURE` | dispatch create, `update_dispatch_smart` | `date`, `today` (IST day, `YYYY-MM-DD`) | A dispatch can't be dated in the future. Today is {today}. |
+| `GRN_DATE_FUTURE` | `save_grn`, `update_grn` (when the day changes) | `date`, `today` (IST day, `YYYY-MM-DD`) | A GRN can't be dated in the future. Today is {today}. |
+| `GRN_PHOTO_REQUIRED` | `delete_grn_image`, `update_grn` | `gr_no` (and `grn_id`, `image_id` from `delete_grn_image`) | A GRN needs at least one photo. Add another before deleting this one. |
+| `DISPATCH_NUMBER_SPACES` | dispatch create, `update_dispatch_smart` (a changed number), `check_dispatch_exists` | `number` | A dispatch number can't contain spaces. |
+| `GRN_NUMBER_SPACES` | `save_grn` | `gr_no` | A GRN number can't contain spaces. |
 | `DISPATCH_BEFORE_GRN` | dispatch create, `update_dispatch_smart` | `date`, `gr_no`, `grn_date` (the latest GRN day among the lots) | The dispatch date {date} is before GRN {gr_no} ({grn_date}). |
 | `GRN_DATE_AFTER_DISPATCH` | `update_grn` | `gr_no`, `date`, `first_dispatch_date`, `dispatch_no` | GRN {gr_no} can't be dated {date}: dispatch {no} took goods from it on {first}. |
 | `GRN_DATE_LOCKED` | `update_grn` | `gr_no`, `date`, `invoice_no`, `inv_fin_year` | This GRN is invoiced. Delete or edit the invoice first. |
@@ -323,6 +340,10 @@ and `save_invoice_internal` rolls the whole block back and answers it (nothing i
 | `LINE_ON_ORDER` | `update_grn` | `line_id`, `item_name`, `customer_name` | {item} is on {customer}'s order. Remove it from the order first. |
 | `LINE_DISPATCHED_BEFORE` | `update_grn` | `line_id`, `item_name` | {item} was dispatched before, so this line can't be removed. |
 | `TOTAL_CHANGED` | `save_invoice(uuid,jsonb,jsonb[])`, `update_invoice` | `current_total`, `expected_total`, `lines` (`[{disp_trl_id, duration, no_of_days}]` as the server recomputed them) | The total is now {current}, not {expected}. Review the figures and save again. |
+| `INVOICE_DATE_FUTURE` | `save_invoice(uuid,jsonb,jsonb[])`, `update_invoice` (only when the invoice day changes) | `date`, `today` (India days, `YYYY-MM-DD`) | An invoice can't be dated in the future. Today is {today}. |
+| `INVOICE_BEFORE_DISPATCH` | `save_invoice(uuid,jsonb,jsonb[])`, `update_invoice` (only when the invoice day or the set of lines changes) | `invoice_date`, `dispatch_no`, `dispatch_date` (the latest dispatch of the lines; days as `YYYY-MM-DD`) | The invoice date {invoice_date} is before dispatch {no} ({dispatch_date}). |
+| `DISCOUNT_TOTAL_ZERO` | `save_invoice(uuid,jsonb,jsonb[])`, `update_invoice` | `discount`, `total_before_discount` | A discount can't take the total to zero. To charge nothing, set the charge to 0 and give a reason. |
+| `RATES_CHANGED` | `save_invoice(uuid,jsonb,jsonb[])`, `update_invoice` | `lines`: `[{disp_trl_id, fields, looked_up, current}]`, `fields` the names (`charge`, `labour_rate`, `tax`) that differ, `looked_up` as sent, `current = {charge, labour_rate, tax}` as the form would look them up now | The rates changed since you opened this invoice. Check the new figures. |
 
 `invoice_no` is the integer invoice number of the live invoice (the first by financial year and number); the app writes it in its own
 form. Order RPCs still answer `{success:false, message, error:{code:'ORDER_NOT_OPEN'}}` when the order is not open; the new order
@@ -429,6 +450,31 @@ invoice `year`. Numbers have at most 20 characters (`gr_no` and `disp_no` are `v
   whatever its first letter; a `year` rule accepts its prefix, two consecutive years (`26-27`, not `26-28`) and the digits, whichever year the date is in. An invoice number is a whole number
   from 1 to 99999999 whatever the rule (`WH422` as before); its rule decides the suggestion only. `update_grn` keeps `GRN_NUMBER_LOCKED`.
 - Lists keep sorting by `document_number_sort_key`: numbers of the earlier letter form first, then by the text before the trailing digits, then the digits as a number.
+
+### Rack presets (migration 131)
+
+The Floor and Chamber buttons of the GRN item form: one list per facility, the same on every phone. A rack is still typed text; the presets only fill it,
+and racks already saved never change. The rows start as BASE, F1, F2, F3, F4 (floor) and C4, C7, C2, Anti-Ch (chamber), version 1.
+
+- `get_rack_presets()`: administrators, supervisors and staff (a customer: `Customer access denied`). `{success:true, floor:[label,...], chamber:[label,...], version, updated_at, max_label_length:12, max_per_list:20}`,
+  each list in the order to show. An older backend answers PGRST202 (the app falls back to its built-in buttons and hides the settings row).
+- `set_rack_presets(p_floor text[], p_chamber text[], p_version integer)`: administrators and supervisors (staff: `Staff access required`, SQLSTATE `42501`). Replaces both lists in one transaction;
+  `p_version` is the `version` of the answer the screen was built from. The answer on success is the `get_rack_presets` answer plus `changed` (false when the lists sent are the lists stored: nothing
+  is written and the version stays, so a resend after a lost answer is a success). Spaces around a label are cut; the answer carries the stored labels.
+- Refusals have the usual envelope (`success:false, error_code:'WH409', reason, error, message`, fields at the top level); nothing is saved:
+
+| `reason` | Fields | When |
+|---|---|---|
+| `PRESETS_CHANGED` | the `get_rack_presets` answer: `floor`, `chamber`, `version`, `updated_at`, limits | `p_version` is not the current version and the lists differ from the stored ones: someone else saved first. Show the English `message` in the app's own words and offer to reload; the answer already holds the current lists. |
+| `LABEL_EMPTY` | `list` (`floor` or `chamber`), `index` (from 1) | a label is NULL or only spaces |
+| `LABEL_TOO_LONG` | `list`, `index`, `label`, `limit` (12) | more than 12 characters |
+| `LABEL_CHARACTER` | `list`, `index`, `label` | a `/` (the separator of the rack text) or a control character |
+| `LABEL_DUPLICATE` | `list`, `index`, `label` | the label is already in either list; case does not matter (`f1` is `F1`) |
+| `TOO_MANY` | `list`, `limit` (20) | more than 20 labels in a list (a list may be empty) |
+| `LIST_REQUIRED` | none | `p_floor` or `p_chamber` is NULL |
+| `VERSION_REQUIRED` | none | `p_version` is NULL |
+
+There is no history of earlier lists. The tables have no grant for an app role.
 
 ### Request codes and `get_submission_result` (owner decision D22: one rule for a lost answer)
 
@@ -696,7 +742,7 @@ and `remove_customer_assignment` return a boolean and raise an exception whose m
 `SERVICE_ACCOUNT_READ_ONLY`. Days are India
 days (`warehouse_security.business_date(now())`), not UTC days.
 
-#### `replace_item_rates(p_item_id uuid, p_customer_id uuid, p_price_type text, p_starts_on date, p_bands jsonb, p_replace_later boolean DEFAULT false, p_mode text DEFAULT 'change', p_move_from date DEFAULT NULL, p_seen_rows uuid[] DEFAULT NULL)`
+#### `replace_item_rates(p_item_id uuid, p_customer_id uuid, p_price_type text, p_starts_on date, p_bands jsonb, p_replace_later boolean DEFAULT false, p_mode text DEFAULT 'change', p_move_from date DEFAULT NULL, p_seen_rows uuid[] DEFAULT NULL, p_request_key text DEFAULT NULL)`
 
 Changes one scope (item, customer or NULL for the default rate, price type) "from a date" in one
 transaction (a refusal after the first write undoes all of them). A band is
@@ -708,7 +754,9 @@ must start at 0 and follow on without gaps; customer bands may have gaps. Roles:
 - `p_mode = 'change'` (default): rows in force on `p_starts_on` end the day before, rows starting on
   that day that are already in force are deleted, the bands are added from that day. A rate
   planned (not begun) to start on that day or later is refused with `LATER_RATES_EXIST` unless
-  `p_replace_later` is true, which deletes it. Exception: new bands (not a stop) that start on a
+  `p_replace_later` is true, which deletes it. Since migration 129 a rate that starts after `p_starts_on` is a later rate whether it has
+  begun or is only planned (before, a begun one was deleted without a word); each entry of `data.later` is
+  `{effective_from, weight_min, weight_max, unit_price, begun}`, `begun` true when it started on or before today. Exception: new bands (not a stop) that start on a
   planned rate's own start day replace it when its id is listed in `p_seen_rows`.
   `p_bands = []` stops the rate. If every row in force that day shares one last day E and no row
   starts later, the new rows keep that stop (`effective_to = E`); `data.kept_end` is E, else null.
@@ -725,6 +773,10 @@ must start at 0 and follow on without gaps; customer bands may have gaps. Roles:
   end, move or delete that is not listed was changed by someone else: the answer is `STALE_RATES`
   (`data.ids` = the unseen ids) and nothing is written. NULL skips the check. Moving or undoing a
   planned rate that carried a scheduled stop gives the stop back to the rows it reopens.
+- `p_request_key` (optional, migration 129): a client-made key for this save. The first successful answer is stored for 7 days under the
+  caller; a resend with the same key for the same item, customer, price type and start day returns that answer as it was (`data` and all),
+  before any other check, and writes nothing; `get_submission_result(p_key)` finds it (`{found: true, response}`). A refusal is not stored,
+  another user's key is not replayed, no key behaves as before.
 - Staff (before migration 90; now refused by the guard): `p_starts_on` today or later, and for a move both `p_move_from` and `p_starts_on` after
   today (`PAST_DATE_NOT_ALLOWED`); rows of the scope that start on `p_starts_on` when that day is
   today give `RATE_IN_FORCE_MANAGER_ONLY` (a rate that began today is for administrators and
@@ -802,7 +854,7 @@ Roles: admin, supervisor (staff are refused by the guard since migration 90). An
 `{ success: true, data: { tiers: [tier, ...] (by weight_min; [] when never saved), updated_at, updated_by_name } }`
 (`updated_at` and `updated_by_name` are null when never saved).
 
-#### `set_standard_rate(p_tiers jsonb, p_expected_updated_at timestamptz DEFAULT NULL, p_dry_run boolean DEFAULT false)`
+#### `set_standard_rate(p_tiers jsonb, p_expected_updated_at timestamptz DEFAULT NULL, p_dry_run boolean DEFAULT false, p_request_key text DEFAULT NULL)`
 
 Roles: admin, supervisor. Staff and customers are refused by the guard (SQLSTATE 42501) whatever tiers they
 send; `STANDARD_RATE_MANAGER_ONLY`, which migration 85 answered to staff from the body, is unreachable since
@@ -907,6 +959,8 @@ rows). `create_item_storage_price` has no window, as before.
   `replace_item_rates` (item, customer or `default`, price type) before they read the scope, so writers of one
   scope take turns and the later one sees the earlier one's rows (`BANDS_OVERLAP` for an overlap).
   `find_storage_price` breaks a last tie by row id (a fixed tie-break, the lower row id).
+  Since migration 129 an item's first default rate (its earliest start day, every band of it) also covers every earlier day in `find_storage_price`, so a GRN
+  or an invoice dated before the item was priced finds it; a later change and a customer's own rate start on their own day.
 
 ## GRNs
 
@@ -949,7 +1003,8 @@ before anything is written; without `p_rates` a staff call works as before.
      item's line weights (a line without weight counts as 0 kg) -> `RATE_NOT_FOR_GRN` (`data.index`,
      `data.item_id`; not checked for the `grn` entries of an invoiced GRN, whose stored set may no longer fit
      a changed line); two GRN-only bands of one item that share a weight -> `BANDS_OVERLAP`.
-  2. `customer` (the GRN's business) and `everyone` (the default rate) entries change the item's rate
+  2. `customer` (the GRN's business) and `everyone` (the default rate) entries are refused for an invoiced GRN (`GRN_INVOICED`,
+     `data.index` and `data.scope` of the first such entry, before anything else is read; migration 129); otherwise they change the item's rate
      of the GRN's price type from the GRN's India day, any day (the staff past-day rule
      of `replace_item_rates` does not apply here; staff cannot send `p_rates` since migration 90). For the rows of that scope that share a weight and a
      day with the days from the GRN day to `to`: a row of a different band -> `BANDS_OVERLAP`
@@ -1135,6 +1190,15 @@ History: migrations 87 (the outside review fixes of 2026-10-15), 120 and 121.
 - `get_grn_list` (`total_weight`) and `get_customer_dispatch_items` (`total_weight`) sum weight as numeric: a
   total above 2147483647 kg is a number, not an error.
 
+### Dispatch lists: the GRN of each line (migration 131)
+
+- `get_dispatch_list_with_items(..., p_include_items => true)`: each `data.dispatches[].items[]` object gains `grn_id` (the id of the GRN the lot was
+  received on; open it with `get_grn_details`). It already carries `grn_qty` (the quantity received on that lot), `gr_no`, `grn_item_id`, `disp_qty`, `weight`,
+  `package_mark` and `rack`. Without items, `items` stays null.
+- `get_recent_dispatched_orders(p_limit, p_offset)`: each `data.dispatches[].items[]` object gains `grn_qty` and `grn_id`, beside `item_name`, `disp_qty`, `rack`,
+  `package_mark`, `gr_no` and `weight`.
+- Fields are only added; signatures, grants and roles are unchanged, so an older app that ignores them keeps working. An older backend lacks them (the app shows plain text).
+
 ### Dispatch create and edit
 
 - **`order_lines_left`.** The success answer of `create_dispatch_with_stock_check` gains `order_lines_left`: an integer, the
@@ -1191,6 +1255,66 @@ dispatch_no, grn_item_id, previous_quantity, new_quantity}`, from create from an
 edit that raises) and what an edit gave back (one `UPDATE` entry per order, `changes.source = 'dispatch_edit'`). A dispatch-driven change
 is made whatever the state of the business.
 
+### The order effect of a save, told before and after (migration 128)
+
+A save of a dispatch, a GRN edit or a GRN delete can change the customer's order. The app names the order lines it changes before the
+person saves, and again in the answer. Every list below is `order_effects`, an array (empty when no order line is touched), one element per
+changed line, sorted by customer name, item name, GRN number:
+
+```
+{customer_id, customer_name, order_id, order_no, order_item_id, grn_item_id, item_name, package_mark, grn_no,
+ old_quantity, new_quantity, removed, change, available_stock, order_lines_left}
+```
+
+`change` is `reduced`, `increased`, `added` (the line is new, `old_quantity` 0), `removed` (`new_quantity` 0, `removed` true) or, for a GRN
+edit only, `exceeds_stock` (the order line is unchanged, `old_quantity` = `new_quantity` = what it asks for, `available_stock` = what the lot
+holds now; only for a lot whose stock the edit lowered below the ordered quantity). `available_stock` is null for the others.
+`order_item_id` is the order line as it was before the save (null for an `added` line: the line did not exist, and a preview cannot know the id).
+`order_lines_left` is the number of lines the order has afterwards (0: the order is empty, and an empty order is not listed, see
+"No empty orders").
+
+The real saves carry the list: `create_dispatch_with_stock_check` (top-level `order_effects`, next to `order_lines_left`; for a dispatch from
+an order the lines it uses up are listed too), `update_dispatch_smart` (next to `order_sync`), `update_grn` (top-level) and
+`delete_grn_safe` (top-level; the lines it removes are `removed`). A saved answer replayed from an older key has no `order_effects`.
+
+Four RPCs answer the same list without saving. They run the real save and undo it, so every check is the real one:
+`preview_create_dispatch(p_dispatch_data jsonb, p_dispatch_items jsonb[])` (staff and above; a direct dispatch or one from an order, as
+`create_dispatch_with_stock_check`; no invoice is generated), `preview_update_dispatch(p_dispatch_id uuid, p_dispatch_data jsonb,
+p_dispatch_items jsonb[])` (a `request_key` in the data is ignored), `preview_update_grn(...)` (the arguments of `update_grn`, same names
+and defaults; staff and above; the request key is ignored) and `preview_delete_grn(p_grn_id uuid)` (administrators and supervisors, like
+the delete). Each answers `{success:true, preview:true, order_effects:[...]}`. When the real save would be refused, the answer is the real
+refusal with `preview:true` added (`success:false`, `error_code`/`reason`/`error`, the same fields). The exception is
+`preview_update_dispatch`: `update_dispatch_smart` catches every error itself, so a refusal it raises (for example WH409 "A dispatch needs at
+least one line") and a fault such as a lock timeout come back as `{success:false, error, preview:true}` with no `error_code`; a privilege
+refusal (42501) is caught the same way there. The other three previews raise a save that would raise. Nothing is kept: no row, no stock movement, no revision, no saved answer, no request-key use. The call takes the row locks of the
+real save for the length of the statement, so it can wait for a save in progress.
+
+### No empty orders (migration 128)
+
+An order is made by its first line, is gone from the lists when its last line goes, and is never made by opening it. A customer keeps
+one order row for good (`one_cart_per_customer`; dispatches, the order history and the order number point at it), so the rule is about
+what the API shows and makes:
+
+- `get_orders_list` leaves out an order that has no line, whatever `p_has_items` is (so `p_has_items=false` answers nothing). The queue's
+  "Empty orders" and the empty cart of a deactivated business are gone. An order comes back, with its number and history, when a line comes
+  back: `add_item_to_order`, or the give-back of a dispatch edit or delete (`restore_to_order`, unchanged: a dispatch delete that gives
+  lines back re-creates the order in the list).
+- New `get_customer_order(p_customer_id uuid)`: the customer's own for a customer account, staff and above for any. Answers
+  `{success:true, data:{exists, order_id, order_no, status, item_count, updated_at}}`; `exists` is false (the other fields null,
+  `item_count` 0) for a customer with no order or an order with no line. It never makes an order. Use `order_id` and `updated_at` for
+  `get_order_with_items` and a dispatch from the order.
+- `add_item_to_order(p_order_id uuid DEFAULT NULL, p_grn_item_id uuid DEFAULT NULL, p_quantity integer DEFAULT NULL, p_customer_id uuid
+  DEFAULT NULL)`. With `p_order_id` it is the call of migration 121 (the order must exist and be OPEN). With only `p_customer_id` it
+  finds the customer's order or makes it; an order that has no line starts again as a new one (OPEN, note empty, priority `normal`, dates
+  from now, name and contact refreshed; the order number and history stay), and a DISPATCHED order is opened. Answers as before, with
+  `data.order_id` and `data.order_created` (true when this line made, or started again, the order). `success:false` with `message` `Order
+  not found` when neither id is sent, the customer has no live order row, or the order is soft-deleted; `Customer not found`; `Business is
+  not active` (`error.code` `BUSINESS_NOT_ACTIVE`); the rest as before (`Quantity must be greater than zero`, `GRN item not found`, `Item already
+  exists in order`, `Insufficient stock...`, `ORDER_NOT_OPEN`; `42501` for an item of another customer).
+- `get_or_create_cart` is unchanged for the released app: it still makes the customer's row, which stays out of the lists until it has a line.
+- Orders that were empty when migration 128 ran are not deleted (some carry history); they are left out of the list and come back with
+  their first line.
+
 ### Dispatch and invoice numbers (D7)
 
 Unchanged in code. The number of a dispatch or invoice that was deleted is free again and `get_next_dispatch_number` /
@@ -1226,6 +1350,22 @@ History: migrations 100, 102, 109, 120 and 121.
 `save_invoice(uuid,jsonb,jsonb[])` (through `save_invoice_internal`) and `update_invoice` (and the one-argument `save_invoice(jsonb)` until 123): before any write, any stock
 in any lot of the GRN the request names is `GRN_HAS_STOCK`. An existing invoice of a GRN that now holds stock is refused on its next edit
 too. `update_grn`: a line without `id` while the GRN is invoiced is `GRN_INVOICED`.
+
+### Invoice date, discount and looked-up rates (migration 129)
+
+`save_invoice(uuid,jsonb,jsonb[])` and `update_invoice`, checked before any write except the discount (after `recalculate_invoice_header`):
+
+- **Dates** (India days): an invoice day after today is `INVOICE_DATE_FUTURE`; an invoice day before the latest dispatch day of its lines is
+  `INVOICE_BEFORE_DISPATCH` (the same day is fine). `update_invoice` checks the future rule only when the invoice day changes, and the dispatch
+  rule when the invoice day or the set of `disp_trl_id` lines changes, so a stored invoice that breaks either rule can still be edited for
+  other reasons. Stored rows are never changed by these rules.
+- **Discount**: when the recalculated total is exactly 0 although the lines charge something (subtotal plus tax above 0) and the discount is
+  above 0, `DISCOUNT_TOTAL_ZERO`. A discount above the amount keeps its own refusal (`Discount exceeds the invoice amount`, no `reason`).
+  The way to bill nothing is a charge of 0 with its reason.
+- **Looked-up rates**: a line of `p_invoice_items` may carry `looked_up` = `{charge, labour_rate, tax}` (the figures the form looked up when
+  it opened) and `typed` = `true` (all three typed by hand) or a list of the names `charge`, `labour_rate`, `tax` typed by hand. Each
+  figure not typed is compared (two decimals) with what the invoice form looks up now (`build_invoice_form_lines`: the GRN's own rate, else the item's);
+  the lines that differ are refused together as `RATES_CHANGED`. No `looked_up` on any line (an older app): no check.
 
 ### Invoice total (D18)
 

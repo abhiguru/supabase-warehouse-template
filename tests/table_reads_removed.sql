@@ -95,6 +95,11 @@ SELECT pg_temp.tr_assert(public.save_grn(p_gr_no=>'TRA',p_date=>'2026-04-01T12:0
 SELECT public.get_or_create_cart(:'customer_id'::uuid) AS cart \gset
 RESET ROLE;
 SELECT id AS lot FROM public.goodsreceived_trl WHERE gr_id=(SELECT id FROM public.goodsreceived WHERE gr_no='TRA') \gset
+-- An order without a line is not listed (migration 128): the cart gets one, so the lists below have an order to show.
+SELECT set_config('request.jwt.claims',:'admin_claims',true);
+SET LOCAL ROLE authenticated;
+SELECT pg_temp.tr_assert(public.add_item_to_order(:'cart'::uuid,:'lot'::uuid,1)->>'success'='true','a line in the cart');
+RESET ROLE;
 SELECT pg_temp.tr_assert((SELECT count(*)>0 FROM public.orders) AND (SELECT count(*)>0 FROM public.item_storage_prices),
  'fixture: orders and item_storage_prices hold rows, so a refusal is not an empty table');
 

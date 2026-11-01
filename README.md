@@ -20,8 +20,10 @@ Prerequisites, all required:
 - The first administrator's phone number, 12 digits with the `91` prefix.
 
 ```bash
-git clone https://github.com/abhiguru/supabase-warehouse-template.git
+(umask 022; git clone https://github.com/abhiguru/supabase-warehouse-template.git)
 cd supabase-warehouse-template
+# main is development: check out the newest release tag (not a -rc tag)
+(umask 022; git checkout --detach "$(git tag --list 'v[0-9]*' --sort=-v:refname | grep -v -- '-' | head -n 1)")
 bash setup.sh --operator \
   --state-dir /srv/warehouse/acme \
   --api-url https://warehouse.example.com \
@@ -36,6 +38,7 @@ node scripts/doctor.mjs --local      # every service healthy on the loopback gat
 # set the SMS ceiling first (required for a public install): docs/OPERATOR_INSTALL.md#authentication-and-otp-limits
 # start the cloudflared connector for your hostname (deploy/cloudflared-config.example.yml)
 node scripts/doctor.mjs              # the same instance answers through the public origin
+sudo bash scripts/watch-timer.sh install --state "$WAREHOUSE_STATE_DIR"   # the monitoring checker and the daily backup (sudo drops the environment, so name the state)
 ```
 
 Then install the app, select the HTTPS origin and sign in as the administrator
@@ -70,6 +73,18 @@ Point an AI coding agent at this repository and tell it to install the backend. 
 The operator copies every secret file onto the host. Never ask for a secret value in chat, and never print one into a log or a report. Do not `cat` or `echo` a secret file to check it; setup and doctor validate them.
 
 Run on the host itself, as the non-root installation user. When a command needs `sudo` and no password-less sudo is set up, give the operator the exact command to run in their own terminal and wait; never ask for the password. After the docker group change, use a new login shell or `sg docker -c '…'`.
+
+The installation user needs `sudo` for a few commands (Docker's install, the state's parent directory, `tunnel.sh install-service`, `watch-timer.sh install`). If it has none, the operator runs those commands in their own terminal as a user that has it, as above.
+
+**Read the guide from a local clone at the release tag, never through a web fetch:** [docs/OPERATOR_INSTALL.md](docs/OPERATOR_INSTALL.md) is about 244,000 characters, which a fetch cuts or summarises, and `main` is not a release. Clone it first, with the commands of the guide's [Host prerequisites](docs/OPERATOR_INSTALL.md#host-prerequisites) (Node and Docker come first there):
+
+```bash
+(umask 022; git clone https://github.com/abhiguru/supabase-warehouse-template.git backend)
+cd backend
+(umask 022; git checkout --detach "$(git tag --list 'v[0-9]*' --sort=-v:refname | grep -v -- '-' | head -n 1)")   # the newest release tag, not an -rc
+```
+
+Then read the guide's sections in pieces with the file reader (the table of contents at its top gives the headings).
 
 **Then follow [docs/OPERATOR_INSTALL.md](docs/OPERATOR_INSTALL.md) in this order:**
 

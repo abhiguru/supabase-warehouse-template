@@ -26,3 +26,22 @@ A ^function\|warehouse_security\.authorize_rpc\(
 B ^function\|warehouse_security\.authorize_rpc\(
 A ^function\|public\.update_dispatch_smart\(
 B ^function\|public\.update_dispatch_smart\(
+#
+# Migration 128 (order effects and empty orders, 2026-10-31): create_dispatch_with_stock_check_internal, update_dispatch_smart, update_grn and
+# delete_grn_safe answer with "order_effects" (the customer's order lines the save changed; update_grn: the lines that now ask for more than
+# their lot holds), and authorize_rpc knows the four preview RPCs, get_customer_order and an add_item_to_order that names a customer. The
+# entries for create_dispatch_with_stock_check_internal, update_dispatch_smart and authorize_rpc are above; update_grn and delete_grn_safe
+# are new.
+A ^function\|public\.update_grn\(
+B ^function\|public\.update_grn\(
+A ^function\|public\.delete_grn_safe\(
+B ^function\|public\.delete_grn_safe\(
+
+# Migration 129 (2026-10-31): apply_grn_rates refuses a customer or everyone entry for an invoiced GRN (GRN_INVOICED).
+A ^function\|warehouse_security\.apply_grn_rates\(
+B ^function\|warehouse_security\.apply_grn_rates\(
+
+# Migration 132 (break-glass sign-in for staff, supervisors and administrators): operator_verify_otp redeems a code through
+# warehouse_security.redeem_break_glass and shortens the session of such a sign-in.
+A ^function\|public\.operator_verify_otp\(
+B ^function\|public\.operator_verify_otp\(

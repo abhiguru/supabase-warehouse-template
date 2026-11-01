@@ -41,15 +41,30 @@ esac
 }
 
 test('prints the code once with the warning, and asks the database for exactly that administrator', () => {
-  const result = run(['9888888911'], { answer: '482910\tBreak Glass Administrator\n' });
+  const result = run(['9888888911'], { answer: '482910\tBreak Glass Administrator\tadmin\n' });
   assert.equal(result.status, 0, result.stderr);
   assert.equal(result.stdout.split('482910').length - 1, 1, 'the code is printed once');
-  assert.match(result.stdout, /This code signs in the admin Break Glass Administrator on any phone within 10 minutes; use it only when SMS is down\./);
+  assert.match(result.stdout, /Break-glass code for Break Glass Administrator, administrator \(9888888911\):/);
+  assert.match(result.stdout, /This code signs in Break Glass Administrator on any phone within 10 minutes; use it only when the association sign-in and SMS cannot be used\./);
+  assert.match(result.stdout, /the session it opens lasts 24 hours/);
+  assert.match(result.stdout, /"Sign in with a code from your facility"/);
   assert.equal(result.stderr, '');
   assert.match(result.docker, /-v phone=9888888911/);
   assert.match(result.docker, /-U supabase_admin/);
   assert.match(result.sql, /warehouse_security\.break_glass_code\(:'phone'\)/, 'the number goes in as a psql variable, quoted by psql');
   assert.doesNotMatch(result.sql + result.docker, /482910/, 'the code is never sent to the database or put on a command line');
+});
+
+test('names the role of a supervisor and of a staff member, and copes with a name that holds the role words', () => {
+  for (const [role, said] of [['supervisor', 'supervisor'], ['staff', 'staff'], ['admin', 'administrator']]) {
+    const result = run(['9888888913'], { answer: `482910\tAsha Staff\t${role}\n` });
+    assert.equal(result.status, 0, result.stderr);
+    assert.match(result.stdout, new RegExp(`Break-glass code for Asha Staff, ${said} \\(9888888913\\):`), role);
+  }
+  // An answer without a role (a stand-in of an older database) still prints, as a facility worker.
+  const bare = run(['9888888913'], { answer: '482910\tAsha Patel\n' });
+  assert.equal(bare.status, 0, bare.stderr);
+  assert.match(bare.stdout, /Break-glass code for Asha Patel, facility worker \(9888888913\):/);
 });
 
 test('accepts the number in the forms people type, and sends the 10 digits', () => {
@@ -60,11 +75,11 @@ test('accepts the number in the forms people type, and sends the 10 digits', () 
   }
 });
 
-test('refuses a number that is not an active administrator, and prints no code', () => {
-  const result = run(['9888888914'], { fail: 'ERROR:  No active, approved administrator has this phone number\nCONTEXT:  PL/pgSQL function warehouse_security.break_glass_code(text) line 14 at RAISE' });
+test('refuses a number that is not an active worker (a customer, say), and prints no code', () => {
+  const result = run(['9888888914'], { fail: 'ERROR:  No active, approved administrator, supervisor or staff member has this phone number\nCONTEXT:  PL/pgSQL function warehouse_security.break_glass_code(text) line 14 at RAISE' });
   assert.equal(result.status, 1);
   assert.equal(result.stdout, '');
-  assert.match(result.stderr, /^Refused: No active, approved administrator has this phone number\.$/m);
+  assert.match(result.stderr, /^Refused: No active, approved administrator, supervisor or staff member has this phone number\.$/m);
 });
 
 test('says so when the database does not answer, and shows no code', () => {
@@ -112,11 +127,13 @@ test('prints the code on a terminal without any flag', { skip: !hasScript && 'sc
   });
   assert.equal(result.status, 0, result.stdout + result.stderr);
   assert.equal(result.stdout.split('482910').length - 1, 1, 'the code is printed once');
-  assert.match(result.stdout, /use it only when SMS is down\./);
+  assert.match(result.stdout, /use it only when the association sign-in and SMS cannot be used\./);
 });
 
-test('the code screen advice names mobile data for an address at its limit', () => {
-  const result = run(['9888888911'], { answer: '482910\tBreak Glass Administrator\n' });
+test('the advice names the app link, the older build, and what to do when the code is refused', () => {
+  const result = run(['9888888911'], { answer: '482910\tBreak Glass Administrator\tadmin\n' });
   assert.equal(result.status, 0, result.stderr);
-  assert.match(result.stdout, /Too many OTP requests.*switch the phone from the facility Wi-Fi to mobile data/s);
+  assert.match(result.stdout, /tap "Sign in with a code from your facility"/);
+  assert.match(result.stdout, /An older app build: enter the number, ask for the SMS code/);
+  assert.match(result.stdout, /"Invalid facility code" or "Too many wrong tries".*run this command again for a new one/s);
 });

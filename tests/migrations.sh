@@ -543,8 +543,14 @@ test_files=(
   "$ROOT/tests/duplicate_warning_124.sql" "$ROOT/tests/dispatch_sort_key_grant_125.sql"
   "$ROOT/tests/report_stock_ist_day.sql" "$ROOT/tests/report_dispatch_weight.sql" "$ROOT/tests/report_grn_weight.sql"
   "$ROOT/tests/report_grn_invoices.sql"
-  "$ROOT/tests/sessions_sliding.sql" "$ROOT/tests/break_glass.sql" "$ROOT/tests/otp_source_limits.sql"
-  "$ROOT/tests/document_numbering.sql"
+  "$ROOT/tests/sessions_sliding.sql" "$ROOT/tests/break_glass.sql" "$ROOT/tests/break_glass_workers.sql" "$ROOT/tests/otp_source_limits.sql"
+  "$ROOT/tests/document_numbering.sql" "$ROOT/tests/order_change_log_128.sql"
+  "$ROOT/tests/order_effects_128.sql" "$ROOT/tests/empty_orders_128.sql"
+  "$ROOT/tests/rate_changes_129.sql"
+  "$ROOT/tests/invoice_checks_129.sql"
+  "$ROOT/tests/rules_130.sql"
+  "$ROOT/tests/dispatch_list_grn_id_131.sql"
+  "$ROOT/tests/rack_presets_131.sql"
 )
 for test_sql in "${test_files[@]}"; do
   docker exec -i -e PGPASSWORD=disposable-test-database-only "$container" psql -X -q -U supabase_admin -d postgres -v ON_ERROR_STOP=1 < "$test_sql"

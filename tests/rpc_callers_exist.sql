@@ -7,7 +7,7 @@
 BEGIN;
 CREATE FUNCTION pg_temp.rc_assert(ok boolean, label text) RETURNS void LANGUAGE plpgsql AS $$
 BEGIN IF NOT COALESCE(ok, false) THEN RAISE EXCEPTION 'rpc callers: %', label; END IF; END $$;
--- The app (src/ and app/): 109 names, 5 of them reached through a variable (save_invoice, update_invoice, the three sensor calls).
+-- The app (src/ and app/): 112 names, 5 of them reached through a variable (save_invoice, update_invoice, the three sensor calls).
 SELECT pg_temp.rc_assert(count(*) = 0, 'the app calls a function that is gone: ' || string_agg(n, ', ' ORDER BY n))
 FROM unnest(ARRAY[
   'add_item_to_order','assign_customer_to_user','cancel_dispatch_image_upload','cancel_grn_image_upload','check_dispatch_exists',
@@ -22,7 +22,7 @@ FROM unnest(ARRAY[
   'get_grn_prefixes_with_stock','get_invoice_data','get_invoice_detail','get_invoice_items_detailed','get_invoiceable_grns',
   'get_invoices_list','get_item','get_item_price_history','get_item_storage_prices','get_item_usage',
   'get_item_wise_stock_list','get_items','get_my_access_status','get_my_language','get_next_dispatch_number',
-  'get_next_grn_number','get_next_invoice_number','get_operations_dashboard','get_or_create_cart','get_order_change_log',
+  'get_next_grn_number','get_next_invoice_number','get_operations_dashboard','get_or_create_cart','get_order_change_log','get_customer_order','get_rack_presets','set_rack_presets',
   'get_order_with_items','get_orders_list','get_recent_dispatched_orders','get_sensor_history','get_standard_rate',
   'get_stock_aging_report','get_submission_result','get_supervisors','get_user_details','get_users_list',
   'get_vehicle_suggestions','logout_session','operator_review_enrollment','refresh_jwt_token','register_dispatch_image_upload',
@@ -41,17 +41,37 @@ WHERE NOT EXISTS (SELECT 1 FROM pg_proc p WHERE p.pronamespace = 'public'::regna
 -- The edge functions: called with the service key (or, for get_public_config, the anon key).
 SELECT pg_temp.rc_assert(count(*) = 0, 'an edge function calls a function that is gone: ' || string_agg(n, ', ' ORDER BY n))
 FROM unnest(ARRAY[
-  'operator_break_glass_open','operator_central_exchange','operator_enrollment_signout','operator_enrollment_status','operator_finish_otp','operator_prepare_otp',
+  'operator_break_glass_open','operator_break_glass_sign_in','operator_central_exchange','operator_enrollment_signout','operator_enrollment_status','operator_finish_otp','operator_prepare_otp',
   'operator_sms_config','operator_verify_otp','get_dispatch_range_for_print','get_grn_range_for_print','get_invoice_range_for_print',
   'get_public_config','record_sensor_batch']) AS n
 WHERE NOT EXISTS (SELECT 1 FROM pg_proc p WHERE p.pronamespace = 'public'::regnamespace AND p.proname = n
   AND has_function_privilege('service_role', p.oid, 'EXECUTE'));
 -- The numbering RPCs (migration 127): the app calls them from the build that has the Document numbers screen, with these parameter names, and
 -- a signed-in session may run them (the guard decides who). Not in the app list above, which is what the app calls today.
+-- The rack presets RPCs (migration 131): the app calls them from the build that has the Rack presets screen, with these parameter names.
+SELECT pg_temp.rc_assert(count(*) = 0, 'a rack presets RPC is gone, has lost a parameter or is not callable by a session: ' || string_agg(f.name, ', ' ORDER BY f.name))
+FROM (VALUES ('get_rack_presets', '{}'), ('set_rack_presets', '{p_floor,p_chamber,p_version}')) AS f(name, arguments)
+WHERE NOT EXISTS (SELECT 1 FROM pg_proc p WHERE p.pronamespace = 'public'::regnamespace AND p.proname = f.name
+  AND p.proargnames IS NOT DISTINCT FROM CASE WHEN f.arguments = '{}' THEN NULL ELSE f.arguments::text[] END
+  AND has_function_privilege('authenticated', p.oid, 'EXECUTE'));
 SELECT pg_temp.rc_assert(count(*) = 0, 'a numbering RPC is gone, has lost a parameter or is not callable by a session: ' || string_agg(f.name, ', ' ORDER BY f.name))
 FROM (VALUES ('suggest_document_number', '{p_document_type,p_date}'), ('get_document_numbering', '{}'), ('set_document_numbering', '{p_document_type,p_rule}')) AS f(name, arguments)
 WHERE NOT EXISTS (SELECT 1 FROM pg_proc p WHERE p.pronamespace = 'public'::regnamespace AND p.proname = f.name
   AND p.proargnames IS NOT DISTINCT FROM CASE WHEN f.arguments = '{}' THEN NULL ELSE f.arguments::text[] END
+  AND has_function_privilege('authenticated', p.oid, 'EXECUTE'));
+-- The order-effect previews and the order read (migration 128): the app calls them from the build that tells the person which order lines a save
+-- changes and that never makes an empty order, with the argument names of the real save. Not in the app list above, which is what the app calls today.
+SELECT pg_temp.rc_assert(count(*) = 0, 'an order-effect preview is gone, has lost a parameter or is not callable by a session: ' || string_agg(f.name, ', ' ORDER BY f.name))
+FROM (VALUES
+  ('preview_create_dispatch', '{p_dispatch_data,p_dispatch_items}'),
+  ('preview_update_dispatch', '{p_dispatch_id,p_dispatch_data,p_dispatch_items}'),
+  ('preview_update_grn', '{p_grn_id,p_gr_no,p_date,p_customer_id,p_customer_name,p_sender_id,p_sender_name,p_supervisor_id,p_supervisor_name,p_registration,p_note,p_leon,p_pricing_mode,p_items,p_images,p_duration_mode,p_idempotency_key,p_rates,p_expected_updated_at}'),
+  ('preview_delete_grn', '{p_grn_id}'),
+  -- migration 128: the order read that never makes an order, and the add that makes it
+  ('get_customer_order', '{p_customer_id}'),
+  ('add_item_to_order', '{p_order_id,p_grn_item_id,p_quantity,p_customer_id}')) AS f(name, arguments)
+WHERE NOT EXISTS (SELECT 1 FROM pg_proc p WHERE p.pronamespace = 'public'::regnamespace AND p.proname = f.name
+  AND p.proargnames IS NOT DISTINCT FROM f.arguments::text[]
   AND has_function_privilege('authenticated', p.oid, 'EXECUTE'));
 -- fas-sync: a function of that name takes every argument name the sync passes (fassync/push.py), and needs no more than those: a new
 -- parameter without a default would make every call fail with "function does not exist", so the names of the required parameters (the

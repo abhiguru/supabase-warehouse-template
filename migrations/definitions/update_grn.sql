@@ -1,6 +1,7 @@
 -- public.update_grn: the definition setup applies after the numbered migrations whenever this file's checksum changes
 -- (scripts/migration-plan.mjs, table warehouse_migrations.definitions). Edit the function here, never in a new migration.
 -- Starts as the function migrations 000 to 126 leave (the numbered files that patched it stay as they are, never edited).
+-- Migration 128 adds the order effect of the save (order_effects in the answer) to this file; see the section 3 note of migration 128.
 CREATE OR REPLACE FUNCTION public.update_grn(p_grn_id uuid, p_gr_no character varying DEFAULT NULL::character varying, p_date timestamp with time zone DEFAULT NULL::timestamp with time zone, p_customer_id uuid DEFAULT NULL::uuid, p_customer_name character varying DEFAULT NULL::character varying, p_sender_id uuid DEFAULT NULL::uuid, p_sender_name character varying DEFAULT NULL::character varying, p_supervisor_id uuid DEFAULT NULL::uuid, p_supervisor_name character varying DEFAULT NULL::character varying, p_registration character varying DEFAULT NULL::character varying, p_note character varying DEFAULT NULL::character varying, p_leon boolean DEFAULT NULL::boolean, p_pricing_mode character varying DEFAULT NULL::character varying, p_items jsonb DEFAULT '[]'::jsonb, p_images jsonb DEFAULT '[]'::jsonb, p_duration_mode character varying DEFAULT NULL::character varying, p_idempotency_key text DEFAULT NULL::text, p_rates jsonb DEFAULT NULL::jsonb, p_expected_updated_at timestamp with time zone DEFAULT NULL::timestamp with time zone)
  RETURNS jsonb
  LANGUAGE plpgsql
@@ -26,6 +27,8 @@ DECLARE
     v_images_updated int := 0;
     v_images_added int := 0;
     v_images_deleted int := 0;
+    v_photos_before int := 0;
+    v_photos_after int := 0;
     v_items_skipped_stock jsonb := '[]'::jsonb;
     v_existing_grn_item_ids uuid[];
     v_provided_grn_item_ids uuid[];
@@ -70,6 +73,9 @@ DECLARE
     v_dropped_rows jsonb := '[]'::jsonb;
     v_would_drop_count integer := 0;
     v_would_drop_items text[] := ARRAY[]::text[];
+    v_order_before jsonb;
+    v_order_lots uuid[];
+    v_order_effects jsonb;
 BEGIN
   PERFORM warehouse_security.authorize_rpc('update_grn',jsonb_build_object('p_grn_id',p_grn_id,'p_customer_id',p_customer_id));
   -- Migration 90: rates typed on the GRN sheet are an administrator's or a supervisor's.
@@ -92,6 +98,8 @@ BEGIN
     END LOOP;
   END IF;
     -- Migration 121 (D13): the registration fits the column (20 characters), as the item name and packaging fit theirs.
+    -- Migration 130: surrounding white space (spaces, tabs, line breaks, non-breaking spaces) is not stored, a blank one is NULL; the length is checked on the trimmed value.
+    p_registration := NULLIF(regexp_replace(p_registration, '^[\s ]+|[\s ]+$', '', 'g'), '');
     IF p_registration IS NOT NULL AND char_length(p_registration) > 20 THEN
         RETURN warehouse_security.grn_rate_failure('registration_too_long',
           'Registration can have at most 20 characters', jsonb_build_object('limit', 20));
@@ -275,6 +283,17 @@ BEGIN
         LIMIT 1;
         v_is_invoiced := v_inv_no IS NOT NULL OR v_stored_invoiced;
 
+        -- Migration 130 (D10): a GRN date that changes is not a future day (today in India). A stored future date that is sent
+        -- back as it is stays editable.
+        IF p_date IS NOT NULL
+           AND warehouse_security.business_date(p_date) IS DISTINCT FROM warehouse_security.business_date(v_stored_date)
+           AND warehouse_security.business_date(p_date) > warehouse_security.business_date(now()) THEN
+            RETURN warehouse_security.refuse('GRN_DATE_FUTURE',
+                format('A GRN can''t be dated in the future. Today is %s.', to_char(warehouse_security.business_date(now()), 'YYYY-MM-DD')),
+                jsonb_build_object('date', to_char(warehouse_security.business_date(p_date), 'YYYY-MM-DD'),
+                                   'today', to_char(warehouse_security.business_date(now()), 'YYYY-MM-DD')));
+        END IF;
+
         -- D23: the date of an invoiced GRN is locked (the invoice's days are counted from it). The same day sent back, at any
         -- time of day, is not a change.
         IF p_date IS NOT NULL AND v_is_invoiced
@@ -389,6 +408,11 @@ BEGIN
                     jsonb_build_object('line_id', v_chk.line_id, 'item_name', v_chk.stored_name, 'customer_name', v_stored_customer_name));
             END IF;
         END LOOP;
+
+        -- Migration 128: the order lines and the stock of this GRN's lots before the edit writes anything, to tell afterwards which
+        -- order line now asks for more than its lot holds.
+        v_order_lots := ARRAY(SELECT t.id FROM goodsreceived_trl t WHERE t.gr_id = p_grn_id);
+        v_order_before := warehouse_security.order_lines_snapshot(v_order_lots);
 
         -- D10, D24: the lines and the pricing kind as they are before this edit, to tell afterwards which line lost its own
         -- rate because its weight or the pricing mode changed.
@@ -563,6 +587,8 @@ BEGIN
 
         IF jsonb_array_length(p_images) > 0 THEN
             v_kept_image_ids := ARRAY[]::uuid[];
+            -- Migration 130 (D15): the confirmed photos of the GRN book (image_type 'header'; item photos do not count) before the list is applied (the GRN row is locked above).
+            SELECT count(*)::int INTO v_photos_before FROM grn_images WHERE grn_id = p_grn_id AND status = 'confirmed' AND image_type = 'header';
 
             FOR v_image IN SELECT * FROM jsonb_array_elements(p_images)
             LOOP
@@ -643,6 +669,14 @@ BEGIN
             AND warehouse_security.grn_image_visible(grn_images.status, grn_images.uploaded_by);
 
             GET DIAGNOSTICS v_images_deleted = ROW_COUNT;
+
+            -- Migration 130 (D15): a GRN that had a photo keeps one. The list that was sent leaves none, so nothing is saved.
+            SELECT count(*)::int INTO v_photos_after FROM grn_images WHERE grn_id = p_grn_id AND status = 'confirmed' AND image_type = 'header';
+            IF v_photos_before > 0 AND v_photos_after = 0 THEN
+                RAISE EXCEPTION 'rate_fail' USING ERRCODE = 'P0001', DETAIL = warehouse_security.refuse('GRN_PHOTO_REQUIRED',
+                    'A GRN needs at least one photo. Add another before deleting this one.',
+                    jsonb_build_object('gr_no', v_stored_gr_no))::text;
+            END IF;
         ELSE
             v_images_deleted := 0;
         END IF;
@@ -788,6 +822,9 @@ BEGIN
             'images', COALESCE(v_grn_images, '[]'::jsonb)
         );
 
+        -- Migration 128: the order lines the new stock leaves asking for more than the lot holds ([] when none).
+        v_order_effects := warehouse_security.order_effects(v_order_lots, v_order_before, true);
+
         v_result := jsonb_build_object(
             'success', true,
             'message', 'GRN updated successfully',
@@ -801,7 +838,8 @@ BEGIN
                 'images_deleted', v_images_deleted,
                 'items_skipped_stock', v_items_skipped_stock
             ),
-            'item_mapping', v_item_mapping
+            'item_mapping', v_item_mapping,
+            'order_effects', v_order_effects
         );
 
         -- Kept for the 7 days a retry is answered from it (migration 120). A key another

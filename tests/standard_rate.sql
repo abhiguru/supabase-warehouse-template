@@ -77,7 +77,7 @@ SELECT pg_temp.sr_assert(bool_and(has_function_privilege('authenticated',f,'EXEC
    AND NOT has_function_privilege('anon',f,'EXECUTE'))
  AND bool_and(pg_get_functiondef(f::regprocedure) ~ 'BEGIN\s+PERFORM warehouse_security\.authorize_rpc\(''(get|set)_standard_rate''')
  AND bool_and(prosecdef), 'the new functions are granted and guarded')
- FROM (SELECT 'public.get_standard_rate()'::regprocedure AS f UNION ALL SELECT 'public.set_standard_rate(jsonb,timestamptz,boolean)'::regprocedure) q
+ FROM (SELECT 'public.get_standard_rate()'::regprocedure AS f UNION ALL SELECT 'public.set_standard_rate(jsonb,timestamptz,boolean,text)'::regprocedure) q
  JOIN pg_proc p ON p.oid=q.f;
 SELECT pg_temp.sr_assert((SELECT relrowsecurity FROM pg_class WHERE oid='public.standard_rate_tiers'::regclass)
  AND NOT has_table_privilege('authenticated','public.standard_rate_tiers','INSERT')
@@ -391,9 +391,9 @@ SELECT pg_temp.sr_assert(:'save5'::jsonb->>'success'='true' AND (SELECT string_a
 -- One transaction means now() never changes, so the saved rate is first aged by an hour: a save then
 -- visibly moves the version.
 SELECT pg_temp.sr_assert((SELECT count(*)=1 FROM pg_proc WHERE pronamespace='public'::regnamespace AND proname='set_standard_rate')
- AND has_function_privilege('authenticated','public.set_standard_rate(jsonb,timestamptz,boolean)','EXECUTE')
- AND has_function_privilege('service_role','public.set_standard_rate(jsonb,timestamptz,boolean)','EXECUTE')
- AND NOT has_function_privilege('anon','public.set_standard_rate(jsonb,timestamptz,boolean)','EXECUTE'),
+ AND has_function_privilege('authenticated','public.set_standard_rate(jsonb,timestamptz,boolean,text)','EXECUTE')
+ AND has_function_privilege('service_role','public.set_standard_rate(jsonb,timestamptz,boolean,text)','EXECUTE')
+ AND NOT has_function_privilege('anon','public.set_standard_rate(jsonb,timestamptz,boolean,text)','EXECUTE'),
  'set_standard_rate has one overload (three arguments) with the baseline grants');
 UPDATE public.standard_rate_tiers SET updated_at = now() - interval '1 hour';
 SELECT pg_temp.sr_as(:'admin_claims'::jsonb,$q$SELECT public.create_item('SR Dry A','Bag')$q$) AS dry_a \gset

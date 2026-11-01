@@ -109,9 +109,8 @@ SELECT pg_temp.bg_assert(has_function_privilege('service_role','public.operator_
   'only the service role may ask whether a code is open');
 
 -- 2. Whom it is for: an existing active, approved administrator. Everyone else is refused and nothing is written.
-SELECT pg_temp.bg_assert(pg_temp.bg_issue('9888888999') = 'raised: No active, approved administrator has this phone number (P0001)','an unknown number is refused');
-SELECT pg_temp.bg_assert(pg_temp.bg_issue('9888888913') LIKE 'raised: No active, approved administrator%','a supervisor is refused');
-SELECT pg_temp.bg_assert(pg_temp.bg_issue('9888888914') LIKE 'raised: No active, approved administrator%','staff is refused');
+SELECT pg_temp.bg_assert(pg_temp.bg_issue('9888888999') = 'raised: No active, approved administrator, supervisor or staff member has this phone number (P0001)','an unknown number is refused');
+-- (Migration 132: a supervisor and a staff member are workers and get a code; that is proved in tests/break_glass_workers.sql.)
 SELECT pg_temp.bg_assert(pg_temp.bg_issue('9888888915') LIKE 'raised: No active, approved administrator%','a customer is refused');
 SELECT pg_temp.bg_assert(pg_temp.bg_issue('9888888916') LIKE 'raised: No active, approved administrator%','a switched-off administrator is refused');
 SELECT pg_temp.bg_assert(pg_temp.bg_issue('9888888917') LIKE 'raised: No active, approved administrator%','a pending administrator is refused');
@@ -148,8 +147,8 @@ SELECT pg_temp.bg_assert(:'signed_in'::jsonb->>'success'='true' AND :'signed_in'
   'the break-glass code opens a normal session for the administrator: '||:'signed_in');
 SELECT pg_temp.bg_assert((SELECT count(*)=:sessions_before+1 FROM warehouse_security.refresh_sessions WHERE user_id=:'admin_user'::uuid),
   'the sign-in made one session');
-SELECT pg_temp.bg_assert((SELECT used_at IS NOT NULL AND code_hash IS NULL AND used_from='203.0.113.11'::inet FROM warehouse_security.break_glass_codes),
-  'the code is marked used, from that address, and its hash is cleared');
+SELECT pg_temp.bg_assert((SELECT used_at IS NOT NULL AND code_hash IS NOT NULL AND used_from='203.0.113.11'::inet FROM warehouse_security.break_glass_codes),
+  'the code is marked used, from that address, and its hash is kept, so a repeat is answered "used"');
 SELECT pg_temp.bg_assert((SELECT count(*)=1 AND bool_and(user_id=:'admin_user'::uuid AND ip_address='203.0.113.11'::inet
     AND new_data->>'mobile'='919888888911' AND NOT (new_data ? 'code'))
   FROM public.audit_log WHERE table_name='break_glass' AND action='SIGN_IN'),'the sign-in is audited with the address it came from');
@@ -202,10 +201,10 @@ SELECT pg_temp.bg_assert(pg_temp.bg_try('9888888912',:'bg6','203.0.113.31')='inv
 SELECT pg_temp.bg_assert((SELECT attempts=0 FROM warehouse_security.break_glass_codes WHERE phone_number='919888888911' AND used_at IS NULL AND expires_at>now()),
   'a try on another number is not counted against the code');
 SELECT pg_temp.bg_assert(pg_temp.bg_try('9888888914',:'bg6','203.0.113.31')='invalid_otp','nor does it open a staff number');
--- The administrator is demoted, or switched off, after the code was made: the code stops working.
-UPDATE public.user_profiles SET role='supervisor' WHERE id=:'admin_profile'::uuid;
+-- The administrator becomes a customer (migration 132: a supervisor or staff member would still be a worker), or is switched off, after the code was made: the code stops working.
+UPDATE public.user_profiles SET role='customer' WHERE id=:'admin_profile'::uuid;
 SELECT pg_temp.bg_assert(NOT public.operator_break_glass_open('9888888911') AND pg_temp.bg_try('9888888911',:'bg6','203.0.113.32')='invalid_otp',
-  'a code of a demoted administrator is refused');
+  'a code of a person who is no longer a worker is refused');
 UPDATE public.user_profiles SET role='admin', active=false WHERE id=:'admin_profile'::uuid;
 SELECT pg_temp.bg_assert(NOT public.operator_break_glass_open('9888888911') AND pg_temp.bg_try('9888888911',:'bg6','203.0.113.32')='invalid_otp',
   'a code of a switched-off administrator is refused');
@@ -288,7 +287,7 @@ SELECT pg_temp.bg_assert(pg_temp.bg_try('9888888912',:'bg14','203.0.113.71')='lo
 SELECT pg_temp.bg_assert((SELECT source_attempts=1 AND attempts=0 FROM public.otp_verifications WHERE id=:'sms14_id'::uuid),
   'the SMS code saw the break-glass code as one wrong try from its own source');
 SELECT pg_temp.bg_assert((SELECT count(*)=1 FROM warehouse_security.break_glass_codes
-    WHERE phone_number='919888888912' AND used_at IS NOT NULL AND code_hash IS NULL AND used_from='203.0.113.71'::inet),
+    WHERE phone_number='919888888912' AND used_at IS NOT NULL AND code_hash IS NOT NULL AND used_from='203.0.113.71'::inet),
   'the break-glass code is used, from that address');
 SELECT pg_temp.bg_assert((SELECT verified AND otp_code_hash IS NULL FROM public.otp_verifications WHERE id=:'sms14_id'::uuid)
   AND pg_temp.bg_try('9888888912',:'sms14','203.0.113.71')='invalid_otp','the SMS code is burnt by the sign-in and no longer works');

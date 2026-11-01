@@ -5,8 +5,11 @@
 # that backup's files (rsync --link-dest), so a night costs the database dump plus the new photos, not a second copy of every
 # photo; extended attributes (the Storage service keeps content type and cache control in user.supabase.*) and modification
 # times are kept. Integrity: SHA256SUMS lists storage.manifest, the sorted sha256 of every file in storage/, and the backup key
-# signs SHA256SUMS. The API is stopped only for the database dump, the catalog queries, the last pass of the file copy and the
-# restart; everything else (the first pass of the copy, the manifest, signing) happens with the API up.
+# signs SHA256SUMS. The services are stopped only for the database dump, the catalog queries, the last pass of the file copy and the
+# restart; everything else (the first pass of the copy, the manifest, signing) happens with the API up. While they are stopped the gateways
+# stay up in maintenance mode (scripts/maintenance.sh): the API answers 503 "upgrading" with Retry-After, which the app shows as "being
+# updated" and waits out, instead of a refused connection (a 502 from the tunnel, which the app reads as a fault). A backup that finds
+# maintenance mode on already (an upgrade, or the operator) leaves it as it is; one that turns it on turns it off again.
 # Invariant: nothing writes into the storage/ of an existing backup, and the live data/storage is never hard-linked to a backup.
 # That is why the last pass of the copy goes into a new directory (linking what the first pass already copied) and never
 # into the first pass's own: rsync would otherwise change the attributes of a file that earlier backups share in place.
@@ -68,6 +71,33 @@ lan_back() {
   lan_stopped=no
   bash "$ROOT/scripts/lan.sh" start || echo 'Warning: the LAN fallback was not started again (message above). Run: bash scripts/lan.sh start' >&2
 }
+# Maintenance mode for the time the services are stopped. api_closed: this run turned it on and has not turned it off yet (the cleanup
+# does, also after a failure half way); api_open_failed: turning it off failed, which fails the backup after it is complete.
+maintenance_marker="$state/config/maintenance"
+# Written next to the marker while this run owns maintenance mode: "backup <pid> <start time>". If the run is killed (SIGKILL, OOM, power loss)
+# the marker stays closed with this file beside it, and scripts/watch.mjs raises an alert because no upgrade is recorded and nobody holds the lock.
+maintenance_owner="$state/config/maintenance-owner"
+api_closed=no
+api_open_failed=no
+open_api() {
+  [[ "$api_closed" == yes ]] || return 0
+  api_closed=no
+  local rc=0
+  bash "$ROOT/scripts/maintenance.sh" off || rc=$?
+  if ((rc == 0)); then
+    rm -f -- "$maintenance_owner"
+  elif ((rc == 2)); then
+    # maintenance.sh exits 2 when it opened the API and the health check after that failed: the API is open.
+    rm -f -- "$maintenance_owner"
+    api_open_failed=yes
+    echo 'The API is open again, but the health check after opening it failed (message above). Find out why: node scripts/watch.mjs health' >&2
+    return 1
+  else
+    api_open_failed=yes
+    echo 'The API is not open again (message above). Open it: bash scripts/maintenance.sh off' >&2
+    return 1
+  fi
+}
 # Only the services this script stopped come back: --no-deps keeps compose from also starting what they depend
 # on (restarting storage would start rest, which the operator may have stopped on purpose). They come back as they were: --no-recreate
 # keeps the container, and with it a gateway in maintenance mode (scripts/maintenance.sh), which a backup never lifts.
@@ -81,7 +111,9 @@ cleanup() {
       status=1
     fi
   fi
+  open_api || true
   lan_back
+  [[ "$api_open_failed" == no ]] || status=1
   if [[ -d "$stage" ]]; then find "$stage" -type d -exec chmod u+rwx {} + 2>/dev/null || true; rm -rf "$stage"; fi
   [[ -z "${scratch:-}" ]] || rm -rf -- "$scratch"
   exit "$status"
@@ -272,15 +304,29 @@ if ((rc != 0 && rc != 24)); then
   exit 1
 fi
 
-# Stop ingress first, then all services that can write the database or object
-# storage. Capture only running services so the cleanup never starts an optional
-# service the operator had intentionally stopped. Ingress is both gateways: the LAN one only if it runs.
-for service in gateway functions rest storage supavisor; do
+# Close the API with the gateways up (maintenance mode: both gateways answer 503 "upgrading"), then stop all services that can write the
+# database or object storage. Capture only running services so the cleanup never starts an optional service the operator had
+# intentionally stopped. A gateway that is not running is not started; the LAN fallback, when it runs without the gateway, is stopped.
+for service in functions rest storage supavisor; do
   id=$(compose ps -q "$service")
   if [[ -n "$id" && "$(docker inspect --format '{{.State.Running}}' "$id")" == true ]]; then restart+=("$service"); fi
 done
-lan_id=$(compose --profile lan ps -q gateway-lan)
-if [[ -n "$lan_id" && "$(docker inspect --format '{{.State.Running}}' "$lan_id")" == true ]]; then lan_stopped=yes; fi
+gateway_id=$(compose ps -q gateway)
+gateway_running=no
+if [[ -n "$gateway_id" && "$(docker inspect --format '{{.State.Running}}' "$gateway_id")" == true ]]; then gateway_running=yes; fi
+if [[ "$gateway_running" == yes ]]; then
+  if [[ ! -e "$maintenance_marker" && ! -L "$maintenance_marker" ]]; then
+    api_closed=yes
+    if ! bash "$ROOT/scripts/maintenance.sh" on; then
+      echo 'Refusing: the API could not be put in maintenance mode (message above). Nothing was stopped.' >&2
+      exit 1
+    fi
+    printf 'backup %s %s\n' "$$" "$(date -u +%Y-%m-%dT%H:%M:%SZ)" > "$maintenance_owner" || true
+  fi
+else
+  lan_id=$(compose --profile lan ps -q gateway-lan)
+  if [[ -n "$lan_id" && "$(docker inspect --format '{{.State.Running}}' "$lan_id")" == true ]]; then lan_stopped=yes; fi
+fi
 stopped=$SECONDS
 if [[ "$lan_stopped" == yes ]]; then compose --profile lan stop gateway-lan; fi
 for service in "${restart[@]}"; do compose stop "$service"; done
@@ -323,6 +369,7 @@ bad="$(unsafe_entry)"
 
 # The services are only needed stopped for the dump and the final pass; everything below reads the finished stage.
 if ((${#restart[@]})); then compose up -d --no-recreate --no-deps --wait --wait-timeout 180 "${restart[@]}"; restart=(); fi
+open_api || true
 lan_back
 stop_seconds=$((SECONDS - stopped))
 

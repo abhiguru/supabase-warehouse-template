@@ -99,10 +99,10 @@ SELECT pg_temp.rc_assert(public.assign_customer_to_user('919777777704',:'north':
 -- ---------------------------------------------------------------------------
 -- 1. Roles
 -- ---------------------------------------------------------------------------
-SELECT pg_temp.rc_assert(has_function_privilege('authenticated','public.replace_item_rates(uuid,uuid,text,date,jsonb,boolean,text,date,uuid[])','EXECUTE')
- AND has_function_privilege('service_role','public.replace_item_rates(uuid,uuid,text,date,jsonb,boolean,text,date,uuid[])','EXECUTE')
- AND NOT has_function_privilege('anon','public.replace_item_rates(uuid,uuid,text,date,jsonb,boolean,text,date,uuid[])','EXECUTE')
- AND pg_get_functiondef('public.replace_item_rates(uuid,uuid,text,date,jsonb,boolean,text,date,uuid[])'::regprocedure)
+SELECT pg_temp.rc_assert(has_function_privilege('authenticated','public.replace_item_rates(uuid,uuid,text,date,jsonb,boolean,text,date,uuid[],text)','EXECUTE')
+ AND has_function_privilege('service_role','public.replace_item_rates(uuid,uuid,text,date,jsonb,boolean,text,date,uuid[],text)','EXECUTE')
+ AND NOT has_function_privilege('anon','public.replace_item_rates(uuid,uuid,text,date,jsonb,boolean,text,date,uuid[],text)','EXECUTE')
+ AND pg_get_functiondef('public.replace_item_rates(uuid,uuid,text,date,jsonb,boolean,text,date,uuid[],text)'::regprocedure)
    ~ 'BEGIN\s+PERFORM warehouse_security\.authorize_rpc\(''replace_item_rates''','grants and the guard call');
 -- Onion starts with a default 0-100 kg rate, 6.00, since 200 days ago (by the administrator).
 SELECT set_config('request.jwt.claims',:'admin_claims',true);

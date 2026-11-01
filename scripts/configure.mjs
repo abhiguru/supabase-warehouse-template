@@ -85,12 +85,21 @@ export async function centralKeysWarning(url, fetchImpl = fetch) {
 // is meaningless without central sign-in). `on` is refused unless central
 // sign-in is configured, in this call or already in the state (`current` is
 // the text of an existing compose.env, null on a fresh setup).
-export function centralLocalCodeValues(flag, central, current) {
+// True when the compose.env text holds an SMS provider (a central-only installation stores none: the lines are empty).
+export function hasStoredProvider(current) {
+  return Boolean(current && /^SMS_PROVIDER=msg91$/m.test(current) && /^MSG91_AUTH_KEY=\S/m.test(current));
+}
+
+// `on` is also refused when the installation has no SMS provider (central sign-in alone, setup without --provider-env): the facility
+// code is an SMS, and nothing could send it. `provider` is true when this call gives a provider file; otherwise the stored
+// compose.env decides.
+export function centralLocalCodeValues(flag, central, current, provider = false) {
   if (flag !== undefined && flag !== 'on' && flag !== 'off') throw new Error('--central-local-code must be on or off.');
   const stored = current ? current.match(/^CENTRAL_LOCAL_CODE=(.*)$/m)?.[1] ?? '' : '';
   const issuer = central ? central.values.CENTRAL_ISSUER : (current?.match(/^CENTRAL_ISSUER=(.*)$/m)?.[1] ?? '');
   if (flag === 'on') {
     if (!issuer) throw new Error('--central-local-code on needs central sign-in: also give --central-issuer with --central-jwks-url or --central-jwks-file, or set it up first.');
+    if (!provider && !hasStoredProvider(current)) throw new Error('--central-local-code on needs an SMS provider: the facility code is an SMS, and this installation has none. Also give --provider-env (docs/OPERATOR_INSTALL.md, "MSG91 provider file"), or leave the extra code off.');
     return { CENTRAL_LOCAL_CODE: 'on' };
   }
   if ((flag === 'off' || (central && !issuer)) && stored) return { CENTRAL_LOCAL_CODE: '' };
@@ -175,6 +184,9 @@ function removeOtherLetterheads(publicDir, keep) {
   }
   return removed;
 }
+
+// What a central-only installation stores: empty lines (docker-compose.yml, doctor.mjs and configure-sms.sql read them as "no provider").
+const NO_PROVIDER = { SMS_PROVIDER: '', MSG91_AUTH_KEY: '', MSG91_TEMPLATE_ID: '', MSG91_PE_ID: '', MSG91_SENDER_ID: '' };
 
 function providerValues(path, checkout, apiUrl) {
   if (!isAbsolute(path) || resolve(path).startsWith(checkout + sep) || realpathSync(path).startsWith(checkout + sep)) throw new Error('--provider-env must be an absolute file outside the checkout.');
@@ -330,7 +342,11 @@ export function configure(root, { stateDir, apiUrl, appUrl, company, providerEnv
       let newPortText = null;
       {
         const text = readFileSync(envPath, 'utf8');
-        if (centralLocalCode !== undefined || central) centralLocalCodeValues(centralLocalCode, central, text);
+        if (centralLocalCode !== undefined || central) centralLocalCodeValues(centralLocalCode, central, text, Boolean(providerEnv));
+        // An installation with no SMS provider signs in through the association alone: turning that off would leave no sign-in.
+        if (central && !central.values.CENTRAL_ISSUER && !providerEnv && !hasStoredProvider(text) && /^CENTRAL_ISSUER=\S/m.test(text)) {
+          throw new Error('--central-issuer off would leave this installation with no way to sign in: it has no SMS provider. Also give --provider-env, or keep central sign-in.');
+        }
         // Compatibility shim (a compose.env from the Kong gateway): the KONG_HTTP_PORT fallback may be dropped once from_floor (scripts/upgrade-floor.txt) is at or after the release that renames the line on every setup (renameKongPort), because an installation that has passed through it has no such line.
         if (port !== null && (text.match(/^GATEWAY_HTTP_PORT=(.*)$/m)?.[1] || text.match(/^KONG_HTTP_PORT=(.*)$/m)?.[1]) !== port) {
           // Containers keep the published port they were created with, so the change waits for a stopped installation.
@@ -349,7 +365,7 @@ export function configure(root, { stateDir, apiUrl, appUrl, company, providerEnv
       if (central || centralLocalCode !== undefined) {
         const current = readFileSync(envPath, 'utf8');
         // The extra code is decided before anything is written, so a refused flag changes nothing.
-        const localCode = centralLocalCodeValues(centralLocalCode, central, current);
+        const localCode = centralLocalCodeValues(centralLocalCode, central, current, Boolean(providerEnv));
         // "Off" on a state that never had the lines changes nothing.
         const absent = !/^CENTRAL_(?:ISSUER|JWKS_URL|JWKS_FILE)=/m.test(current);
         const updated = !central ? setEnvLines(current, localCode)
@@ -416,11 +432,14 @@ export function configure(root, { stateDir, apiUrl, appUrl, company, providerEnv
     }
     if (readdirSync(state).length) throw new Error('State directory is partially initialized; inspect it before retrying.');
   }
-  if (!apiUrl || !company || !providerEnv) throw new Error('Fresh setup requires --api-url, --company and --provider-env.');
+  // A member installation that signs in through the association (--central-issuer) needs no SMS provider: it stores none.
+  const centralOnly = !providerEnv && Boolean(central?.values.CENTRAL_ISSUER);
+  if (!apiUrl || !company || (!providerEnv && !centralOnly)) throw new Error('Fresh setup requires --api-url, --company and --provider-env (or --central-issuer with its keys, for an installation that uses the association\'s sign-in alone).');
+  centralLocalCodeValues(centralLocalCode, central, null, Boolean(providerEnv));
   const canonical = canonicalOrigin(apiUrl, '--api-url');
   const application = appUrl ? canonicalOrigin(appUrl, '--app-url') : canonical;
   if (company.length > 120 || !/^[^\u0000-\u001f\u007f-\u009f\u2028\u2029]+$/.test(company)) throw new Error('--company must be a printable name of at most 120 characters.');
-  const provider = providerValues(providerEnv, checkout, canonical);
+  const provider = centralOnly ? NO_PROVIDER : providerValues(providerEnv, checkout, canonical);
   if (port !== null && !portFree(port)) throw new Error(`127.0.0.1:${port} is already in use; choose another --gateway-port.`);
   const manifest = { schemaVersion: 1, instanceId: randomUUID(), displayName: company, companyName: company,
     canonicalOrigin: canonical, supportedApiVersions: ['1'], minimumClientVersion: '0.1.0',
@@ -432,7 +451,7 @@ export function configure(root, { stateDir, apiUrl, appUrl, company, providerEnv
     WAREHOUSE_MANIFEST_PATH: manifestPath, WAREHOUSE_PROJECT_NAME: `warehouse-${manifest.instanceId.slice(0, 12)}`,
     POSTGRES_PASSWORD: randomBytes(32).toString('hex'), ...generatedDbValues(), ...generateSigningKeys(), ...(port === null ? {} : { GATEWAY_HTTP_PORT: port }),
     ...provider,
-    ...(central?.values ?? {}), ...centralLocalCodeValues(centralLocalCode, central, null), ...(letterhead?.bytes ? { LETTERHEAD_FILE: letterhead.name } : {}) };
+    ...(central?.values ?? {}), ...centralLocalCodeValues(centralLocalCode, central, null, Boolean(providerEnv)), ...(letterhead?.bytes ? { LETTERHEAD_FILE: letterhead.name } : {}) };
   values.CUPS_ADMIN_PASSWORD = randomBytes(32).toString('hex');
   const template = replaceEnvLines(readFileSync(resolve(root, '.env.example'), 'utf8'), values);
   const stage = `${state}.installing-${randomBytes(8).toString('hex')}`;
