@@ -157,6 +157,18 @@ function savedImages(dir, { sign = true, key = backupKey } = {}) {
 }
 const dockerCalls = f => readFileSync(join(f.scratch, 'docker.log'), 'utf8').split('\n').filter(Boolean);
 
+test('restore-host appends verify and total lines with elapsed seconds to <state>/restores.log (mode 0600)', () => {
+  const f = fixture('warehouse-restore-host-timing-');
+  try {
+    const result = f.run(['--state-dir', f.state, '--yes', f.backup]);
+    assert.equal(result.status, 0, result.stderr + result.stdout);
+    const log = join(f.state, 'restores.log');
+    assert.equal(statSync(log).mode & 0o777, 0o600);
+    const lines = readFileSync(log, 'utf8').trim().split('\n');
+    assert.deepEqual(lines.map(line => /^\d{4}-\d\d-\d\dT\d\d:\d\d:\d\dZ restore-host\.sh phase=(\w+) seconds=\d+$/.exec(line)?.[1]), ['verify', 'total']);
+  } finally { clean(f); }
+});
+
 test('restore-host loads the images saved beside the backup, adopts their build record and does not load anything else', () => {
   const f = fixture('warehouse-restore-host-images-');
   try {

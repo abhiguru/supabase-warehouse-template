@@ -68,6 +68,9 @@ done
 ((EUID != 0)) || die 'Run restore-host as the installation user (a member of the docker group), not as root.'
 # shellcheck source=scripts/backup-key.sh
 source "$ROOT/scripts/backup-key.sh"
+# shellcheck source=scripts/restore-timing.sh
+source "$ROOT/scripts/restore-timing.sh"
+restore_timing_start "$state" restore-host.sh
 unset WAREHOUSE_BACKUP_KEY_FILE WAREHOUSE_STATE_DIR
 if [[ -n "$keyfile" ]]; then
   backup_key_load "$keyfile" || exit 1
@@ -220,6 +223,7 @@ local_fingerprint="$(for m in "${migrations[@]:0:count}"; do printf '%s:%s\n' "$
 # shellcheck source=scripts/storage-schema.sh
 source "$ROOT/scripts/storage-schema.sh"
 storage_check_backup_head "$backup" || exit 1
+rt_verify=$((SECONDS - RT_MARK))   # written below, once the new state exists
 
 # 4. A new host has no trace of this installation's containers.
 [[ -z "$(docker ps -aq --filter "label=com.docker.compose.project=$project")" ]] || die "Refusing: containers of $project already exist on this host. This is not a fresh host for this installation (use npm run db:restore on the original state instead)."
@@ -350,6 +354,8 @@ and run restore-host again.
 MSG
   exit 1
 fi
+restore_timing_append "$state" restore-host.sh verify "$rt_verify"
+restore_timing_total
 # The directories restore.sh set aside were created empty above.
 for kept in "$state"/data/db.pre-restore-* "$state"/data/storage.pre-restore-*; do
   [[ -d "$kept" ]] && rmdir -- "$kept" 2>/dev/null || true
