@@ -197,6 +197,8 @@ export const readSensorWebhook = (path, checkout) => readAlertWebhook(path, chec
 // --heartbeat-url-file ABSOLUTE|off: the same rules, for the ping address of an external dead-man switch (docs/MONITORING.md,
 // "External heartbeat"). Any one https URL; the checker (scripts/watch.mjs) reads config/heartbeat-url.
 export const HEARTBEAT_URL_PATTERN = /^https:\/\/[^\s/]+\/?\S*$/;
+// The checker's reading of config/heartbeat-url: the first line that is not blank or a comment (scripts/watch.mjs uses this too).
+export const firstUrlLine = text => String(text).split('\n').map(l => l.trim()).find(l => l && !l.startsWith('#')) ?? '';
 export const HEARTBEAT_FILE = 'config/heartbeat-url';
 export const readHeartbeatUrl = (path, checkout) =>
   readSecretFile(path, checkout, '--heartbeat-url-file', HEARTBEAT_URL_PATTERN, 'one https URL (the ping address of your dead-man switch)');
@@ -273,7 +275,7 @@ export function storedHeartbeatUrl(state) {
   const path = join(state, HEARTBEAT_FILE);
   const st = lstatSync(path, { throwIfNoEntry: false });
   if (!st?.isFile() || st.uid !== process.getuid() || (st.mode & 0o077)) return null;
-  const url = readFileSync(path, 'utf8').split('\n').map(l => l.trim()).find(l => l && !l.startsWith('#')) ?? '';
+  const url = firstUrlLine(readFileSync(path, 'utf8'));
   return HEARTBEAT_URL_PATTERN.test(url) ? url : null;
 }
 

@@ -379,7 +379,7 @@ not in a backup, and `node scripts/watch.mjs test-message sensors` tests it.
 
 The checker cannot tell anyone that it has died. For that, give it the address of a dead-man switch: a service that expects
 a ping every few minutes and alerts (by email, SMS or its own app) when the pings stop. healthchecks.io is one (create a
-check with a 10 minute period and a 5 minute grace time); any address that does this works. Put the https URL it gives you in
+check with a 5 minute period and a 15 minute grace time, the schedule of the checker); any address that does this works. Put the https URL it gives you in
 a private file (mode 0600, outside the checkout, one line) and give it to setup, which stores it as `config/heartbeat-url`:
 
 ```bash
@@ -400,12 +400,19 @@ checker that runs but cannot reach Slack the other way round.
 
 ## A newer release
 
-`node scripts/doctor.mjs --local` prints `Note: vX.Y.Z is available (this facility runs vA.B.C)` and the daily "Monitoring is alive" message
-carries `Release: vX.Y.Z is available (...)` when the origin holds a newer final release tag (release candidates are ignored). The line adds
-` — Security release` when the GitHub release title says "Security" ([SECURITY.md](../SECURITY.md)), and `; support for the vA.B line ends YYYY-MM-DD`
-(or `ended`) when the running line is behind, computed from the dates of tags this checkout already holds (the rule: the previous minor line
-is fixed for 6 months after the next minor release). It is information only: never an alert, never a Slack message of its own, and a lookup
-that fails (no network, GitHub unreachable) leaves the line out.
+`node scripts/doctor.mjs --local` prints `Note: vX.Y.Z is available (this facility runs vA.B.C)`, and the daily "Monitoring is alive" message
+carries `Release: ...` with the same words, when the origin holds a newer final release tag (release candidates are ignored). The lookup runs
+once per day for the message. When the running line has a newer release of its own that is not the newest overall, the line names it first
+(`v0.6.3 is available for your line (this facility runs v0.6.2); newest is v0.7.1`). It adds ` \u2014 Security release` when any newer final
+release has "Security" in its GitHub title ([SECURITY.md](../SECURITY.md)), and `; support for the vA.B line ends YYYY-MM-DD` (or `ended`)
+when the running line is behind, from the publication dates of the next two minor releases (GitHub, else tags this checkout already holds).
+It is information only: never an alert, never a Slack message of its own, and a lookup that fails (no network, GitHub unreachable) leaves
+the line out.
+
+**What leaves the host.** The lookup contacts GitHub without any account or token: `git ls-remote --tags origin` and one request to the
+public releases list of the origin (`api.github.com/repos/<owner>/<repo>/releases`, only when the origin is on github.com). GitHub therefore
+sees the facility's public IP address and the checkout's own repository name; no business data, no instance name and no credential is sent.
+Both calls have a 10 second limit, follow no redirects, and never prompt. A host that must not contact GitHub from the facility simply gets no line.
 
 ## An association view with healthchecks
 
@@ -418,8 +425,9 @@ self-hosted healthchecks) for the purpose:
 - the check's **ping URL** is given to that facility's operator, who gives it to setup as `--heartbeat-url-file` (above). The URL is a secret
   of the facility and of the association: send it privately, and replace it (a new check, or a reset URL) if it leaks.
 
-The board then shows each facility as **up**, **late** or **down**, and when it last pinged. Nothing else is sent: the ping is an empty GET
-request to that URL, with no business data, no names, no counts and no alerts. The facility's own Slack alerts are not copied
+The board then shows each facility as **up**, **late** or **down**, and when it last pinged. The ping is an empty GET
+request to that URL with no business data, no names, no counts and no alerts; the association's service sees the facility's public IP address and
+the times of the pings, and the check's name is chosen by whoever creates it. The facility's own Slack alerts are not copied
 to the association. The checker pings one address, so the association's check is that facility's dead-man switch; a facility that prefers its own (or both) can keep its own check and give the association a second one only by running a second pinger, which this repository does not provide.
 
 ## Finding a slow query

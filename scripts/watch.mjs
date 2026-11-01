@@ -59,8 +59,8 @@ import { redactServiceLog } from './service-diagnostics.mjs';
 import { MIN_VHDX_DRIVE_FREE_BYTES, MIN_VHDX_DRIVE_FREE_PERCENT, driveSpace, isWsl, statfsWithTimeout, vhdxDrive } from './wsl-host.mjs';
 import { usbBackupWarning, usbRotationNote } from './usb-backup-status.mjs';
 import { ageText, sensorCheck, sensorLimitSeconds } from './sensors-check.mjs';
-import { postSlackMessage, sensorTestMessage, testMessage } from './alert-webhook.mjs';
-import { releaseLine } from './release-check.mjs';
+import { HEARTBEAT_URL_PATTERN, firstUrlLine, postSlackMessage, sensorTestMessage, testMessage } from './alert-webhook.mjs';
+import { fetchGithubJson, releaseLine } from './release-check.mjs';
 import { ADAPTERS, AUDIENCES, TARGET_IDS, audienceOf, ALERT_LOG, createAlertLog, deliver, historyLine, loadTargets, pickAudience, readAlertLog, secretsOf, targetsOf } from './notify.mjs';
 
 const MIN = 60 * 1000;
@@ -138,7 +138,7 @@ export const statePath = state => join(state, 'config/watch-state.json');
 export const mutesPath = state => join(state, 'config/watch-mutes.json');
 export const freshState = now => ({
   version: 1, firstRun: now, alerts: {}, containers: {}, cpu: null, lastRunAt: null,
-  lastDailyRun: {}, dailyAttempt: null, dailyRunning: null, dailySkipped: null, busySince: null, delivery: {},
+  lastDailyRun: {}, releaseCheck: null, dailyAttempt: null, dailyRunning: null, dailySkipped: null, busySince: null, delivery: {},
   memoryNote: null, heal: {}, lastSmsCheck: null, stackRestarts: [],
   // Mutes live in their own file (loadMutes) and are filled in from it; they are never part of the run state.
   muteUntil: null, mutes: {},
@@ -223,6 +223,7 @@ export function normalizeState(raw, now, log = () => {}) {
   take('stackRestarts', v => Array.isArray(v) && v.every(isNum));   // absent in older state files: the fresh default stays
   take('heal', v => isObj(v) && Object.values(v).every(x => isObj(x) && isNum(x.unhealthyRuns) && numOrNull(x.lastAt) && typeof x.lastAction === 'string'
     && (x.actions === undefined || (Array.isArray(x.actions) && x.actions.every(isNum)))));
+  take('releaseCheck', v => v === null || (isObj(v) && typeof v.date === 'string' && (v.line === null || typeof v.line === 'string')));   // the day's release lookup (heartbeat)
   take('lastDailyRun', v => isObj(v) && Object.values(v).every(x => isObj(x) && typeof x.date === 'string' && typeof x.result === 'string'));
   if (isObj(raw.alerts)) for (const [id, a] of Object.entries(raw.alerts)) out.alerts[id] = normalizeAlert(id, a, log);
   // The alert that was called usb_backup is offhost_copy_missing now: a firing one carries over, so an upgrade posts no false CLEARED.
@@ -412,11 +413,7 @@ export function makeContext(deps, data) {
   ctx.secrets = () => secretsOf(ctx.targets());
   // "vX.Y.Z is available (this facility runs vA.B.C)" or null (scripts/release-check.mjs): information for the daily status, never an alert.
   ctx.releaseLine = () => (deps.releaseLine ?? (() => releaseLine({ root: deps.root, state: deps.state, run: deps.run, now: deps.now,
-    fetchJson: async (url, { timeoutMs }) => {
-      const response = await deps.fetch(url, { signal: AbortSignal.timeout(timeoutMs), redirect: 'error', headers: { accept: 'application/vnd.github+json', 'user-agent': 'warehouse-release-check' } });
-      if (!response.ok) throw new Error(`HTTP ${response.status}`);
-      return response.json();
-    } })))();
+    fetchJson: (url, options) => fetchGithubJson(url, { ...options, fetchImpl: deps.fetch }) })))();
   ctx.alertLog = () => (ctx.memo.alertLog ??= deps.alertLog ?? createAlertLog(deps.state, { now: deps.now, warn: message => (deps.log ?? stderrLog)(message) }));
   ctx.env_ = () => (ctx.memo.env ??= (() => { try { return readEnv(join(deps.state, 'config/compose.env')); } catch { return {}; } })());
   ctx.compose = (args, opts) => deps.run('bash', [join(deps.root, 'scripts/compose.sh'), ...args], opts);
@@ -1651,8 +1648,11 @@ async function heartbeat(ctx) {
       const muted = notes.length ? ` ${notes.join(' ')}` : '';
       text = `Monitoring is alive - ${describe(ctx)}\n${firing ? `${firing} alert(s) firing.` : 'No alerts firing.'}${muted}`;
       // A field of the daily status, not a result or an alert: a failed lookup leaves it out.
+      // Looked up once per local day (data.releaseCheck), also when the post has to be retried.
       let release = null;
-      try { release = await ctx.releaseLine(); } catch { /* information only */ }
+      const day = localDate(now);
+      if (data.releaseCheck?.date === day) release = data.releaseCheck.line;
+      else { try { release = (await ctx.releaseLine()) ?? null; data.releaseCheck = { date: day, line: release }; } catch { /* information only */ } }
       if (release) text += `\nRelease: ${release}`;
     }
     const message = { audience: target.audience, kind: 'heartbeat', name: describe(ctx), text: redact(text, ctx.env_(), ctx.secrets()) };
@@ -1959,8 +1959,8 @@ export function readHeartbeatUrl(state) {
   const stat = lstatSync(path, { throwIfNoEntry: false });
   if (!stat) return { url: '' };
   if (!stat.isFile() || stat.uid !== process.getuid() || (stat.mode & 0o077)) return { problem: 'config/heartbeat-url must be a regular file owned by the installation user with mode 0600' };
-  const url = (readFileOrNull(path) ?? '').split('\n').map(l => l.trim()).find(l => l && !l.startsWith('#')) ?? '';
-  if (!/^https:\/\/[^\s/]+\/?\S*$/.test(url)) return { problem: 'config/heartbeat-url must hold one https URL' };
+  const url = firstUrlLine(readFileOrNull(path) ?? '');
+  if (!HEARTBEAT_URL_PATTERN.test(url)) return { problem: 'config/heartbeat-url must hold one https URL' };
   return { url };
 }
 // The end of every successful run: a GET with a 5 s limit. A failure is logged (never the URL, which is a secret) and

@@ -408,8 +408,8 @@ alert_step="Alerts are local only until you run setup.sh --operator again with -
      webhook prompt on a terminal; the URL is not in a backup, skip this if the installation never had one). If sensors are on,
      also give --sensor-webhook-file /absolute/path/to/sensor-webhook-url-file (the separate sensor-alert webhook; not in a backup either).
      Give the external heartbeat again too: its ping URL (config/heartbeat-url) is not in a backup either, so add
-     --heartbeat-url-file /absolute/path/to/heartbeat-url-file (or off) to the same rerun (skip it if the installation never had one;
-     docs/MONITORING.md, \"External heartbeat\"). On WSL the two Windows scheduled tasks live on Windows, not in a backup: register them
+     --heartbeat-url-file /absolute/path/to/heartbeat-url-file to the same rerun, or record the decision against it again
+     (config/heartbeat-declined; skip this if the installation never had a heartbeat; docs/MONITORING.md, \"External heartbeat\"). On WSL the two Windows scheduled tasks live on Windows, not in a backup: register them
      again on the new machine with scripts/windows/register-tasks.ps1 (docs/OPERATOR_INSTALL.md, \"Keep the distro running and start it at boot\")."
 if [[ "$central_missing" == true ]]; then
   alert_step+="

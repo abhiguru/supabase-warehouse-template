@@ -4780,3 +4780,56 @@ test('the daily "Monitoring is alive" message carries the release line; no line 
     } finally { clean(h); }
   }
 });
+
+test('the release lookup runs once per local day, also while a failed post is retried; a new day looks again', async () => {
+  const h = harness();
+  try {
+    let lookups = 0;
+    h.deps.releaseLine = async () => { lookups += 1; return 'v0.8.0 is available (this facility runs v0.7.0)'; };
+    h.postFails = true;
+    await W.runOnce(h.deps, { checks: [], ...NO_JOBS });
+    h.advance(5 * 60000); await W.runOnce(h.deps, { checks: [], ...NO_JOBS });
+    h.postFails = false;
+    h.advance(5 * 60000); await W.runOnce(h.deps, { checks: [], ...NO_JOBS });
+    assert.equal(lookups, 1, 'one lookup for the day');
+    assert.match(h.posts.find(p => /^Monitoring is alive/.test(p.text)).text, /Release: v0\.8\.0 is available/, 'the remembered line is posted');
+    h.clock.t = new Date(2026, 9, 21, 9, 0).getTime();
+    await W.runOnce(h.deps, { checks: [], ...NO_JOBS });
+    assert.equal(lookups, 2, 'the next day looks again');
+    assert.equal(W.loadState(h.state, h.clock.t, h.deps.readText).releaseCheck.date, W.localDate(h.clock.t));
+  } finally { clean(h); }
+});
+
+test('the checker\'s own release lookup asks GitHub through its fetch: no redirects, with a time limit, releases list of the origin', async () => {
+  const h = harness();
+  try {
+    writeFileSync(join(h.state, 'public/release.json'), JSON.stringify({ backendRelease: 'v0.7.0' }));
+    const sha = 'b'.repeat(40);
+    h.runs['ls-remote'] = ok(`${sha}\trefs/tags/v0.7.0\n${sha}\trefs/tags/v0.7.1\n`);
+    h.runs['get-url'] = ok('https://github.com/abhiguru/supabase-warehouse-template.git\n');
+    h.runs['git -C'] = ok('');
+    const seen = [];
+    h.deps.fetch = async (url, options) => { seen.push({ url, options }); return { ok: true, json: async () => [{ tag_name: 'v0.7.1', name: 'v0.7.1 Security: x', published_at: '2026-10-01T00:00:00Z' }] }; };
+    const text = await h.ctx().releaseLine();
+    assert.equal(text, 'v0.7.1 is available (this facility runs v0.7.0) — Security release');
+    assert.equal(seen.length, 1);
+    assert.equal(seen[0].url, 'https://api.github.com/repos/abhiguru/supabase-warehouse-template/releases?per_page=100');
+    assert.equal(seen[0].options.redirect, 'error');
+    assert.ok(seen[0].options.signal instanceof AbortSignal);
+  } finally { clean(h); }
+});
+
+test('the checker and setup read the heartbeat file by one set of rules', async () => {
+  const { storedHeartbeatUrl } = await import('../scripts/alert-webhook.mjs');
+  const h = harness();
+  try {
+    const path = join(h.state, 'config/heartbeat-url');
+    for (const [text, url] of [['# note\n\nhttps://hc-ping.example.test/a\n', 'https://hc-ping.example.test/a'], ['http://hc.example.test/a\n', null], ['https://x.example.test/a b\n', null], ['', null]]) {
+      writeFileSync(path, text, { mode: 0o600 });
+      assert.equal(storedHeartbeatUrl(h.state), url, JSON.stringify(text));
+      const checker = W.readHeartbeatUrl(h.state);
+      assert.equal(checker.problem ? null : checker.url, url ?? (checker.problem ? null : ''), JSON.stringify(text));
+      assert.equal(Boolean(checker.url), url !== null, JSON.stringify(text));
+    }
+  } finally { clean(h); }
+});
