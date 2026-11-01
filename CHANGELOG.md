@@ -24,6 +24,14 @@ file used to carry for earlier installations are in git: `git show b45ae0b:CHANG
 
 ### Changed
 
+- **The order list reads the page first (migration 135, `get_orders_list`).** The function used to read the view `v_orders_list`, which
+  aggregated the lines of every order and picked the latest dispatch of every order, twice per call (count and page), so every phone on an
+  order screen paid for the whole queue every refresh. The matching orders are now found from `orders` (filters, search, count), the page is cut
+  with the same sort, and the item list, the pending totals and the dispatch fields are built only for the orders on the page. The answer is
+  the same (same keys, same order, same count and `has_more`). New rules: `p_limit` is held to 1..200 (the answer's `pagination.limit` says
+  which), `p_offset` to 0 or more, and `p_user_id` counts only for `service_role` (any other caller is checked as the session user). New index
+  `idx_dispatch_source_order_latest` on `dispatch (source_order_id, created_at DESC)`. The view is unchanged. Test: `tests/orders_list_135.sql`.
+
 - **Saving a GRN no longer deletes other people's photo uploads in progress (`update_grn`, no new migration).** When the photo list is sent, an
   unfinished (`pending`) photo that is not in the list used to be removed for an administrator or supervisor, whoever uploaded it. Now it is
   removed only if the saver uploaded it or it is older than 15 minutes; another person's recent pending upload survives and can still be
