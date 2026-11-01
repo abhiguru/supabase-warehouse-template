@@ -1,5 +1,5 @@
 import { accessSync, constants, existsSync, lstatSync, statSync, statfsSync, realpathSync, readFileSync } from 'node:fs';
-import { userInfo } from 'node:os';
+import { availableParallelism, userInfo } from 'node:os';
 import { join, resolve, sep } from 'node:path';
 import { createConnection } from 'node:net';
 import { spawnSync } from 'node:child_process';
@@ -166,6 +166,27 @@ export function wslDriveCheck({ hostPreflight = false, readText = path => readFi
   return wslDriveVerdict(space.free, { newInstall: hostPreflight, drive });
 }
 
+// The host minimum (docs/OPERATOR_INSTALL.md, "Host prerequisites"): 4 vCPU, 8 GiB RAM, 60 GB disk. Below it a host still runs, so
+// --host-preflight only warns; the thresholds leave room for what the kernel and the disk format take (an 8 GiB machine reports about
+// 7.7 GiB, a 60 GB disk about 56 GiB). WAREHOUSE_MEMINFO_FILE names the meminfo file, so tests need not depend on the host.
+export const MIN_CPUS = 4;
+export const MIN_MEMORY_BYTES = 7.5 * 1024 ** 3;
+export const MIN_DISK_TOTAL_BYTES = 55 * 1024 ** 3;
+export function hostMinimumWarnings({ cpus, memoryBytes, diskBytes }) {
+  const gib = bytes => (bytes / 1024 ** 3).toFixed(1);
+  const out = [];
+  if (Number.isFinite(cpus) && cpus < MIN_CPUS) out.push(`this host has ${cpus} vCPU; the supported minimum is ${MIN_CPUS} (docs/OPERATOR_INSTALL.md, "Host prerequisites"). The services run, but a database query, a PDF and a backup then compete for the processor.`);
+  if (Number.isFinite(memoryBytes) && memoryBytes < MIN_MEMORY_BYTES) out.push(`this host has ${gib(memoryBytes)} GiB of memory; the supported minimum is 8 GiB (docs/OPERATOR_INSTALL.md, "Host prerequisites"). Containers can be killed for lack of memory.`);
+  if (Number.isFinite(diskBytes) && diskBytes < MIN_DISK_TOTAL_BYTES) out.push(`the state's filesystem is ${gib(diskBytes)} GiB in total; the supported minimum is 60 GB (docs/OPERATOR_INSTALL.md, "Host prerequisites").`);
+  return out;
+}
+
+// MemTotal of a /proc/meminfo text, in bytes; NaN when it is missing.
+export function memTotalBytes(text) {
+  const m = /^MemTotal:\s+(\d+)\s+kB$/m.exec(String(text ?? ''));
+  return m ? Number(m[1]) * 1024 : NaN;
+}
+
 export const listening = port => new Promise(resolve => {
   const socket = createConnection({ host: '127.0.0.1', port });
   const done = value => { socket.destroy(); resolve(value); };
@@ -323,6 +344,11 @@ export async function doctor({ hostPreflight = false, preflight = false, local =
   const wsl = wslDriveCheck({ hostPreflight, composeEnv });
   if (wsl.error) throw new Error(wsl.error);
   if (wsl.warning) console.error(`Warning: ${wsl.warning}`);
+  if (hostPreflight) {
+    let memoryBytes = NaN;
+    try { memoryBytes = memTotalBytes(readFileSync(process.env.WAREHOUSE_MEMINFO_FILE || '/proc/meminfo', 'utf8')); } catch { /* unreadable: no warning */ }
+    for (const warning of hostMinimumWarnings({ cpus: availableParallelism(), memoryBytes, diskBytes: Number(fs.blocks) * Number(fs.bsize) })) console.error(`Warning: ${warning}`);
+  }
   if (hostPreflight) return 'Host prerequisites and state filesystem preflight passed.';
   const envPath = resolve(state, 'config/compose.env');
   const env = readEnv(envPath);

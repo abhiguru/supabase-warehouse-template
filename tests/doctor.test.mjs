@@ -15,7 +15,7 @@ test('operator configuration requires canonical HTTPS origins and supported Node
 import { mkdtempSync, mkdirSync, writeFileSync, chmodSync, rmSync, utimesSync } from 'node:fs';
 import { tmpdir, userInfo } from 'node:os';
 import { join } from 'node:path';
-import { checkStatePlacement, checkerWarnings, CHECKER_MAX_AGE_MS, NO_WEBHOOK_WARNING, NO_HEARTBEAT_WARNING, releaseNote, NO_SENSOR_WEBHOOK_WARNING, INVALID_SENSOR_WEBHOOK_WARNING, SAME_SENSOR_WEBHOOK_WARNING, stoppedWarning, timerUnit, dailyTimerUnit, freeSpaceVerdict, wslDriveCheck } from '../scripts/doctor.mjs';
+import { checkStatePlacement, checkerWarnings, CHECKER_MAX_AGE_MS, NO_WEBHOOK_WARNING, NO_HEARTBEAT_WARNING, releaseNote, NO_SENSOR_WEBHOOK_WARNING, INVALID_SENSOR_WEBHOOK_WARNING, SAME_SENSOR_WEBHOOK_WARNING, stoppedWarning, timerUnit, dailyTimerUnit, freeSpaceVerdict, wslDriveCheck, hostMinimumWarnings, memTotalBytes } from '../scripts/doctor.mjs';
 
 test('a fresh install refuses a state whose parent is not writable, naming the fix', { skip: process.getuid() === 0 && 'root can write anywhere' }, () => {
   const base = mkdtempSync(join(tmpdir(), 'state-parent-'));
@@ -150,7 +150,7 @@ test('doctor runs the central key file check for --local and the full run, after
 import { spawnSync } from 'node:child_process';
 import { statfsSync } from 'node:fs';
 
-function doctorWithCompose(help, extraBin = {}, mode = '--host-preflight') {
+function doctorWithCompose(help, extraBin = {}, mode = '--host-preflight', extraEnv = {}) {
   const base = mkdtempSync(join(tmpdir(), 'doctor-compose-'));
   try {
     const bin = join(base, 'bin');
@@ -167,7 +167,7 @@ esac
     const state = join(base, 'state');
     mkdirSync(state, { mode: 0o700 });
     return spawnSync(process.execPath, [new URL('../scripts/doctor.mjs', import.meta.url).pathname, mode], {
-      encoding: 'utf8', env: { ...process.env, PATH: `${bin}:${process.env.PATH}`, WAREHOUSE_STATE_DIR: state, NODE_TEST_CONTEXT: '' } });
+      encoding: 'utf8', env: { ...process.env, PATH: `${bin}:${process.env.PATH}`, WAREHOUSE_STATE_DIR: state, NODE_TEST_CONTEXT: '', ...extraEnv } });
   } finally { rmSync(base, { recursive: true, force: true }); }
 }
 
@@ -502,6 +502,34 @@ test('free space: a new installation needs 10 GiB; a start only warns below 10 G
   // The scripts use the right mode: only setup's host preflight is strict.
   const doctor = readFileSync(new URL('../scripts/doctor.mjs', import.meta.url), 'utf8');
   assert.match(doctor, /freeSpaceVerdict\(Number\(fs\.bavail\) \* Number\(fs\.bsize\), \{ newInstall: hostPreflight \}\)/);
+});
+
+test('host minimum: warns below 4 vCPU, 7.5 GiB of memory and 55 GiB of disk, silent at the boundary or when a figure is unknown', () => {
+  const GiB = 1024 ** 3;
+  const ok = { cpus: 4, memoryBytes: 7.5 * GiB, diskBytes: 55 * GiB };
+  assert.deepEqual(hostMinimumWarnings(ok), []);
+  assert.match(hostMinimumWarnings({ ...ok, cpus: 3 }).join(), /3 vCPU; the supported minimum is 4/);
+  assert.match(hostMinimumWarnings({ ...ok, memoryBytes: 7.5 * GiB - 1 }).join(), /7\.5 GiB of memory; the supported minimum is 8 GiB/);
+  assert.match(hostMinimumWarnings({ ...ok, diskBytes: 55 * GiB - 1 }).join(), /55\.0 GiB in total; the supported minimum is 60 GB/);
+  assert.equal(hostMinimumWarnings({ cpus: 2, memoryBytes: GiB, diskBytes: GiB }).length, 3);
+  assert.deepEqual(hostMinimumWarnings({ cpus: NaN, memoryBytes: NaN, diskBytes: NaN }), [], 'unknown figures never warn');
+  assert.equal(memTotalBytes('MemTotal:        8048576 kB\nMemFree: 1 kB\n'), 8048576 * 1024);
+  assert.ok(Number.isNaN(memTotalBytes('nothing')));
+});
+
+function memWarning(kb) {
+  const base = mkdtempSync(join(tmpdir(), 'doctor-mem-'));
+  try {
+    writeFileSync(join(base, 'meminfo'), `MemTotal:       ${kb} kB\n`);
+    return doctorWithCompose(WAIT, {}, '--host-preflight', { WAREHOUSE_MEMINFO_FILE: join(base, 'meminfo') });
+  } finally { rmSync(base, { recursive: true, force: true }); }
+}
+test('doctor --host-preflight reads memory from WAREHOUSE_MEMINFO_FILE and only warns', SPACE, () => {
+  let run = memWarning(7.5 * 1024 * 1024 - 1);
+  assert.equal(run.status, 0, run.stderr);
+  assert.match(run.stderr, /Warning: this host has [\d.]+ GiB of memory; the supported minimum is 8 GiB/);
+  run = memWarning(7.5 * 1024 * 1024);
+  assert.doesNotMatch(run.stderr, /of memory/);
 });
 
 test('WSL drive check: nothing off WSL; at exactly 20 GiB passes; below it an error for a new installation and a warning for a start; an unreadable or non-Windows drive warns', () => {

@@ -51,6 +51,10 @@ Sections: [host prerequisites](#host-prerequisites),
 - `tmux` (or another way to keep a process running after you log out) for the Expo development server of the app, if you
   run one on this host. The backend itself needs it for nothing.
 - A non-root user in the `docker` group. Do not run setup as root or make the Docker socket world-writable.
+- **Host minimum: 4 vCPU, 8 GiB of memory, an SSD and 60 GB of disk** (more disk for the data: [Disk space](#disk-space)). Below it
+  `doctor --host-preflight` (run by `setup.sh`) prints a warning and carries on: below 4 vCPU, 7.5 GiB of memory (an 8 GiB machine
+  reports about 7.7) or 55 GiB of disk in total on the state's filesystem. A hard disk instead of an SSD is not detected; the
+  database and the backups are slow on one.
 - At least 10 GiB free on a persistent filesystem for the installation, plus capacity for the data. `setup.sh` refuses
   to start below 10 GiB. `start.sh` and `doctor` only warn below 10 GiB and refuse below 2 GiB, so a disk that has filled
   up since the install does not keep the facility down after a power cut ([Disk full](TROUBLESHOOTING.md#disk-full)).

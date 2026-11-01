@@ -10,6 +10,7 @@ file used to carry for earlier installations are in git: `git show b45ae0b:CHANG
 
 ### Added
 
+- **Host minimum checked.** `doctor --host-preflight` warns (never refuses) below 4 vCPU, 7.5 GiB of memory and 55 GiB of disk in total on the state's filesystem; "Host prerequisites" states 4 vCPU / 8 GiB / SSD / 60 GB.
 - **A request id on every API answer, and logs saved before restarts.** The gateway makes a random `$request_id` (32 hex characters, no user
   data) for each request: the last field of its access line, an `X-Request-Id` header passed to PostgREST, Storage and the functions (a
   client-sent one is replaced) and returned on every answer, error answers included. The function helpers write `request_id=` on their
