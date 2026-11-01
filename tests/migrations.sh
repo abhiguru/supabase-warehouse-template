@@ -549,6 +549,9 @@ test_files=(
   "$ROOT/tests/rate_changes_129.sql"
   "$ROOT/tests/invoice_checks_129.sql"
   "$ROOT/tests/rules_130.sql"
+  "$ROOT/tests/order_history_counts_133.sql"
+  "$ROOT/tests/grn_prefixes_133.sql"
+  "$ROOT/tests/items_without_rate_133.sql"
   "$ROOT/tests/dispatch_list_grn_id_131.sql"
   "$ROOT/tests/rack_presets_131.sql"
 )

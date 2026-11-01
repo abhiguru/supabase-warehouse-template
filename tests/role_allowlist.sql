@@ -97,7 +97,7 @@ INSERT INTO ra_rpc(name,staff,customer) VALUES
  -- the numbering rules (migration 127): staff are suggested the next number; supervisors read the rules, administrators change them
  ('suggest_document_number',true,'no'),('get_document_numbering',false,'no'),('set_document_numbering',false,'no'),
  -- the rack presets of the GRN item form (migration 131): staff read the buttons, administrators and supervisors change them
- ('get_rack_presets',true,'no'),('set_rack_presets',false,'no'),
+ ('get_rack_presets',true,'no'),('get_items_without_rate',true,'no'),('set_rack_presets',false,'no'),
  ('get_all_grn_items',true,'no'),('get_grn_list',true,'no'),
  ('get_grn_prefixes_with_stock',true,'no'),('get_all_grn_activity',true,'no'),
  ('search_customers',true,'no'),('get_supervisors',true,'no'),('get_vehicle_suggestions',true,'no'),
