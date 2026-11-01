@@ -8,7 +8,7 @@
 BEGIN;
 CREATE FUNCTION pg_temp.rc_assert(ok boolean, label text) RETURNS void LANGUAGE plpgsql AS $$
 BEGIN IF NOT COALESCE(ok, false) THEN RAISE EXCEPTION 'rpc callers: %', label; END IF; END $$;
--- The app (src/ and app/): 115 names, 7 of them reached through a variable or a fetch call (save_invoice, update_invoice, the three sensor calls, get_print_jobs, cancel_print_job).
+-- The app (src/ and app/): 119 names, 7 of them reached through a variable or a fetch call (save_invoice, update_invoice, the three sensor calls, get_print_jobs, cancel_print_job).
 SELECT pg_temp.rc_assert(count(*) = 0, 'the app calls a function that is gone: ' || string_agg(n, ', ' ORDER BY n))
 FROM unnest(ARRAY[
   'add_item_to_order','assign_customer_to_user','cancel_dispatch_image_upload','cancel_grn_image_upload','check_dispatch_exists',
@@ -33,6 +33,7 @@ FROM unnest(ARRAY[
   'update_grn','update_item','update_order_item_quantity','update_user_role','update_user_status',
   'user_accessible_customers','save_invoice','update_invoice','get_sensor_polling_data','get_print_jobs','cancel_print_job','get_sensor_device',
   'update_sensor_device','suggest_document_number','get_document_numbering','set_document_numbering',
+  'cancel_invoice','get_sensor_hourly','list_user_sessions','revoke_session',
   -- functions/_shared/report-pdf.ts calls these by variable name (call.name of report-definitions.ts), with the caller's token.
   'get_customer_grn_activity','get_all_grn_activity','get_customer_dispatch_activity','get_all_dispatch_activity','get_customer_invoice_summary',
   'get_customer_stock_summary','get_all_stock_summary','get_stock_aging_report','get_customer_activity_detail',
