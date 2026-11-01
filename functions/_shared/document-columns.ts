@@ -8,5 +8,9 @@
 // list with the fields document-pdf.ts uses.
 export const invoiceHeaderColumns = 'id,customer_name,inv_date,inv_fin_year,labour,tax_amount,discount,total';
 
+// A cancelled invoice prints one more line (migration 134). Its two columns are read apart from the header, so the header list above stays
+// the fields every invoice prints.
+export const invoiceCancelColumns = 'cancelled_at,cancel_reason';
+
 export const headerColumns = (kind: 'grn' | 'dispatch' | 'invoice') =>
   kind === 'invoice' ? invoiceHeaderColumns : '*';

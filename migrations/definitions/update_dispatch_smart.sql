@@ -290,7 +290,7 @@ BEGIN
     IF v_day_changed OR v_no_changed THEN
         SELECT i.inv_no, i.inv_fin_year INTO v_inv_no, v_inv_year
         FROM invoice_trl it
-        JOIN invoice i ON i.id = it.invoice_id AND i.deleted_at IS NULL
+        JOIN invoice i ON i.id = it.invoice_id AND i.deleted_at IS NULL AND i.cancelled_at IS NULL
         JOIN dispatch_trl dt ON dt.id = it.disp_trl_id
         WHERE dt.disp_id = p_dispatch_id
         ORDER BY i.inv_fin_year, i.inv_no, i.id
@@ -390,7 +390,7 @@ BEGIN
         AND EXISTS (
             -- Only a live invoice counts, the rule get_dispatch_details shows (migration 120).
             SELECT 1 FROM invoice_trl it
-            JOIN invoice inv ON inv.id = it.invoice_id AND inv.deleted_at IS NULL
+            JOIN invoice inv ON inv.id = it.invoice_id AND inv.deleted_at IS NULL AND inv.cancelled_at IS NULL
             WHERE it.disp_trl_id = dt.id
         )
         AND (

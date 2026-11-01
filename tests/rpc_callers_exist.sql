@@ -3,6 +3,7 @@
 -- points at the app, the app list equal to what the app calls (scripts/contract-details.mjs logic). Names only for the app and the
 -- edge functions; for fas-sync (~/fas-sync, fassync/push.py: ten calls) the argument names it passes too, because it calls by name.
 -- Runs after all migrations in migrations.sh's disposable database; it writes nothing.
+-- Migration 134 added cancel_invoice(uuid, text, timestamptz); it joins the app list below in the app change that calls it (delete_invoice stays: it exists and refuses).
 \set ON_ERROR_STOP on
 BEGIN;
 CREATE FUNCTION pg_temp.rc_assert(ok boolean, label text) RETURNS void LANGUAGE plpgsql AS $$

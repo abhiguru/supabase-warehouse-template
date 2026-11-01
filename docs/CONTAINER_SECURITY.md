@@ -589,7 +589,7 @@ golden-PDF job on every change.
 
 ## audit_log retention
 
-`audit_log` keeps 730 days (2 years). Its monthly partitions are created ahead (3 months), and partitions older than the cutoff are dropped by
+`audit_log` keeps 2920 days (8 years; migration 134 raised it from 730 days because GST records are kept 72 months). Its monthly partitions are created ahead (3 months), and partitions older than the cutoff are dropped by
 the daily chain (`watch.mjs`, `watch-daily.sh`, `retention.sh apply`, `run_database_retention`); see "Retention" in
 [OPERATOR_INSTALL.md](OPERATOR_INSTALL.md#retention).
 

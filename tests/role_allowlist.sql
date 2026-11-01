@@ -136,7 +136,7 @@ INSERT INTO ra_rpc(name,staff,customer) VALUES
  ('get_users_list',false,'no'),('get_user_details',false,'no'),('get_operations_dashboard',false,'no'),
  ('create_customer',false,'no'),('update_customer',false,'no'),
  ('create_item',false,'no'),('update_item',false,'no'),('delete_item_safe',false,'no'),
- ('delete_grn_safe',false,'no'),('delete_dispatch_with_order_cleanup',false,'no'),('delete_invoice',false,'no'),
+ ('delete_grn_safe',false,'no'),('delete_dispatch_with_order_cleanup',false,'no'),('delete_invoice',false,'no'),('cancel_invoice',false,'no'),
  -- the price history of migration 48: administrators and supervisors only
  ('get_item_price_history',false,'no'),('get_item_usage',false,'no'),
  -- migration 49: administrators only; the guard refuses a supervisor as well

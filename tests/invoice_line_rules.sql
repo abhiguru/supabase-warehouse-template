@@ -182,14 +182,14 @@ SELECT pg_temp.rule_assert((SELECT count(*)=2 FROM public.invoice_trl t JOIN pub
 SELECT pg_temp.rule_assert((SELECT invoiced IS NOT TRUE FROM public.goodsreceived WHERE id=:'grn_a'::uuid),'a refused save does not mark the receipt');
 UPDATE public.goodsreceived SET invoiced=true WHERE id=:'grn_a'::uuid;
 
--- Deleting the invoice (administrator) frees the receipt and its lines; staff
+-- Cancelling the invoice (administrator; migration 134: delete_invoice refuses) frees the receipt and its lines; staff
 -- then invoices it again through the three-argument path with the fixture total.
 SELECT set_config('request.jwt.claims',:'admin_claims',true);
 SET LOCAL ROLE authenticated;
-SELECT pg_temp.rule_assert(public.delete_invoice(:'zero_invoice'::uuid)->>'success'='true','administrator deletes the zero invoice');
+SELECT pg_temp.rule_assert(public.cancel_invoice(:'zero_invoice'::uuid,'Line rule cleanup',NULL)->>'success'='true','administrator cancels the zero invoice');
 SELECT set_config('request.jwt.claims',:'staff_claims',true);
 SELECT pg_temp.rule_save3(:'a_header'::jsonb || '{"inv_no":20261043}'::jsonb,:'a_items'::jsonb) AS again \gset
-SELECT pg_temp.rule_assert(:'again'::jsonb->>'success'='true','the receipt is invoiced again after the delete: ' || :'again');
+SELECT pg_temp.rule_assert(:'again'::jsonb->>'success'='true','the receipt is invoiced again after the cancel: ' || :'again');
 SELECT (:'again'::jsonb->>'invoice_id') AS invoice_a \gset
 RESET ROLE;
 SELECT pg_temp.rule_assert((SELECT total=998 AND tax_amount=48 AND labour=200 FROM public.invoice WHERE id=:'invoice_a'::uuid),'the new invoice has the fixture total 998');
@@ -223,12 +223,12 @@ SELECT pg_temp.rule_assert(pg_temp.rule_update(:'invoice_c'::uuid,:'c_header'::j
 RESET ROLE;
 SELECT pg_temp.rule_assert((SELECT no_of_days=30 AND duration=1 FROM public.invoice_trl WHERE invoice_id=:'invoice_c'::uuid)
  AND (SELECT total=74 AND notes='edited' FROM public.invoice WHERE id=:'invoice_c'::uuid),'edit: 30 days, one period, total 74');
--- The one-argument path, after the administrator deletes that invoice.
+-- The one-argument path, after the administrator cancels that invoice (its number 20261044 stays taken: the new invoice takes 20261048).
 SELECT set_config('request.jwt.claims',:'admin_claims',true);
 SET LOCAL ROLE authenticated;
-SELECT pg_temp.rule_assert(public.delete_invoice(:'invoice_c'::uuid)->>'success'='true','administrator deletes the RULC invoice');
+SELECT pg_temp.rule_assert(public.cancel_invoice(:'invoice_c'::uuid,'Line rule cleanup',NULL)->>'success'='true','administrator cancels the RULC invoice');
 SELECT set_config('request.jwt.claims',:'staff_claims',true);
-SELECT pg_temp.rule_save1(:'c_header'::jsonb || '{"inv_no":20261044}'::jsonb,:'c_items'::jsonb) AS saved_c1 \gset
+SELECT pg_temp.rule_save1(:'c_header'::jsonb || '{"inv_no":20261048}'::jsonb,:'c_items'::jsonb) AS saved_c1 \gset
 SELECT pg_temp.rule_assert(:'saved_c1'::jsonb->>'success'='true','one-argument save of RULC: ' || :'saved_c1');
 SELECT (:'saved_c1'::jsonb->>'invoice_id') AS invoice_c \gset
 RESET ROLE;
@@ -238,7 +238,7 @@ SELECT pg_temp.rule_assert((SELECT no_of_days=30 AND duration=1 FROM public.invo
 -- (19:00 UTC on 1 May) is 31 days after 1 April, so 1.5 periods.
 UPDATE public.dispatch SET disp_date='2026-05-01T19:00:00Z' WHERE disp_no='RULC1';
 SET LOCAL ROLE authenticated;
-SELECT pg_temp.rule_assert(pg_temp.rule_update(:'invoice_c'::uuid,:'c_header'::jsonb || '{"inv_no":20261044}'::jsonb,:'c_items'::jsonb)->>'success'='true','edit after the dispatch date moved');
+SELECT pg_temp.rule_assert(pg_temp.rule_update(:'invoice_c'::uuid,:'c_header'::jsonb || '{"inv_no":20261048}'::jsonb,:'c_items'::jsonb)->>'success'='true','edit after the dispatch date moved');
 RESET ROLE;
 SELECT pg_temp.rule_assert((SELECT no_of_days=31 AND duration=1.5 FROM public.invoice_trl WHERE invoice_id=:'invoice_c'::uuid)
  AND (SELECT total=100 FROM public.invoice WHERE id=:'invoice_c'::uuid),'00:30 on 2 May in India counts as 2 May: 31 days, total 100');
@@ -444,7 +444,7 @@ SELECT pg_temp.rule_assert((SELECT jsonb_agg(jsonb_build_array((l->>'dispatch_qt
 -- 2 on the edit path. An invoice cannot be moved onto a receipt that is
 -- already invoiced (the RULC invoice onto RULA and its lines).
 SET LOCAL ROLE authenticated;
-SELECT pg_temp.rule_assert(pg_temp.rule_refused(pg_temp.rule_update(:'invoice_c'::uuid,:'a_header'::jsonb || '{"inv_no":20261044}'::jsonb,:'a_items'::jsonb),
+SELECT pg_temp.rule_assert(pg_temp.rule_refused(pg_temp.rule_update(:'invoice_c'::uuid,:'a_header'::jsonb || '{"inv_no":20261048}'::jsonb,:'a_items'::jsonb),
  'GRN is already invoiced'),'edit: an invoice cannot move onto an invoiced receipt');
 RESET ROLE;
 SELECT pg_temp.rule_assert((SELECT gr_id=:'grn_c'::uuid AND total=100 FROM public.invoice WHERE id=:'invoice_c'::uuid)
@@ -465,32 +465,35 @@ DELETE FROM public.invoice_trl WHERE invoice_id='00000000-0000-4000-8000-0000000
 DELETE FROM public.invoice WHERE id='00000000-0000-4000-8000-000000000041';
 UPDATE public.goodsreceived SET invoiced=true WHERE id=:'grn_a'::uuid;
 
--- 5. An invoice with a payment cannot be deleted; without it, it can, the
+-- 5. An invoice with a payment cannot be cancelled (nor deleted: migration 134); without it, it can be cancelled, the
 -- receipt is free again, staff invoices it again, and the history of the
--- deleted invoice stays.
+-- cancelled invoice stays.
 INSERT INTO public.payments(payment_no,payment_date,customer_id,customer_name,amount,invoice_id)
  VALUES ('RULPAY1','2026-05-03T12:00:00Z',:'customer_id'::uuid,'Line Rule Customer',988,:'invoice_a'::uuid);
 SELECT set_config('request.jwt.claims',:'admin_claims',true);
 SET LOCAL ROLE authenticated;
 SELECT public.delete_invoice(:'invoice_a'::uuid) AS paid_delete \gset
-SELECT pg_temp.rule_assert(:'paid_delete'::jsonb->>'success'='false' AND :'paid_delete'::jsonb->>'error'='Cannot delete an invoice that has payments',
- 'an invoice with a payment is not deleted: ' || :'paid_delete');
+SELECT public.cancel_invoice(:'invoice_a'::uuid,'Line rule cleanup',NULL) AS paid_cancel \gset
+SELECT pg_temp.rule_assert(:'paid_delete'::jsonb->>'success'='false' AND :'paid_delete'::jsonb->>'reason'='INVOICE_CANCEL_ONLY',
+ 'an invoice is not deleted (migration 134): ' || :'paid_delete');
+SELECT pg_temp.rule_assert(:'paid_cancel'::jsonb->>'success'='false' AND :'paid_cancel'::jsonb->>'reason'='INVOICE_HAS_PAYMENTS',
+ 'an invoice with a payment is not cancelled: ' || :'paid_cancel');
 RESET ROLE;
 SELECT pg_temp.rule_assert((SELECT count(*)=1 FROM public.invoice WHERE id=:'invoice_a'::uuid)
  AND (SELECT count(*)=2 FROM public.invoice_trl WHERE invoice_id=:'invoice_a'::uuid)
  AND (SELECT invoice_id=:'invoice_a'::uuid FROM public.payments WHERE payment_no='RULPAY1')
- AND (SELECT invoiced FROM public.goodsreceived WHERE id=:'grn_a'::uuid),'the refused delete leaves invoice, lines, payment and receipt');
+ AND (SELECT invoiced FROM public.goodsreceived WHERE id=:'grn_a'::uuid),'the refused delete and cancel leave invoice, lines, payment and receipt');
 DELETE FROM public.payments WHERE payment_no='RULPAY1';
 SET LOCAL ROLE authenticated;
-SELECT pg_temp.rule_assert(public.delete_invoice(:'invoice_a'::uuid)->>'success'='true','the invoice is deleted once the payment is gone');
+SELECT pg_temp.rule_assert(public.cancel_invoice(:'invoice_a'::uuid,'Line rule cleanup',NULL)->>'success'='true','the invoice is cancelled once the payment is gone');
 SELECT set_config('request.jwt.claims',:'staff_claims',true);
 SELECT pg_temp.rule_save1(:'a_header'::jsonb || '{"inv_no":20261047}'::jsonb,:'a_items'::jsonb) AS third \gset
-SELECT pg_temp.rule_assert(:'third'::jsonb->>'success'='true','one-argument save: the receipt is invoiced again after the delete: ' || :'third');
+SELECT pg_temp.rule_assert(:'third'::jsonb->>'success'='true','one-argument save: the receipt is invoiced again after the cancel: ' || :'third');
 RESET ROLE;
 SELECT pg_temp.rule_assert((SELECT total=998 FROM public.invoice WHERE id=(:'third'::jsonb->>'invoice_id')::uuid)
- AND (SELECT count(*)=1 FROM public.invoice WHERE gr_id=:'grn_a'::uuid),'one invoice of 998 for the receipt');
+ AND (SELECT count(*)=1 FROM public.invoice WHERE gr_id=:'grn_a'::uuid AND cancelled_at IS NULL),'one live invoice of 998 for the receipt (the cancelled ones are not counted)');
 SELECT pg_temp.rule_assert((SELECT count(*)=4 FROM public.invoice_discount_history WHERE invoice_id=:'invoice_a'::uuid),
- 'the deleted invoice''s discount history is kept');
+ 'the cancelled invoice''s discount history is kept');
 -- A reason longer than 500 characters is cut to 500 on the invoice and in the history.
 SELECT set_config('request.jwt.claims',:'staff_claims',true);
 SET LOCAL ROLE authenticated;

@@ -1138,7 +1138,7 @@ in-loop `Cannot delete item "..." - has N existing dispatches` stays as a backst
 every insert and delete, and every update except one that changes only `updated_at`, `updated_by`, `out_of_stock` or `invoiced` of a GRN, or
 only the `stock` of a line (every dispatch moves stock; `stock_movements` records it). `delete_grn_safe` still hard-deletes and the DELETE
 triggers keep a copy of the GRN and of each line; `audit_log.user_id` is the JWT `sub` (null for a service connection). History starts at the
-deploy; nothing purges `audit_log`. `save_grn` and `update_grn` also refuse a registration over 20 characters:
+deploy; `audit_log` is purged only by its retention (8 years, 2920 days; migration 134, below). `save_grn` and `update_grn` also refuse a registration over 20 characters:
 `{success:false, error:'Registration can have at most 20 characters', error_code:'registration_too_long', data:{limit:20}, message}` (the column is
 `varchar(20)`; before, a database text). `warehouse_security.ascii_digits(text)` turns Gujarati, Devanagari, Arabic-Indic and extended
 Arabic-Indic digits into 0-9; `save_grn` and `update_grn` store `rack` and `package_mark` through it. Rows already stored are not converted.
@@ -1357,6 +1357,56 @@ History: migrations 100, 102, 109, 120 and 121.
 - The three-argument `save_invoice` no longer refuses on the phone's estimated header `total`, `labour` and `tax_amount` (the
   server recomputes them); the discount keeps its range check. `delete_invoice` locks the live invoice, re-checks payments, and
   clears `goodsreceived.invoiced` only when no other live invoice holds the GRN (also in its trigger).
+
+### Cancelling an invoice (migration 134)
+
+An invoice is **cancelled, never deleted**: it keeps its number and its lines, stays visible (a customer account sees it, marked cancelled)
+and can not be edited. Owner decision, review finding H5.
+
+`cancel_invoice(p_invoice_id uuid, p_reason text, p_expected_updated_at timestamptz DEFAULT NULL)` (administrators and supervisors; staff and
+customers get `Staff access required`, a raised `42501`). The reason is trimmed and must be 3 to 500 characters. `p_expected_updated_at` is the
+invoice's `updated_at` as the caller read it (the version token; `NULL` = no check). Success:
+
+```
+{ "success": true, "invoice_id": "<uuid>", "invoice_number": 5, "inv_fin_year": 2026, "gr_id": "<uuid>", "cancelled_at": "<timestamptz>",
+  "cancelled_by": "<user_profiles.id>", "cancel_reason": "<trimmed>", "updated_at": "<the new token>", "message": "Invoice cancelled successfully" }
+```
+
+Refusals (the envelope of "One refusal envelope": `{success:false, error_code:'WH409', reason, error, message, ...}`; nothing is written):
+
+| `reason` | When | Extra keys |
+| --- | --- | --- |
+| `CANCEL_REASON_INVALID` | reason missing, blank, under 3 or over 500 characters | `min` 3, `max` 500 |
+| `STALE_RECORD` | the invoice changed after the caller read it | `what:'invoice'`, `id`, `expected_updated_at`, `current_updated_at` |
+| `INVOICE_CANCELLED` | already cancelled | `invoice_id`, `cancelled_at` |
+| `INVOICE_HAS_PAYMENTS` | a payment refers to the invoice | `invoice_id`, `payments` (count) |
+| `USER_REQUIRED` | a service connection with no person behind it | none |
+
+The reason is trimmed like the discount reason (spaces, no-break spaces and zero-width characters count as blank) and the table refuses a cancelled invoice without a person or with a reason outside 3 to 500 characters. No payment can be recorded for a cancelled invoice (nor moved onto one): the insert fails with `WH409`, "Invoice … is cancelled: no payment can be recorded for it". `get_grn_details` `invoices_summary` counts live invoices only (not deleted, not cancelled) and adds `cancelled_count`. `get_invoice_range_for_print` (preprinted printing) leaves cancelled invoices out of `data` and lists them in `skipped` as `{inv_no, inv_fin_year, invoice_id, reason:'cancelled'}`; `print-invoice-preprinted` returns that list as `skipped`, and refuses a range that holds only cancelled invoices.
+
+An unknown or deleted invoice is `{success:false, error:'Invoice not found'}` (as `update_invoice` answers it). The GRN's `invoiced` flag is cleared
+unless another live invoice (not deleted, not cancelled) holds the GRN. A cancelled invoice is **not live**: its dispatch lines can go on a new invoice, and
+the GRN and dispatch edit rules, `get_grn_edit_state`, `get_grn_item_rates` and `get_dispatch_details` treat it as no invoice. Its number stays taken:
+`NUMBER_TAKEN` for a new invoice with that number, and `get_next_invoice_number` still counts it.
+
+`delete_invoice(p_invoice_id)` now **refuses** and deletes nothing: `{success:false, error_code:'WH409', reason:'INVOICE_CANCEL_ONLY', error:'An invoice is
+not deleted: cancel it instead. Its number stays in the books.', message, invoice_id}` (an unauthorised caller keeps the old answer
+`{success:false, error:'Staff access required'}` and the like).
+`update_invoice` and the three-argument `save_invoice` over the id of a cancelled invoice answer `{success:false, error_code:'WH409',
+reason:'INVOICE_CANCELLED', error:'This invoice is cancelled and can not be changed.', message, invoice_id}` (`save_invoice` adds `function_version`).
+
+New fields: `get_invoice_detail` `invoice.cancelled_at` and `invoice.cancel_reason` (every reader; `null` when not cancelled), and for administrators,
+supervisors and staff also `invoice.cancelled_by` and `invoice.cancelled_by_name`; `get_invoices_list` rows carry `cancelled_at` and `cancel_reason`; the
+`invoice` table columns `cancelled_at` and `cancel_reason` are readable by name like `deleted_at` (`cancelled_by` is not: who cancelled is read through `get_invoice_detail` and `get_invoice_data`, which answer `cancelled_by` and `cancelled_by_name` to administrators, supervisors and staff only; `get_invoice_data` also answers `cancelled_at` and `cancel_reason` in `data.header`). `get_customer_invoice_summary` lists a
+cancelled invoice with `payment_status.status = 'cancelled'` (and `cancelled_at`, `cancel_reason`, balance 0) and leaves it out of every sum and
+count (`summary.total_invoices`, `total_amount`, `paid_count`, `pending_count`, the months and the customers); `summary.cancelled_count` says how many
+there are. `get_customer_activity_detail` does the same (`summary.cancelled_count`, `recent_invoices[].status = 'cancelled'`), and
+`get_all_customer_activity_summary` leaves them out of `total_invoice_amount`. The invoice-history report PDF prints such a row as Cancelled with
+no amount; the invoice PDF of a cancelled invoice has the line `CANCELLED <date> — <reason>` under the title.
+
+**Audit.** `invoice`, `invoice_trl`, `payments` and `dispatch_trl` write `audit_log` rows (`public.audit_trigger_func()`): every insert and delete, and
+every update that changes more than `updated_at`. `audit_log` is kept 8 years (2920 days, `warehouse_maintenance.retention_policy`; GST records
+are kept 72 months), up from 730 days.
 
 ### Unbilled bags (D9)
 
