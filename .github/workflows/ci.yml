@@ -732,6 +732,8 @@ jobs:
           git -C "$fault" add migrations/99999999999999_ci_fail.sql
           git -C "$fault" -c user.name=ci -c user.email=ci@example.invalid -c commit.gpgsign=false commit -q -m 'CI: a migration that fails on the facility database'
           fault_ref="$(git -C "$fault" rev-parse HEAD)"
+          # Row counts taken now, right before the failing upgrade: the install-time counts are older than the setup and doctor passes since.
+          if grep -q -- '--counts' scripts/data-fingerprint.sh; then bash scripts/data-fingerprint.sh --counts > "$RUNNER_TEMP/counts-drill-before"; fi
           # The upgrade must fail, inside setup, after the checkout moved; the record is kept and the API stays closed.
           if bash upgrade.sh --ref "$fault_ref" > "$RUNNER_TEMP/failed-upgrade.log" 2>&1; then
             cat "$RUNNER_TEMP/failed-upgrade.log"
@@ -773,8 +775,15 @@ jobs:
           test "$(node -p 'JSON.parse(require("fs").readFileSync(process.argv[1], "utf8")).instanceId' "$WAREHOUSE_STATE_DIR/public/instance.json")" = "$(cat "$RUNNER_TEMP/instance-before")"
           bash scripts/compose.sh exec -T db psql -X -qAt -U supabase_admin -d postgres \
             -c "SELECT mobile FROM public.user_profiles WHERE role = 'admin' ORDER BY created_at" | diff -u "$RUNNER_TEMP/admins-before" -
-          if test -s "$RUNNER_TEMP/counts-before"; then
-            bash scripts/data-fingerprint.sh --counts | diff -u "$RUNNER_TEMP/counts-before" -
+          # The business tables and the stored objects have exactly their rows again; every other table (logs, sessions, ledgers that setup and
+          # the doctor write to) has at least the rows it had.
+          if test -s "$RUNNER_TEMP/counts-drill-before"; then
+            bash scripts/data-fingerprint.sh --counts > "$RUNNER_TEMP/counts-drill-after"
+            for table in customers goodsreceived goodsreceived_trl dispatch dispatch_trl invoice invoice_trl orders order_items grn_images dispatch_images; do
+              test "$(grep "^public.$table " "$RUNNER_TEMP/counts-drill-before" || true)" = "$(grep "^public.$table " "$RUNNER_TEMP/counts-drill-after" || true)"
+            done
+            test "$(grep '^storage.objects ' "$RUNNER_TEMP/counts-drill-before" || true)" = "$(grep '^storage.objects ' "$RUNNER_TEMP/counts-drill-after" || true)"
+            awk 'NR == FNR { before[$1] = $2; next } ($1 in before) && $2 + 0 < before[$1] + 0 { print "rows lost in " $1 ": " before[$1] " -> " $2; lost = 1 } END { exit lost }' "$RUNNER_TEMP/counts-drill-before" "$RUNNER_TEMP/counts-drill-after"
           fi
           # The drill's log line is history; set aside so that the dry-run assertion of the next step (no upgrades.log yet) stays strict.
           mv "$WAREHOUSE_STATE_DIR/config/upgrades.log" "$RUNNER_TEMP/upgrades-after-rollback.log"

@@ -137,7 +137,7 @@ names the candidate it was built for; the revision is the commit of both.
       `docker/docker-compose.yml` that have `build:`), and each `ref` is `ghcr.io/abhiguru/supabase-warehouse-template/<service>@sha256:<64 hex>`.
 - [ ] A release candidate's draft is **published as a pre-release before the rehearsal** (`gh release edit vX.Y.Z-rc.N --draft=false
       --prerelease`), or the rehearsal's `setup.sh` finds no file and builds, which proves nothing about the pull. The rehearsal output must
-      say `Pulled N image(s) from the release (...)`. The final's job needs the candidate's list, so keep the candidate's release (draft or
+      say `Taken from the release: N (M already on this host) (...)`. The final's job needs the candidate's list, so keep the candidate's release (draft or
       published) until the final has been tagged.
 
 ## Upgrade rehearsal from the previous tag

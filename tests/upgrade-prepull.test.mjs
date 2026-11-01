@@ -40,9 +40,14 @@ function world() {
   const shim = (name, body) => { writeFileSync(join(bin, name), `#!/bin/bash\n${body}\n`); chmodSync(join(bin, name), 0o755); };
   shim('uname', 'if [ "$1" = -m ]; then echo "${FAKE_ARCH:-x86_64}"; else exec /usr/bin/uname "$@"; fi');
   shim('curl', `echo "curl $*" >> "$FAKE_LOG"
-[ -z "$FAKE_CURL_FAIL" ] || { echo "curl: (22) The requested URL returned error: 404" >&2; exit 22; }
+case "$FAKE_CURL_FAIL" in
+  '') ;;
+  network) echo "curl: (6) Could not resolve host: github.com" >&2; printf 000; exit 6 ;;
+  *) echo "curl: (22) The requested URL returned error: $FAKE_CURL_FAIL" >&2; printf '%s' "$FAKE_CURL_FAIL"; exit 22 ;;
+esac
 out=''; while [ $# -gt 0 ]; do if [ "$1" = --output ]; then out="$2"; fi; shift; done
-printf '%s' "$FAKE_JSON" > "$out"`);
+printf '%s' "$FAKE_JSON" > "$out"
+printf 200`);
   shim('docker', `echo "docker $*" >> "$FAKE_LOG"
 case "$1 $2" in
   "pull --quiet")
@@ -87,7 +92,7 @@ test('the file is fetched with the address and the curl flags of scripts/build-i
   const w = world();
   try {
     const fetched = w.run({ TO_LABEL: 'v1.2.3+build.5', FAKE_JSON: manifest({ release: 'v1.2.3+build.5' }) }).calls.find(line => line.startsWith('curl '));
-    assert.match(fetched, /^curl --fail --silent --show-error --location --proto =https --proto-redir =https --tlsv1\.2 --max-time 60 --max-filesize 1048576 --output \S+ https:\/\/github\.com\/abhiguru\/supabase-warehouse-template\/releases\/download\/v1\.2\.3%2Bbuild\.5\/release-images\.json$/);
+    assert.match(fetched, /^curl --fail --silent --show-error --location --proto =https --proto-redir =https --tlsv1\.2 --max-time 60 --max-filesize 1048576 --output \S+ --write-out %\{http_code\} https:\/\/github\.com\/abhiguru\/supabase-warehouse-template\/releases\/download\/v1\.2\.3%2Bbuild\.5\/release-images\.json$/);
     const flags = text => /curl (--fail .*?) --output/.exec(text)?.[1];
     assert.ok(flags(readFileSync(join(root, 'scripts/build-images.sh'), 'utf8')), 'build-images.sh has the curl line');
     assert.equal(flags(readFileSync(join(root, 'scripts/upgrade-prepull.sh'), 'utf8')), flags(readFileSync(join(root, 'scripts/build-images.sh'), 'utf8')), 'the flags are the same');
@@ -126,9 +131,15 @@ test('a dry run fetches and checks the file and says what a real run pulls, and 
 test('a download that fails, or a file of another release or commit, refuses with "Nothing was changed" and pulls nothing', () => {
   const w = world();
   try {
-    const down = w.run({ FAKE_CURL_FAIL: '1' });
-    assert.equal(down.status, 1);
-    assert.match(down.stderr, /Refusing: https:\/\/github\.com\/.*release-images\.json could not be fetched \(curl: \(22\)[^)]*\)[^]*Nothing was changed\./);
+    // The network, or the server, failing refuses; a 404 is the release having no file (see the next test).
+    for (const [code, pattern] of [['network', /could not be fetched \(curl: \(6\) Could not resolve host: github\.com , HTTP 000\)/], ['503', /could not be fetched \(curl: \(22\)[^)]*503 , HTTP 503\)/]]) {
+      const down = w.run({ FAKE_CURL_FAIL: code });
+      assert.equal(down.status, 1, code);
+      assert.match(down.stderr, /Refusing: https:\/\/github\.com\/.*release-images\.json could not be fetched/);
+      assert.match(down.stderr, pattern, code);
+      assert.match(down.stderr, /Nothing was changed\./);
+      assert.deepEqual(pulls(down.calls), [], code);
+    }
     for (const [label, json, pattern] of [
       ['another commit', manifest({ commit: 'f'.repeat(40) }), /is not usable: it names commit/],
       ['another release', manifest({ release: 'v9.9.9' }), /is not usable: it is for release "v9\.9\.9", not v1\.2\.3/],
@@ -140,7 +151,7 @@ test('a download that fails, or a file of another release or commit, refuses wit
       assert.match(r.stderr, /Nothing was changed\./, label);
       assert.deepEqual(pulls(r.calls), [], `${label}: nothing was pulled`);
     }
-    assert.deepEqual(w.run({ FAKE_CURL_FAIL: '1' }).leftovers, [], 'no temporary file is left');
+    assert.deepEqual(w.run({ FAKE_CURL_FAIL: 'network' }).leftovers, [], 'no temporary file is left');
   } finally { w.cleanup(); }
 });
 
@@ -175,5 +186,19 @@ test('a pulled image of another digest or of another commit is refused, and the 
     assert.equal(none.status, 1);
     assert.match(none.stderr, /<no revision label>/);
     assert.ok(!none.calls.some(line => /^docker tag\b/.test(line)));
+  } finally { w.cleanup(); }
+});
+
+test('a release with no release-images.json (the download answers 404) is skipped with one warning, exit 0, nothing pulled and nothing left behind', () => {
+  const w = world();
+  try {
+    const r = w.run({ FAKE_CURL_FAIL: '404' });
+    assert.equal(r.status, 0, r.stdout + r.stderr);
+    assert.match(r.stderr, /^Warning: https:\/\/github\.com\/.*\/v1\.2\.3\/release-images\.json answers 404 \(.*\): release v1\.2\.3 has no release-images\.json, so its images are not pulled ahead; setup pulls or builds them while the API is closed\.\n$/);
+    assert.deepEqual(pulls(r.calls), []);
+    assert.deepEqual(r.leftovers, []);
+    // Only the 404 is let through: a dry run behaves the same, and a file that does not fit still refuses.
+    assert.equal(w.run({ FAKE_CURL_FAIL: '404', DRY: 'yes' }).status, 0);
+    assert.equal(w.run({ FAKE_JSON: manifest({ commit: 'f'.repeat(40) }) }).status, 1);
   } finally { w.cleanup(); }
 });

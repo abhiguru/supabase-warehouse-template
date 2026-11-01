@@ -386,12 +386,15 @@ test('the upgrade writes its record before the first change, runs every step in 
     assert.match(w.upgradesLog(), new RegExp(`^\\d{4}-\\d\\d-\\d\\dT\\d\\d:\\d\\d:\\d\\dZ v0\\.1\\.0 -> v0\\.2\\.0 \\(from ${from.slice(0, 12)}, backup ${dir}\\) ok\\n$`));
     assert.equal(statModeOf(join(w.state, 'config/upgrades.log')) & 0o077, 0, 'the log is private');
     assert.notEqual(from, r.head);
+    const lastBefore = readFileSync(join(w.state, 'config/upgrade-last'), 'utf8');
+    assert.match(lastBefore, new RegExp(`^from_sha=${from}$`, 'm'));
     // Repeating it at the release: no checkout, the rest runs again (with a fresh backup: no upgrade was interrupted).
     const again = w.run(['v0.2.0']);
     assert.equal(again.status, 0, again.stderr);
     assert.match(again.stdout, /already at v0\.2\.0/);
     assert.equal(again.log.length, 3);
     assert.match(w.upgradesLog().trim().split('\n').at(-1), /v0\.2\.0 -> v0\.2\.0 \(from [0-9a-f]{12}, backup [^)]*\) ok$/);
+    assert.equal(readFileSync(join(w.state, 'config/upgrade-last'), 'utf8'), lastBefore, 'a repeated run at the same release keeps the note of the real upgrade');
   } finally { w.cleanup(); }
 });
 

@@ -18,7 +18,7 @@ file used to carry for earlier installations are in git: `git show b45ae0b:CHANG
   starting with `bash scripts/maintenance.sh on`. It only prints. `doctor`, `start.sh` and the checker do not report `upgrade-last`.
   (3) The release's preflight (`scripts/upgrade-prepull.sh`) pulls the release's images by digest, and the Docker Hub images its compose file
   names, before the API is closed; `scripts/build-images.sh` does not pull an image of the released digest that is already on the host. A
-  download or pull that fails refuses the upgrade with "Nothing was changed". Operator actions: none. Tests: `tests/upgrade-prepull.test.mjs`
+  download (other than a 404: a release with no `release-images.json` is skipped with a warning) or pull that fails refuses the upgrade with "Nothing was changed". `rollback --last` first copies `upgrade-last` back to `upgrade-in-progress`, so that doctor and the checker report an interrupted upgrade until the list has been run, and leaves out the image lines when the saved images are gone; the setup summary now reads "Taken from the release: N (M already on this host)". Operator actions: none. Tests: `tests/upgrade-prepull.test.mjs`
   (new), `tests/upgrade-preflight.test.mjs`, `tests/upgrade.test.mjs`, `tests/upgrade-record.test.mjs`, `tests/build-images.test.mjs`,
   `tests/workflows.test.mjs`.
 - **Break-glass codes for every facility worker, with their own sign-in (migration 132).** `scripts/break-glass-admin.sh` now makes a one-time code

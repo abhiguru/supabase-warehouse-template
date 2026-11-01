@@ -2390,7 +2390,7 @@ and cost only disk; `docker image rm <ref>` removes one).
   its recipe. For each service setup would build whose fingerprint equals the one in the file, it runs `docker pull` of
   `<service>@sha256:<digest>`, checks that the image on the host carries that digest, tags it `<project>-<service>` and records it as a build
   would, so nothing downstream differs. It prints which services were pulled and which built, for example
-  `Pulled 4 image(s) from the release (db functions pdf-renderer storage) and built 1 here (gateway).` Everything else builds here as
+  `Taken from the release: 4 (0 already on this host) (db functions pdf-renderer storage); built 1 here (gateway).` ("already on this host" counts the images the upgrade preflight pulled ahead) Everything else builds here as
   always, with one line that says why: a checkout that is not at a tag (`main`, a branch, a copy you changed), a release whose file
   is missing or cannot be read (the release is still a draft, GitHub or `ghcr.io` cannot be reached), a file that names another
   commit or release, or a reference outside `ghcr.io/abhiguru/supabase-warehouse-template`, a recipe in your checkout that is not

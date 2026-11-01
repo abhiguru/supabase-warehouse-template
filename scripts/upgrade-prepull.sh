@@ -8,7 +8,7 @@
 # Pulling is all it does: it never runs `docker tag`, because the tag <project>-<service> names the images the facility runs now (upgrade.sh
 # tags them as pre-<release> next, and the way back puts them back); setup of the new release tags the pulled images itself and finds them
 # on this host. Anything that is not a release tag (--ref), a host that is not x86-64 (the images are built for x86-64 only) or without
-# curl is skipped with one line. A download that fails, a file that does not fit the release, a pull that fails or times out, or a pulled
+# curl is skipped with one line. A release with no release-images.json (the download answers 404) is skipped with one warning: setup pulls or builds inside the downtime, as before. A download that fails otherwise (network, 5xx), a file that does not fit the release, a pull that fails or times out, or a pulled
 # image of another digest or commit refuses the upgrade: nothing has been changed yet, and the same command can be run again.
 #
 # From the preflight, in the environment: STATE, TO_SHA, TO_LABEL, DRY (yes for --dry-run: the file is fetched and checked, nothing is pulled).
@@ -38,8 +38,19 @@ command -v docker >/dev/null || refuse 'docker is not installed, so the images o
 url="https://github.com/abhiguru/supabase-warehouse-template/releases/download/${TO_LABEL//+/%2B}/release-images.json"
 file="$(mktemp "$STATE/config/.release-images.XXXXXX")" || refuse "a temporary file cannot be made in $STATE/config."
 trap 'rm -f -- "$file"' EXIT
-if ! why="$(curl --fail --silent --show-error --location --proto '=https' --proto-redir '=https' --tlsv1.2 --max-time 60 --max-filesize 1048576 --output "$file" "$url" 2>&1)"; then
-  refuse "$url could not be fetched (${why:-curl failed}), so the images of $TO_LABEL cannot be pulled before the downtime. Run this command again when the network is back."
+err="$(mktemp "$STATE/config/.release-images-err.XXXXXX")" || refuse "a temporary file cannot be made in $STATE/config."
+trap 'rm -f -- "$file" "$err"' EXIT
+rc=0
+code="$(curl --fail --silent --show-error --location --proto '=https' --proto-redir '=https' --tlsv1.2 --max-time 60 --max-filesize 1048576 --output "$file" --write-out '%{http_code}' "$url" 2> "$err")" || rc=$?
+if ((rc != 0)); then
+  why="$(tr '\n' ' ' < "$err")"
+  # The release published no such file (an older release, or one whose images were not published): nothing to pull ahead of time, and setup
+  # pulls or builds inside the downtime as it always did. Anything else (the network, a 5xx, a timeout) refuses: the registry host is not answering.
+  if [[ "$code" == 404 ]]; then
+    printf 'Warning: %s answers 404 (%s): release %s has no release-images.json, so its images are not pulled ahead; setup pulls or builds them while the API is closed.\n' "$url" "${why:-not found}" "$TO_LABEL" >&2
+    exit 0
+  fi
+  refuse "$url could not be fetched (${why:-curl failed}${code:+, HTTP $code}), so the images of $TO_LABEL cannot be pulled before the downtime. Run this command again when the network is back."
 fi
 # Checks the file against the release and the commit (and its recipes hash); with no service named it prints nothing.
 if ! selection="$(node "$HERE/image-recipes.mjs" release-select "$file" "$TO_LABEL" "$TO_SHA" 2>&1)"; then

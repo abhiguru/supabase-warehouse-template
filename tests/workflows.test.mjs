@@ -209,8 +209,16 @@ test('operator-upgrade drills the way back that upgrade.sh printed: a fault migr
   // Then the facility is the starting point again.
   for (const line of [
     'test "$(git rev-parse HEAD)" = "$before"', 'test ! -e "$WAREHOUSE_STATE_DIR/config/upgrade-in-progress"', 'test ! -e "$WAREHOUSE_STATE_DIR/config/maintenance"',
-    'node scripts/doctor.mjs --local', 'test "$(rpc)" = 200', 'bash scripts/data-fingerprint.sh --counts | diff -u "$RUNNER_TEMP/counts-before" -',
+    'node scripts/doctor.mjs --local', 'test "$(rpc)" = 200',
   ]) assert.ok(run.includes(line), line);
+  // Counts are retaken right before the failing upgrade (not the install-time ones); business tables and storage compare exactly, the rest "not fewer".
+  assert.ok(run.indexOf('> "$RUNNER_TEMP/counts-drill-before"') > 0 && run.indexOf('> "$RUNNER_TEMP/counts-drill-before"') < run.indexOf('if bash upgrade.sh --ref "$fault_ref"'), 'counts are taken before the failing upgrade');
+  assert.doesNotMatch(run, /counts-before"/, 'the install-time counts are not used by the drill');
+  const business = /for table in ([a-z_ ]+); do\n\s+test "\$\(grep "\^public\.\$table " [^\n]*= [^\n]*\n\s+done/.exec(run)?.[1].split(' ');
+  const seeded = /for table in (customers [a-z_ ]+); do/.exec(ci.slice(ci.indexOf('\n  seeded-upgrade:\n')))?.[1].split(' ');
+  assert.deepEqual(business, seeded, 'the business tables are those the seeded upgrade compares');
+  assert.match(run, /test "\$\(grep '\^storage\.objects ' "\$RUNNER_TEMP\/counts-drill-before" \|\| true\)" = "\$\(grep '\^storage\.objects ' "\$RUNNER_TEMP\/counts-drill-after" \|\| true\)"/);
+  assert.match(run, /awk 'NR == FNR [^\n]*rows lost in [^\n]*"\$RUNNER_TEMP\/counts-drill-before" "\$RUNNER_TEMP\/counts-drill-after"/);
   assert.match(run, /mv "\$WAREHOUSE_STATE_DIR\/config\/upgrades\.log" "\$RUNNER_TEMP\/upgrades-after-rollback\.log"/, 'the drill\'s log line is set aside: the next step asserts there is none');
   assert.match(run, /get_public_config/);
   // The drill's time is paid for.

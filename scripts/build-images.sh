@@ -247,7 +247,7 @@ pull_release_image() {
   # A pull that stalls would hold setup inside the downtime window of an upgrade; after the limit the image is built here instead.
   # An image of this digest that is already on the host (the upgrade preflight pulled it before the API was closed, scripts/upgrade-prepull.sh)
   # is not fetched again: the digest and revision checks below are made on it all the same, and the downtime needs no registry.
-  if docker image inspect --format '{{.Id}}' "$ref" >/dev/null 2>&1; then echo "The $service image of release $release_tag_used is already on this host ($ref)."
+  if docker image inspect --format '{{.Id}}' "$ref" >/dev/null 2>&1; then echo "The $service image of release $release_tag_used is already on this host ($ref)."; already_here=$((already_here + 1))
   elif command -v timeout >/dev/null; then out="$(timeout -k 10 "$limit" docker pull --quiet "$ref" 2>&1)" || rc=$?
   else out="$(docker pull --quiet "$ref" 2>&1)" || rc=$?; fi
   if ((rc != 0)); then
@@ -275,6 +275,7 @@ pull_release_image() {
   fi
 }
 
+already_here=0
 declare -A plan_fingerprint=() plan_image=() plan_reason=()
 order=()
 while IFS=$'\t' read -r service fingerprint image reason; do
@@ -316,7 +317,7 @@ node "$ROOT/scripts/image-recipes.mjs" record "$record" "${built[@]}"
 
 save_images
 if [[ "$from_release" == true ]]; then
-  echo "Pulled ${#pulled[@]} image(s) from the release (${pulled[*]:-none}) and built ${#services[@]} here (${services[*]:-none}). The next start replaces the containers whose image changed."
+  echo "Taken from the release: ${#pulled[@]} ($already_here already on this host) (${pulled[*]:-none}); built ${#services[@]} here (${services[*]:-none}). The next start replaces the containers whose image changed."
 else
   echo "Built ${#services[@]} image(s). The next start replaces the containers whose image changed."
 fi

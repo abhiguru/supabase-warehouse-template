@@ -161,6 +161,8 @@ record_write() {
 # next successful upgrade replaces it. A failure only warns: the upgrade itself stands.
 record_keep_last() {
   [[ "$RECORD_LIVE" == yes && -f "$RECORD" ]] || return 0
+  # The same release again (a repeated setup) is not an upgrade: its way back would be to itself, and it must not replace the note of the real one.
+  [[ "$FROM_SHA" != "$TO_SHA" ]] || return 0
   local tmp
   if ! tmp="$(umask 077; mktemp "$STATE/config/.upgrade-last.XXXXXX")" \
     || ! { cat -- "$RECORD"; printf 'finished=%s\nresult=ok\n' "$(date -u +%Y-%m-%dT%H:%M:%SZ)"; } > "$tmp" \
