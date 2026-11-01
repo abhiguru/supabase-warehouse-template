@@ -172,6 +172,7 @@ The operator scripts use only Node's built-in modules; `npm ci` is needed only t
 | First administrator | `--admin-phone`, `--admin-name` (both required) | `91` and ten digits, and a display name; see **First administrator** below. |
 | Slack webhook file | `--alert-webhook-file` | Private file with the facility's incoming-webhook URL. `off` only for a non-production install; without the option a terminal is asked and no terminal means setup refuses. See [Setup](#setup). |
 | Sensor Slack webhook file | `--sensor-webhook-file` | Private file with a second, separate incoming-webhook URL for sensor alerts. Required when Slack alerts are on and sensors are on; `off` removes it; leave it out to keep what is stored. See [Setup](#setup). |
+| External heartbeat file | `--heartbeat-url-file` | Private file (mode 0600, outside the checkout, one line) with the ping URL of a dead-man switch such as healthchecks.io; stored as `config/heartbeat-url`. `off` removes it; leave it out to keep what is stored. Without one `npm run doctor` warns, unless the decision is recorded (`config/heartbeat-declined`, [MONITORING.md](MONITORING.md#external-heartbeat-the-dead-man-switch)). Association members also see [An association view with healthchecks](MONITORING.md#an-association-view-with-healthchecks). |
 | Central sign-in (members only) | `--central-issuer` with `--central-jwks-url` or `--central-jwks-file` | The issuer and the public key set (an address or a file) that the association gives you; see [Central sign-in](#central-sign-in). Leave out for SMS sign-in only. |
 | PDF letterhead | `--letterhead-file` | A JPEG or PNG banner (at most 2 MiB) that the GRN, dispatch, invoice and customer stock PDFs print at the top, or `off` for plain PDFs. On a first install setup asks for it on a terminal (Enter means plain PDFs) and, with no terminal and without the option, refuses; a rerun without the option asks nothing and keeps what is there. See [Letterhead image](#letterhead-image-optional). |
 
@@ -306,6 +307,8 @@ bash setup.sh --operator --state-dir "$WAREHOUSE_STATE_DIR" --admin-phone 91XXXX
 ```
 
 Sensor alerts then go to that webhook and everything else stays on the facility webhook ([MONITORING.md](MONITORING.md#alert-delivery)).
+
+The external heartbeat is given the same way: `--heartbeat-url-file /absolute/path` (a private file, mode 0600, one https URL; `off` removes it; leaving it out keeps it). It is not in a backup, so a restore on another host gives it again ([MONITORING.md](MONITORING.md#external-heartbeat-the-dead-man-switch)). `node scripts/doctor.mjs --local` also prints a `Note:` line when a newer release exists ("vX.Y.Z is available (this facility runs vA.B.C)", with "Security release" when its GitHub release says so, and the date the running line stops getting fixes when [SECURITY.md](../SECURITY.md) gives one); the daily "Monitoring is alive" message carries the same line. It is information, never an alert.
 
 The PDF letterhead is asked the same way: give `--letterhead-file /absolute/path` (a JPEG or PNG of at most 2 MiB) or
 `--letterhead-file off` for plain PDFs, or let setup ask on a terminal (the path, or Enter for plain PDFs). Without a

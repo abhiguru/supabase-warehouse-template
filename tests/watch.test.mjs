@@ -4761,3 +4761,22 @@ test('a malformed field of a delivery entry is reset on its own and an old key s
   const half = W.normalizeState({ ...W.freshState(T0), lastHeartbeat: T0 - 5, delivery: { 'facility-slack': { lastError: 'broken', lastHeartbeat: T0 - 1 } } }, T0, () => {});
   assert.deepEqual(half.delivery['facility-slack'], { lastError: null, lastHeartbeat: T0 - 1 });
 });
+
+test('the daily "Monitoring is alive" message carries the release line; no line or a failed lookup leaves it out, and it is never an alert', async () => {
+  for (const [lookup, expected] of [
+    [async () => 'v0.8.0 is available (this facility runs v0.7.0) — Security release', /\nRelease: v0\.8\.0 is available \(this facility runs v0\.7\.0\) — Security release$/],
+    [async () => null, null],
+    [async () => { throw new Error('lookup exploded'); }, null],
+  ]) {
+    const h = harness();
+    try {
+      h.deps.releaseLine = lookup;
+      await W.runOnce(h.deps, { checks: [], ...NO_JOBS });
+      const beat = h.posts.filter(p => /^Monitoring is alive/.test(p.text));
+      assert.equal(beat.length, 1);
+      if (expected) assert.match(beat[0].text, expected); else assert.doesNotMatch(beat[0].text, /Release:/);
+      assert.equal(h.posts.length, 1, 'no message of its own');
+      assert.deepEqual(Object.keys(W.loadState(h.state, h.clock.t, h.deps.readText).alerts), [], 'no alert state');
+    } finally { clean(h); }
+  }
+});

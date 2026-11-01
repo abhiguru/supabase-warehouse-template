@@ -13,7 +13,9 @@ import { isMain } from './is-main.mjs';
 import { driveSpace, isWslHost, statfsWithTimeout, vhdxDrive, wslDriveVerdict } from './wsl-host.mjs';
 import { usbBackupWarning } from './usb-backup-status.mjs';
 import { interruptedUpgradeWarning } from './upgrade-record.mjs';
-import { storedSensorWebhook, storedWebhook } from './alert-webhook.mjs';
+import { storedHeartbeatUrl, storedSensorWebhook, storedWebhook } from './alert-webhook.mjs';
+import { HEARTBEAT_DECLINED_NAME, HEARTBEAT_DECLINED_SENTENCE, declinedMarker } from './declined-marker.mjs';
+import { releaseLine } from './release-check.mjs';
 import { defaultDeps, legacyDailyAdvice, loadState, maintenanceMarked, runHealth, statePath, stoppedByOperator } from './watch.mjs';
 import { ADAPTERS, TARGET_IDS } from './notify.mjs';
 import { sensorReport } from './sensors-check.mjs';
@@ -41,6 +43,8 @@ export const NO_WEBHOOK_WARNING = 'No Slack webhook: alerts are recorded on this
 
 export const INVALID_SENSOR_WEBHOOK_WARNING = 'Sensors are on and Slack alerts are on, but the sensor webhook file (config/sensor-webhook-url) is not a valid Slack webhook: sensor alerts go to the facility channel. Set a valid one with setup.sh --sensor-webhook-file ... (docs/MONITORING.md).';
 const SENSOR_POST_FAILURE_WINDOW_MS = 24 * 60 * 60 * 1000;
+export const NO_HEARTBEAT_WARNING = 'No external heartbeat: if this host or the monitoring checker stops, nobody outside this host is told, because the checker cannot report its own death. Give setup.sh --operator (with your usual inputs) --heartbeat-url-file <a private file holding the ping URL of a dead-man switch such as healthchecks.io> (docs/MONITORING.md, "External heartbeat"), or record the decision with: printf \'%s\\n\' \'We have decided not to use an external heartbeat.\' > config/heartbeat-declined && chmod 600 config/heartbeat-declined';
+
 const sensorWebhookFileExists = state => Boolean(lstatSync(join(state, 'config/sensor-webhook-url'), { throwIfNoEntry: false })?.isFile());
 // The checker's record of its latest failed delivery to the sensor channel ({ at, message }), or null. Read through the
 // checker's own loader, so a state file from before the delivery layer (lastSensorPostError) is understood too.
@@ -119,6 +123,8 @@ export function checkerWarnings(state, {
       if (failed && now - failed.at < SENSOR_POST_FAILURE_WINDOW_MS) out.push(`The last post to the sensor ${ADAPTERS.slack.label} webhook failed ${Math.max(0, Math.round((now - failed.at) / 60000))} minutes ago (${failed.message}): sensor alerts may not be reaching the channel. Test it with node scripts/watch.mjs test-message sensors (docs/MONITORING.md).`);
     }
   }
+  // The checker's own death is reported by nobody inside the host: an external dead-man switch does, unless the facility decided against it.
+  if (!storedHeartbeatUrl(state) && !declinedMarker(state, HEARTBEAT_DECLINED_NAME, HEARTBEAT_DECLINED_SENTENCE)) out.push(NO_HEARTBEAT_WARNING);
   // The alert record (logs/alerts.jsonl) is written by the checker and the daily pass as the operator user; a root-owned copy
   // (made by a sudo run of watch.mjs) would make every write fail quietly.
   let owner;
@@ -281,6 +287,11 @@ export function databaseCollationProblem() {
   return collationProblem(args => probe('bash', [resolve(root, 'scripts/compose.sh'), 'exec', '-T', 'db', ...args]));
 }
 
+// "\nNote: vX.Y.Z is available (this facility runs vA.B.C)", or '' (nothing newer, or no answer): information, never a Warning.
+export async function releaseNote(state, lookup = releaseLine) {
+  try { const line = await lookup({ root, state }); return line ? `\nNote: ${line}` : ''; } catch { return ''; }
+}
+
 export async function doctor({ hostPreflight = false, preflight = false, local = false } = {}) {
   if (process.platform !== 'linux' || process.arch !== 'x64') throw new Error('Linux x86-64 required.');
   if (!supportedNode()) throw new Error('Node.js 22.18+ required.');
@@ -364,7 +375,9 @@ export async function doctor({ hostPreflight = false, preflight = false, local =
   const sensorWarnings = manifest?.capabilities?.sensors === true
     ? sensorReport({ env, db: inDb, compose: args => probe('bash', [resolve(root, 'scripts/compose.sh'), ...args]) }).map(text => `\nWarning: ${text}`).join('')
     : '';
-  const note = [upgradeWarning, usb, ...checker].filter(Boolean).map(text => `\nWarning: ${text}`).join('') + lanNote + numberingWarnings + sensorWarnings + (numbering ? `\n${numbering}` : '');
+  // A newer release, as a Note (not a Warning), for `--local` only: the full check stays free of the network lookup.
+  const releaseText = local ? await releaseNote(state) : '';
+  const note = [upgradeWarning, usb, ...checker].filter(Boolean).map(text => `\nWarning: ${text}`).join('') + lanNote + numberingWarnings + sensorWarnings + (numbering ? `\n${numbering}` : '') + releaseText;
   if (local) return `Local operator services and gateway are healthy.${note}`;
   if (maintenance) throw new Error('Maintenance mode is on (config/maintenance): the API answers 503 "upgrading" to phones on purpose, so the external check cannot pass. Open it with: bash scripts/maintenance.sh off');
   const response = await fetch(`${origin}/functions/v1/get-public-config`, { signal: AbortSignal.timeout(15000), redirect: 'error' });

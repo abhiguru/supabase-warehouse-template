@@ -60,6 +60,7 @@ import { MIN_VHDX_DRIVE_FREE_BYTES, MIN_VHDX_DRIVE_FREE_PERCENT, driveSpace, isW
 import { usbBackupWarning, usbRotationNote } from './usb-backup-status.mjs';
 import { ageText, sensorCheck, sensorLimitSeconds } from './sensors-check.mjs';
 import { postSlackMessage, sensorTestMessage, testMessage } from './alert-webhook.mjs';
+import { releaseLine } from './release-check.mjs';
 import { ADAPTERS, AUDIENCES, TARGET_IDS, audienceOf, ALERT_LOG, createAlertLog, deliver, historyLine, loadTargets, pickAudience, readAlertLog, secretsOf, targetsOf } from './notify.mjs';
 
 const MIN = 60 * 1000;
@@ -409,6 +410,13 @@ export function makeContext(deps, data) {
   // The alert channels of this installation (notify.mjs), read once; their secret addresses; the local record of deliveries.
   ctx.targets = () => (ctx.memo.targets ??= loadTargets(deps.state));
   ctx.secrets = () => secretsOf(ctx.targets());
+  // "vX.Y.Z is available (this facility runs vA.B.C)" or null (scripts/release-check.mjs): information for the daily status, never an alert.
+  ctx.releaseLine = () => (deps.releaseLine ?? (() => releaseLine({ root: deps.root, state: deps.state, run: deps.run, now: deps.now,
+    fetchJson: async (url, { timeoutMs }) => {
+      const response = await deps.fetch(url, { signal: AbortSignal.timeout(timeoutMs), redirect: 'error', headers: { accept: 'application/vnd.github+json', 'user-agent': 'warehouse-release-check' } });
+      if (!response.ok) throw new Error(`HTTP ${response.status}`);
+      return response.json();
+    } })))();
   ctx.alertLog = () => (ctx.memo.alertLog ??= deps.alertLog ?? createAlertLog(deps.state, { now: deps.now, warn: message => (deps.log ?? stderrLog)(message) }));
   ctx.env_ = () => (ctx.memo.env ??= (() => { try { return readEnv(join(deps.state, 'config/compose.env')); } catch { return {}; } })());
   ctx.compose = (args, opts) => deps.run('bash', [join(deps.root, 'scripts/compose.sh'), ...args], opts);
@@ -1642,6 +1650,10 @@ async function heartbeat(ctx) {
       if (notes.length) notes.push(`${listIds(NEVER_MUTED)} are never muted: they are posted anyway.`);
       const muted = notes.length ? ` ${notes.join(' ')}` : '';
       text = `Monitoring is alive - ${describe(ctx)}\n${firing ? `${firing} alert(s) firing.` : 'No alerts firing.'}${muted}`;
+      // A field of the daily status, not a result or an alert: a failed lookup leaves it out.
+      let release = null;
+      try { release = await ctx.releaseLine(); } catch { /* information only */ }
+      if (release) text += `\nRelease: ${release}`;
     }
     const message = { audience: target.audience, kind: 'heartbeat', name: describe(ctx), text: redact(text, ctx.env_(), ctx.secrets()) };
     await postThenKeep(ctx, [target], message, () => { deliveryOf(data, target.id).lastHeartbeat = now; }, () => { deliveryOf(data, target.id).lastHeartbeat = before; });

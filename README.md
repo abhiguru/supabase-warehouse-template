@@ -32,6 +32,7 @@ bash setup.sh --operator \
   --admin-phone 91XXXXXXXXXX \
   --admin-name 'Warehouse Administrator' \
   --alert-webhook-file /secure/warehouse-slack-webhook.txt \
+  --heartbeat-url-file /secure/warehouse-heartbeat-url.txt \
   --letterhead-file /secure/letterhead.png   # or: --letterhead-file off (plain PDFs)
 export WAREHOUSE_STATE_DIR=/srv/warehouse/acme
 node scripts/doctor.mjs --local      # every service healthy on the loopback gateway
@@ -64,11 +65,12 @@ Point an AI coding agent at this repository and tell it to install the backend. 
    4. The company name (`--company`, the facility's display name, up to 120 characters).
    5. The first administrator's phone (`91` + ten digits) and name.
    6. A Slack webhook file (`off` only for a test install).
-   7. A letterhead file, or `off`.
-   8. Central sign-in, yes or no; if yes, the issuer and the key URL or file ([Central sign-in](docs/OPERATOR_INSTALL.md#central-sign-in)); if no, SMS sign-in only. If yes, also ask whether to require this facility's own SMS code at every central sign-in (`--central-local-code on`, default off; read the trade-off in [Central sign-in](docs/OPERATOR_INSTALL.md#central-sign-in)). The operator gives the association this facility's exact public origin (the `--api-url`) for its catalogue. The central identity service is not part of a facility install: the association's primary operator installs it once from its own repository (`central-identity-template`, private; ask the association). A facility needs only the issuer and the key set from the association.
-   9. The daily SMS ceiling, the most MSG91 requests they will pay for in 24 hours (`otp_daily_provider_attempt_cap`).
-   10. The host time zone, the facility's own.
-   11. The state directory (absolute, outside the checkout; the guide uses `/srv/warehouse/<name>`).
+   7. The ping URL of an external heartbeat, a dead-man switch such as healthchecks.io ([External heartbeat](docs/MONITORING.md#external-heartbeat-the-dead-man-switch)), given as a private file (`--heartbeat-url-file`), or `off`. An association member is told the URL of its association check; if the operator declines, doctor keeps a warning unless they record the decision.
+   8. A letterhead file, or `off`.
+   9. Central sign-in, yes or no; if yes, the issuer and the key URL or file ([Central sign-in](docs/OPERATOR_INSTALL.md#central-sign-in)); if no, SMS sign-in only. If yes, also ask whether to require this facility's own SMS code at every central sign-in (`--central-local-code on`, default off; read the trade-off in [Central sign-in](docs/OPERATOR_INSTALL.md#central-sign-in)). The operator gives the association this facility's exact public origin (the `--api-url`) for its catalogue. The central identity service is not part of a facility install: the association's primary operator installs it once from its own repository (`central-identity-template`, private; ask the association). A facility needs only the issuer and the key set from the association.
+   10. The daily SMS ceiling, the most MSG91 requests they will pay for in 24 hours (`otp_daily_provider_attempt_cap`).
+   11. The host time zone, the facility's own.
+   12. The state directory (absolute, outside the checkout; the guide uses `/srv/warehouse/<name>`).
 
 The operator copies every secret file onto the host. Never ask for a secret value in chat, and never print one into a log or a report. Do not `cat` or `echo` a secret file to check it; setup and doctor validate them.
 
@@ -111,7 +113,7 @@ Then read the guide's sections in pieces with the file reader (the table of cont
    ([Setup](docs/OPERATOR_INSTALL.md#setup)), then the full
    [external doctor](docs/OPERATOR_INSTALL.md#external-doctor) through the public origin.
 
-If the operator chose the app too, continue with the app's [Install with an AI agent](https://github.com/abhiguru/rn-warehouse-template#install-with-an-ai-agent) (Expo Go), using this origin and, with central sign-in, the issuer from input 8.
+If the operator chose the app too, continue with the app's [Install with an AI agent](https://github.com/abhiguru/rn-warehouse-template#install-with-an-ai-agent) (Expo Go), using this origin and, with central sign-in, the issuer from input 9.
 
 **Stop and ask the operator** when an input is missing, when a step needs a payment or licence decision or an account outside the host,
 or when a step fails the same way twice; look in [docs/TROUBLESHOOTING.md](docs/TROUBLESHOOTING.md) first.

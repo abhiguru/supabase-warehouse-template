@@ -9,7 +9,7 @@ import { KEY_SET_MAX_BYTES, holdsPrivateKey, usableKeys } from './central-key-se
 import { addMissingDbValues, generatedDbValues } from './db-roles.mjs';
 import { isFixtureAddress, isProviderPlaceholder } from './provider-placeholder.mjs';
 import { LETTERHEAD_NAMES, readLetterhead } from './letterhead.mjs';
-import { LEGACY_WEBHOOK_FILE, SENSOR_WEBHOOK_FILE, WEBHOOK_FILE, assertSensorWebhookPlaceable, placeSensorWebhook, placeWebhook, readAlertWebhook, readSensorWebhook } from './alert-webhook.mjs';
+import { HEARTBEAT_FILE, LEGACY_WEBHOOK_FILE, SENSOR_WEBHOOK_FILE, WEBHOOK_FILE, assertSensorWebhookPlaceable, placeHeartbeatUrl, placeSensorWebhook, placeWebhook, readAlertWebhook, readHeartbeatUrl, readSensorWebhook } from './alert-webhook.mjs';
 
 export function canonicalOrigin(value, name = 'URL') {
   let url;
@@ -280,7 +280,7 @@ function projectContainersRunning(project) {
 export { lanAddressValue, lanCidrValue, lanPortValue } from './lan-common.mjs';
 export const GATEWAY_PORT_REMINDER = 'Update the Cloudflare Tunnel ingress for this installation to http://127.0.0.1:<port> (deploy/cloudflared-config.example.yml), then restart the tunnel.';
 
-export function configure(root, { stateDir, apiUrl, appUrl, company, providerEnv, centralIssuer, centralJwksUrl, centralJwksFile, centralLocalCode, alertWebhookFile, sensorWebhookFile, letterheadFile, gatewayPort, portFree = loopbackPortFree, containersRunning = projectContainersRunning, faultAfterManifest = false } = {}) {
+export function configure(root, { stateDir, apiUrl, appUrl, company, providerEnv, centralIssuer, centralJwksUrl, centralJwksFile, centralLocalCode, alertWebhookFile, sensorWebhookFile, heartbeatUrlFile, letterheadFile, gatewayPort, portFree = loopbackPortFree, containersRunning = projectContainersRunning, faultAfterManifest = false } = {}) {
   const port = gatewayPortValue(gatewayPort);
   const central = centralValues(centralIssuer, centralJwksUrl, centralJwksFile);
   const letterhead = letterheadValue(letterheadFile);
@@ -290,10 +290,13 @@ export function configure(root, { stateDir, apiUrl, appUrl, company, providerEnv
   // Checked before anything is written: a refused file changes nothing.
   const webhook = readAlertWebhook(alertWebhookFile, checkout);
   const sensorWebhook = readSensorWebhook(sensorWebhookFile, checkout);
+  const heartbeatUrl = readHeartbeatUrl(heartbeatUrlFile, checkout);
   // What the result says about it: true (an address was stored), null (removed), undefined (not given). Never the address.
   const state = resolve(stateDir);
   // `off` reports a removal only when a stored URL was there to remove.
   const hadWebhook = [WEBHOOK_FILE, LEGACY_WEBHOOK_FILE].some(file => lstatSync(join(state, file), { throwIfNoEntry: false }));
+  const hadHeartbeatUrl = Boolean(lstatSync(join(state, HEARTBEAT_FILE), { throwIfNoEntry: false }));
+  const heartbeatReport = typeof heartbeatUrl === 'string' ? true : heartbeatUrl === null && hadHeartbeatUrl ? null : undefined;
   const hadSensorWebhook = Boolean(lstatSync(join(state, SENSOR_WEBHOOK_FILE), { throwIfNoEntry: false }));
   const sensorWebhookReport = typeof sensorWebhook === 'string' ? true : sensorWebhook === null && hadSensorWebhook ? null : undefined;
   // The sensor webhook is an addition to the facility one: alerts for the facility never go to the sensor channel, so a sensor
@@ -422,13 +425,14 @@ export function configure(root, { stateDir, apiUrl, appUrl, company, providerEnv
       assertSensorWebhookPlaceable(state);   // refused before the facility webhook changes: no half-applied change
       const placed = placeWebhook(state, webhook);
       placeSensorWebhook(state, sensorWebhook);
+      placeHeartbeatUrl(state, heartbeatUrl);
       // The gateway port is written last: a refusal above (state faults, the webhook) leaves it unchanged,
       // so the rerun after the fix still reports the change and prints the tunnel reminder.
       if (newPortText !== null) {
         replaceFileAtomically(envPath, withGatewayPort(readFileSync(envPath, 'utf8'), newPortText));
         gatewayPortChanged = true;
       }
-      return { created: false, state, manifest, providerUpdated, centralUpdated, letterheadUpdated, letterhead: letterhead === undefined ? undefined : letterhead.bytes ? letterhead.name : letterheadUpdated ? null : undefined, gatewayPortChanged, gatewayPortRenamed, restSchemasUpdated, graphqlSchemaKept, retiredKeysRemoved, dbValuesAdded: withDbValues.added, backupKeyCreated, monitoringUpdated: placed.moved, monitoringCleaned: placed.cleaned, webhook: webhookReport, sensorWebhook: sensorWebhookReport };
+      return { created: false, state, manifest, providerUpdated, centralUpdated, letterheadUpdated, letterhead: letterhead === undefined ? undefined : letterhead.bytes ? letterhead.name : letterheadUpdated ? null : undefined, gatewayPortChanged, gatewayPortRenamed, restSchemasUpdated, graphqlSchemaKept, retiredKeysRemoved, dbValuesAdded: withDbValues.added, backupKeyCreated, monitoringUpdated: placed.moved, monitoringCleaned: placed.cleaned, webhook: webhookReport, sensorWebhook: sensorWebhookReport, heartbeatUrl: heartbeatReport };
     }
     if (readdirSync(state).length) throw new Error('State directory is partially initialized; inspect it before retrying.');
   }
@@ -467,18 +471,19 @@ export function configure(root, { stateDir, apiUrl, appUrl, company, providerEnv
     createBackupKey(join(stage, 'config'));
     placeWebhook(stage, webhook);
     placeSensorWebhook(stage, sensorWebhook);
+    placeHeartbeatUrl(stage, heartbeatUrl);
     renameSync(stage, state);
   } catch (error) { rmSync(stage, { recursive: true, force: true }); throw error; }
-  return { created: true, state, manifest, letterhead: letterhead?.bytes ? letterhead.name : undefined, gatewayPortChanged: port !== null, dbValuesAdded: [], backupKeyCreated: true, monitoringUpdated: true, webhook: webhookReport, sensorWebhook: sensorWebhookReport };
+  return { created: true, state, manifest, letterhead: letterhead?.bytes ? letterhead.name : undefined, gatewayPortChanged: port !== null, dbValuesAdded: [], backupKeyCreated: true, monitoringUpdated: true, webhook: webhookReport, sensorWebhook: sensorWebhookReport, heartbeatUrl: heartbeatReport };
 }
 
 export function parseConfigureArgs(args) {
   const options = {};
   const names = { '--state-dir': 'stateDir', '--api-url': 'apiUrl', '--app-url': 'appUrl', '--company': 'company', '--provider-env': 'providerEnv',
     '--central-issuer': 'centralIssuer', '--central-jwks-url': 'centralJwksUrl', '--central-jwks-file': 'centralJwksFile',
-    '--central-local-code': 'centralLocalCode', '--alert-webhook-file': 'alertWebhookFile', '--sensor-webhook-file': 'sensorWebhookFile', '--letterhead-file': 'letterheadFile', '--gateway-port': 'gatewayPort' };
+    '--central-local-code': 'centralLocalCode', '--alert-webhook-file': 'alertWebhookFile', '--sensor-webhook-file': 'sensorWebhookFile', '--heartbeat-url-file': 'heartbeatUrlFile', '--letterhead-file': 'letterheadFile', '--gateway-port': 'gatewayPort' };
   for (let i = 0; i < args.length; i += 2) {
-    if (!names[args[i]] || !args[i + 1]) throw new Error('Usage: --state-dir ABSOLUTE [--api-url HTTPS --app-url HTTPS --company NAME --provider-env ABSOLUTE] [--central-issuer HTTPS|off (--central-jwks-url HTTPS | --central-jwks-file ABSOLUTE)] [--central-local-code on|off] [--alert-webhook-file ABSOLUTE|off] [--sensor-webhook-file ABSOLUTE|off] [--letterhead-file ABSOLUTE|off] [--gateway-port 1024-65535]');
+    if (!names[args[i]] || !args[i + 1]) throw new Error('Usage: --state-dir ABSOLUTE [--api-url HTTPS --app-url HTTPS --company NAME --provider-env ABSOLUTE] [--central-issuer HTTPS|off (--central-jwks-url HTTPS | --central-jwks-file ABSOLUTE)] [--central-local-code on|off] [--alert-webhook-file ABSOLUTE|off] [--sensor-webhook-file ABSOLUTE|off] [--heartbeat-url-file ABSOLUTE|off] [--letterhead-file ABSOLUTE|off] [--gateway-port 1024-65535]');
     options[names[args[i]]] = args[i + 1];
   }
   return options;
@@ -513,6 +518,8 @@ if (isMain(import.meta.url)) {
     else if (result.webhook === null) console.log('Removed the Slack webhook: the monitoring checker keeps alerts on this host only.');
     if (result.sensorWebhook) console.log('Stored the Slack webhook for sensor alerts (mode 0600, in the state).');
     else if (result.sensorWebhook === null) console.log('Removed the sensor Slack webhook: sensor alerts go to the facility webhook.');
+    if (result.heartbeatUrl) console.log('Stored the external heartbeat URL (mode 0600, config/heartbeat-url): the checker pings it at the end of each run.');
+    else if (result.heartbeatUrl === null) console.log('Removed the external heartbeat URL: the checker no longer pings anything outside this host.');
     if (result.gatewayPortChanged) {
       const gateway = readFileSync(join(result.state, 'config', 'compose.env'), 'utf8').match(/^GATEWAY_HTTP_PORT=(.*)$/m)?.[1];
       console.log(`Gateway port is ${gateway}. ${GATEWAY_PORT_REMINDER.replace('<port>', gateway)}`);

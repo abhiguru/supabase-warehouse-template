@@ -28,8 +28,7 @@ logs"). The release note names the affected versions, what an attacker could do,
 to do besides `bash upgrade.sh vX.Y.Z`. A published advisory (GitHub Security tab) accompanies it when the issue needs a CVE.
 Watch the repository's releases to be told (Watch, Custom, Releases). Fixes land on `main` first and are tagged from there; a backport of
 a code-only fix is tagged from the branch `release/MAJOR.MINOR` of its line (rules: [CONTRIBUTING.md](CONTRIBUTING.md), "How a security
-fix ships"). Nothing on the facility itself tells an operator about a new release yet (a backlog item in
-[docs/PRODUCTION_DEPENDENCIES.md](docs/PRODUCTION_DEPENDENCIES.md)); the release notes on GitHub are the channel.
+fix ships"). `node scripts/doctor.mjs --local` and the daily monitoring message on the facility say when a newer release exists, marked "Security release" when its GitHub release says so ([docs/MONITORING.md](docs/MONITORING.md#a-newer-release)); the release notes on GitHub stay the channel for what to do.
 
 This project has one maintainer ([docs/PRODUCTION_DEPENDENCIES.md](docs/PRODUCTION_DEPENDENCIES.md), "Accepted by the owner"):
 answers and fixes are best effort and slow down when the maintainer is away.

@@ -10,6 +10,15 @@ file used to carry for earlier installations are in git: `git show b45ae0b:CHANG
 
 ### Added
 
+- **Outside observer and release notice.** `setup.sh --operator --heartbeat-url-file ABSOLUTE|off` stores the ping URL of an external
+  dead-man switch as `config/heartbeat-url` (mode 0600; kept when the option is left out); `npm run doctor` warns while there is none, unless
+  the facility records `config/heartbeat-declined` ("We have decided not to use an external heartbeat."). The restore-host "Next" steps
+  say to give it again (it is not in a backup) and, on WSL, to register the Windows tasks. [MONITORING.md](docs/MONITORING.md) describes an association-owned
+  healthchecks project with one check per facility as a fleet "who is down" board (nothing but the ping is sent). `doctor --local` and the
+  daily "Monitoring is alive" message now say "vX.Y.Z is available (this facility runs vA.B.C)", with a Security marker and the support-end
+  date of the running line when they can be told; it is information, never an alert. Tests: `tests/release-check.test.mjs` (new),
+  `tests/alert-webhook.test.mjs`, `tests/configure.test.mjs`, `tests/doctor.test.mjs`, `tests/watch.test.mjs`, `tests/restore-host.test.mjs`.
+
 - **Break-glass codes for every facility worker, with their own sign-in (migration 132).** `scripts/break-glass-admin.sh` now makes a one-time code
   (10 minutes, once, five wrong tries) for an active, approved administrator, **supervisor or staff member** (never a customer) and prints the
   role. The app signs in with it through `POST /functions/v1/operator-otp/break-glass` `{phone_number, code}` (service-role RPC

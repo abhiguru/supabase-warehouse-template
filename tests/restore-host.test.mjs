@@ -134,6 +134,7 @@ test('restore-host builds the state from the backup, rewrites only the three pat
     assert.match(result.stdout, /Install the monitoring checker[^]*sudo bash scripts\/watch-timer\.sh install --state /);
     assert.doesNotMatch(result.stdout, /profile monitoring|prometheus/i);
     assert.match(result.stdout, /alerts are local only until you run setup\.sh --operator[^\n]*--alert-webhook-file/i);
+    assert.match(result.stdout, /external heartbeat again too: its ping URL \(config\/heartbeat-url\) is not in a backup either[^]*--heartbeat-url-file[^]*On WSL[^]*register-tasks\.ps1/);
     assert.equal(readFileSync(join(f.state, 'config/backup.key'), 'utf8'), `${backupKey}\n`, 'the rebuilt installation keeps the backup key');
     assert.equal(statSync(join(f.state, 'config/backup.key')).mode & 0o777, 0o600);
   } finally { clean(f); }

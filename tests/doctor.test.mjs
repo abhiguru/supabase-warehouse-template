@@ -15,7 +15,7 @@ test('operator configuration requires canonical HTTPS origins and supported Node
 import { mkdtempSync, mkdirSync, writeFileSync, chmodSync, rmSync, utimesSync } from 'node:fs';
 import { tmpdir, userInfo } from 'node:os';
 import { join } from 'node:path';
-import { checkStatePlacement, checkerWarnings, CHECKER_MAX_AGE_MS, NO_WEBHOOK_WARNING, NO_SENSOR_WEBHOOK_WARNING, INVALID_SENSOR_WEBHOOK_WARNING, SAME_SENSOR_WEBHOOK_WARNING, stoppedWarning, timerUnit, dailyTimerUnit, freeSpaceVerdict, wslDriveCheck } from '../scripts/doctor.mjs';
+import { checkStatePlacement, checkerWarnings, CHECKER_MAX_AGE_MS, NO_WEBHOOK_WARNING, NO_HEARTBEAT_WARNING, releaseNote, NO_SENSOR_WEBHOOK_WARNING, INVALID_SENSOR_WEBHOOK_WARNING, SAME_SENSOR_WEBHOOK_WARNING, stoppedWarning, timerUnit, dailyTimerUnit, freeSpaceVerdict, wslDriveCheck } from '../scripts/doctor.mjs';
 
 test('a fresh install refuses a state whose parent is not writable, naming the fix', { skip: process.getuid() === 0 && 'root can write anywhere' }, () => {
   const base = mkdtempSync(join(tmpdir(), 'state-parent-'));
@@ -333,13 +333,14 @@ test('port preflight: the way docker prints published ports is read in each form
 
 // The monitoring checker (scripts/watch.mjs, a systemd timer) replaced the Alertmanager warning.
 const HOOK = 'https://hooks.slack.com/services/' + 'T0000000/B0000000/fictionalfictionalfictional';
-function checkerState({ webhook = true, ran = null, daily = null } = {}) {
+function checkerState({ webhook = true, ran = null, daily = null, heartbeat = true } = {}) {
   const base = mkdtempSync(join(tmpdir(), 'doctor-checker-'));
   const state = join(base, 'acme');
   mkdirSync(join(state, 'config'), { recursive: true });
   mkdirSync(join(state, 'public'), { recursive: true });
   writeFileSync(join(state, 'config/compose.env'), 'WAREHOUSE_PROJECT_NAME=warehouse-acme\n', { mode: 0o600 });
   if (webhook) writeFileSync(join(state, 'config/slack-webhook-url'), `${HOOK}\n`, { mode: 0o600 });
+  if (heartbeat) writeFileSync(join(state, 'config/heartbeat-url'), 'https://hc-ping.example.test/00000000-0000-0000-0000-000000000000\n', { mode: 0o600 });
   if (ran !== null) {
     const file = join(state, 'config/watch-state.json');
     writeFileSync(file, daily === null ? '{}\n' : `${JSON.stringify({ dailyRunning: { job: 'daily', startedAt: daily } })}\n`);
@@ -862,4 +863,39 @@ test('doctor warns when the alert record folder or file is not writable by the o
     assert.equal(dir.length, 1);
     assert.match(dir[0], /\/logs is not writable by this user/);
   } finally { try { chmodSync(join(f.state, 'logs'), 0o700); } catch { /* absent */ } rmSync(f.base, { recursive: true, force: true }); }
+});
+
+test('doctor warns when no external heartbeat is stored, unless the decision is recorded exactly', () => {
+  const up = { now: Date.now(), timerActive: () => true };
+  const none = checkerState({ ran: up.now - 60000, heartbeat: false });
+  try {
+    assert.deepEqual(checkerWarnings(none.state, up), [NO_HEARTBEAT_WARNING]);
+    assert.match(NO_HEARTBEAT_WARNING, /^No external heartbeat: .*--heartbeat-url-file .*We have decided not to use an external heartbeat\./);
+    const marker = join(none.state, 'config/heartbeat-declined');
+    writeFileSync(marker, 'We have decided not to use an external heartbeat.\n', { mode: 0o600 });
+    assert.deepEqual(checkerWarnings(none.state, up), [], 'a valid declined marker silences it');
+    writeFileSync(marker, 'We have decided otherwise.\n', { mode: 0o600 });
+    assert.deepEqual(checkerWarnings(none.state, up), [NO_HEARTBEAT_WARNING], 'other text is not a decision');
+    writeFileSync(marker, 'We have decided not to use an external heartbeat.\n', { mode: 0o600 }); chmodSync(marker, 0o644);
+    assert.deepEqual(checkerWarnings(none.state, up), [NO_HEARTBEAT_WARNING], 'a loose mode is not a decision');
+    chmodSync(marker, 0o600);
+    const url = join(none.state, 'config/heartbeat-url');
+    writeFileSync(url, 'not a url\n', { mode: 0o600 });
+    assert.deepEqual(checkerWarnings(none.state, up), [], 'the marker still holds');
+    rmSync(marker);
+    assert.deepEqual(checkerWarnings(none.state, up), [NO_HEARTBEAT_WARNING], 'a file that is not an https URL is no heartbeat');
+    writeFileSync(url, '# comment\nhttps://hc-ping.example.test/abc\n', { mode: 0o600 });
+    assert.deepEqual(checkerWarnings(none.state, up), [], 'a valid URL after a comment line');
+    chmodSync(url, 0o644);
+    assert.deepEqual(checkerWarnings(none.state, up), [NO_HEARTBEAT_WARNING], 'a loose mode: the checker would not send it');
+  } finally { rmSync(none.base, { recursive: true, force: true }); }
+});
+
+test('the release note is a Note line, never a Warning, and a failing lookup adds nothing', async () => {
+  assert.equal(await releaseNote('/s', async () => 'v0.8.0 is available (this facility runs v0.7.0)'), '\nNote: v0.8.0 is available (this facility runs v0.7.0)');
+  assert.equal(await releaseNote('/s', async () => null), '');
+  assert.equal(await releaseNote('/s', async () => { throw new Error('boom'); }), '');
+  const source = readFileSync(new URL('../scripts/doctor.mjs', import.meta.url), 'utf8');
+  assert.match(source, /const releaseText = local \? await releaseNote\(state\) : ''/, 'only --local looks');
+  assert.match(source, /\(numbering \? `\\n\$\{numbering\}` : ''\) \+ releaseText;/, 'it is the last line of the note, after every warning');
 });

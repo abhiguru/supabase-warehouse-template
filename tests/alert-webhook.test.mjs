@@ -525,7 +525,7 @@ test('set-capability sensors on prints the notice (exit code 0) only when the se
 
 test('setup.sh passes --sensor-webhook-file to configure.mjs and ends with the sensor-notice command, which prints only while sensors are on', () => {
   const setup = read('setup.sh');
-  assert.match(setup, /--alert-webhook-file\|--sensor-webhook-file\|--letterhead-file/);
+  assert.match(setup, /--alert-webhook-file\|--sensor-webhook-file\|--heartbeat-url-file\|--letterhead-file/);
   assert.match(setup, /\*\) CONFIG_ARGS\+=\("\$1" "\$2"\) ;;/, 'the option reaches configure.mjs unchanged');
   assert.ok(setup.indexOf('alert-webhook.mjs" sensor-notice --state-dir "$STATE"') > setup.indexOf('watch-timer.sh" hint'), 'the notice is printed at the end');
   const s = scratch();
@@ -534,5 +534,68 @@ test('setup.sh passes --sensor-webhook-file to configure.mjs and ends with the s
     assert.match(run(noticeState(s.dir)).stdout, /NOTICE/);
     assert.equal(run(noticeState(mkdtempSync(join(s.dir, 'off-')), { sensors: false })).stdout, '', 'sensors off: no notice');
     assert.equal(run(noticeState(mkdtempSync(join(s.dir, 'set-')), { sensor: true })).stdout, '', 'sensor webhook stored: no notice');
+  } finally { s.cleanup(); }
+});
+
+// The heartbeat URL shares the file rules of the webhooks (readSecretFile); its pattern is any one https URL.
+import { HEARTBEAT_FILE, placeHeartbeatUrl, readHeartbeatUrl, readSecretFile, readSensorWebhook, storedHeartbeatUrl } from '../scripts/alert-webhook.mjs';
+import { symlinkSync } from 'node:fs';
+
+test('readHeartbeatUrl: off, absent, one https URL, and every file rule of the webhooks', () => {
+  const s = scratch();
+  try {
+    const ping = 'https://hc-ping.example.test/abc-123';
+    const file = join(s.dir, 'hb.txt');
+    const checkout = join(s.dir, 'checkout'); mkdirSync(checkout);
+    assert.equal(readHeartbeatUrl(undefined, checkout), undefined);
+    assert.equal(readHeartbeatUrl('off', checkout), null);
+    writeFileSync(file, `﻿${ping}\n`, { mode: 0o600 });
+    assert.equal(readHeartbeatUrl(file, checkout), ping);
+    assert.throws(() => readHeartbeatUrl('rel.txt', checkout), /--heartbeat-url-file must be an absolute path/);
+    assert.throws(() => readHeartbeatUrl(join(s.dir, 'missing'), checkout), /must be a regular file/);
+    for (const bad of ['http://x.example.test/a', 'https://x.example.test/a b', `${ping}\nhttps://second.example.test/`, 'hooks', '']) {
+      writeFileSync(file, `${bad}\n`, { mode: 0o600 });
+      assert.throws(() => readHeartbeatUrl(file, checkout), error => /--heartbeat-url-file must hold one https URL/.test(error.message) && !error.message.includes('second.example'), JSON.stringify(bad));
+    }
+    writeFileSync(file, `${ping}\n`, { mode: 0o600 }); chmodSync(file, 0o640);
+    assert.throws(() => readHeartbeatUrl(file, checkout), /owned by this user and mode 0600/);
+    chmodSync(file, 0o600);
+    writeFileSync(file, `https://x.example.test/${'a'.repeat(2100)}\n`, { mode: 0o600 });
+    assert.throws(() => readHeartbeatUrl(file, checkout), /larger than 2 KB/);
+    // Inside the checkout, directly or through a link.
+    const inside = join(checkout, 'hb.txt'); writeFileSync(inside, `${ping}\n`, { mode: 0o600 });
+    assert.throws(() => readHeartbeatUrl(inside, checkout), /outside the checkout/);
+    writeFileSync(file, `${ping}\n`, { mode: 0o600 });
+    const link = join(s.dir, 'link.txt'); symlinkSync(inside, link);
+    assert.throws(() => readHeartbeatUrl(link, checkout), /regular file/);
+    // The webhook readers are wrappers of the same check.
+    writeFileSync(file, `${URL_A}\n`, { mode: 0o600 });
+    assert.equal(readSensorWebhook(file, checkout), URL_A);
+    assert.equal(readSecretFile(file, checkout, '--x', /^https:/, 'a thing'), URL_A);
+    assert.throws(() => readSecretFile(file, checkout, '--x', /^nope/, 'a thing'), /^Error: --x must hold a thing\.$/);
+  } finally { s.cleanup(); }
+});
+
+test('placeHeartbeatUrl: a string stores (0600), undefined keeps, null removes; storedHeartbeatUrl reads what the checker would use', () => {
+  const s = scratch();
+  try {
+    const state = stateWith(s.dir, null);
+    const path = join(state, HEARTBEAT_FILE);
+    assert.equal(HEARTBEAT_FILE, 'config/heartbeat-url', 'the path scripts/watch.mjs reads');
+    assert.equal(storedHeartbeatUrl(state), null);
+    assert.equal(placeHeartbeatUrl(state, undefined), false);
+    assert.equal(placeHeartbeatUrl(state, null), false, 'nothing to remove');
+    assert.equal(placeHeartbeatUrl(state, 'https://hc-ping.example.test/a'), true);
+    assert.equal(readFileSync(path, 'utf8'), 'https://hc-ping.example.test/a\n');
+    assert.equal(statSync(path).mode & 0o777, 0o600);
+    assert.equal(storedHeartbeatUrl(state), 'https://hc-ping.example.test/a');
+    assert.equal(placeHeartbeatUrl(state, 'https://hc-ping.example.test/a'), false, 'unchanged');
+    assert.equal(placeHeartbeatUrl(state, undefined), false);
+    assert.equal(storedHeartbeatUrl(state), 'https://hc-ping.example.test/a', 'undefined keeps');
+    chmodSync(path, 0o644);
+    assert.equal(storedHeartbeatUrl(state), null, 'the checker would not send with a loose mode');
+    chmodSync(path, 0o600);
+    assert.equal(placeHeartbeatUrl(state, null), true);
+    assert.equal(existsSync(path), false);
   } finally { s.cleanup(); }
 });

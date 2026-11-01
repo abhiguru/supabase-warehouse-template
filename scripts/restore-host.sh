@@ -406,7 +406,11 @@ step 'If the backup drive may have been exposed: bash rotate-keys.sh --yes, rota
 step "Keep your copy of the backup key: this installation signs with the same key ($state/config/backup.key)."
 alert_step="Alerts are local only until you run setup.sh --operator again with --alert-webhook-file (or answer its Slack
      webhook prompt on a terminal; the URL is not in a backup, skip this if the installation never had one). If sensors are on,
-     also give --sensor-webhook-file /absolute/path/to/sensor-webhook-url-file (the separate sensor-alert webhook; not in a backup either)."
+     also give --sensor-webhook-file /absolute/path/to/sensor-webhook-url-file (the separate sensor-alert webhook; not in a backup either).
+     Give the external heartbeat again too: its ping URL (config/heartbeat-url) is not in a backup either, so add
+     --heartbeat-url-file /absolute/path/to/heartbeat-url-file (or off) to the same rerun (skip it if the installation never had one;
+     docs/MONITORING.md, \"External heartbeat\"). On WSL the two Windows scheduled tasks live on Windows, not in a backup: register them
+     again on the new machine with scripts/windows/register-tasks.ps1 (docs/OPERATOR_INSTALL.md, \"Keep the distro running and start it at boot\")."
 if [[ "$central_missing" == true ]]; then
   alert_step+="
      The central sign-in step above reruns setup as well: add --alert-webhook-file /absolute/path/to/webhook-url-file

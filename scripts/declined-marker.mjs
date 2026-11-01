@@ -6,6 +6,8 @@ import { resolve } from 'node:path';
 
 export const OFFHOST_DECLINED_NAME = 'offhost-copy-declined';
 export const OFFHOST_DECLINED_SENTENCE = 'We have decided not to keep a copy of the backups outside this host.';
+export const HEARTBEAT_DECLINED_NAME = 'heartbeat-declined';
+export const HEARTBEAT_DECLINED_SENTENCE = 'We have decided not to use an external heartbeat.';
 
 export function declinedMarker(state, name, sentence) {
   const path = resolve(state, 'config', name);

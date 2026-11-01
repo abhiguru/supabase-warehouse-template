@@ -380,12 +380,15 @@ not in a backup, and `node scripts/watch.mjs test-message sensors` tests it.
 The checker cannot tell anyone that it has died. For that, give it the address of a dead-man switch: a service that expects
 a ping every few minutes and alerts (by email, SMS or its own app) when the pings stop. healthchecks.io is one (create a
 check with a 10 minute period and a 5 minute grace time); any address that does this works. Put the https URL it gives you in
-a private file:
+a private file (mode 0600, outside the checkout, one line) and give it to setup, which stores it as `config/heartbeat-url`:
 
 ```bash
-install -m 600 /dev/null "$WAREHOUSE_STATE_DIR/config/heartbeat-url"
-$EDITOR "$WAREHOUSE_STATE_DIR/config/heartbeat-url"      # one line: the https URL
+bash setup.sh --operator ... --heartbeat-url-file /secure/warehouse-heartbeat-url.txt     # or: --heartbeat-url-file off (removes it)
 ```
+
+(Writing `config/heartbeat-url` by hand, mode 0600, works the same.) `npm run doctor` warns while there is none. A facility that
+decided against it records that, as the user that runs the checker, with `printf '%s\n' 'We have decided not to use an external heartbeat.' > config/heartbeat-declined && chmod 600 config/heartbeat-declined`
+(a regular file, owned by that user, mode 0600, exactly that sentence: anything else is ignored), and the warning stops.
 
 At the end of each successful 5-minute run the checker fetches that URL (a GET with a 5 second limit); it does so also when
 an operator command holds the lock (the checker is alive then). A run that fails before it has saved its state sends no ping,
@@ -394,6 +397,30 @@ the log (`journalctl -u <project>-watch.service`) and `node scripts/watch.mjs st
 is never an alert, because Slack may be what is down. The URL is a secret (anyone who knows it can fake the ping), is not in
 backups, and has to be put back after `db:restore-host`. The daily "Monitoring is alive" Slack line stays: it covers a
 checker that runs but cannot reach Slack the other way round.
+
+## A newer release
+
+`node scripts/doctor.mjs --local` prints `Note: vX.Y.Z is available (this facility runs vA.B.C)` and the daily "Monitoring is alive" message
+carries `Release: vX.Y.Z is available (...)` when the origin holds a newer final release tag (release candidates are ignored). The line adds
+` — Security release` when the GitHub release title says "Security" ([SECURITY.md](../SECURITY.md)), and `; support for the vA.B line ends YYYY-MM-DD`
+(or `ended`) when the running line is behind, computed from the dates of tags this checkout already holds (the rule: the previous minor line
+is fixed for 6 months after the next minor release). It is information only: never an alert, never a Slack message of its own, and a lookup
+that fails (no network, GitHub unreachable) leaves the line out.
+
+## An association view with healthchecks
+
+An association that wants to see which of its member facilities have gone quiet can own one healthchecks.io project (or a
+self-hosted healthchecks) for the purpose:
+
+- one **project**, owned by the association, with one **check per facility**, named by the facility (its company name);
+- each check's schedule matches the checker: a **period of 5 minutes** and a **grace time of about 15 minutes** (the checker pings at the
+  end of every 5-minute run, so three missed runs make a check late and then down);
+- the check's **ping URL** is given to that facility's operator, who gives it to setup as `--heartbeat-url-file` (above). The URL is a secret
+  of the facility and of the association: send it privately, and replace it (a new check, or a reset URL) if it leaks.
+
+The board then shows each facility as **up**, **late** or **down**, and when it last pinged. Nothing else is sent: the ping is an empty GET
+request to that URL, with no business data, no names, no counts and no alerts. The facility's own Slack alerts are not copied
+to the association. The checker pings one address, so the association's check is that facility's dead-man switch; a facility that prefers its own (or both) can keep its own check and give the association a second one only by running a second pinger, which this repository does not provide.
 
 ## Finding a slow query
 

@@ -377,7 +377,7 @@ test('setup and the edge function apply the same key set rules', () => {
 
 test('setup.sh passes the central options on and applies the issuer to the database after the auth settings', () => {
   const setup = readFileSync(new URL('../setup.sh', import.meta.url), 'utf8');
-  assert.match(setup, /--admin-name\|--central-issuer\|--central-jwks-url\|--central-jwks-file\|--central-local-code\|--alert-webhook-file\|--sensor-webhook-file\|--letterhead-file\|--gateway-port\)/);
+  assert.match(setup, /--admin-name\|--central-issuer\|--central-jwks-url\|--central-jwks-file\|--central-local-code\|--alert-webhook-file\|--sensor-webhook-file\|--heartbeat-url-file\|--letterhead-file\|--gateway-port\)/);
   const auth = setup.indexOf('scripts/configure-auth.sql');
   const central = setup.indexOf('scripts/configure-central.sql');
   assert.ok(auth > 0 && central > auth && central < setup.indexOf('scripts/configure-sms.sql'));
@@ -1162,5 +1162,44 @@ test('central sign-in alone (--central-issuer without --provider-env): no SMS pr
     const sql = readFileSync(new URL('../scripts/configure-sms.sql', import.meta.url), 'utf8');
     assert.ok(sql.indexOf('\\quit') > 0 && sql.indexOf('\\quit') < sql.indexOf('INSERT INTO public.sms_config'), 'no provider: the script stops before it stores anything');
     assert.match(sql, /:'sms_provider'='' AND :'sms_production_mode'='true' AND :'sms_auth_key'='' AND :'sms_flow_id'='' AND :'sms_pe_id'='' AND :'sms_sender_id'=''/);
+  } finally { rmSync(scratch, { recursive: true, force: true }); }
+});
+
+test('--heartbeat-url-file stores, keeps and removes config/heartbeat-url (mode 0600), with the same file rules, on a fresh and an existing state', () => {
+  const scratch = mkdtempSync(join(tmpdir(), 'warehouse-config-heartbeat-'));
+  const root = join(scratch, 'checkout');
+  const providerEnv = join(scratch, 'provider.env');
+  try {
+    mkdirSync(root);
+    copyFileSync(new URL('../.env.example', import.meta.url), join(root, '.env.example'));
+    writeFileSync(providerEnv, 'SMS_PROVIDER=msg91\nMSG91_AUTH_KEY=provider-key\nMSG91_TEMPLATE_ID=flow-id\nMSG91_PE_ID=pe-id\nMSG91_SENDER_ID=WHOUSE\n', { mode: 0o600 });
+    const hooks = { portFree: () => true, containersRunning: () => false };
+    const ping = 'https://hc-ping.example.test/3b0e8f64-1111-2222-3333-444455556666';
+    const file = join(scratch, 'heartbeat.txt');
+    writeFileSync(file, `${ping}\n`, { mode: 0o600 });
+    const state = join(scratch, 'state');
+    const path = join(state, 'config/heartbeat-url');
+    const created = configure(root, { apiUrl: 'https://api.example.com', company: 'Acme Stores', providerEnv, stateDir: state, heartbeatUrlFile: file, ...hooks });
+    assert.equal(created.heartbeatUrl, true);
+    assert.equal(readFileSync(path, 'utf8'), `${ping}\n`);
+    assert.equal(statSync(path).mode & 0o777, 0o600);
+    assert.equal(configure(root, { stateDir: state, ...hooks }).heartbeatUrl, undefined, 'absent keeps it');
+    assert.equal(readFileSync(path, 'utf8'), `${ping}\n`);
+    const other = 'https://hc-ping.example.test/other';
+    writeFileSync(file, `${other}\n`, { mode: 0o600 });
+    assert.equal(configure(root, { stateDir: state, heartbeatUrlFile: file, ...hooks }).heartbeatUrl, true);
+    assert.equal(readFileSync(path, 'utf8'), `${other}\n`);
+    // Refusals change nothing and never quote the address.
+    writeFileSync(file, 'http://insecure.example.test/x\n', { mode: 0o600 });
+    assert.throws(() => configure(root, { stateDir: state, heartbeatUrlFile: file, ...hooks }), error => /--heartbeat-url-file must hold one https URL/.test(error.message) && !error.message.includes('insecure'));
+    assert.throws(() => configure(root, { stateDir: state, heartbeatUrlFile: 'relative.txt', ...hooks }), /--heartbeat-url-file must be an absolute path/);
+    writeFileSync(file, `${ping}\n`, { mode: 0o644 }); chmodSync(file, 0o644);
+    assert.throws(() => configure(root, { stateDir: state, heartbeatUrlFile: file, ...hooks }), /--heartbeat-url-file must be owned by this user and mode 0600/);
+    assert.equal(readFileSync(path, 'utf8'), `${other}\n`);
+    assert.equal(configure(root, { stateDir: state, heartbeatUrlFile: 'off', ...hooks }).heartbeatUrl, null);
+    assert.equal(existsSync(path), false);
+    assert.equal(configure(root, { stateDir: state, heartbeatUrlFile: 'off', ...hooks }).heartbeatUrl, undefined, 'nothing to remove');
+    assert.equal(parseConfigureArgs(['--state-dir', state, '--heartbeat-url-file', 'off']).heartbeatUrlFile, 'off');
+    assert.match(readFileSync(new URL('../scripts/configure.mjs', import.meta.url), 'utf8'), /\[--heartbeat-url-file ABSOLUTE\|off\]/, 'in the usage text');
   } finally { rmSync(scratch, { recursive: true, force: true }); }
 });
