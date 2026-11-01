@@ -257,7 +257,8 @@ test('operator-upgrade drills the way back that upgrade.sh printed: a fault migr
     const extracted = spawnSync('bash', ['-euo', 'pipefail', '-c', run.slice(from, to)], { encoding: 'utf8', env: { ...process.env, RUNNER_TEMP: scratch } });
     assert.equal(extracted.status, 0, extracted.stdout + extracted.stderr);
     const commands = readFileSync(join(scratch, 'rollback-commands.txt'), 'utf8').trimEnd().split('\n');
-    assert.equal(commands.length, 10);
+    assert.equal(commands.length, 11, 'ten steps and the diagnostics save before the restore');
+    assert.ok(commands.some(line => /service-diagnostics\.mjs save rollback \|\| true$/.test(line)), 'the diagnostics save line is a command of the list');
     assert.equal(commands[0], '  (umask 022; git checkout --detach ' + 'a'.repeat(40) + ')');
     assert.equal(commands.find(line => line.includes('setup.sh')), "  bash setup.sh --operator --state-dir '/state' --admin-phone 919888888871 --admin-name 'Core Demo Administrator' --alert-webhook-file off");
     assert.ok(commands.every(line => /^ {2}\S/.test(line)) && !commands.some(line => /XXXX|NAME\b/.test(line)));

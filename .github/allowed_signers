@@ -1,8 +1,8 @@
 # Keys that may sign release tags (OpenSSH "allowed signers" format, read by `git verify-tag`; docs/RELEASE_CHECKLIST.md, "Signing the tag").
 #
-# PLACEHOLDER: no key is listed yet. While this file has no key line, upgrade.sh prints a warning and does not check tag signatures, so
-# that the first signed release can be reached. The maintainer adds the real public key as one line, in a commit of its own made BEFORE the
-# first signed tag:
+# The release-signing key of the maintainer is listed below (fingerprint SHA256:JfbT0+bW7PmoB/HA7HsW+K150PQgTMimV2pPijMC8vM, also in README.md,
+# "Security"). A release tag must be signed by a listed key, or upgrade.sh refuses it. A checkout whose copy lists no key line (an older
+# release) warns and does not check signatures. A new key is added as one more line, in a commit of its own:
 #
 #   release namespaces="git" ssh-ed25519 AAAA... warehouse-release-signing
 #

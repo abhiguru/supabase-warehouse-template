@@ -1559,9 +1559,11 @@ test('signed release tags: a checkout whose allowed_signers lists no key warns a
       assert.match(r.stderr, /lists no release signing key in \.github\/allowed_signers, so the signature of v0\.2\.0 is not checked/);
     } finally { w.cleanup(); }
   }
-  const placeholder = readFileSync(join(root, '.github/allowed_signers'), 'utf8');
-  assert.match(placeholder, /PLACEHOLDER/);
-  assert.equal(placeholder.split('\n').filter(l => l.trim() && !l.trim().startsWith('#')).length, 0, 'the committed file ships with no key line');
+  // The shipped file lists the maintainer's release-signing key (one line), so a checkout of this repository checks signatures.
+  const shipped = readFileSync(join(root, '.github/allowed_signers'), 'utf8');
+  const keyLines = shipped.split('\n').filter(l => l.trim() && !l.trim().startsWith('#'));
+  assert.equal(keyLines.length, 1, 'the committed file lists exactly one key line');
+  assert.match(keyLines[0], /^release namespaces="git" ssh-ed25519 [A-Za-z0-9+\/=]+ warehouse-release-signing$/);
 });
 
 test('every test that makes tags with git says explicitly that they are unsigned', () => {
