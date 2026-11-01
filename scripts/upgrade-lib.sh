@@ -101,11 +101,26 @@ changelog_between() {
 # ships before the first signed release; there is nothing to verify against yet.
 signers_have_key() { [[ -f "$1" ]] && grep -qvE '^[[:space:]]*(#|$)' "$1"; }
 
+# signers_fingerprints SIGNERS_FILE: one line per listed key, "SHA256:... (comment)", for the operator to compare with the published
+# fingerprint. Prints nothing when ssh-keygen is missing or a line cannot be read.
+signers_fingerprints() {
+  local line key
+  command -v ssh-keygen >/dev/null || return 0
+  key="$(mktemp)"
+  while IFS= read -r line; do
+    awk '{ for (i = 1; i <= NF; i++) if ($i ~ /^(ssh-|ecdsa-|sk-)/) { print $i " " $(i + 1); exit } }' <<< "$line" > "$key"
+    [[ -s "$key" ]] && ssh-keygen -lf "$key" 2>/dev/null
+  done < <(grep -vE '^[[:space:]]*(#|$)' "$1")
+  rm -f -- "$key"
+  return 0
+}
+
 # tag_signature_problem TAG SIGNERS_FILE EXPECTED_COMMIT: prints why TAG cannot be trusted, nothing when it can. TAG must be an annotated
-# tag whose own name is TAG, that points at EXPECTED_COMMIT, and that carries an SSH signature by a key listed in SIGNERS_FILE
-# (ssh-keygen "allowed signers" format). Run in the git checkout that holds the tag. Needs git 2.34 or newer and ssh-keygen.
+# tag whose own name is TAG, that points at EXPECTED_COMMIT, and that carries an SSH signature (and no PGP or X.509 one) by a key listed in
+# SIGNERS_FILE (ssh-keygen "allowed signers" format). The signature programs are pinned so that nothing in the host's gpg keyring or
+# git configuration can vouch for a tag. Run in the git checkout that holds the tag. Needs git 2.34 or newer and ssh-keygen.
 tag_signature_problem() {
-  local tag="$1" signers="$2" expect="$3" ver major minor header out
+  local tag="$1" signers="$2" expect="$3" ver major minor object header out
   ver="$(git version 2>/dev/null | sed -n 's/^git version \([0-9][0-9]*\)\.\([0-9][0-9]*\).*/\1 \2/p')"
   read -r major minor <<< "$ver"
   if [[ -z "${major:-}" ]] || ((major < 2 || (major == 2 && minor < 34))); then
@@ -114,10 +129,17 @@ tag_signature_problem() {
   fi
   command -v ssh-keygen >/dev/null || { echo 'ssh-keygen (the OpenSSH client package) is needed to check the signature of a release tag, and is not installed'; return 0; }
   [[ "$(git cat-file -t "refs/tags/$tag" 2>/dev/null)" == tag ]] || { echo "$tag is not an annotated, signed tag"; return 0; }
-  header="$(git cat-file tag "refs/tags/$tag" | sed -n '1,/^$/p')"
+  object="$(git cat-file tag "refs/tags/$tag")"
+  header="$(sed -n '1,/^$/p' <<< "$object")"
   [[ "$(sed -n 's/^tag //p' <<< "$header")" == "$tag" ]] || { echo "the signed tag object behind $tag carries another tag name (a signed tag published under a different name)"; return 0; }
   [[ "$(sed -n 's/^object //p' <<< "$header")" == "$expect" ]] || { echo "the signed tag object behind $tag points at another commit than the release"; return 0; }
-  if ! out="$(git -c gpg.format=ssh -c "gpg.ssh.allowedSignersFile=$signers" verify-tag "$tag" 2>&1)"; then
+  grep -q -e '^-----BEGIN SSH SIGNATURE-----' <<< "$object" || { echo "$tag carries no SSH signature, so it is not signed by a key listed in .github/allowed_signers of this checkout (release tags are signed with an SSH key)"; return 0; }
+  if grep -q -e '^-----BEGIN PGP SIGNATURE-----' -e '^-----BEGIN SIGNED MESSAGE-----' <<< "$object"; then
+    echo "$tag carries a PGP or X.509 signature as well as an SSH one; only an SSH signature is accepted"
+    return 0
+  fi
+  if ! out="$(git -c gpg.format=ssh -c gpg.program=false -c gpg.openpgp.program=false -c gpg.x509.program=false -c gpg.ssh.program=ssh-keygen \
+      -c gpg.minTrustLevel=undefined -c "gpg.ssh.allowedSignersFile=$signers" verify-tag "$tag" 2>&1)"; then
     echo "$tag is not signed by a key listed in .github/allowed_signers of this checkout (git said: $(tr '\n' ' ' <<< "$out" | sed 's/  */ /g; s/ $//'))"
   fi
   return 0

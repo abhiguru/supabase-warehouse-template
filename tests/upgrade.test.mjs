@@ -179,7 +179,10 @@ function world({ at = 'v0.1.0', sign = null } = {}) {
   git(src, 'tag', 'v0.1.1');                       // a lightweight tag
   base('v0.2.0', { upgrade: true, changelog: changelog(S020 + S011 + S010 + S005), migrations: ['00000000000000_baseline.sql', '00000000000001_more.sql'] });
   const key = sign?.keys?.['v0.2.0'];
-  if (key) git(src, '-c', 'gpg.format=ssh', '-c', `user.signingkey=${key}`, 'tag', '-s', '-m', 'release 0.2.0', 'v0.2.0');
+  if (sign?.gpg) {
+    const r = spawnSync('git', ['-c', 'gpg.format=openpgp', '-c', `user.signingkey=${sign.gpg.id}`, '-C', src, 'tag', '-s', '-m', 'release 0.2.0', 'v0.2.0'], { encoding: 'utf8', env: { ...process.env, ...gitEnv, GNUPGHOME: sign.gpg.home } });
+    assert.equal(r.status, 0, r.stderr);
+  } else if (key) git(src, '-c', 'gpg.format=ssh', '-c', `user.signingkey=${key}`, 'tag', '-s', '-m', 'release 0.2.0', 'v0.2.0');
   else git(src, 'tag', '-a', '-m', 'release 0.2.0', 'v0.2.0');
   git(src, 'branch', 'squash');
   // A release on a new PostgreSQL major.
@@ -1574,4 +1577,64 @@ test('every test that makes tags with git says explicitly that they are unsigned
   }
   assert.ok(checked >= 3, `the guard looked at ${checked} files`);
   assert.match(readFileSync(new URL('./upgrade.test.mjs', import.meta.url), 'utf8'), /'-c', 'tag\.gpgsign=false', '-C'/);
+});
+
+test('signed release tags: PGP is refused, a release may not drop the key list, the keys of an unchecked release are shown, the record says what was checked', () => {
+  withKeys((dir, good) => {
+    // M2: this checkout lists a key; the release lists none.
+    const drop = world({ sign: { allowed: good.line, allowedBy: { 'v0.2.0': '# none\n' }, keys: { 'v0.2.0': good.file } } });
+    try { refusing(drop)(['v0.2.0'], /v0\.2\.0 lists no release signing key[^]*although this checkout does[^]*Nothing was changed/); } finally { drop.cleanup(); }
+
+    // L1: this checkout lists none; the release lists the good key: the warning names its fingerprint.
+    const first = world({ sign: { allowed: '# none\n', allowedBy: { 'v0.2.0': good.line }, keys: { 'v0.2.0': good.file } } });
+    try {
+      const fingerprint = spawnSync('ssh-keygen', ['-lf', `${good.file}.pub`], { encoding: 'utf8' }).stdout.split(' ')[1];
+      assert.match(fingerprint, /^SHA256:/);
+      const r = first.run(['v0.2.0'], { FAKE_FAIL: 'setup' });
+      assert.match(r.stderr, new RegExp(`lists no release signing key[^]*v0\\.2\\.0 lists the signing key\\(s\\) [^]*${fingerprint.replace(/[+/]/g, '\\$&')}[^]*published`));
+      // L3: the record says the signature was not checked, and the rerun (resume) says so and does not check again.
+      assert.match(readFileSync(first.recordPath, 'utf8'), /^signature=unchecked$/m);
+      const again = first.run(['v0.2.0']);
+      assert.match(again.stdout, /Signature: +not checked again[^\n]*signature=unchecked/);
+    } finally { first.cleanup(); }
+
+    // L3 + L6: a checked signature is recorded, and a resumed upgrade does not check again.
+    const ok = world({ sign: { allowed: good.line, keys: { 'v0.2.0': good.file } } });
+    try {
+      ok.run(['v0.2.0'], { FAKE_FAIL: 'setup' });
+      assert.match(readFileSync(ok.recordPath, 'utf8'), /^signature=checked$/m);
+      const again = ok.run(['v0.2.0']);
+      assert.equal(again.status, 0, again.stderr);
+      assert.match(again.stdout, /Signature: +not checked again[^\n]*signature=checked/);
+      assert.doesNotMatch(again.stdout + again.stderr, /is signed by a key listed/);
+    } finally { ok.cleanup(); }
+
+    // --ref is recorded as such.
+    const ref = world({ sign: { allowed: good.line, keys: {} } });
+    try {
+      ref.run(['--ref', ref.tag('v0.2.0')], { FAKE_FAIL: 'setup' });
+      assert.match(readFileSync(ref.recordPath, 'utf8'), /^signature=ref$/m);
+    } finally { ref.cleanup(); }
+
+    // L6: ssh-keygen is not installed: refused with the reason (a PATH that has everything but ssh-keygen).
+    const nokeygen = world({ sign: { allowed: good.line, keys: { 'v0.2.0': good.file } } });
+    try {
+      const bin = join(dir, 'bin-no-keygen'); mkdirSync(bin);
+      for (const d of (process.env.PATH ?? '').split(':').filter(Boolean)) {
+        let names = []; try { names = readdirSync(d); } catch { continue; }
+        for (const n of names) if (n !== 'ssh-keygen') spawnSync('ln', ['-s', '-f', join(d, n), join(bin, n)]);
+      }
+      refusing(nokeygen)(['v0.2.0'], /ssh-keygen \(the OpenSSH client package\) is needed[^]*Nothing was changed/, { PATH: bin });
+    } finally { nokeygen.cleanup(); }
+  });
+});
+
+test('signed release tags: a tag signed with OpenPGP is refused even when the host keyring holds the key', { skip: spawnSync('bash', ['-c', 'command -v gpg']).status !== 0 && 'gpg is not installed' }, () => {
+  withKeys((dir, good) => {
+    const home = join(dir, 'gnupg'); mkdirSync(home, { mode: 0o700 });
+    const made = spawnSync('gpg', ['--batch', '--passphrase', '', '--quick-gen-key', 'release@example.invalid', 'default', 'default', 'never'], { encoding: 'utf8', env: { ...process.env, GNUPGHOME: home } });
+    assert.equal(made.status, 0, made.stderr);
+    const w = world({ sign: { allowed: good.line, gpg: { home, id: 'release@example.invalid' } } });
+    try { refusing(w)(['v0.2.0'], /v0\.2\.0 carries no SSH signature[^]*Nothing was changed/, { GNUPGHOME: home }); } finally { w.cleanup(); }
+  });
 });

@@ -87,6 +87,8 @@ checkout signed. One-time setup (the maintainer, once):
       file in a pull request that is not about the key.
 - [ ] In the clone used for tagging only (not globally): `git config gpg.format ssh`,
       `git config user.signingkey ~/.ssh/warehouse_release_signing.pub`.
+- [ ] Publish the key's fingerprint (`ssh-keygen -lf ~/.ssh/warehouse_release_signing.pub`) in the README under a "Security" heading and in each
+      release note: an operator whose checkout lists no key yet is shown the fingerprint of the release's key and compares it with these.
 - [ ] GitHub's immutable releases are switched on for the repository (see [Image publication](#image-publication)).
 
 Every release: sign with `git tag -s vX.Y.Z-rc.N <commit> -m "..."` (instead of `git tag -a`), then check it before the push:
@@ -95,7 +97,8 @@ Every release: sign with `git tag -s vX.Y.Z-rc.N <commit> -m "..."` (instead of 
 How it is checked. Until a release lists a key, nothing is checked: `upgrade.sh` warns that the checkout lists no key and goes on, and
 `release.yml` prints a notice. From the first release that lists a key, a checkout at that release (or later) refuses any tag not signed by
 a key of ITS OWN list, and `release.yml` checks the pushed tag against the list of the previous final release, as an operator at that
-release would. A release therefore cannot add its own signers: **key rotation** needs one release signed with the old key that carries the
+release would (for the first signed release, whose predecessor lists no key, against the release's own list). Only an SSH signature counts: a PGP or
+X.509 signature is refused, whatever the host keyring holds. A release that lists no key after one that does is refused (a downgrade). A release therefore cannot add its own signers: **key rotation** needs one release signed with the old key that carries the
 new key line; keep the old line for at least two releases. A lost key means releases cannot be verified until such a bridge release signed
 by a still-listed key. `--ref` is not verified.
 

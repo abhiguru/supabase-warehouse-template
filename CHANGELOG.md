@@ -14,7 +14,7 @@ file used to carry for earlier installations are in git: `git show b45ae0b:CHANG
   with no key yet: the maintainer adds one before the first signed tag). A checkout that lists a key makes `upgrade.sh vX.Y.Z` run
   `git verify-tag` against ITS OWN list and refuse, before anything is changed, a tag that is unsigned, lightweight, signed by another key or
   published under another name; git 2.34 or newer and `ssh-keygen` are then needed. A checkout that lists no key (every release so far) warns and
-  goes on, so the first signed release can be reached; `--ref` is not verified. `release.yml` checks the pushed tag against the previous release's
+  goes on, so the first signed release can be reached; `--ref` is not verified. Only an SSH signature counts (PGP and X.509 are refused whatever the host keyring holds), a release that drops the key list is refused, the warning of a checkout without a key shows the fingerprints the release lists, and the upgrade record keeps `signature=checked|unchecked|ref`. `release.yml` checks the pushed tag against the previous release's
   list (`scripts/check-release-signature.sh`). Operator action: none.
 - **The way back from an upgrade is drilled in CI, kept after success, and the images are pulled before the freeze.** (1) The `operator-upgrade` job makes an
   upgrade fail inside setup (a throwaway commit with a migration that raises only on the facility's database) and runs the lines that

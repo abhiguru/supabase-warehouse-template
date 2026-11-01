@@ -2147,10 +2147,10 @@ sudo bash scripts/backup-usb.sh setup --state "$WAREHOUSE_STATE_DIR"   # only if
 **Signed releases.** A release tag is signed by the maintainer. Once your checkout lists a signing key (`.github/allowed_signers`),
 `upgrade.sh` checks the tag against that list, as committed in the checkout you run now (never the list of the release it installs), and
 refuses with "is not signed by a key listed in .github/allowed_signers of this checkout ... Nothing was changed" when the tag is unsigned,
-signed by another key, a lightweight tag, or a signed object published under another name; it also refuses on git older than 2.34. Do not work around the refusal:
+signed by another key, signed with PGP or X.509 instead of SSH, a lightweight tag, or a signed object published under another name; it also refuses a release that lists no signing key when your checkout lists one (a dropped key list), and refuses on git older than 2.34. Do not work around the refusal:
 a tag that fails the check is not the maintainer's release; report it (SECURITY.md) and ask which release to use. A checkout from before signed releases lists no key: `upgrade.sh`
-prints a warning and goes on, and the checkout it installs checks the releases after it. `--ref` is for development and is not verified.
-A resumed upgrade says "Signature: not checked again" (the first run checked it).
+prints a warning that shows the fingerprint(s) of the key(s) the release lists, to compare with the fingerprint published in the README ("Security") and in the release note, and goes on; the checkout it installs checks the releases after it. `--ref` is for development and is not verified.
+The upgrade record keeps `signature=checked|unchecked|ref`; a resumed upgrade says "Signature: not checked again" and shows it.
 
 **Run the dry run first, and do what it lists under "before".** `upgrade.sh` holds the operator lock from start to end (the monitoring checker
 judges nothing meanwhile; its `operator_lock_stuck` alert fires after 2 hours, or after twice the time of the last backup plus the last verify when that is longer) and prints the operator actions of `CHANGELOG.md` between your
