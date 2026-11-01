@@ -146,12 +146,18 @@ The `operator-upgrade` CI job runs `upgrade.sh --ref` from the previous tag (or 
 the new tag itself (a commit is not a release tag). So the rehearsal runs on a release candidate, and the final tag goes on the same
 commit afterwards: a failed rehearsal never leaves a published `vX.Y.Z` that has to be moved.
 
+- [ ] The `operator-upgrade` job's rollback drill passed for this commit (it makes an upgrade fail inside setup and runs the way back that
+      `node scripts/upgrade-record.mjs rollback` prints; a notice that it was skipped is not a pass).
 - [ ] Tag the release commit `vX.Y.Z-rc.N` (`git tag -a vX.Y.Z-rc.N <commit>`, push it) and wait for `release.yml` to pass. The
       `CHANGELOG.md` section is `## vX.Y.Z (date)`; `upgrade.sh` prints it for the candidate too.
 - [ ] On a **throwaway** installation of the previous release (its own state and project name; never a facility's), with some data
       in it, run `bash upgrade.sh --dry-run vX.Y.Z-rc.N` and then `bash upgrade.sh vX.Y.Z-rc.N`. Both must end well; the last line of
       `$WAREHOUSE_STATE_DIR/config/upgrades.log` must end in `ok`, `config/upgrade-in-progress` must be gone, and
       `node scripts/doctor.mjs` must pass.
+- [ ] On the same throwaway installation, `node scripts/upgrade-record.mjs rollback --last` prints the way back from the finished upgrade:
+      read it (it starts with `bash scripts/maintenance.sh on`, names the loss, and ends with `rm -f` of `config/upgrade-last`).
+- [ ] At a release candidate tag the preflight prints `Pre-pull of images: done (N image(s) of vX.Y.Z-rc.N, ...)` before the pause, and setup
+      pulls nothing again.
 - [ ] Read what `upgrade.sh` printed under "What vX.Y.Z-rc.N asks of the operator": it must be the operator actions of this release and
       no other release's.
 - [ ] If the previous release is on another PostgreSQL major, `upgrade.sh` must refuse and name the "Major PostgreSQL upgrade"

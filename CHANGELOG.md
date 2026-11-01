@@ -10,6 +10,17 @@ file used to carry for earlier installations are in git: `git show b45ae0b:CHANG
 
 ### Added
 
+- **The way back from an upgrade is drilled in CI, kept after success, and the images are pulled before the freeze.** (1) The `operator-upgrade` job makes an
+  upgrade fail inside setup (a throwaway commit with a migration that raises only on the facility's database) and runs the lines that
+  `node scripts/upgrade-record.mjs rollback` prints, exactly as printed; the previous release must be running again, healthy, with the same
+  rows. (2) A successful `upgrade.sh` keeps its record as `config/upgrade-last`; `node scripts/upgrade-record.mjs rollback --last` prints the way
+  back from a finished upgrade, headed with what it loses (everything recorded since the backup) and that the next patch release is preferred, and
+  starting with `bash scripts/maintenance.sh on`. It only prints. `doctor`, `start.sh` and the checker do not report `upgrade-last`.
+  (3) The release's preflight (`scripts/upgrade-prepull.sh`) pulls the release's images by digest, and the Docker Hub images its compose file
+  names, before the API is closed; `scripts/build-images.sh` does not pull an image of the released digest that is already on the host. A
+  download or pull that fails refuses the upgrade with "Nothing was changed". Operator actions: none. Tests: `tests/upgrade-prepull.test.mjs`
+  (new), `tests/upgrade-preflight.test.mjs`, `tests/upgrade.test.mjs`, `tests/upgrade-record.test.mjs`, `tests/build-images.test.mjs`,
+  `tests/workflows.test.mjs`.
 - **Break-glass codes for every facility worker, with their own sign-in (migration 132).** `scripts/break-glass-admin.sh` now makes a one-time code
   (10 minutes, once, five wrong tries) for an active, approved administrator, **supervisor or staff member** (never a customer) and prints the
   role. The app signs in with it through `POST /functions/v1/operator-otp/break-glass` `{phone_number, code}` (service-role RPC

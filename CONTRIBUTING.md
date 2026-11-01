@@ -119,7 +119,10 @@ Rules that keep `upgrade.sh` working for the installed base:
 - **`upgrade.sh` leaves a record while it runs** (`$WAREHOUSE_STATE_DIR/config/upgrade-in-progress`, read by
   `scripts/upgrade-record.mjs`; doctor, `start.sh` and the status commands report it; the checker raises `upgrade_interrupted` when it exists and
   the lock is free, and does no self-healing meanwhile). Keep its format (`format=1`, `key=value` lines)
-  readable by every later release: add fields, never rename or remove one (`maintenance=on` is the latest).
+  readable by every later release: add fields, never rename or remove one (`maintenance=on` is the latest). A successful upgrade renames it to
+  `config/upgrade-last` (the same lines plus `finished=` and `result=ok`), which only `scripts/upgrade-record.mjs rollback --last` reads; keep the
+  checker, doctor and `start.sh` reading `upgrade-in-progress` only. CI drills the printed `rollback` list (`operator-upgrade`), so a change to that list
+  must keep every command line indented by two spaces and its notes by six.
 - **Every release carries `scripts/upgrade-preflight.sh` and `scripts/upgrade-floor.txt`, and they are how a release tells the installed
   `upgrade.sh` what it needs.** `upgrade.sh` is the script of the release an installation runs now, so a check that must happen before the
   backup (a higher host minimum, a "before" operator action, the oldest release it accepts an upgrade from) cannot live in it. It reads the
