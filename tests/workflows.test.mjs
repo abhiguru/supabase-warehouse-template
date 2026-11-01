@@ -177,6 +177,70 @@ test('operator-upgrade installs the previous release, moves it to the commit wit
   assert.match(picker, /kind=merge-base/);
 });
 
+test('operator-upgrade drills the way back that upgrade.sh printed: a fault migration that fails only on the facility database, the printed lines run as printed, the facility the starting point again', async () => {
+  const ci = readFileSync(new URL('../.github/workflows/ci.yml', import.meta.url), 'utf8');
+  const job = ci.slice(ci.indexOf('\n  operator-upgrade:\n') + 1).split(/\n  [a-z-]+:\n/)[0];
+  const names = [...job.matchAll(/\n      - name: ([^\n]+)\n/g)].map(match => match[1]);
+  const drillName = 'A failed upgrade, then the way back that upgrade.sh printed';
+  // After the install of the previous release and before the real upgrade, which then starts from the restored installation.
+  assert.ok(names.indexOf('Install the previous release') < names.indexOf(drillName) && names.indexOf(drillName) < names.indexOf('Upgrade to this commit with upgrade.sh'), names.join(' | '));
+  const step = job.split(`      - name: ${drillName}\n`)[1].split('\n      - name: ')[0];
+  assert.match(step, /^        if: steps\.previous\.outputs\.skip != 'true'\n/);
+  const run = step.split('        run: |\n')[1].replace(/^ {10}/gm, '');
+  // The fault: a throwaway commit on a worktree of the checkout (never pushed), a migration that raises only on the facility's database. The
+  // preflight's rehearsal restores into warehouse_restore (scripts/upgrade-rehearse.sh), so the same file passes there.
+  assert.match(run, /git -C "\$backend" worktree prune\ngit -C "\$backend" worktree add --detach "\$fault" /);
+  const migration = /cat > "\$fault\/migrations\/99999999999999_ci_fail\.sql" <<'SQL'\n([^]*?)\nSQL\n/.exec(run)?.[1];
+  assert.ok(migration, 'the fault migration is written by the step');
+  assert.match(migration, /IF current_database\(\) = 'postgres' THEN\s+RAISE EXCEPTION 'CI fault injection: /);
+  assert.match(readFileSync(new URL('../scripts/upgrade-rehearse.sh', import.meta.url), 'utf8'), /-d warehouse_restore/, 'the rehearsal uses another database than the fault names');
+  assert.match(readFileSync(new URL('../scripts/migrate.sh', import.meta.url), 'utf8'), /-U supabase_admin -d postgres /, 'the live apply is the database the fault names');
+  assert.match(run, /git -C "\$fault" -c user\.name=ci -c user\.email=ci@example\.invalid -c commit\.gpgsign=false commit -q /);
+  // It fails inside setup, after the checkout, with the record kept and the API closed.
+  assert.match(run, /if bash upgrade\.sh --ref "\$fault_ref" > "\$RUNNER_TEMP\/failed-upgrade\.log" 2>&1; then\n[^]*?::error::the upgrade with the injected fault succeeded"\n\s+exit 1\nfi/);
+  for (const line of [
+    `grep -q 'CI fault injection' "$RUNNER_TEMP/failed-upgrade.log"`, `grep -q 'The upgrade stopped at: Setup' "$RUNNER_TEMP/failed-upgrade.log"`,
+    'test "$(git rev-parse HEAD)" = "$fault_ref"', 'test -f "$WAREHOUSE_STATE_DIR/config/upgrade-in-progress"', 'test -e "$WAREHOUSE_STATE_DIR/config/maintenance"', 'test "$(rpc)" = 503',
+  ]) assert.ok(run.includes(`${line}\n`), line);
+  // The lines are the ones `rollback` prints, they are found in what the failed upgrade printed, and they run one by one as printed.
+  assert.match(run, /node scripts\/upgrade-record\.mjs rollback > "\$RUNNER_TEMP\/rollback\.txt"/);
+  assert.match(run, /grep -qxF -- "\$line" "\$RUNNER_TEMP\/failed-upgrade\.log"/);
+  assert.match(run, /while IFS= read -r line; do\n\s+echo "\+ \$line"\n\s+bash -euo pipefail -c "\$line" < \/dev\/null\ndone < "\$RUNNER_TEMP\/rollback-commands\.txt"/, 'each line runs with standard input closed, so a command cannot eat the rest of the list');
+  // Then the facility is the starting point again.
+  for (const line of [
+    'test "$(git rev-parse HEAD)" = "$before"', 'test ! -e "$WAREHOUSE_STATE_DIR/config/upgrade-in-progress"', 'test ! -e "$WAREHOUSE_STATE_DIR/config/maintenance"',
+    'node scripts/doctor.mjs --local', 'test "$(rpc)" = 200', 'bash scripts/data-fingerprint.sh --counts | diff -u "$RUNNER_TEMP/counts-before" -',
+  ]) assert.ok(run.includes(line), line);
+  assert.match(run, /mv "\$WAREHOUSE_STATE_DIR\/config\/upgrades\.log" "\$RUNNER_TEMP\/upgrades-after-rollback\.log"/, 'the drill\'s log line is set aside: the next step asserts there is none');
+  assert.match(run, /get_public_config/);
+  // The drill's time is paid for.
+  assert.match(job, /\n    timeout-minutes: (?:[89]\d|\d{3})\n/);
+  // The extraction runs on the real print: indented lines are commands, the masked administrator is filled in, no mask is left. (The step's own lines
+  // from the awk to the check for a leftover mask, run on a scratch directory with the real rollbackLines text as both the print and the failed log.)
+  const { rollbackLines } = await import('../scripts/upgrade-record.mjs');
+  const text = rollbackLines({ state: '/state', fromLabel: 'v0.6.0', fromSha: 'a'.repeat(40), toLabel: 'v0.7.0', backup: '/state/backups/warehouse-20261026T100000Z', adminPhone: '919888888871', webhookOff: true, preImages: 'pre-v0.6.0', maintenance: true }).join('\n') + '\n';
+  const from = run.indexOf(`awk '/^  [^ ]/'`);
+  const to = run.indexOf('\n', run.indexOf(`if grep -q 'XXXX'`));
+  assert.ok(from > 0 && to > from, 'the extraction is in the step');
+  const scratch = mkdtempSync(join(tmpdir(), 'warehouse-rollback-extract-'));
+  try {
+    writeFileSync(join(scratch, 'rollback.txt'), text);
+    writeFileSync(join(scratch, 'failed-upgrade.log'), `noise\n${text}more noise\n`);
+    const extracted = spawnSync('bash', ['-euo', 'pipefail', '-c', run.slice(from, to)], { encoding: 'utf8', env: { ...process.env, RUNNER_TEMP: scratch } });
+    assert.equal(extracted.status, 0, extracted.stdout + extracted.stderr);
+    const commands = readFileSync(join(scratch, 'rollback-commands.txt'), 'utf8').trimEnd().split('\n');
+    assert.equal(commands.length, 10);
+    assert.equal(commands[0], '  (umask 022; git checkout --detach ' + 'a'.repeat(40) + ')');
+    assert.equal(commands.find(line => line.includes('setup.sh')), "  bash setup.sh --operator --state-dir '/state' --admin-phone 919888888871 --admin-name 'Core Demo Administrator' --alert-webhook-file off");
+    assert.ok(commands.every(line => /^ {2}\S/.test(line)) && !commands.some(line => /XXXX|NAME\b/.test(line)));
+    // A line that the failed upgrade did not print stops the drill.
+    writeFileSync(join(scratch, 'failed-upgrade.log'), text.replace('  bash stop.sh\n', ''));
+    const missing = spawnSync('bash', ['-euo', 'pipefail', '-c', run.slice(from, to)], { encoding: 'utf8', env: { ...process.env, RUNNER_TEMP: scratch } });
+    assert.notEqual(missing.status, 0);
+    assert.match(missing.stdout + missing.stderr, /upgrade\.sh did not print this line of the way back:   bash stop\.sh/);
+  } finally { rmSync(scratch, { recursive: true, force: true }); }
+});
+
 test('the upgrade drill ties the 503 to the backup: ci-freeze-check.sh passes only with an "upgrading" answer between the Backup and Setup steps', () => {
   const dir = mkdtempSync(join(tmpdir(), 'warehouse-freeze-check-'));
   try {
