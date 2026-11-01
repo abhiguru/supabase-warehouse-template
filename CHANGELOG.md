@@ -26,11 +26,11 @@ file used to carry for earlier installations are in git: `git show b45ae0b:CHANG
 
 - **Row policies evaluate their helpers once; customers no longer see deleted documents; direct reads and list pages are capped (migrations 137 and 138, review findings M5 and M8).**
   Every policy on the 12 app-readable tables, and the `storage.objects` policies of `scripts/configure-storage.sql`, now calls
-  `active_role()`, `owns_customer(...)` and `get_current_user_profile_id()` inside a scalar subquery, so a role check is evaluated once per
+  `active_role()`, `owns_customer(...)`, `get_current_user_profile_id()` and (the `user_profiles` policies, migration 139) `auth.uid()` inside a scalar subquery, so a role check is evaluated once per
   statement instead of once per row; `owns_customer()` asks `active_role()` once instead of three times. A customer's
   `select * from dispatch_trl` over 50,000 lines ran in about 2.5 s and now runs in about 0.19 s. **Owner decision:** the customer policies
   (receipts, dispatches, invoices and their lines and photos) also require `deleted_at IS NULL` on the document, so a customer no longer
-  reads a deleted document; staff, supervisors and administrators are unchanged, and a cancelled invoice stays visible. `get_dispatch_list_with_items`
+  reads a deleted document (nor the file of its photo in Storage: `starter_customer_grn_images`, `starter_customer_dispatch_images`); staff, supervisors and administrators are unchanged, and a cancelled invoice stays visible. `get_dispatch_list_with_items`
   and `get_invoices_list` clamp `p_limit` to 1..200 (page and offset to at least 1 and 0). PostgREST returns at most 2,000 rows
   of a direct table read (`PGRST_DB_MAX_ROWS`, `docker/docker-compose.yml`). Tests: `tests/rls_wrapped_137.sql`, `tests/list_clamps_138.sql`
   (new), `tests/database-settings.test.mjs`, `tests/grn_heavy_dispatch.sql` (pages in 200s). Docs: [API_CONTRACT.md](docs/API_CONTRACT.md), [STAFF_GRN_POLICY.md](docs/STAFF_GRN_POLICY.md).

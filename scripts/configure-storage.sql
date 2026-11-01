@@ -56,15 +56,17 @@ USING (bucket_id IN ('grn-images','dispatch-images') AND (SELECT warehouse_secur
   AND NOT EXISTS (SELECT 1 FROM public.dispatch_images i WHERE i.storage_path=name)
   AND NOT EXISTS (SELECT 1 FROM public.goodsreceived g WHERE g.gr_image_url IS NOT NULL AND position(name IN g.gr_image_url) > 0)
   AND NOT EXISTS (SELECT 1 FROM public.dispatch d WHERE d.disp_image_url IS NOT NULL AND position(name IN d.disp_image_url) > 0));
+-- A customer reads the file of a confirmed photo of an assigned customer's document only while the document is not deleted
+-- (migration 137 does the same for the grn_images and dispatch_images rows).
 DROP POLICY IF EXISTS starter_customer_grn_images ON storage.objects;
 CREATE POLICY starter_customer_grn_images ON storage.objects FOR SELECT TO authenticated USING (
   bucket_id='grn-images' AND EXISTS (SELECT 1 FROM public.grn_images i JOIN public.goodsreceived g ON g.id=i.grn_id
-    WHERE i.storage_path=name AND i.status='confirmed' AND (SELECT warehouse_security.owns_customer(g.customer_id)))
+    WHERE i.storage_path=name AND i.status='confirmed' AND g.deleted_at IS NULL AND (SELECT warehouse_security.owns_customer(g.customer_id)))
 );
 DROP POLICY IF EXISTS starter_customer_dispatch_images ON storage.objects;
 CREATE POLICY starter_customer_dispatch_images ON storage.objects FOR SELECT TO authenticated USING (
   bucket_id='dispatch-images' AND EXISTS (SELECT 1 FROM public.dispatch_images i JOIN public.dispatch d ON d.id=i.dispatch_id
-    WHERE i.storage_path=name AND i.status='confirmed' AND (SELECT warehouse_security.owns_customer(d.customer_id)))
+    WHERE i.storage_path=name AND i.status='confirmed' AND d.deleted_at IS NULL AND (SELECT warehouse_security.owns_customer(d.customer_id)))
 );
 -- Staff can read GRN attachments and upload only their registered pending
 -- objects. A file that an image row names cannot be deleted or overwritten by

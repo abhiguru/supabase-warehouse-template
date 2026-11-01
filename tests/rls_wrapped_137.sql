@@ -1,7 +1,7 @@
 -- Migration 137: row policies evaluate their helpers once, and customers no longer see deleted documents.
 --
---   (a) No policy on the 12 app-readable tables (nor on storage.objects) calls active_role(), owns_customer() or
---       get_current_user_profile_id() outside a scalar subquery `(SELECT ...)`, and owns_customer() calls active_role() once.
+--   (a) No policy on the 12 app-readable tables (nor on storage.objects) calls active_role(), owns_customer(),
+--       get_current_user_profile_id() or auth.uid() outside a scalar subquery `(SELECT ...)`, and owns_customer() calls active_role() once.
 --   (b) Parity: customer, staff, supervisor, administrator and a token without a session see the rows they saw before the
 --       migration (the rows that are not deleted); an unwrapped helper would also be called once per row, a wrapped one does not.
 --   (c) A customer cannot read a deleted receipt, dispatch or invoice, nor their lines or photos; staff, supervisor and
@@ -38,13 +38,13 @@ SELECT pg_temp.rw_assert((SELECT count(*) FROM rw_pol WHERE schemaname = 'storag
 CREATE FUNCTION pg_temp.rw_calls(body text, helper text) RETURNS integer LANGUAGE sql IMMUTABLE AS $$
   SELECT (length(body) - length(replace(body, helper || '(', ''))) / length(helper || '(') $$;
 CREATE FUNCTION pg_temp.rw_wrapped(body text, helper text) RETURNS integer LANGUAGE sql IMMUTABLE AS $$
-  SELECT count(*)::int FROM regexp_matches(body, '\(\s*SELECT\s+(public\.)?' || replace(helper, '.', '\.') || '\(', 'g') $$;
+  SELECT count(*)::int FROM regexp_matches(body, '\(\s*SELECT\s+(public\.|auth\.)?' || replace(helper, '.', '\.') || '\(', 'g') $$;
 DO $$
 DECLARE r record; h text; total integer := 0;
 BEGIN
   FOR r IN SELECT * FROM rw_pol LOOP
-    -- pg_policies shows public.get_current_user_profile_id without its schema (public is on the search path).
-    FOREACH h IN ARRAY ARRAY['warehouse_security.active_role', 'warehouse_security.owns_customer', 'get_current_user_profile_id'] LOOP
+    -- pg_policies shows public.get_current_user_profile_id and auth.uid() without their schemas (both are on the search path).
+    FOREACH h IN ARRAY ARRAY['warehouse_security.active_role', 'warehouse_security.owns_customer', 'get_current_user_profile_id', 'uid'] LOOP
       IF pg_temp.rw_calls(r.body, h) <> pg_temp.rw_wrapped(r.body, h) THEN
         RAISE EXCEPTION 'rls wrapped 137: policy % on %.% calls % outside (SELECT ...): %', r.policyname, r.schemaname, r.tablename, h, r.body;
       END IF;
@@ -212,6 +212,37 @@ BEGIN
   want := 'dispatch=1/1/0,dispatch_images=1/0/0,dispatch_trl=61/0/0,goodsreceived=1/1/0,goodsreceived_trl=61/0/0,grn_images=1/0/0,invoice=1/1/0,invoice_trl=1/0/0';
   PERFORM pg_temp.rw_assert(got = want, 'with the document policies open, a customer still reads no line, photo or invoice line of a deleted document (live/deleted/other per table): ' || got);
 END $$;
+
+-- The same for the files: a customer's storage policies ask for a live document themselves. The policies they read through (the
+-- documents and the photo rows) are put back to the old rule too, so that only the storage policy can hide a deleted document's file.
+DROP POLICY starter_customer ON public.grn_images;
+CREATE POLICY starter_customer ON public.grn_images FOR SELECT TO authenticated USING (((status)::text = 'confirmed'::text) AND (EXISTS (SELECT 1 FROM public.goodsreceived g WHERE g.id = grn_images.grn_id AND (SELECT warehouse_security.owns_customer(g.customer_id)))));
+DROP POLICY starter_customer ON public.dispatch_images;
+CREATE POLICY starter_customer ON public.dispatch_images FOR SELECT TO authenticated USING (((status)::text = 'confirmed'::text) AND (EXISTS (SELECT 1 FROM public.dispatch d WHERE d.id = dispatch_images.dispatch_id AND (SELECT warehouse_security.owns_customer(d.customer_id)))));
+INSERT INTO storage.objects(bucket_id, name) VALUES
+ ('grn-images', 'wrap-rule/WRL.jpg'), ('grn-images', 'wrap-rule/WRD.jpg'), ('grn-images', 'wrap-rule/WRB.jpg'),
+ ('dispatch-images', 'wrap-rule/WLV.jpg'), ('dispatch-images', 'wrap-rule/WDL.jpg'), ('dispatch-images', 'wrap-rule/WBT.jpg');
+CREATE TEMP TABLE rw_files(who text, files text);
+GRANT ALL ON rw_files TO PUBLIC;
+SELECT set_config('request.jwt.claims', :'c1_claims', true);
+SET LOCAL ROLE authenticated;
+INSERT INTO rw_files SELECT 'customer1', coalesce(string_agg(name, ',' ORDER BY name), '') FROM storage.objects WHERE name LIKE 'wrap-rule/%';
+RESET ROLE;
+SELECT set_config('request.jwt.claims', :'c2_claims', true);
+SET LOCAL ROLE authenticated;
+INSERT INTO rw_files SELECT 'customer2', coalesce(string_agg(name, ',' ORDER BY name), '') FROM storage.objects WHERE name LIKE 'wrap-rule/%';
+RESET ROLE;
+SELECT set_config('request.jwt.claims', :'admin_claims', true);
+SET LOCAL ROLE authenticated;
+INSERT INTO rw_files SELECT 'admin', coalesce(string_agg(name, ',' ORDER BY name), '') FROM storage.objects WHERE name LIKE 'wrap-rule/%';
+RESET ROLE;
+SELECT set_config('request.jwt.claims', :'ghost_claims', true);
+SET LOCAL ROLE authenticated;
+INSERT INTO rw_files SELECT 'ghost', coalesce(string_agg(name, ',' ORDER BY name), '') FROM storage.objects WHERE name LIKE 'wrap-rule/%';
+RESET ROLE;
+SELECT pg_temp.rw_assert((SELECT string_agg(who || '=' || files, ' ' ORDER BY who) FROM rw_files)
+  = 'admin=wrap-rule/WBT.jpg,wrap-rule/WDL.jpg,wrap-rule/WLV.jpg,wrap-rule/WRB.jpg,wrap-rule/WRD.jpg,wrap-rule/WRL.jpg customer1=wrap-rule/WLV.jpg,wrap-rule/WRL.jpg customer2=wrap-rule/WBT.jpg,wrap-rule/WRB.jpg ghost=',
+  'photo files per role (customer one must not read the files of its deleted receipt and dispatch): ' || (SELECT string_agg(who || '=' || files, ' ' ORDER BY who) FROM rw_files));
 
 -- owns_customer() asks active_role() once per call (it asked three times before migration 137).
 SET LOCAL track_functions = 'all';

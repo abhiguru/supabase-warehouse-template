@@ -17,7 +17,7 @@ and supervisors. Customers retain their assigned-customer read boundary.
 
 **Customers do not see deleted documents (migration 137, owner decision).** A customer account reads a goods receipt, dispatch or invoice
 of an assigned customer only while it is not deleted (`deleted_at IS NULL` on the document), and never the lines or photos of a deleted
-one (`goodsreceived_trl`, `grn_images`, `dispatch_trl`, `dispatch_images`, `invoice_trl`). Administrators, supervisors and staff read
+one (`goodsreceived_trl`, `grn_images`, `dispatch_trl`, `dispatch_images`, `invoice_trl`), nor the photo files of a deleted receipt or dispatch in Storage. Administrators, supervisors and staff read
 deleted documents as before. Only deletion hides a document from a customer: an invoice that is cancelled (not deleted) stays visible to
 its customer. `tests/rls_wrapped_137.sql` proves it for every role.
 
