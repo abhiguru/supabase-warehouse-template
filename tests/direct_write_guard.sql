@@ -324,20 +324,21 @@ SELECT id AS dispatch_b1 FROM public.dispatch WHERE disp_no='WGB1' \gset
 -- 5. (An order's note went through update_order_metadata, which migration 123 dropped: no screen called it.)
 
 -- 6. The dependency-checked deletes still work for the supervisor: the invoice
--- first, then a dispatch (stock restored), then a receipt with its lines.
+-- is cancelled first (migration 134: delete_invoice refuses), then a dispatch (stock restored), then a receipt with its lines.
 SELECT set_config('request.jwt.claims',:'supervisor_claims',true);
 SET LOCAL ROLE authenticated;
 SELECT public.delete_dispatch_with_order_cleanup(:'dispatch_a1'::uuid,NULL) AS invoiced_dispatch \gset
 SELECT pg_temp.guard_assert(:'invoiced_dispatch'::jsonb->>'success'='false','an invoiced dispatch is not deleted: ' || :'invoiced_dispatch');
-SELECT pg_temp.guard_assert(public.delete_invoice(:'invoice_a'::uuid)->>'success'='true','supervisor deletes the invoice');
+SELECT pg_temp.guard_assert(public.delete_invoice(:'invoice_a'::uuid)->>'reason'='INVOICE_CANCEL_ONLY','supervisor''s delete of the invoice is refused (migration 134)');
+SELECT pg_temp.guard_assert(public.cancel_invoice(:'invoice_a'::uuid,'Guard test cleanup',NULL)->>'success'='true','supervisor cancels the invoice');
 SELECT public.delete_dispatch_with_order_cleanup(:'dispatch_b1'::uuid,NULL) AS deleted_dispatch \gset
 SELECT pg_temp.guard_assert(:'deleted_dispatch'::jsonb->>'success'='true','supervisor deletes the dispatch: ' || :'deleted_dispatch');
 SELECT pg_temp.guard_assert((SELECT stock=10 FROM public.goodsreceived_trl WHERE id=:'lot_b'::uuid),'deleting the dispatch restores its 4 bags');
 SELECT public.delete_grn_safe(:'grn_b'::uuid) AS deleted_grn \gset
 SELECT pg_temp.guard_assert(:'deleted_grn'::jsonb->>'success'='true','supervisor deletes the receipt: ' || :'deleted_grn');
 RESET ROLE;
-SELECT pg_temp.guard_assert((SELECT count(*)=0 FROM public.invoice WHERE id=:'invoice_a'::uuid)
-  AND (SELECT invoiced IS NOT TRUE FROM public.goodsreceived WHERE id=:'grn_a'::uuid),'the invoice is gone and its receipt is uninvoiced');
+SELECT pg_temp.guard_assert((SELECT count(*)=1 AND bool_and(cancelled_at IS NOT NULL) FROM public.invoice WHERE id=:'invoice_a'::uuid)
+  AND (SELECT invoiced IS NOT TRUE FROM public.goodsreceived WHERE id=:'grn_a'::uuid),'the invoice is cancelled (kept) and its receipt is uninvoiced');
 SELECT pg_temp.guard_assert((SELECT count(*)=1 FROM public.dispatch WHERE id=:'dispatch_a1'::uuid),'the invoiced dispatch was kept');
 SELECT pg_temp.guard_assert((SELECT count(*)=0 FROM public.dispatch WHERE id=:'dispatch_b1'::uuid)
   AND (SELECT count(*)=0 FROM public.goodsreceived_trl WHERE id=:'lot_b'::uuid)

@@ -348,12 +348,12 @@ SELECT pg_temp.gr_upd(:'rater_claims'::jsonb,'GRN-G1',jsonb_build_array(pg_temp.
 SELECT pg_temp.gr_assert(:'inv_same'::jsonb->>'success'='true' AND pg_temp.gr_own('GRN-G1')='GR Plum 0-50@9.00/2.00/5 monthly','the equal set on an invoiced GRN is accepted: '||:'inv_same');
 SELECT pg_temp.gr_as(:'rater_claims'::jsonb,format($q$SELECT public.get_grn_details(%L::uuid)$q$,pg_temp.gr_grn('GRN-G1'))) AS det2 \gset
 SELECT pg_temp.gr_assert(:'det2'::jsonb#>>'{data,grn,rates,0,archived}'='true','the rate of an invoiced GRN is archived');
--- Delete the invoice: the GRN rate (9) applies again, also through the old invoice id.
-SELECT pg_temp.gr_as(:'admin_claims'::jsonb,format($q$SELECT public.delete_invoice(%L::uuid)$q$,:'invoice_g1')) AS del1 \gset
-SELECT pg_temp.gr_assert(:'del1'::jsonb->>'success'='true' AND NOT (SELECT invoiced FROM public.goodsreceived WHERE gr_no='GRN-G1'),'invoice deleted: '||:'del1');
+-- Cancel the invoice (migration 134: delete_invoice refuses): the GRN rate (9) applies again, also through the old invoice id.
+SELECT pg_temp.gr_as(:'admin_claims'::jsonb,format($q$SELECT public.cancel_invoice(%L::uuid,'Rates test cleanup',NULL)$q$,:'invoice_g1')) AS del1 \gset
+SELECT pg_temp.gr_assert(:'del1'::jsonb->>'success'='true' AND NOT (SELECT invoiced FROM public.goodsreceived WHERE gr_no='GRN-G1'),'invoice cancelled: '||:'del1');
 SELECT public.build_invoice_recalculation_rows(pg_temp.gr_grn('GRN-G1'),'legacy',:'invoice_g1'::uuid) AS rows_after \gset
 SELECT r->>'charge' AS after_plum_charge FROM jsonb_array_elements(:'rows_after'::jsonb->'rows') r WHERE r->>'item_name'='GR Plum' \gset
-SELECT pg_temp.gr_assert(:after_plum_charge::numeric=9,'after delete_invoice the GRN rate applies again: '||:'after_plum_charge');
+SELECT pg_temp.gr_assert(:after_plum_charge::numeric=9,'after cancel_invoice the GRN rate applies again: '||:'after_plum_charge');
 
 -- ---------------------------------------------------------------------------
 -- 6a. An invoiced GRN (C2): no rate is demanded of its lines, and its stored set is accepted as it is

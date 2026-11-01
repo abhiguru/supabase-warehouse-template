@@ -355,14 +355,14 @@ SELECT pg_temp.ria_assert((:'staff_quince_oct'::jsonb#>>'{data,summary,total_amo
   AND (:'staff_quince_sep'::jsonb#>>'{data,summary,paid_amount}')::numeric = 14
   AND (:'staff_quince_sep'::jsonb#>>'{data,summary,pending_amount}')::numeric = 89,
   'staff: October alone is 220 (paid 111, pending 109) and September alone 103 (paid 14, pending 89): ' || :'staff_quince_oct' || ' / ' || :'staff_quince_sep');
--- The keys of the answer, the summary, an invoice and a month are the same as before.
+-- The keys of the answer, the summary, an invoice and a month are the same as before (migration 134 adds cancelled_count to the summary and cancel_reason, cancelled_at to an invoice).
 SELECT pg_temp.ria_assert(pg_temp.ria_keys(:'staff_quince'::jsonb) = 'data,metadata,success'
   AND pg_temp.ria_keys(:'staff_quince'::jsonb->'data') = 'by_month,invoices,summary'
-  AND pg_temp.ria_keys(:'staff_quince'::jsonb#>'{data,summary}') = 'net_amount,paid_amount,paid_count,pending_amount,pending_count,total_amount,total_discount,total_invoices,total_labour,total_tax'
+  AND pg_temp.ria_keys(:'staff_quince'::jsonb#>'{data,summary}') = 'cancelled_count,net_amount,paid_amount,paid_count,pending_amount,pending_count,total_amount,total_discount,total_invoices,total_labour,total_tax'
   AND pg_temp.ria_keys(:'staff_quince'::jsonb#>'{data,by_month,0}') = 'invoice_count,month,paid_amount,pending_amount,total_amount',
   'staff: the keys of the Quince answer, its summary and its months: ' || :'staff_quince');
 -- Migration 62 adds balance_amount and paid_amount to each invoice (tests/report_invoice_paid.sql checks their values).
-SELECT pg_temp.ria_assert(count(*) = 4 AND bool_and(pg_temp.ria_keys(x) = 'balance_amount,discount,financial_year,grn_id,grn_ref,invoice_date,invoice_id,invoice_number,item_count,labour,line_items,net_total,notes,paid_amount,payment_status,tax_amount,total,total_quantity'),
+SELECT pg_temp.ria_assert(count(*) = 4 AND bool_and(pg_temp.ria_keys(x) = 'balance_amount,cancel_reason,cancelled_at,discount,financial_year,grn_id,grn_ref,invoice_date,invoice_id,invoice_number,item_count,labour,line_items,net_total,notes,paid_amount,payment_status,tax_amount,total,total_quantity'),
   'staff: the keys of each Quince invoice')
 FROM jsonb_array_elements(:'staff_quince'::jsonb#>'{data,invoices}') AS t(x);
 -- An administrator is answered the same (everything but the time of the answer).
@@ -392,7 +392,7 @@ SELECT pg_temp.ria_assert((:'staff_all'::jsonb#>>'{data,summary,total_invoices}'
   AND (:'staff_all'::jsonb#>>'{data,summary,total_tax}')::numeric = 45
   AND (:'staff_all'::jsonb#>>'{data,summary,total_amount}') = :'table_all_period'
   AND jsonb_typeof(:'staff_all'::jsonb#>'{data,summary,net_amount}') = 'number'
-  AND pg_temp.ria_keys(:'staff_all'::jsonb#>'{data,summary}') = 'net_amount,total_amount,total_customers,total_invoices,total_tax',
+  AND pg_temp.ria_keys(:'staff_all'::jsonb#>'{data,summary}') = 'cancelled_count,net_amount,total_amount,total_customers,total_invoices,total_tax',
   'staff: all customers: 6 invoices, total 502 = net 502 (it was 583), tax 45: ' || :'staff_all');
 SELECT pg_temp.ria_assert(pg_temp.ria_col(:'staff_all'::jsonb#>'{data,by_customer}', 'customer_name') = ARRAY['Invoice Amounts Quince Cold', 'Invoice Amounts Rowan Agro']
   AND pg_temp.ria_col(:'staff_all'::jsonb#>'{data,by_customer}', 'invoice_count') = ARRAY['4', '2']
@@ -436,7 +436,7 @@ SELECT pg_temp.ria_assert(pg_temp.ria_col(:'staff_detail'::jsonb#>'{data,recent_
 -- Key sets.
 SELECT pg_temp.ria_assert(pg_temp.ria_keys(:'staff_detail'::jsonb) = 'data,metadata,success'
   AND pg_temp.ria_keys(:'staff_detail'::jsonb->'data') = 'by_bucket,customer_city,customer_id,customer_name,monthly_trends,recent_dispatches,recent_grns,recent_invoices,summary,top_stock_items'
-  AND pg_temp.ria_keys(:'staff_detail'::jsonb#>'{data,summary}') = 'average_stock_age_days,current_stock,total_dispatch_quantity,total_dispatches,total_grn_quantity,total_grns,total_invoice_amount,total_paid_amount,total_pending_amount'
+  AND pg_temp.ria_keys(:'staff_detail'::jsonb#>'{data,summary}') = 'average_stock_age_days,cancelled_count,current_stock,total_dispatch_quantity,total_dispatches,total_grn_quantity,total_grns,total_invoice_amount,total_paid_amount,total_pending_amount'
   AND pg_temp.ria_keys(:'staff_detail'::jsonb#>'{data,monthly_trends,0}') = 'dispatch_count,dispatch_quantity,grn_count,grn_quantity,invoice_amount,month,stock_level_end'
   AND pg_temp.ria_keys(:'staff_detail'::jsonb#>'{data,recent_invoices,0}') = 'invoice_date,invoice_id,invoice_number,net_total,status',
   'staff: the keys of the activity detail: ' || :'staff_detail');

@@ -240,12 +240,12 @@ BEGIN
         ) THEN
             PERFORM 1 FROM goodsreceived WHERE id = p_grn_id FOR UPDATE;
 
-            IF EXISTS (SELECT 1 FROM invoice WHERE gr_id = p_grn_id AND deleted_at IS NULL)
+            IF EXISTS (SELECT 1 FROM invoice WHERE gr_id = p_grn_id AND deleted_at IS NULL AND cancelled_at IS NULL)
                OR EXISTS (
                    SELECT 1 FROM invoice_trl it
                    JOIN dispatch_trl dt ON dt.id = it.disp_trl_id
                    JOIN invoice inv ON inv.id = it.invoice_id
-                   WHERE dt.gr_id = p_grn_id AND inv.deleted_at IS NULL
+                   WHERE dt.gr_id = p_grn_id AND inv.deleted_at IS NULL AND inv.cancelled_at IS NULL
                ) THEN
                 RAISE EXCEPTION 'Cannot change the pricing mode of a GRN that has invoices: delete invoices first, then change the pricing mode and invoice again';
             END IF;
@@ -353,7 +353,7 @@ BEGIN
                 SELECT i.inv_no, i.inv_fin_year INTO v_inv_no2, v_inv_year2
                 FROM invoice_trl it
                 JOIN dispatch_trl dt ON dt.id = it.disp_trl_id
-                JOIN invoice i ON i.id = it.invoice_id AND i.deleted_at IS NULL
+                JOIN invoice i ON i.id = it.invoice_id AND i.deleted_at IS NULL AND i.cancelled_at IS NULL
                 WHERE dt.gr_trl_id = v_chk.line_id
                 ORDER BY i.inv_fin_year, i.inv_no, i.id
                 LIMIT 1;

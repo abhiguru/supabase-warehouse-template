@@ -481,36 +481,38 @@ SELECT pg_temp.rf_assert(:'keep_clear'::jsonb->>'success'='true' AND (SELECT COA
  'twin: sent keys are applied (notes cleared, mode back to legacy): '||:'keep_clear');
 
 -- ---------------------------------------------------------------------------
--- 11. delete_invoice: a payment is re-checked on the live invoice; the GRN flag is cleared only when no other live invoice holds it (I12)
+-- 11. cancel_invoice (migration 134; delete_invoice refuses): a payment is re-checked on the live invoice; the GRN flag is cleared only when no other live invoice holds it (I12)
 -- ---------------------------------------------------------------------------
 INSERT INTO public.payments(payment_no,payment_date,customer_id,customer_name,amount,invoice_id)
  VALUES ('FXPAY1','2026-06-25T12:00:00Z',:'customer_a'::uuid,'Fix Customer A',5,:'invoice_k'::uuid);
 SELECT set_config('request.jwt.claims',:'admin_claims',true);
 SET LOCAL ROLE authenticated;
 SELECT public.delete_invoice(:'invoice_k'::uuid) AS del_paid \gset
+SELECT public.cancel_invoice(:'invoice_k'::uuid,'Fix test cleanup',NULL) AS cancel_paid \gset
 RESET ROLE;
-SELECT pg_temp.rf_assert(:'del_paid'::jsonb->>'success'='false' AND :'del_paid'::jsonb->>'error'='Cannot delete an invoice that has payments'
+SELECT pg_temp.rf_assert(:'del_paid'::jsonb->>'reason'='INVOICE_CANCEL_ONLY','a paid invoice is not deleted: '||:'del_paid');
+SELECT pg_temp.rf_assert(:'cancel_paid'::jsonb->>'success'='false' AND :'cancel_paid'::jsonb->>'reason'='INVOICE_HAS_PAYMENTS'
  AND EXISTS (SELECT 1 FROM public.invoice WHERE id=:'invoice_k'::uuid AND deleted_at IS NULL) AND (SELECT invoiced FROM public.goodsreceived WHERE id=:'grn_k'::uuid)
- AND (SELECT count(*)=1 FROM public.invoice_trl WHERE invoice_id=:'invoice_k'::uuid),'a paid invoice is not deleted, keeps its line and the GRN stays invoiced: '||:'del_paid');
+ AND (SELECT count(*)=1 FROM public.invoice_trl WHERE invoice_id=:'invoice_k'::uuid),'a paid invoice is not cancelled, keeps its line and the GRN stays invoiced: '||:'cancel_paid');
 DELETE FROM public.payments WHERE payment_no='FXPAY1';
--- A second live invoice on the same GRN (a legacy shape, written directly): deleting one leaves the GRN invoiced, deleting the last frees it.
+-- A second live invoice on the same GRN (a legacy shape, written directly): cancelling one leaves the GRN invoiced, cancelling the last frees it.
 INSERT INTO public.invoice(inv_no,inv_fin_year,customer_id,customer_name,inv_date,gr_id,gr_no,total,tax_amount,labour,discount,duration_mode)
  VALUES (91099,2026,:'customer_a'::uuid,'Fix Customer A','2026-06-21T12:00:00Z',:'grn_k'::uuid,'FXK',0,0,0,0,'legacy');
 SELECT set_config('request.jwt.claims',:'admin_claims',true);
 SET LOCAL ROLE authenticated;
-SELECT public.delete_invoice(:'invoice_k'::uuid) AS del_first \gset
+SELECT public.cancel_invoice(:'invoice_k'::uuid,'Fix test cleanup',NULL) AS del_first \gset
 RESET ROLE;
-SELECT pg_temp.rf_assert(:'del_first'::jsonb->>'success'='true' AND NOT EXISTS (SELECT 1 FROM public.invoice WHERE id=:'invoice_k'::uuid)
- AND (SELECT invoiced FROM public.goodsreceived WHERE id=:'grn_k'::uuid),'deleting one of two live invoices of a GRN leaves the GRN invoiced: '||:'del_first');
+SELECT pg_temp.rf_assert(:'del_first'::jsonb->>'success'='true' AND EXISTS (SELECT 1 FROM public.invoice WHERE id=:'invoice_k'::uuid AND cancelled_at IS NOT NULL)
+ AND (SELECT invoiced FROM public.goodsreceived WHERE id=:'grn_k'::uuid),'cancelling one of two live invoices of a GRN leaves the GRN invoiced: '||:'del_first');
 SELECT id AS invoice_k2 FROM public.invoice WHERE inv_no=91099 AND gr_id=:'grn_k'::uuid \gset
 SELECT set_config('request.jwt.claims',:'admin_claims',true);
 SET LOCAL ROLE authenticated;
-SELECT public.delete_invoice(:'invoice_k2'::uuid) AS del_last \gset
-SELECT public.delete_invoice(:'invoice_k2'::uuid) AS del_again \gset
+SELECT public.cancel_invoice(:'invoice_k2'::uuid,'Fix test cleanup',NULL) AS del_last \gset
+SELECT public.cancel_invoice(:'invoice_k2'::uuid,'Fix test cleanup',NULL) AS del_again \gset
 RESET ROLE;
 SELECT pg_temp.rf_assert(:'del_last'::jsonb->>'success'='true' AND NOT (SELECT invoiced FROM public.goodsreceived WHERE id=:'grn_k'::uuid)
- AND :'del_again'::jsonb->>'success'='false' AND :'del_again'::jsonb->>'error'='Invoice not found',
- 'deleting the last live invoice frees the GRN; deleting it again is "Invoice not found": '||:'del_last'||:'del_again');
+ AND :'del_again'::jsonb->>'success'='false' AND :'del_again'::jsonb->>'reason'='INVOICE_CANCELLED',
+ 'cancelling the last live invoice frees the GRN; cancelling it again is INVOICE_CANCELLED: '||:'del_last'||:'del_again');
 
 -- ---------------------------------------------------------------------------
 -- 12. confirm_grn_image_upload and confirm_dispatch_image_upload: NOT_FOUND for a wrong token, an already confirmed row, a row that went away

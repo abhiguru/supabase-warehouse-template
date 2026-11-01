@@ -22,6 +22,7 @@ BEGIN
         'duration_mode', COALESCE(i.duration_mode, 'legacy'),
         'notes', i.notes, 'created_by', i.created_by,
         'updated_at', i.updated_at,
+        'cancelled_at', i.cancelled_at, 'cancel_reason', i.cancel_reason,
         'grn_pricing_mode', (SELECT gr.pricing_mode FROM goodsreceived gr WHERE gr.id = i.gr_id)
     ) || CASE WHEN auth.jwt()->>'role' = 'service_role'
                 OR warehouse_security.active_role() IN ('admin','supervisor','staff')
@@ -39,7 +40,9 @@ BEGIN
                 (SELECT h.changed_by_name FROM invoice_zero_charge_history h
                   WHERE h.invoice_id = i.id AND h.changed_at = i.zero_charge_set_at ORDER BY h.id DESC LIMIT 1),
                 (SELECT p.name FROM user_profiles p WHERE p.id = i.zero_charge_set_by)),
-            'zero_charge_set_at', i.zero_charge_set_at)
+            'zero_charge_set_at', i.zero_charge_set_at,
+            'cancelled_by', i.cancelled_by,
+            'cancelled_by_name', (SELECT p.name FROM user_profiles p WHERE p.id = i.cancelled_by))
         ELSE '{}'::jsonb END
     INTO v_invoice_header FROM invoice i WHERE i.id = p_invoice_id AND i.deleted_at IS NULL;
 

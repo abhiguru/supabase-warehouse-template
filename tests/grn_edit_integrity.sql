@@ -169,15 +169,15 @@ RESET ROLE;
 SELECT pg_temp.gei_assert(:'free_change'::jsonb->>'success'='true'
  AND (SELECT pricing_mode='ONE_TIME' FROM public.goodsreceived WHERE id=:'grn_b'::uuid),'a receipt without invoices changes its mode');
 
--- The revision path: delete the invoice, change the mode, invoice again.
+-- The revision path: cancel the invoice (migration 134: it is not deleted), change the mode, invoice again.
 SET LOCAL ROLE authenticated;
-SELECT public.delete_invoice(:'invoice_id'::uuid) AS deleted \gset
+SELECT public.cancel_invoice(:'invoice_id'::uuid,'Integrity test revision',NULL) AS deleted \gset
 SELECT public.update_grn(p_grn_id=>:'grn_a'::uuid,p_pricing_mode=>'ONE_TIME',
  p_items=>jsonb_build_array(jsonb_build_object('id',:'line_a','item_id',:'item_id','item_name','Integrity Potatoes','packaging','Bag','qty',10,'weight',5))) AS after_delete \gset
 RESET ROLE;
 SELECT pg_temp.gei_assert(:'deleted'::jsonb->>'success'='true' AND :'after_delete'::jsonb->>'success'='true'
  AND (SELECT pricing_mode='ONE_TIME' FROM public.goodsreceived WHERE id=:'grn_a'::uuid),
- 'after the invoice is deleted the mode can change: ' || :'after_delete');
+ 'after the invoice is cancelled the mode can change: ' || :'after_delete');
 
 -- The patch kept the function's owner, SECURITY DEFINER, settings and grants,
 -- and the kept-image update is bound to the receipt as well.

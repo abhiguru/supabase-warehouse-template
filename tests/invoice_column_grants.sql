@@ -210,5 +210,28 @@ SET LOCAL ROLE service_role;
 SELECT pg_temp.col_assert((SELECT discount_reason='Handling surcharge agreed' AND zero_charge_reason='Sample lot' FROM public.invoice WHERE id=:'invoice_id'::uuid)
  AND (SELECT count(*)=1 FROM (SELECT * FROM public.invoice WHERE id=:'invoice_id'::uuid) whole),'the service role reads the whole row');
 RESET ROLE;
+
+-- ---------------------------------------------------------------------------
+-- 5. Migration 134: a cancelled invoice. The three cancellation columns are open like deleted_at and deleted_by; the six internal ones stay closed.
+-- ---------------------------------------------------------------------------
+SELECT pg_temp.col_assert((SELECT bool_and(has_column_privilege('authenticated','public.invoice',c,'SELECT')) FROM unnest(ARRAY['cancelled_at','cancelled_by','cancel_reason','deleted_at','deleted_by']) c)
+ AND (SELECT NOT bool_or(has_column_privilege('authenticated','public.invoice',c,'INSERT,UPDATE')) FROM unnest(ARRAY['cancelled_at','cancelled_by','cancel_reason']) c)
+ AND NOT has_column_privilege('anon','public.invoice','cancelled_at','SELECT'),'the app role reads the three cancellation columns and writes none; anonymous callers read none');
+SELECT set_config('request.jwt.claims',:'admin_claims',true);
+SET LOCAL ROLE authenticated;
+SELECT public.cancel_invoice(:'invoice_id'::uuid,'Column grant test',NULL) AS cancelled \gset
+RESET ROLE;
+SELECT pg_temp.col_assert(:'cancelled'::jsonb->>'success'='true','the administrator cancels the fixture invoice: '||:'cancelled');
+SELECT set_config('request.jwt.claims',:'customer_claims',true);
+SET LOCAL ROLE authenticated;
+SELECT pg_temp.col_rows(format('SELECT %s FROM public.invoice',:'open_columns')) AS customer_cancelled_rows \gset
+SELECT public.get_invoice_detail(:'invoice_id'::uuid)->'invoice' AS customer_cancelled_detail \gset
+RESET ROLE;
+SELECT pg_temp.col_assert(jsonb_array_length(:'customer_cancelled_rows'::jsonb)=1 AND :'customer_cancelled_rows'::jsonb#>>'{0,cancel_reason}'='Column grant test'
+ AND :'customer_cancelled_rows'::jsonb#>>'{0,cancelled_at}' IS NOT NULL AND :'customer_cancelled_rows'::jsonb#>>'{0,cancelled_by}' IS NOT NULL
+ AND (SELECT count(*)=:open_count FROM jsonb_object_keys(:'customer_cancelled_rows'::jsonb->0)) AND NOT (:'customer_cancelled_rows'::jsonb->0 ?| :'internal'::text[]),
+ 'a customer account still reads its cancelled invoice, with the cancellation, and still not the internal columns: '||:'customer_cancelled_rows');
+SELECT pg_temp.col_assert(:'customer_cancelled_detail'::jsonb->>'cancel_reason'='Column grant test' AND NOT (:'customer_cancelled_detail'::jsonb ?| ARRAY['discount_reason','cancelled_by_name','cancelled_by']),
+ 'get_invoice_detail shows a customer account the cancellation, not the internal columns or who cancelled: '||:'customer_cancelled_detail');
 ROLLBACK;
 \echo 'Invoice column grants: the six internal columns are closed to every app role''s direct read, the rest and get_invoice_detail are unchanged.'
