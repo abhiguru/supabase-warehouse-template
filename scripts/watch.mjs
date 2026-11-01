@@ -56,9 +56,11 @@ import { RECORD_FILE, interruptedUpgradeWarning, readUpgradeRecord } from './upg
 import { centralKeyFault, gatewayPortText, letterheadProblem, readEnv, root as checkoutRoot } from './doctor-common.mjs';
 import { LAN_SERVICE, describeAddresses, hostHasAddress, lanOrigin, lanSettings, probeLanKeys, readHostInterfaces } from './lan-common.mjs';
 import { redactServiceLog } from './service-diagnostics.mjs';
-import { usbBackupWarning } from './usb-backup-status.mjs';
+import { MIN_VHDX_DRIVE_FREE_BYTES, MIN_VHDX_DRIVE_FREE_PERCENT, driveSpace, isWsl, statfsWithTimeout, vhdxDrive } from './wsl-host.mjs';
+import { usbBackupWarning, usbRotationNote } from './usb-backup-status.mjs';
 import { ageText, sensorCheck, sensorLimitSeconds } from './sensors-check.mjs';
-import { postSlackMessage, sensorTestMessage, testMessage } from './alert-webhook.mjs';
+import { HEARTBEAT_URL_PATTERN, firstUrlLine, postSlackMessage, sensorTestMessage, testMessage } from './alert-webhook.mjs';
+import { fetchGithubJson, releaseLine } from './release-check.mjs';
 import { ADAPTERS, AUDIENCES, TARGET_IDS, audienceOf, ALERT_LOG, createAlertLog, deliver, historyLine, loadTargets, pickAudience, readAlertLog, secretsOf, targetsOf } from './notify.mjs';
 
 const MIN = 60 * 1000;
@@ -67,7 +69,7 @@ const DAY = 24 * HOUR;
 // Thresholds are those of the Prometheus alert rules this checker replaced (docs/MONITORING.md lists them).
 export const LIMITS = {
   cpuPercent: 80, memoryPercent: 85, diskRootFreePercent: 20, diskOtherFreePercent: 10,
-  dbConnections: 80, txSeconds: 300, cacheHitRatio: 0.9, cacheMinBlocks: 10000, deadTuples: 100000,
+  dbConnections: 80, txSeconds: 300, lockWaiters: 5, cacheHitRatio: 0.9, cacheMinBlocks: 10000, deadTuples: 100000,
   containerMemoryRatio: 0.9, restartsPerHour: 3, oomHoldMs: HOUR,
   errorRate: 0.05, latencySeconds: 2, minRequests: 10, backupMaxAgeMs: 26 * HOUR,
   failingRuns: 2, repeatMs: 4 * HOUR, busyGiveUpMs: 2 * HOUR, keepBackups: 7,
@@ -136,8 +138,8 @@ export const statePath = state => join(state, 'config/watch-state.json');
 export const mutesPath = state => join(state, 'config/watch-mutes.json');
 export const freshState = now => ({
   version: 1, firstRun: now, alerts: {}, containers: {}, cpu: null, lastRunAt: null,
-  lastDailyRun: {}, dailyAttempt: null, dailyRunning: null, dailySkipped: null, busySince: null, delivery: {},
-  memoryNote: null, heal: {}, lastSmsCheck: null, stackRestarts: [],
+  lastDailyRun: {}, releaseCheck: null, dailyAttempt: null, dailyRunning: null, dailySkipped: null, busySince: null, delivery: {},
+  memoryNote: null, heal: {}, lastSmsCheck: null, stackRestarts: [], bootId: null, hostRestart: null,
   // Mutes live in their own file (loadMutes) and are filled in from it; they are never part of the run state.
   muteUntil: null, mutes: {},
 });
@@ -218,11 +220,16 @@ export function normalizeState(raw, now, log = () => {}) {
   normalizeDelivery(raw, out, log);
   take('memoryNote', v => v === null || typeof v === 'string');
   take('lastSmsCheck', numOrNull);
+  take('bootId', v => v === null || typeof v === 'string');
+  take('hostRestart', v => v === null || (isObj(v) && isNum(v.at)));
   take('stackRestarts', v => Array.isArray(v) && v.every(isNum));   // absent in older state files: the fresh default stays
   take('heal', v => isObj(v) && Object.values(v).every(x => isObj(x) && isNum(x.unhealthyRuns) && numOrNull(x.lastAt) && typeof x.lastAction === 'string'
     && (x.actions === undefined || (Array.isArray(x.actions) && x.actions.every(isNum)))));
+  take('releaseCheck', v => v === null || (isObj(v) && typeof v.date === 'string' && (v.line === null || typeof v.line === 'string')));   // the day's release lookup (heartbeat)
   take('lastDailyRun', v => isObj(v) && Object.values(v).every(x => isObj(x) && typeof x.date === 'string' && typeof x.result === 'string'));
   if (isObj(raw.alerts)) for (const [id, a] of Object.entries(raw.alerts)) out.alerts[id] = normalizeAlert(id, a, log);
+  // The alert that was called usb_backup is offhost_copy_missing now: a firing one carries over, so an upgrade posts no false CLEARED.
+  if (out.alerts.usb_backup) { out.alerts.offhost_copy_missing ??= out.alerts.usb_backup; delete out.alerts.usb_backup; }
   else if ('alerts' in raw) log('state field "alerts" had the wrong type and was reset');
   if (isObj(raw.containers)) {
     for (const [service, c] of Object.entries(raw.containers)) { const fixed = normalizeContainer(service, c, log); if (fixed) out.containers[service] = fixed; }
@@ -378,6 +385,8 @@ export function defaultDeps(env = process.env) {
     // The host's IPv4 addresses (the LAN fallback check), replaceable for tests.
     interfaces: () => readHostInterfaces(env),
     usbEtc: env.WAREHOUSE_USB_BACKUP_ETC || '/etc',
+    // Under WSL2 the Windows drive is probed through a child process with a timeout (checkDisks, checkRestoreSpace).
+    driveStatfs: statfsWithTimeout,
     usbLibexec: env.WAREHOUSE_USB_BACKUP_LIBEXEC || '/usr/local/libexec',
     unitDir: env.WAREHOUSE_WATCH_UNIT_DIR || '/etc/systemd/system',
     nodeVersion: process.version,
@@ -404,6 +413,9 @@ export function makeContext(deps, data) {
   // The alert channels of this installation (notify.mjs), read once; their secret addresses; the local record of deliveries.
   ctx.targets = () => (ctx.memo.targets ??= loadTargets(deps.state));
   ctx.secrets = () => secretsOf(ctx.targets());
+  // "vX.Y.Z is available (this facility runs vA.B.C)" or null (scripts/release-check.mjs): information for the daily status, never an alert.
+  ctx.releaseLine = () => (deps.releaseLine ?? (() => releaseLine({ root: deps.root, state: deps.state, run: deps.run, now: deps.now,
+    fetchJson: (url, options) => fetchGithubJson(url, { ...options, fetchImpl: deps.fetch }) })))();
   ctx.alertLog = () => (ctx.memo.alertLog ??= deps.alertLog ?? createAlertLog(deps.state, { now: deps.now, warn: message => (deps.log ?? stderrLog)(message) }));
   ctx.env_ = () => (ctx.memo.env ??= (() => { try { return readEnv(join(deps.state, 'config/compose.env')); } catch { return {}; } })());
   ctx.compose = (args, opts) => deps.run('bash', [join(deps.root, 'scripts/compose.sh'), ...args], opts);
@@ -468,12 +480,32 @@ export function checkMemory(ctx) {
   const used = 100 * (1 - m.MemAvailable / m.MemTotal);
   return [result('memory', 'memory_high', !(used > LIMITS.memoryPercent), `Memory usage ${used.toFixed(0)}% (limit ${LIMITS.memoryPercent}%)`)];
 }
+// Under WSL2 "/" is the filesystem inside ext4.vhdx and shows its virtual size (about 1 TB); what limits it is the free space of the
+// Windows drive that holds that file. Null when the host is not WSL; { drive, free, percent } when the drive was read; { drive, error }
+// when it was not (not a Windows mount, a failure or a timeout): the host is WSL and its limiting disk is unknown.
+function wslDrive(ctx) {
+  if (!isWsl(ctx.readText, ctx.proc)) return null;
+  const drive = vhdxDrive(ctx.env ?? {}, ctx.env_());
+  try { return { drive, ...driveSpace(drive, { readText: ctx.readText, procDir: ctx.proc, statfs: ctx.driveStatfs ?? ctx.statfs }) }; } catch (e) { return { drive, error: clip(String(e.message ?? e), 200) }; }
+}
+const gibText = bytes => (bytes / 1024 ** 3).toFixed(1);
 const unescapeMount = s => s.replace(/\\([0-7]{3})/g, (_, o) => String.fromCharCode(parseInt(o, 8)));
 export function checkDisks(ctx) {
   const free = path => { const s = ctx.statfs(path); return 100 * Number(s.bavail) / Number(s.blocks); };
   const out = [];
   const root = free('/');
   out.push(result('disk', 'disk_root_low', !(root < LIMITS.diskRootFreePercent), `Disk space on / ${root.toFixed(0)}% free (limit ${LIMITS.diskRootFreePercent}%)`));
+  const vhdx = wslDrive(ctx);
+  if (vhdx?.error) {
+    out.push(result('disk', 'disk_vhdx_drive_low', false,
+      `Cannot read the free space of ${vhdx.drive}, the Windows drive that holds the WSL virtual disk (${vhdx.error})`,
+      'On a Windows host the disk that fills up is that drive, not "/", and without a reading it cannot be watched. If the distro is on another drive, set VHDX_DRIVE=<its mount point> in config/compose.env: docs/OPERATOR_INSTALL.md, "Windows host (Ubuntu in WSL2)", "Watch the Windows drive".'));
+  } else if (vhdx) {
+    const low = vhdx.free < MIN_VHDX_DRIVE_FREE_BYTES || vhdx.percent < MIN_VHDX_DRIVE_FREE_PERCENT;
+    out.push(result('disk', 'disk_vhdx_drive_low', !low,
+      `Windows drive ${vhdx.drive}, which holds the WSL virtual disk, has ${gibText(vhdx.free)} GiB free (${vhdx.percent.toFixed(0)}%; limit ${gibText(MIN_VHDX_DRIVE_FREE_BYTES)} GiB and ${MIN_VHDX_DRIVE_FREE_PERCENT}%)`,
+      'The virtual disk grows on this Windows drive and PostgreSQL stops when the drive is full, although "/" still shows free space. Free space on the Windows drive: docs/OPERATOR_INSTALL.md, "Windows host (Ubuntu in WSL2)", "Watch the Windows drive".'));
+  }
   const mounts = String(ctx.readText(join(ctx.proc, 'mounts')) ?? '').split('\n').map(l => l.split(' ')).filter(p => p.length >= 3);
   const seen = new Set(mounts.filter(p => unescapeMount(p[1]) === '/').map(p => p[0]));
   for (const [dev, mp, type, opts = ''] of mounts) {
@@ -495,7 +527,10 @@ const DB_SQL = `SELECT (SELECT count(*) FROM pg_stat_activity WHERE backend_type
   COALESCE((SELECT floor(max(extract(epoch FROM now()-xact_start))) FROM pg_stat_activity WHERE xact_start IS NOT NULL AND backend_type='client backend' AND pid<>pg_backend_pid()),0),
   COALESCE((SELECT blks_hit FROM pg_stat_database WHERE datname='postgres'),0),
   COALESCE((SELECT blks_read FROM pg_stat_database WHERE datname='postgres'),0),
-  COALESCE((SELECT sum(n_dead_tup) FROM pg_stat_user_tables),0)`;
+  COALESCE((SELECT sum(n_dead_tup) FROM pg_stat_user_tables),0),
+  (SELECT count(*) FROM pg_locks l JOIN pg_stat_activity a USING (pid) WHERE l.locktype='advisory' AND NOT l.granted AND l.classid=0 AND l.objid=71040 AND l.objsubid=1 AND a.backend_type='client backend')`;
+// The sixth column counts the sessions waiting for advisory lock 71040, the lock that serializes stock-changing work (GRN, dispatch,
+// document numbers): pg_advisory_xact_lock(71040) shows in pg_locks as classid 0, objid 71040, objsubid 1.
 export const databaseReady = ctx => ctx.compose(['exec', '-T', 'db', 'pg_isready', '-U', 'supabase_admin', '-d', 'postgres']).status === 0;
 export function checkDatabase(ctx) {
   if (!databaseReady(ctx)) return [result('database', 'postgres_down', false, 'PostgreSQL is not responding', 'pg_isready failed.')];
@@ -503,8 +538,8 @@ export function checkDatabase(ctx) {
     '-v', 'ON_ERROR_STOP=1', '-U', 'supabase_admin', '-d', 'postgres', '-c', DB_SQL]);
   if (q.status !== 0) throw new Error(`database query failed: ${clip(q.stderr.trim(), 200)}`);
   const v = q.stdout.trim().split('\n').pop().split('|').map(Number);
-  if (v.length !== 5 || v.some(Number.isNaN)) throw new Error('unexpected database query output');
-  const [conns, txAge, hit, read, dead] = v;
+  if (v.length !== 6 || v.some(Number.isNaN)) throw new Error('unexpected database query output');
+  const [conns, txAge, hit, read, dead, waiters] = v;
   const ratio = hit / (hit + read + 0.001);
   const cacheBad = hit + read >= LIMITS.cacheMinBlocks && ratio < LIMITS.cacheHitRatio;
   return [
@@ -515,6 +550,8 @@ export function checkDatabase(ctx) {
     result('database', 'db_long_transaction', !(txAge > LIMITS.txSeconds), `Oldest transaction ${txAge} s (limit ${LIMITS.txSeconds} s)`),
     // Counters start at zero after a restart, so a handful of cold reads would read as a bad ratio: a minimum sample.
     result('database', 'db_cache_hit_low', !cacheBad, `Cache hit ratio ${(ratio * 100).toFixed(1)}% (limit ${LIMITS.cacheHitRatio * 100}%)`),
+    // Stock-changing requests queue behind one transaction that holds the lock for too long: the app then shows slow or timed-out saves.
+    result('database', 'db_lock_waiters', !(waiters >= LIMITS.lockWaiters), `${waiters} sessions waiting for the stock lock (limit ${LIMITS.lockWaiters})`, 'Sessions queue behind a transaction that holds advisory lock 71040 (GRN, dispatch and numbering work); see docs/MONITORING.md.'),
     result('database', 'db_dead_tuples_high', !(dead > LIMITS.deadTuples), `${dead} dead tuples (limit ${LIMITS.deadTuples}); consider VACUUM`),
   ];
 }
@@ -756,10 +793,12 @@ export async function checkApiLan(ctx) {
 }
 // `sinceMs` (an epoch time) keeps only the lines that `docker logs -t` stamped at or after it: each such line starts with an
 // RFC 3339 time with nanoseconds ("2026-10-19T10:00:00.123456789Z "). A line with no readable stamp is kept (it cannot be placed).
+// A line ends with the seconds and, since the request id was added to the format, a 32-hex id (docs/MONITORING.md, "Finding one request");
+// a line written before that still parses.
 export function parseGatewayLog(text, { sinceMs = null } = {}) {
   const rows = [];
   for (const line of text.split('\n')) {
-    const m = line.match(/\[[^\]]+\] "[A-Z]+ \S+ [^"]*" (\d{3}) \d+ ([\d.]+)\s*$/);
+    const m = line.match(/\[[^\]]+\] "[A-Z]+ \S+ [^"]*" (\d{3}) \d+ ([\d.]+)(?: [0-9a-f]{32})?\s*$/);
     if (!m) continue;
     if (sinceMs !== null) {
       const stamp = Date.parse((/^(\d{4}-\d{2}-\d{2}T\S+) /.exec(line) ?? [])[1] ?? '');
@@ -910,6 +949,8 @@ export function newestBackupMs(state) {
   }
   return newest;
 }
+export const OFFHOST_ALERT = 'offhost_copy_missing';
+const OFFHOST_GRACE_MS = 7 * 24 * HOUR;
 export function checkBackups(ctx) {
   const now = ctx.now();
   const last = fieldsOf(ctx.readText(backupStatusPath(ctx.state, 'backup')));
@@ -924,8 +965,11 @@ export function checkBackups(ctx) {
     // The failed daily backup is reported only here (after two failing runs), with the job's own message.
     result('backups', 'backup_failed', !failed, `The last backup failed${last.message ? `: ${last.message}` : ''}`, last.message ?? ''),
   ];
-  const usb = usbBackupWarning(ctx.state, { now, etc: ctx.usbEtc });
-  out.push(result('backups', 'usb_backup', usb === null, usb ?? 'USB backup fine or not set up', usb ?? ''));
+  // The only copy of the backups that survives the loss of this host is the USB drive. Weekly, never muted. Only "no copy yet" (USB never set
+  // up, or set up and never run) waits for the checker's first 7 days, the time to plug a drive in; a failed or stale copy and an
+  // unconfirmed key copy are said at once. The recorded decision not to keep a copy (usbBackupWarning) clears the first.
+  const usb = usbBackupWarning(ctx.state, { now, etc: ctx.usbEtc, graceOver: now - ctx.data.firstRun > OFFHOST_GRACE_MS });
+  out.push(result('backups', OFFHOST_ALERT, usb === null, usb ?? 'An off-host copy of the backups exists or is declined, or the checker is in its first 7 days', usb ?? '', { repeatHours: 168 }));
   const ret = fieldsOf(ctx.readText(backupStatusPath(ctx.state, 'retention')));
   out.push(result('backups', 'retention_failed', ret.result !== 'failed', `The last retention clean-up failed${ret.message ? `: ${ret.message}` : ''}`, ret.message ?? ''));
   return out;
@@ -947,6 +991,15 @@ export function checkRestoreSpace(ctx) {
   if (!Number.isFinite(free)) throw new Error('could not read the free space of the data directory');
   const need = newest.bytes + newest.dumpBytes + LIMITS.restoreReserveBytes;
   const gib = bytes => (bytes / 1024 ** 3).toFixed(1);
+  // Under WSL2 the restore grows the virtual disk on the Windows drive: that drive must keep its floor after the restore as well.
+  const vhdx = wslDrive(ctx);
+  const driveShort = vhdx !== null && !vhdx.error && vhdx.free - need < MIN_VHDX_DRIVE_FREE_BYTES;
+  if (free >= need && driveShort) {
+    return [result('restore_space', 'restore_space_low', false,
+      `Windows drive ${vhdx.drive}, which holds the WSL virtual disk, has ${gib(vhdx.free)} GiB free, and an in-place restore of ${newest.name} needs ${gib(need)} GiB, which would leave it below ${gib(MIN_VHDX_DRIVE_FREE_BYTES)} GiB`,
+      'The in-place restore that is the way back from an upgrade grows the virtual disk on this Windows drive, and PostgreSQL stops when the drive is full. Free space on the Windows drive: docs/OPERATOR_INSTALL.md, "Windows host (Ubuntu in WSL2)", "Watch the Windows drive".',
+      { repeatHours: 24 })];
+  }
   return [result('restore_space', 'restore_space_low', free >= need,
     `Free space in data/ is ${gib(free)} GiB, and an in-place restore of ${newest.name} needs ${gib(need)} GiB (its stored files, ${gib(newest.bytes)} GiB, ${newest.dumpBytes ? `its database dump, ${gib(newest.dumpBytes)} GiB, ` : ''}plus 1 GiB)`,
     'The way back from an upgrade is an in-place restore, which copies the stored files in again and replays the database while it keeps the replaced ones; this is a minimum (the photos added since that backup and any new images come on top). Free space (the data/*.pre-restore-* directories of restores you have accepted, backups you no longer need) or add disk: docs/OPERATOR_INSTALL.md, "Disk space".',
@@ -1434,7 +1487,7 @@ export function gatewayMaintenance(ctx) {
 // upgrade stopped half way: a facility that muted "everything" for a week while a service was being repaired would otherwise also silence
 // the only warning that its data is not being saved, or that it is closed to phones and half upgraded.
 export const UPGRADE_ALERT = 'upgrade_interrupted';
-export const NEVER_MUTED = ['backup_missing', 'backup_failed', LEGACY_DAILY_ALERT, UPGRADE_ALERT];
+export const NEVER_MUTED = ['backup_missing', 'backup_failed', OFFHOST_ALERT, LEGACY_DAILY_ALERT, UPGRADE_ALERT];
 const listIds = ids => (ids.length > 1 ? `${ids.slice(0, -1).join(', ')} and ${ids.at(-1)}` : ids.join(''));
 export const isMuted = (data, id, now) => !NEVER_MUTED.includes(id) && Boolean((data.muteUntil && now < data.muteUntil) || (data.mutes?.[id] && now < data.mutes[id]));
 
@@ -1570,6 +1623,20 @@ async function notifyTo(ctx, plan, audience) {
   });
 }
 
+// A restart of the host (the kernel's boot id changed since the previous run) is remembered once and said once in the daily status
+// ("Host restarted at HH:MM"); it is information, never an alert. The first run only records the id. An unreadable id changes nothing.
+export function noteHostBoot(ctx) {
+  const { data } = ctx;
+  const id = String(ctx.readText(join(ctx.proc, 'sys/kernel/random/boot_id')) ?? '').trim();
+  if (!/^[0-9a-f-]{8,64}$/i.test(id)) return;
+  if (data.bootId !== null && data.bootId !== id) data.hostRestart = { at: ctx.now() };
+  data.bootId = id;
+}
+export function hostRestartLine(restart, now) {
+  const when = `${pad(new Date(restart.at).getHours())}:${pad(new Date(restart.at).getMinutes())}`;
+  return `Host restarted at ${when}${localDate(restart.at) === localDate(now) ? '' : ` on ${localDate(restart.at)}`}.`;
+}
+
 // ---------------------------------------------------------------- calendar rules
 const pad = n => String(n).padStart(2, '0');
 export const localDate = ms => { const d = new Date(ms); return `${d.getFullYear()}-${pad(d.getMonth() + 1)}-${pad(d.getDate())}`; };
@@ -1603,9 +1670,18 @@ async function heartbeat(ctx) {
       if (notes.length) notes.push(`${listIds(NEVER_MUTED)} are never muted: they are posted anyway.`);
       const muted = notes.length ? ` ${notes.join(' ')}` : '';
       text = `Monitoring is alive - ${describe(ctx)}\n${firing ? `${firing} alert(s) firing.` : 'No alerts firing.'}${muted}`;
+      // A field of the daily status, not a result or an alert: a failed lookup leaves it out.
+      // Looked up once per local day (data.releaseCheck), also when the post has to be retried.
+      let release = null;
+      const day = localDate(now);
+      if (data.releaseCheck?.date === day) release = data.releaseCheck.line;
+      else { try { release = (await ctx.releaseLine()) ?? null; data.releaseCheck = { date: day, line: release }; } catch { /* information only */ } }
+      if (release) text += `\nRelease: ${release}`;
     }
+    const restart = target.audience === 'sensors' ? null : data.hostRestart;
+    if (restart) text += `\n${hostRestartLine(restart, now)}`;
     const message = { audience: target.audience, kind: 'heartbeat', name: describe(ctx), text: redact(text, ctx.env_(), ctx.secrets()) };
-    await postThenKeep(ctx, [target], message, () => { deliveryOf(data, target.id).lastHeartbeat = now; }, () => { deliveryOf(data, target.id).lastHeartbeat = before; });
+    await postThenKeep(ctx, [target], message, () => { deliveryOf(data, target.id).lastHeartbeat = now; if (restart && data.hostRestart === restart) data.hostRestart = null; }, () => { deliveryOf(data, target.id).lastHeartbeat = before; if (restart && data.hostRestart === null) data.hostRestart = restart; });
   }
 }
 
@@ -1827,6 +1903,9 @@ function recordDaily(ctx, data, outcome, attempt, secrets) {
   if (backup.result !== 'ok') message = backup.message.startsWith('backup') || backup.message.startsWith('the daily') ? backup.message : `backup failed: ${backup.message}`;
   else if (verify.result !== 'ok') message = `backup ${name} was made but verification failed${keptNote(outcome.prune)}: ${verify.message}`;
   else message = `backup ${name} verified${outcome.prune.pruned ? `; removed ${outcome.prune.pruned} old` : ''}${outcome.prune.message ? `; ${outcome.prune.message}` : ''}${backup.warning ? `; ${backup.warning}` : ''}`;
+  // Once a week (Monday), information only: one drive that never leaves the building is not a copy away from it.
+  const rotation = backupOk && new Date(now).getDay() === 1 ? usbRotationNote(ctx.state, now) : null;
+  if (rotation) message = `${message}; ${rotation}`;
   message = `${clean(message)}${backupOk ? '' : ` (attempt ${attempt} of ${LIMITS.dailyAttempts})`}`;
   data.lastDailyRun.backup = { date, at: now, result: backupOk ? 'ok' : 'failed', message };
   try { writeJobStatus(ctx, 'backup', backupOk, message, name && backup.result === 'ok' ? { backup: name } : {}); } catch { /* the state file carries the result */ }
@@ -1905,8 +1984,8 @@ export function readHeartbeatUrl(state) {
   const stat = lstatSync(path, { throwIfNoEntry: false });
   if (!stat) return { url: '' };
   if (!stat.isFile() || stat.uid !== process.getuid() || (stat.mode & 0o077)) return { problem: 'config/heartbeat-url must be a regular file owned by the installation user with mode 0600' };
-  const url = (readFileOrNull(path) ?? '').split('\n').map(l => l.trim()).find(l => l && !l.startsWith('#')) ?? '';
-  if (!/^https:\/\/[^\s/]+\/?\S*$/.test(url)) return { problem: 'config/heartbeat-url must hold one https URL' };
+  const url = firstUrlLine(readFileOrNull(path) ?? '');
+  if (!HEARTBEAT_URL_PATTERN.test(url)) return { problem: 'config/heartbeat-url must hold one https URL' };
   return { url };
 }
 // The end of every successful run: a GET with a 5 s limit. A failure is logged (never the URL, which is a secret) and
@@ -1977,6 +2056,7 @@ export async function runOnce(deps, { checks = CHECKS, heal = selfHeal } = {}) {
   }
   ran.add('daily_timer');   // every run, so the alert clears once the unit is replaced
   data.lastRunAt = now;
+  noteHostBoot(ctx);
   const plan = evaluate(data, results, ran, now);
   await notify(ctx, plan);
   await heartbeat(ctx);
@@ -2015,7 +2095,7 @@ const USAGE = `Usage: node scripts/watch.mjs run | daily | health [--wait SECOND
   test-message  post a test message to the facility's alert channel (test-message sensors: to the separate sensor-alert channel)
   history       the local record of alert deliveries (logs/alerts.jsonl, 12 months): when, which alerts, which channel, delivered or failed; --days N (default 30)
   status        failing alerts, mutes, the daily jobs and the time zone
-  mute          silence all alerts (or one alert id, quoted when it has spaces) for MINUTES; backup_missing and backup_failed are never muted
+  mute          silence all alerts (or one alert id, quoted when it has spaces) for MINUTES; backup_missing, backup_failed, offhost_copy_missing, daily_timer_legacy and upgrade_interrupted are never muted
   unmute        end the mute (all, or one alert id)
 Mute before a deliberate stop.sh (or any planned stop): a stopped service is an alert like any other.
 The daily backup, verification, pruning and retention run once a day inside a 6-hour window after the time chosen
@@ -2150,7 +2230,7 @@ export async function main(argv, deps = defaultDeps(), out = text => console.log
     if (args[1]) {
       if (!ALERT_ID.test(args[1])) { out('Not an alert id.'); return 1; }
       if (NEVER_MUTED.includes(args[1])) {
-        const why = { [LEGACY_DAILY_ALERT]: 'it says the daily backup is kept running by an out-of-date unit', [UPGRADE_ALERT]: 'it says an upgrade stopped half way, with the facility closed to phones' }[args[1]] ?? 'it says no backup exists';
+        const why = { [LEGACY_DAILY_ALERT]: 'it says the daily backup is kept running by an out-of-date unit', [UPGRADE_ALERT]: 'it says an upgrade stopped half way, with the facility closed to phones', [OFFHOST_ALERT]: 'it says the backups have no copy outside this host' }[args[1]] ?? 'it says no backup exists';
         out(`${args[1]} cannot be muted: ${why}.`);
         return 1;
       }

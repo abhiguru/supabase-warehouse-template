@@ -68,6 +68,9 @@ done
 ((EUID != 0)) || die 'Run restore-host as the installation user (a member of the docker group), not as root.'
 # shellcheck source=scripts/backup-key.sh
 source "$ROOT/scripts/backup-key.sh"
+# shellcheck source=scripts/restore-timing.sh
+source "$ROOT/scripts/restore-timing.sh"
+restore_timing_start "$state" restore-host.sh
 unset WAREHOUSE_BACKUP_KEY_FILE WAREHOUSE_STATE_DIR
 if [[ -n "$keyfile" ]]; then
   backup_key_load "$keyfile" || exit 1
@@ -220,6 +223,7 @@ local_fingerprint="$(for m in "${migrations[@]:0:count}"; do printf '%s:%s\n' "$
 # shellcheck source=scripts/storage-schema.sh
 source "$ROOT/scripts/storage-schema.sh"
 storage_check_backup_head "$backup" || exit 1
+rt_verify=$((SECONDS - RT_MARK))   # written below, once the new state exists
 
 # 4. A new host has no trace of this installation's containers.
 [[ -z "$(docker ps -aq --filter "label=com.docker.compose.project=$project")" ]] || die "Refusing: containers of $project already exist on this host. This is not a fresh host for this installation (use npm run db:restore on the original state instead)."
@@ -350,6 +354,8 @@ and run restore-host again.
 MSG
   exit 1
 fi
+restore_timing_append "$state" restore-host.sh verify "$rt_verify"
+restore_timing_total
 # The directories restore.sh set aside were created empty above.
 for kept in "$state"/data/db.pre-restore-* "$state"/data/storage.pre-restore-*; do
   [[ -d "$kept" ]] && rmdir -- "$kept" 2>/dev/null || true
@@ -400,7 +406,11 @@ step 'If the backup drive may have been exposed: bash rotate-keys.sh --yes, rota
 step "Keep your copy of the backup key: this installation signs with the same key ($state/config/backup.key)."
 alert_step="Alerts are local only until you run setup.sh --operator again with --alert-webhook-file (or answer its Slack
      webhook prompt on a terminal; the URL is not in a backup, skip this if the installation never had one). If sensors are on,
-     also give --sensor-webhook-file /absolute/path/to/sensor-webhook-url-file (the separate sensor-alert webhook; not in a backup either)."
+     also give --sensor-webhook-file /absolute/path/to/sensor-webhook-url-file (the separate sensor-alert webhook; not in a backup either).
+     Give the external heartbeat again too: its ping URL (config/heartbeat-url) is not in a backup either, so add
+     --heartbeat-url-file /absolute/path/to/heartbeat-url-file to the same rerun, or record the decision against it again
+     (config/heartbeat-declined; skip this if the installation never had a heartbeat; docs/MONITORING.md, \"External heartbeat\"). On WSL the two Windows scheduled tasks live on Windows, not in a backup: register them
+     again on the new machine with scripts/windows/register-tasks.ps1 (docs/OPERATOR_INSTALL.md, \"Keep the distro running and start it at boot\")."
 if [[ "$central_missing" == true ]]; then
   alert_step+="
      The central sign-in step above reruns setup as well: add --alert-webhook-file /absolute/path/to/webhook-url-file

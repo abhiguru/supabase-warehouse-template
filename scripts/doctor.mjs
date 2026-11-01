@@ -1,5 +1,5 @@
 import { accessSync, constants, existsSync, lstatSync, statSync, statfsSync, realpathSync, readFileSync } from 'node:fs';
-import { userInfo } from 'node:os';
+import { availableParallelism, userInfo } from 'node:os';
 import { join, resolve, sep } from 'node:path';
 import { createConnection } from 'node:net';
 import { spawnSync } from 'node:child_process';
@@ -10,9 +10,12 @@ import { canonicalOrigin } from './configure.mjs';
 import { validateDbValues } from './db-roles.mjs';
 import { isFixtureAddress, isProviderPlaceholder } from './provider-placeholder.mjs';
 import { isMain } from './is-main.mjs';
+import { driveSpace, isWslHost, statfsWithTimeout, vhdxDrive, wslDriveVerdict } from './wsl-host.mjs';
 import { usbBackupWarning } from './usb-backup-status.mjs';
 import { interruptedUpgradeWarning } from './upgrade-record.mjs';
-import { storedSensorWebhook, storedWebhook } from './alert-webhook.mjs';
+import { storedHeartbeatUrl, storedSensorWebhook, storedWebhook } from './alert-webhook.mjs';
+import { HEARTBEAT_DECLINED_NAME, HEARTBEAT_DECLINED_SENTENCE, declinedMarker } from './declined-marker.mjs';
+import { releaseLine } from './release-check.mjs';
 import { defaultDeps, legacyDailyAdvice, loadState, maintenanceMarked, runHealth, statePath, stoppedByOperator } from './watch.mjs';
 import { ADAPTERS, TARGET_IDS } from './notify.mjs';
 import { sensorReport } from './sensors-check.mjs';
@@ -40,6 +43,8 @@ export const NO_WEBHOOK_WARNING = 'No Slack webhook: alerts are recorded on this
 
 export const INVALID_SENSOR_WEBHOOK_WARNING = 'Sensors are on and Slack alerts are on, but the sensor webhook file (config/sensor-webhook-url) is not a valid Slack webhook: sensor alerts go to the facility channel. Set a valid one with setup.sh --sensor-webhook-file ... (docs/MONITORING.md).';
 const SENSOR_POST_FAILURE_WINDOW_MS = 24 * 60 * 60 * 1000;
+export const NO_HEARTBEAT_WARNING = 'No external heartbeat: if this host or the monitoring checker stops, nobody outside this host is told, because the checker cannot report its own death. Give setup.sh --operator (with your usual inputs) --heartbeat-url-file <a private file holding the ping URL of a dead-man switch such as healthchecks.io> (docs/MONITORING.md, "External heartbeat"), or record the decision with: printf \'%s\\n\' \'We have decided not to use an external heartbeat.\' > config/heartbeat-declined && chmod 600 config/heartbeat-declined';
+
 const sensorWebhookFileExists = state => Boolean(lstatSync(join(state, 'config/sensor-webhook-url'), { throwIfNoEntry: false })?.isFile());
 // The checker's record of its latest failed delivery to the sensor channel ({ at, message }), or null. Read through the
 // checker's own loader, so a state file from before the delivery layer (lastSensorPostError) is understood too.
@@ -118,6 +123,8 @@ export function checkerWarnings(state, {
       if (failed && now - failed.at < SENSOR_POST_FAILURE_WINDOW_MS) out.push(`The last post to the sensor ${ADAPTERS.slack.label} webhook failed ${Math.max(0, Math.round((now - failed.at) / 60000))} minutes ago (${failed.message}): sensor alerts may not be reaching the channel. Test it with node scripts/watch.mjs test-message sensors (docs/MONITORING.md).`);
     }
   }
+  // The checker's own death is reported by nobody inside the host: an external dead-man switch does, unless the facility decided against it.
+  if (!storedHeartbeatUrl(state) && !declinedMarker(state, HEARTBEAT_DECLINED_NAME, HEARTBEAT_DECLINED_SENTENCE)) out.push(NO_HEARTBEAT_WARNING);
   // The alert record (logs/alerts.jsonl) is written by the checker and the daily pass as the operator user; a root-owned copy
   // (made by a sudo run of watch.mjs) would make every write fail quietly.
   let owner;
@@ -144,6 +151,65 @@ export function freeSpaceVerdict(freeBytes, { newInstall = false } = {}) {
     return { warning: `Only ${gib} GiB is free on the state's disk (less than 10 GiB): the next backup, image build or upgrade may not fit. Free space or add disk soon (docs/TROUBLESHOOTING.md, "Disk full").` };
   }
   return {};
+}
+
+// The Windows drive that holds the WSL virtual disk: an error for a new installation below 20 GiB, a warning for a running one; a drive
+// that cannot be read, or is not a Windows mount, is a warning (the distro may be on another drive: VHDX_DRIVE in config/compose.env).
+// Nothing when the host is not WSL. WAREHOUSE_OSRELEASE_FILE names the kernel-release file, as for scripts/backup.sh.
+export function wslDriveCheck({ hostPreflight = false, readText = path => readFileSync(path, 'utf8'), statfs = statfsWithTimeout, env = process.env, composeEnv = {} } = {}) {
+  if (!isWslHost(env, readText)) return {};
+  const drive = vhdxDrive(env, composeEnv);
+  let space;
+  try { space = driveSpace(drive, { readText, statfs }); } catch (e) {
+    return { warning: `could not read the free space of ${drive}, the Windows drive that holds the WSL virtual disk (${String(e.message ?? e).slice(0, 200)}); if the distro is on another drive, set VHDX_DRIVE=<its mount point> in config/compose.env.` };
+  }
+  return wslDriveVerdict(space.free, { newInstall: hostPreflight, drive });
+}
+
+// The host minimum (docs/OPERATOR_INSTALL.md, "Host prerequisites"): 4 vCPU, 8 GiB RAM, 60 GB disk. Below it a host still runs, so
+// --host-preflight only warns; the thresholds leave room for what the kernel and the disk format take (an 8 GiB machine reports about
+// 7.7 GiB, a 60 GB disk about 56 GiB). WAREHOUSE_MEMINFO_FILE names the meminfo file, so tests need not depend on the host.
+export const MIN_CPUS = 4;
+export const MIN_MEMORY_BYTES = 7.5 * 1024 ** 3;
+export const MIN_DISK_TOTAL_BYTES = 55 * 1024 ** 3;
+export function hostMinimumWarnings({ cpus, memoryBytes, diskBytes }) {
+  const gib = bytes => (bytes / 1024 ** 3).toFixed(1);
+  const out = [];
+  if (Number.isFinite(cpus) && cpus < MIN_CPUS) out.push(`this host has ${cpus} vCPU; the supported minimum is ${MIN_CPUS} (docs/OPERATOR_INSTALL.md, "Host prerequisites"). The services run, but a database query, a PDF and a backup then compete for the processor.`);
+  if (Number.isFinite(memoryBytes) && memoryBytes < MIN_MEMORY_BYTES) out.push(`this host has ${gib(memoryBytes)} GiB of memory; the supported minimum is 8 GiB (docs/OPERATOR_INSTALL.md, "Host prerequisites"). Containers can be killed for lack of memory.`);
+  if (Number.isFinite(diskBytes) && diskBytes < MIN_DISK_TOTAL_BYTES) out.push(`the state's filesystem is ${gib(diskBytes)} GiB in total; the supported minimum is 60 GB (docs/OPERATOR_INSTALL.md, "Host prerequisites").`);
+  return out;
+}
+
+// MemTotal of a /proc/meminfo text, in bytes; NaN when it is missing.
+export function memTotalBytes(text) {
+  const m = /^MemTotal:\s+(\d+)\s+kB$/m.exec(String(text ?? ''));
+  return m ? Number(m[1]) * 1024 : NaN;
+}
+
+// Full-disk encryption (docs/OPERATOR_INSTALL.md, "Host prerequisites"): the facility's data, its backup key and its signing keys sit
+// on this disk, and a stolen or discarded host exposes them. The root filesystem is encrypted when a `crypt` (dm-crypt/LUKS) device is
+// in the chain beneath it. Silent when either command fails or the root is not a block device: the check must never be a false alarm.
+// Not run under WSL (the disk is a file on a Windows drive: BitLocker there, checked by hand). `run(command, args)` returns
+// { status, stdout }; tests inject it.
+export const NO_ENCRYPTION_WARNING = 'the root filesystem of this host is not on an encrypted disk (no dm-crypt/LUKS device under it). Anyone who takes or discards the disk can read the database, the photos, the signing keys and the backup key. Full-disk encryption is recommended for a real facility (docs/OPERATOR_INSTALL.md, "Host prerequisites"); it can only be added at install time or by reinstalling the host.';
+const defaultRun = (command, args) => spawnSync(command, args, { encoding: 'utf8', timeout: 10000 });
+export function diskEncryptionWarning({ run = defaultRun } = {}) {
+  let source;
+  try {
+    const found = run('findmnt', ['-no', 'SOURCE', '/']);
+    if (found.status !== 0) return null;
+    source = String(found.stdout ?? '').trim().split('\n')[0].replace(/\[.*\]$/, '');
+  } catch { return null; }
+  if (!source.startsWith('/dev/')) return null;
+  let types;
+  try {
+    const chain = run('lsblk', ['-s', '-n', '-o', 'TYPE', source]);
+    if (chain.status !== 0) return null;
+    types = String(chain.stdout ?? '').split('\n').map(line => line.trim()).filter(Boolean);
+  } catch { return null; }
+  if (!types.length) return null;
+  return types.includes('crypt') ? null : NO_ENCRYPTION_WARNING;
 }
 
 export const listening = port => new Promise(resolve => {
@@ -267,6 +333,11 @@ export function databaseCollationProblem() {
   return collationProblem(args => probe('bash', [resolve(root, 'scripts/compose.sh'), 'exec', '-T', 'db', ...args]));
 }
 
+// "\nNote: vX.Y.Z is available (this facility runs vA.B.C)", or '' (nothing newer, or no answer): information, never a Warning.
+export async function releaseNote(state, lookup = releaseLine) {
+  try { const line = await lookup({ root, state }); return line ? `\nNote: ${line}` : ''; } catch { return ''; }
+}
+
 export async function doctor({ hostPreflight = false, preflight = false, local = false } = {}) {
   if (process.platform !== 'linux' || process.arch !== 'x64') throw new Error('Linux x86-64 required.');
   if (!supportedNode()) throw new Error('Node.js 22.18+ required.');
@@ -292,6 +363,21 @@ export async function doctor({ hostPreflight = false, preflight = false, local =
   const space = freeSpaceVerdict(Number(fs.bavail) * Number(fs.bsize), { newInstall: hostPreflight });
   if (space.error) throw new Error(space.error);
   if (space.warning) console.error(`Warning: ${space.warning}`);
+  // WSL2: "/" shows the virtual size of the disk, so the free space that matters is that of the Windows drive holding ext4.vhdx.
+  let composeEnv = {};
+  try { composeEnv = readEnv(resolve(state, 'config/compose.env')); } catch { /* a new installation has none yet */ }
+  const wsl = wslDriveCheck({ hostPreflight, composeEnv });
+  if (wsl.error) throw new Error(wsl.error);
+  if (wsl.warning) console.error(`Warning: ${wsl.warning}`);
+  if (!isWslHost(process.env, path => readFileSync(path, 'utf8'))) {
+    const encryption = diskEncryptionWarning();
+    if (encryption) console.error(`Warning: ${encryption}`);
+  }
+  if (hostPreflight) {
+    let memoryBytes = NaN;
+    try { memoryBytes = memTotalBytes(readFileSync(process.env.WAREHOUSE_MEMINFO_FILE || '/proc/meminfo', 'utf8')); } catch { /* unreadable: no warning */ }
+    for (const warning of hostMinimumWarnings({ cpus: availableParallelism(), memoryBytes, diskBytes: Number(fs.blocks) * Number(fs.bsize) })) console.error(`Warning: ${warning}`);
+  }
   if (hostPreflight) return 'Host prerequisites and state filesystem preflight passed.';
   const envPath = resolve(state, 'config/compose.env');
   const env = readEnv(envPath);
@@ -344,7 +430,9 @@ export async function doctor({ hostPreflight = false, preflight = false, local =
   const sensorWarnings = manifest?.capabilities?.sensors === true
     ? sensorReport({ env, db: inDb, compose: args => probe('bash', [resolve(root, 'scripts/compose.sh'), ...args]) }).map(text => `\nWarning: ${text}`).join('')
     : '';
-  const note = [upgradeWarning, usb, ...checker].filter(Boolean).map(text => `\nWarning: ${text}`).join('') + lanNote + numberingWarnings + sensorWarnings + (numbering ? `\n${numbering}` : '');
+  // A newer release, as a Note (not a Warning), for `--local` only: the full check stays free of the network lookup.
+  const releaseText = local ? await releaseNote(state) : '';
+  const note = [upgradeWarning, usb, ...checker].filter(Boolean).map(text => `\nWarning: ${text}`).join('') + lanNote + numberingWarnings + sensorWarnings + (numbering ? `\n${numbering}` : '') + releaseText;
   if (local) return `Local operator services and gateway are healthy.${note}`;
   if (maintenance) throw new Error('Maintenance mode is on (config/maintenance): the API answers 503 "upgrading" to phones on purpose, so the external check cannot pass. Open it with: bash scripts/maintenance.sh off');
   const response = await fetch(`${origin}/functions/v1/get-public-config`, { signal: AbortSignal.timeout(15000), redirect: 'error' });

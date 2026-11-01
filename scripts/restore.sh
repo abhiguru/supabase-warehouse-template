@@ -62,6 +62,9 @@ state="$(operator_state)"
 }
 [[ "$backup" != "$state/data"/* ]] || { echo 'Refusing: the backup must not live inside the state data directory that is being replaced.' >&2; exit 1; }
 operator_lock "$state"
+# shellcheck source=scripts/restore-timing.sh
+source "$ROOT/scripts/restore-timing.sh"
+restore_timing_start "$state" restore.sh
 
 # 1. Nothing may hold the data directories: the operator stops the project first.
 compose config --quiet
@@ -166,6 +169,7 @@ fi
 verify_args=()
 if [[ "$allow_unsigned" == true ]]; then verify_args+=(--allow-unsigned); fi
 bash "$ROOT/scripts/verify-restore.sh" "${verify_args[@]}" "$backup"
+restore_timing_phase verify
 
 # The fresh cluster below is initialised by the db image of this checkout. `compose up` builds only an image that is
 # missing, so a stale image (the previous PostgreSQL major, left from before a checkout of a new release) would start
@@ -266,6 +270,7 @@ else
   # attributes are set again from the catalog once the services run.
   tar --no-same-owner -p --xattrs --xattrs-include='user.*' -xzf "$backup/storage.tar.gz" -C "$state/data/storage"
 fi
+restore_timing_phase storage
 if [[ "$restore_config" == true ]]; then
   phase='restore configuration'
   cp "$state/config/compose.env" "$old_config"
@@ -347,6 +352,7 @@ db_psql -d postgres < "$ROOT/scripts/backup-integrity.sql" > "$scratch/integrity
 storage_integrity_align "$backup/integrity.txt" "$scratch/integrity.txt"
 diff -u "$backup/integrity.txt" "$scratch/integrity.txt"
 
+restore_timing_phase database
 # 6. Apply migrations this checkout added after the backup (a no-op otherwise),
 #    start everything and run the local doctor.
 phase='migrations'
@@ -390,6 +396,8 @@ if ! WAREHOUSE_CENTRAL_KEY_PENDING="$pending" node "$ROOT/scripts/doctor.mjs" --
   exit 1
 fi
 phase=done
+restore_timing_phase start
+restore_timing_total
 cat <<MSG
 In-place restore completed from $backup.
 The replaced data was kept; remove it once the restored instance is accepted:

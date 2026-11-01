@@ -1,6 +1,6 @@
 import { documentRequestBody } from './request-body.ts';
 import { restClient } from './supabase-rest.ts';
-import { validateUserAccess, createAuthErrorResponse } from './auth-helpers.ts';
+import { validateUserAccess, createAuthErrorResponse, requestId } from './auth-helpers.ts';
 import { securityHeaders } from './security-headers.ts';
 import { renderDocumentPdf } from './pdf-renderer-client.ts';
 import { cancelledNotice, documentDate, documentHtml, kgEach, withNotice } from './document-html.ts';
@@ -90,7 +90,7 @@ export const documentPdf = (kind: Kind) => async (req: Request): Promise<Respons
     // ignores a value that is not exactly a JPEG or PNG data URI.
     let html = documentHtml(kind.toUpperCase(),company.data.value,metadata,columns,rows,Deno.env.get('LETTERHEAD_DATA_URI') || undefined);
     if (notice) html = withNotice(html,notice);
-    const pdf = await renderDocumentPdf(html,{ solo: pages > SOLO_PDF_PAGES });
+    const pdf = await renderDocumentPdf(html,{ solo: pages > SOLO_PDF_PAGES, requestId: requestId(req) });
     // Upload uses server authority only after document reads were authorized.
     const path = `${kind}/${header.id}/${crypto.randomUUID()}.pdf`;
     const upload = await writer.storage.from('documents').upload(path,pdf,{ contentType:'application/pdf',upsert:false });
@@ -102,5 +102,5 @@ export const documentPdf = (kind: Kind) => async (req: Request): Promise<Respons
       document:{type:kind,number,date,customer:header.customer_name,items_count:rows.length} }), {
       headers:{...securityHeaders,'Content-Type':'application/json','Cache-Control':'no-store'},
     });
-  } catch(error) { return createAuthErrorResponse(error,securityHeaders); }
+  } catch(error) { return createAuthErrorResponse(error,securityHeaders,req); }
 };

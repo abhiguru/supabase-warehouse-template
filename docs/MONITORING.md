@@ -66,11 +66,13 @@ An alert fires after two failing runs in a row (10 minutes), except the event al
 | `cpu_high` | CPU use averaged since the previous run is above 80% |
 | `memory_high` | Memory use is above 85% |
 | `disk_root_low` | `/` has less than 20% free |
+| `disk_vhdx_drive_low` | Only on a Windows host (Ubuntu in WSL2): the Windows drive that holds the virtual disk (`/mnt/c`, or `WAREHOUSE_VHDX_DRIVE`) has less than 20 GiB or less than 10% free. `/` cannot show it, because it has the virtual size of the disk. Free space on that drive: [OPERATOR_INSTALL.md](OPERATOR_INSTALL.md#watch-the-windows-drive). When the drive cannot be read (not mounted, no answer in 10 seconds, not a Windows mount) the alert fires too, saying so: set `VHDX_DRIVE=<mount point>` in `config/compose.env` if the distro is on another drive |
 | `disk_low:<path>` | Another ext4, xfs or btrfs filesystem has less than 10% free (Docker's own mounts and read-only mounts are skipped) |
 | `postgres_down` | `pg_isready` fails inside the database container |
 | `db_connections_high` | More than 80 client connections (the ceiling is 100) |
 | `db_long_transaction` | The oldest open transaction is older than 300 s |
 | `db_cache_hit_low` | The cache hit ratio is below 90%, judged only once at least 10,000 blocks were read since the last restart |
+| `db_lock_waiters` | 5 or more sessions are waiting for the stock lock (advisory lock 71040, which serializes GRN, dispatch and document-numbering work). Likely cause: one transaction holds the lock for a long time (a stuck request, a manual session left open in a transaction), so saves in the app are slow or time out. First action: look at the oldest transaction, `bash scripts/compose.sh exec -T db psql -X -U supabase_admin -d postgres -c "SELECT pid, now()-xact_start AS age, state, left(query,80) FROM pg_stat_activity WHERE xact_start IS NOT NULL ORDER BY xact_start LIMIT 5"`, and end the one that is stuck (`pg_terminate_backend(pid)`); `db_long_transaction` usually fires with it. Two failing runs fire it; it repeats every 4 hours |
 | `db_dead_tuples_high` | More than 100,000 dead tuples (consider `VACUUM`) |
 | `service_down:<name>` | A service of the default profile is not running, or is unhealthy, or has been "starting" for more than 4 minutes. The 5-minute checker does not judge a container whose health is "starting" within 4 minutes of its start (so a run right after a host restart does not alert), unless that container restarted in the last hour (a crash loop gets no grace); `health`, `doctor --local` and the daily gate always count "starting" as failing. The optional `supavisor`, `cups` and `sensor-bridge` only while their container exists (`supavisor` only after `pooler.sh on`); `service_down:gateway-lan` only while the LAN fallback is on (`COMPOSE_PROFILES` lists `lan`). A bridge that runs but delivers nothing (hubs moved to new addresses) is `sensors_stale` below, not this alert |
 | `sensors_stale` | Only while the `sensors` capability is on. Readings do not reach the database: no hub row, a hub offline or silent, no reading newer than the limit (16 minutes by default; 3 x the larger of `SENSOR_BRIDGE_HEARTBEAT_SECONDS` and `_POLL_SECONDS`, plus `_POST_SECONDS`), or `SENSOR_BRIDGE_HUBS` set with no `sensor-bridge` container. The summary names each fault, for example "Sensors: hub 192.0.2.10 offline for 5 days" (a reading fault adds "(readings limit 16 minutes)"). A query that fails or times out is also this alert ("the sensor tables could not be read"), not `check_error`. Not judged for the first 16 minutes after the database or the bridge container started (readings need that long to arrive; a container that restarted in the last hour gets no such grace); during those minutes a standing alert is kept, not cleared. Not judged while PostgreSQL is down (`postgres_down` says that). A stopped or unhealthy bridge is also `service_down:sensor-bridge`. What to do: `node scripts/doctor.mjs --local` names the fault and the command to read the bridge log; usually a hub got a new address (`docs/SENSORS.md`, Troubleshooting; `docs/TROUBLESHOOTING.md`, "Sensors show no data") |
@@ -96,8 +98,8 @@ An alert fires after two failing runs in a row (10 minutes), except the event al
 | `central_key_file` | The central sign-in key file the configuration names is missing or unusable |
 | `backup_missing` | No successful backup for 26 hours (or none yet, 26 hours after the first run); never muted |
 | `backup_failed` | The last daily backup failed; never muted |
-| `restore_space_low` | The free space in the state's `data/` is below the stored files of the newest verified backup, plus the size of its database dump, plus 1 GiB: the in-place restore that is the way back from an upgrade (`scripts/restore.sh` refuses below the first and last of these; the dump is replayed into the new database) would not fit. A minimum: the photos added since and new images come on top. Judged every run, from the newest backup on `config/backups-verified.list` (its `storage_bytes=`, for a v5 backup the size of its tarball); nothing is judged until a backup has been verified; not judged while the daily pass holds the lock. **Repeats once a day**, not every 4 hours like the other alerts: it needs disk, not a quick fix. Free space or add disk ([Disk space](OPERATOR_INSTALL.md#disk-space)) |
-| `usb_backup` | The USB backup is set up and stale or failed; or it still writes readable archives although nobody typed `--no-encrypt` (the installation never reran `sudo bash scripts/backup-usb.sh setup --state <state>` after encryption became the default); or its archives are encrypted and the key copy is not confirmed (no `config/backup-key.escrow`, or one for another key: `bash scripts/backup-key-escrow.sh show`); the same rule as `npm run doctor` |
+| `restore_space_low` | The free space in the state's `data/` is below the stored files of the newest verified backup, plus the size of its database dump, plus 1 GiB (on a Windows host also: the restore would leave the Windows drive that holds the virtual disk below 20 GiB): the in-place restore that is the way back from an upgrade (`scripts/restore.sh` refuses below the first and last of these; the dump is replayed into the new database) would not fit. A minimum: the photos added since and new images come on top. Judged every run, from the newest backup on `config/backups-verified.list` (its `storage_bytes=`, for a v5 backup the size of its tarball); nothing is judged until a backup has been verified; not judged while the daily pass holds the lock. **Repeats once a day**, not every 4 hours like the other alerts: it needs disk, not a quick fix. Free space or add disk ([Disk space](OPERATOR_INSTALL.md#disk-space)) |
+| `offhost_copy_missing` | **Weekly** (repeats every 168 hours), **never muted**, and the "no copy yet" cases wait until the checker has run for 7 days (time to plug a drive in): the USB backup is not set up (the backups and the backup key then sit only on this one disk), or it is set up and has made no copy yet. The other cases are said at once: the USB copy is stale or failed; or it still writes readable archives although nobody typed `--no-encrypt` (the installation never reran `sudo bash scripts/backup-usb.sh setup --state <state>` after encryption became the default); or its archives are encrypted and the key copy is not confirmed (no `config/backup-key.escrow`, or one for another key: `bash scripts/backup-key-escrow.sh show`); the same rule as `npm run doctor`. The fix is `docs/OPERATOR_INSTALL.md`, "USB backup drive". A facility that has decided not to keep an off-host copy records it, as the user that runs the checker, with `printf '%s\n' 'We have decided not to keep a copy of the backups outside this host.' > config/offhost-copy-declined && chmod 600 config/offhost-copy-declined` (a regular file, owned by that user, mode 0600, exactly that sentence: anything else is ignored); the "no copy" part of the alert then stays silent (a backup key copy that is not confirmed is still said) |
 | `retention_failed` | The last retention clean-up failed |
 | `daily_timer_legacy` | The checker unit is from before the daily timer: the backup still runs inside it (at once; never muted; see "Install the timer") |
 | `upgrade_interrupted` | An upgrade did not finish: `config/upgrade-in-progress` exists and no command holds the operator lock, so `upgrade.sh` is not running (at once; **never muted**). The facility may be half upgraded and the API is closed to phones (maintenance mode) until a person finishes the upgrade (the same command again) or goes back; `node scripts/upgrade-record.mjs report` prints both, `bash scripts/maintenance.sh off` opens the API. Services are not restarted by the checker meanwhile (see "Self-healing"). An upgrade that stopped before its backup was proved changed nothing: the record says so. If the alert says the API is open, the upgrade had finished and opened it, and the health check after that failed: run `node scripts/watch.mjs health`. The same alert also fires, with the summary "Maintenance mode is on and nothing is running that owns it", when `config/maintenance` exists, no upgrade is recorded and no command holds the lock: a backup that was killed part way (it leaves `config/maintenance-owner` beside the marker) or a maintenance mode left on; `bash scripts/maintenance.sh off` opens the API |
@@ -195,7 +197,9 @@ alone.
 
 - An alert is posted once when it starts, again every 4 hours while it keeps firing, and once when it clears. New alerts
   of one run go out as one message.
-- Once a day, after 09:00 local time, one "Monitoring is alive" message says how many alerts are firing. **A day
+- Once a day, after 09:00 local time, one "Monitoring is alive" message says how many alerts are firing. When the host restarted since the
+  previous run (the kernel's boot id changed) it adds one line, "Host restarted at HH:MM." (with the date if it was on an earlier day), once;
+  it is information, never an alert, and the first run after an upgrade only records the boot id. **A day
   without that message means monitoring is down**: the timer, the host or the webhook (revoked, channel deleted).
 - If Slack does not accept a post, it is tried again at the next run; `status` shows the last failure.
 - Nothing printed or posted carries a secret: passwords, tokens, database URLs and the webhook are replaced by `[REDACTED]`.
@@ -265,8 +269,8 @@ node scripts/watch.mjs unmute "service_down:rest"
 **Mute before a planned `stop.sh`**: the checker keeps running while the services are stopped and reports each stopped
 service as an alert. `stop.sh` says so when it finishes. The commands need `WAREHOUSE_STATE_DIR`.
 
-**`backup_missing`, `backup_failed`, `daily_timer_legacy` and `upgrade_interrupted` are never muted.** A mute, whole or of one alert, covers every other alert; these
-are posted anyway, and `mute 60 backup_missing` is refused. They are the only warning that the data is not being saved (or that
+**`backup_missing`, `backup_failed`, `offhost_copy_missing`, `daily_timer_legacy` and `upgrade_interrupted` are never muted.** A mute, whole or of one alert, covers every other alert; these
+are posted anyway, and `mute 60 backup_missing` is refused. They are the only warning that the data is not being saved (or that no copy of it exists outside this host, or that
 the backup hangs on an out-of-date unit, or that an upgrade stopped half way with the API closed to phones), and a
 week-long mute while a service was being repaired must not hide it. The daily "Monitoring is alive" message says so whenever
 a mute is active.
@@ -378,13 +382,16 @@ not in a backup, and `node scripts/watch.mjs test-message sensors` tests it.
 
 The checker cannot tell anyone that it has died. For that, give it the address of a dead-man switch: a service that expects
 a ping every few minutes and alerts (by email, SMS or its own app) when the pings stop. healthchecks.io is one (create a
-check with a 10 minute period and a 5 minute grace time); any address that does this works. Put the https URL it gives you in
-a private file:
+check with a 5 minute period and a 15 minute grace time, the schedule of the checker); any address that does this works. Put the https URL it gives you in
+a private file (mode 0600, outside the checkout, one line) and give it to setup, which stores it as `config/heartbeat-url`:
 
 ```bash
-install -m 600 /dev/null "$WAREHOUSE_STATE_DIR/config/heartbeat-url"
-$EDITOR "$WAREHOUSE_STATE_DIR/config/heartbeat-url"      # one line: the https URL
+bash setup.sh --operator ... --heartbeat-url-file /secure/warehouse-heartbeat-url.txt     # or: --heartbeat-url-file off (removes it)
 ```
+
+(Writing `config/heartbeat-url` by hand, mode 0600, works the same.) `npm run doctor` warns while there is none. A facility that
+decided against it records that, as the user that runs the checker, with `printf '%s\n' 'We have decided not to use an external heartbeat.' > config/heartbeat-declined && chmod 600 config/heartbeat-declined`
+(a regular file, owned by that user, mode 0600, exactly that sentence: anything else is ignored), and the warning stops.
 
 At the end of each successful 5-minute run the checker fetches that URL (a GET with a 5 second limit); it does so also when
 an operator command holds the lock (the checker is alive then). A run that fails before it has saved its state sends no ping,
@@ -393,6 +400,38 @@ the log (`journalctl -u <project>-watch.service`) and `node scripts/watch.mjs st
 is never an alert, because Slack may be what is down. The URL is a secret (anyone who knows it can fake the ping), is not in
 backups, and has to be put back after `db:restore-host`. The daily "Monitoring is alive" Slack line stays: it covers a
 checker that runs but cannot reach Slack the other way round.
+
+## A newer release
+
+`node scripts/doctor.mjs --local` prints `Note: vX.Y.Z is available (this facility runs vA.B.C)`, and the daily "Monitoring is alive" message
+carries `Release: ...` with the same words, when the origin holds a newer final release tag (release candidates are ignored). The lookup runs
+once per day for the message. When the running line has a newer release of its own that is not the newest overall, the line names it first
+(`v0.6.3 is available for your line (this facility runs v0.6.2); newest is v0.7.1`). It adds ` \u2014 Security release` when any newer final
+release has "Security" in its GitHub title ([SECURITY.md](../SECURITY.md)), and `; support for the vA.B line ends YYYY-MM-DD` (or `ended`)
+when the running line is behind, from the publication dates of the next two minor releases (GitHub, else tags this checkout already holds).
+It is information only: never an alert, never a Slack message of its own, and a lookup that fails (no network, GitHub unreachable) leaves
+the line out.
+
+**What leaves the host.** The lookup contacts GitHub without any account or token: `git ls-remote --tags origin` and one request to the
+public releases list of the origin (`api.github.com/repos/<owner>/<repo>/releases`, only when the origin is on github.com). GitHub therefore
+sees the facility's public IP address and the checkout's own repository name; no business data, no instance name and no credential is sent.
+Both calls have a 10 second limit, follow no redirects, and never prompt. A host that must not contact GitHub from the facility simply gets no line.
+
+## An association view with healthchecks
+
+An association that wants to see which of its member facilities have gone quiet can own one healthchecks.io project (or a
+self-hosted healthchecks) for the purpose:
+
+- one **project**, owned by the association, with one **check per facility**, named by the facility (its company name);
+- each check's schedule matches the checker: a **period of 5 minutes** and a **grace time of about 15 minutes** (the checker pings at the
+  end of every 5-minute run, so three missed runs make a check late and then down);
+- the check's **ping URL** is given to that facility's operator, who gives it to setup as `--heartbeat-url-file` (above). The URL is a secret
+  of the facility and of the association: send it privately, and replace it (a new check, or a reset URL) if it leaks.
+
+The board then shows each facility as **up**, **late** or **down**, and when it last pinged. The ping is an empty GET
+request to that URL with no business data, no names, no counts and no alerts; the association's service sees the facility's public IP address and
+the times of the pings, and the check's name is chosen by whoever creates it. The facility's own Slack alerts are not copied
+to the association. The checker pings one address, so the association's check is that facility's dead-man switch; a facility that prefers its own (or both) can keep its own check and give the association a second one only by running a second pinger, which this repository does not provide.
 
 ## Finding a slow query
 
@@ -409,6 +448,25 @@ sign-in code). The same statements, summed, are in `pg_stat_statements` (`bash s
 postgres -c "SELECT calls, round(total_exec_time) AS ms, left(query, 80) FROM pg_stat_statements ORDER BY total_exec_time DESC LIMIT 10"`).
 The API roles are cut off by the database itself: `anon` after
 3 seconds, `authenticated` after 8 (an answer with `canceling statement due to statement timeout`; [CONTAINER_SECURITY.md](CONTAINER_SECURITY.md#database-roles)).
+
+## Finding one request
+
+Every answer of the gateway carries an `X-Request-Id` header: 32 random hexadecimal characters, made by the gateway for that request
+(a value the client sent is replaced). It is also the last field of the gateway's access line, and the gateway passes it to PostgREST,
+Storage and the functions. To follow one request that failed on a phone, take the id from the app's report or from the response
+(browser tools show response headers), then search the logs for it:
+
+```bash
+ID=0123456789abcdef0123456789abcdef   # the id from the phone or the response
+bash scripts/compose.sh logs --since 48h gateway | grep "$ID"
+bash scripts/compose.sh logs --since 48h functions | grep "$ID"
+```
+
+The gateway line gives the time, path, status and duration; the functions log writes `request_id=<id>` on its server-side error lines
+(the profile lookup and the PDF renderer among them). The id carries no user data, so it is safe to paste into a message. The gateway keeps ten
+10 MB log files, and a recreated container starts with an empty log; before an upgrade, a key rotation or a database password rotation the
+last 48 hours of the log of each of `gateway`, `gateway-lan`, `functions`, `rest` and `supavisor` are saved, redacted, in `$WAREHOUSE_STATE_DIR/diagnostics/pre-<label>-<utc>/` (the newest five stay), so
+search there too when the request is older than the restart. By hand: `node scripts/service-diagnostics.mjs save <label>`. The printed way back of an interrupted upgrade starts with the same command (`save rollback`).
 
 ## What it does not cover
 

@@ -171,9 +171,11 @@ export function alertWebhookAddress(text, option = '--alert-webhook-file') {
   return value;
 }
 
-// --alert-webhook-file PATH | off. Returns undefined (leave the state alone), null (remove the stored
-// address) or the address. Everything is checked before anything is written.
-export function readAlertWebhook(path, checkout, option = '--alert-webhook-file') {
+// A secret file given as `--option PATH | off`. Returns undefined (leave the state alone), null (remove the stored
+// value) or the value. Everything is checked before anything is written: an absolute path, a regular file, outside the
+// checkout (also through links), owned by this user, mode 0600, at most 2 KB, and one value that matches `pattern`
+// (`what` names it in the refusal). No message quotes the file's contents.
+export function readSecretFile(path, checkout, option, pattern, what) {
   if (path === undefined) return undefined;
   if (path === 'off') return null;
   if (!isAbsolute(path)) throw new Error(`${option} must be an absolute path (or off).`);
@@ -182,10 +184,24 @@ export function readAlertWebhook(path, checkout, option = '--alert-webhook-file'
   if (resolve(path).startsWith(checkout + sep) || realpathSync(path).startsWith(checkout + sep)) throw new Error(`${option} must be outside the checkout.`);
   if (st.uid !== process.getuid() || (st.mode & 0o077)) throw new Error(`${option} must be owned by this user and mode 0600 (it holds a secret address).`);
   if (st.size > WEBHOOK_MAX_BYTES) throw new Error(`${option} is larger than 2 KB.`);
-  return alertWebhookAddress(readFileSync(path, 'utf8'), option);
+  const value = readFileSync(path, 'utf8').replace(/^\uFEFF/, '').trim();
+  if (!pattern.test(value)) throw new Error(`${option} must hold ${what}.`);
+  return value;
 }
+
+// --alert-webhook-file PATH | off: one Slack incoming-webhook URL.
+export const readAlertWebhook = (path, checkout, option = '--alert-webhook-file') =>
+  readSecretFile(path, checkout, option, SLACK_WEBHOOK_PATTERN, 'one Slack incoming-webhook URL (https://hooks.slack.com/services/...)');
 // --sensor-webhook-file ABSOLUTE|off: the same rules, for the separate sensor-alert webhook.
 export const readSensorWebhook = (path, checkout) => readAlertWebhook(path, checkout, '--sensor-webhook-file');
+// --heartbeat-url-file ABSOLUTE|off: the same rules, for the ping address of an external dead-man switch (docs/MONITORING.md,
+// "External heartbeat"). Any one https URL; the checker (scripts/watch.mjs) reads config/heartbeat-url.
+export const HEARTBEAT_URL_PATTERN = /^https:\/\/[^\s/]+\/?\S*$/;
+// The checker's reading of config/heartbeat-url: the first line that is not blank or a comment (scripts/watch.mjs uses this too).
+export const firstUrlLine = text => String(text).split('\n').map(l => l.trim()).find(l => l && !l.startsWith('#')) ?? '';
+export const HEARTBEAT_FILE = 'config/heartbeat-url';
+export const readHeartbeatUrl = (path, checkout) =>
+  readSecretFile(path, checkout, '--heartbeat-url-file', HEARTBEAT_URL_PATTERN, 'one https URL (the ping address of your dead-man switch)');
 
 // Replaces a file through a same-directory temporary, so a reader sees the old or the new content.
 function place(path, bytes, mode) {
@@ -243,6 +259,24 @@ export function placeSensorWebhook(state, webhook) {
   if (typeof webhook === 'string') return place(path, Buffer.from(`${webhook}\n`), 0o600);
   if (webhook === null && lstatSync(path, { throwIfNoEntry: false })) { rmSync(path); return true; }
   return false;
+}
+
+// Writes or removes the heartbeat URL in `state` (undefined keeps it, null removes it, a string stores it). Returns true when the file changed.
+export function placeHeartbeatUrl(state, url) {
+  const path = join(state, HEARTBEAT_FILE);
+  if (typeof url === 'string') return place(path, Buffer.from(`${url}\n`), 0o600);
+  if (url === null && lstatSync(path, { throwIfNoEntry: false })) { rmSync(path); return true; }
+  return false;
+}
+
+// The stored heartbeat URL the checker can use (a regular file of this user, mode 0600; the first line that is not blank or a
+// comment, as the checker reads it), or null (none, unusable, or not an https URL).
+export function storedHeartbeatUrl(state) {
+  const path = join(state, HEARTBEAT_FILE);
+  const st = lstatSync(path, { throwIfNoEntry: false });
+  if (!st?.isFile() || st.uid !== process.getuid() || (st.mode & 0o077)) return null;
+  const url = firstUrlLine(readFileSync(path, 'utf8'));
+  return HEARTBEAT_URL_PATTERN.test(url) ? url : null;
 }
 
 // What to do about the webhook: 'off' (given as off), 'file' (a path was given), 'stored' (the state has one),

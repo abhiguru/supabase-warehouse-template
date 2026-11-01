@@ -48,6 +48,32 @@ file used to carry for earlier installations are in git: `git show b45ae0b:CHANG
   `CF-Connecting-IP` (now checked as one real IPv4 or IPv6 address) and the user agent. Needs the app batch that shows the list. Shapes:
   [API_CONTRACT.md](docs/API_CONTRACT.md), "Signed-in devices"; privacy: [TELEMETRY_AND_PRIVACY.md](docs/TELEMETRY_AND_PRIVACY.md), section 4.
   Tests: `tests/session_devices_140.sql` (new), `tests/operator-otp-handler.test.mjs`, `tests/central-exchange.test.mjs`.
+- **Lock-wait alert.** The checker's database query gains a sixth column, the sessions waiting for advisory lock 71040 (the stock lock), and the new alert `db_lock_waiters` fires at 5 or more (two failing runs, repeating every 4 hours); see MONITORING.md.
+- **Internet line guidance.** "Host prerequisites" and "Ingress and the LAN" recommend a dual-WAN or 4G/5G-failover router so that an ISP outage does not stop GRN and dispatch, and the acceptance list gains a "WAN pulled" step.
+- **Windows 11 host, Windows Update and a restart note.** Windows 11 (Pro or Home) is the supported host and Windows 10 is at your own risk; a new "Windows Update" section (active hours, no auto-restart with logged on users, deferred feature updates, monthly `wsl --version`); `register-tasks.ps1 -Checkout -State` registers the best-effort "Warehouse WSL stop" task (System event 1074, 90 s) that runs `stop.sh --on-host-shutdown` (stops the stack without the stopped-by-operator hold); the checker remembers the kernel boot id and the daily "Monitoring is alive" message says "Host restarted at HH:MM" once after a restart (not an alert).
+- **Retiring or losing a host.** A new section "Retire or lose a host" lists what to do in order (rotate the signing keys, delete the tunnel, replace the MSG91 key, revoke the Slack and heartbeat URLs, rotate the database passwords with `--superuser`, re-enrol USB drives, keep the backup key copy), "Rotate signing keys" says when rotation is required, and "Secrets that rotate-keys does not change" gains the MSG91 key, backup key, tunnel credential and heartbeat URL. Key rotation now also deletes unused break-glass codes.
+- **Disk-encryption warning.** `doctor` warns when the root filesystem has no `crypt` (LUKS) device under it (not under WSL, silent when `findmnt` or `lsblk` fail); the host prerequisites recommend full-disk encryption, and the Windows ones give the `manage-bde -status` check.
+- **`setup.sh --db-memory <GiB>`** (1 to 256) sets the database container's memory limit and, from it, `shared_buffers` (a quarter) and `effective_cache_size` (half) through `DB_MEMORY_LIMIT`, `DB_SHARED_BUFFERS` and `DB_EFFECTIVE_CACHE_SIZE` in `config/compose.env`; refused while the containers run. Without it the values are the old fixed ones (1G, 128MB, 512MB).
+- **Host minimum checked.** `doctor --host-preflight` warns (never refuses) below 4 vCPU, 7.5 GiB of memory and 55 GiB of disk in total on the state's filesystem; "Host prerequisites" states 4 vCPU / 8 GiB / SSD / 60 GB.
+- **A request id on every API answer, and logs saved before restarts.** The gateway makes a random `$request_id` (32 hex characters, no user
+  data) for each request: the last field of its access line, an `X-Request-Id` header passed to PostgREST, Storage and the functions (a
+  client-sent one is replaced) and returned on every answer, error answers included. The function helpers write `request_id=` on their
+  server-side error lines (only an id of exactly that form is repeated). `scripts/watch.mjs` still reads old lines. Before an upgrade, `setup.sh`
+  on an existing state, `rotate-keys.sh` and `scripts/rotate-db-passwords.sh` recreate containers, they save the last 48 hours of each
+  service log, redacted, in `<state>/diagnostics/pre-<label>-<utc>/` (`node scripts/service-diagnostics.mjs save <label>`, the newest 5 kept, best
+  effort). The saves run before each script's first change and the printed way back of an interrupted upgrade starts with one; copies are redacted of query strings and keep the newest `pre-upgrade-*`. Storage logs the request id (`REQUEST_ID_HEADER`). The gateway services keep 10 log files instead of 3. See [MONITORING.md](docs/MONITORING.md#finding-one-request). Operator action: none.
+  Tests: `tests/gateway-config.test.mjs`, `tests/gateway-nginx.test.mjs`, `tests/watch.test.mjs`, `tests/access.test.mjs`,
+  `tests/pdf-renderer-footer.test.mjs`, `tests/service-diagnostics.test.mjs`, `tests/compose-networks.test.mjs`, `tests/diagnostics-wiring.test.mjs`.
+
+- **Outside observer and release notice.** `setup.sh --operator --heartbeat-url-file ABSOLUTE|off` stores the ping URL of an external
+  dead-man switch as `config/heartbeat-url` (mode 0600; kept when the option is left out); `npm run doctor` warns while there is none, unless
+  the facility records `config/heartbeat-declined` ("We have decided not to use an external heartbeat."). The restore-host "Next" steps
+  say to give it again (it is not in a backup) and, on WSL, to register the Windows tasks. [MONITORING.md](docs/MONITORING.md) describes an association-owned
+  healthchecks project with one check per facility as a fleet "who is down" board (nothing but the ping is sent). `doctor --local` and the
+  daily "Monitoring is alive" message now say "vX.Y.Z is available (this facility runs vA.B.C)", with a Security marker and the support-end
+  date of the running line when they can be told; it is information, never an alert. Tests: `tests/release-check.test.mjs` (new),
+  `tests/alert-webhook.test.mjs`, `tests/configure.test.mjs`, `tests/doctor.test.mjs`, `tests/watch.test.mjs`, `tests/restore-host.test.mjs`.
+
 - **Break-glass codes for every facility worker, with their own sign-in (migration 132).** `scripts/break-glass-admin.sh` now makes a one-time code
   (10 minutes, once, five wrong tries) for an active, approved administrator, **supervisor or staff member** (never a customer) and prints the
   role. The app signs in with it through `POST /functions/v1/operator-otp/break-glass` `{phone_number, code}` (service-role RPC
@@ -59,6 +85,17 @@ file used to carry for earlier installations are in git: `git show b45ae0b:CHANG
   checks and uses a code; the comparison is made on keyed hashes of both hashes. Works over the LAN fallback as before. Tests:
   `tests/break_glass_workers.sql` (new), `tests/break_glass.sql`, `tests/break-glass-admin.test.mjs`, `tests/operator-otp-handler.test.mjs`.
   Operator procedure: [CENTRAL_LOGIN.md](docs/CENTRAL_LOGIN.md), "When the association's SMS is down".
+
+### Added (Windows hosts)
+
+- **WSL2: the Windows drive that holds the virtual disk is watched (`disk_vhdx_drive_low`).** Inside Ubuntu `/` shows the virtual size of
+  `ext4.vhdx` (about 1 TB), so a filling `C:` stopped PostgreSQL with no warning. On a WSL2 host (kernel release contains "microsoft") the
+  monitoring checker now alerts when the drive that holds the file (`/mnt/c`, or `VHDX_DRIVE` in `config/compose.env`, or `WAREHOUSE_VHDX_DRIVE` for one run) has under 20 GiB or under 10 % free,
+  and `restore_space_low` also fails when an in-place restore would leave it under 20 GiB; `npm run doctor` refuses a new installation under 20 GiB
+  (`--host-preflight`) and warns otherwise; `scripts/backup.sh` refuses a backup that would leave the drive under 20 GiB, before anything stops
+  (a drive that is not a Windows mount, or that `df` cannot read within 10 seconds, is a warning). A drive the checker cannot read raises the same alert, saying so. Hosts that are not WSL are unchanged. Operator procedure: [OPERATOR_INSTALL.md](docs/OPERATOR_INSTALL.md),
+  "Watch the Windows drive". New file `scripts/wsl-host.mjs`. Tests: `tests/wsl-host.test.mjs`, `tests/watch.test.mjs`, `tests/doctor.test.mjs`,
+  `tests/backup-storage.test.mjs`.
 
 ### Changed
 
@@ -97,6 +134,15 @@ file used to carry for earlier installations are in git: `git show b45ae0b:CHANG
   and `get_invoices_list` clamp `p_limit` to 1..200 (page and offset to at least 1 and 0). PostgREST returns at most 2,000 rows
   of a direct table read (`PGRST_DB_MAX_ROWS`, `docker/docker-compose.yml`). Tests: `tests/rls_wrapped_137.sql`, `tests/customer_rpc_deleted_137.sql`, `tests/list_clamps_138.sql`
   (new), `tests/database-settings.test.mjs`, `tests/grn_heavy_dispatch.sql` (pages in 200s). Docs: [API_CONTRACT.md](docs/API_CONTRACT.md), [STAFF_GRN_POLICY.md](docs/STAFF_GRN_POLICY.md).
+- **Off-host copy alert (`offhost_copy_missing`, replaces `usb_backup`).** An installation whose backups and backup key sit only on the host's one disk (USB backup never
+  set up) now gets a weekly, never-muted alert, and `npm run doctor` says the same at once. **Installations without a USB copy start
+  getting this alert 7 days after the checker's first run**; a failed or stale USB copy and an unconfirmed backup-key copy are raised at once, as `usb_backup` did.
+  Fix it by setting up the drive ([OPERATOR_INSTALL.md](docs/OPERATOR_INSTALL.md), "USB backup drive"), or record the decision in `config/offhost-copy-declined` (exact sentence, mode 0600,
+  see "Recovery point and recovery time"; the key-copy check stays on). `offhost_copy_missing` is in the never-muted list with `backup_missing`, `backup_failed`,
+  `daily_timer_legacy` and `upgrade_interrupted`; a stored `usb_backup` alert is carried over to the new name. `backup-usb.sh uninstall` renames
+  `config/usb-backup.last` to `usb-backup.last.uninstalled`. Also: on Mondays the daily status adds a note when only one USB drive wrote in the last 30 days
+  (`config/usb-backup.history`, kept by `backup-usb.sh`); `restore.sh` and `restore-host.sh` append per-phase seconds to `<state>/restores.log`.
+  Tests: `tests/declined-marker.test.mjs`, `tests/backup-usb.test.mjs`, `tests/backup-usb-drive.test.mjs`, `tests/watch.test.mjs`, `tests/restore.test.mjs`, `tests/restore-host.test.mjs`.
 - **Saving a GRN no longer deletes other people's photo uploads in progress (`update_grn`, no new migration).** When the photo list is sent, an
   unfinished (`pending`) photo that is not in the list used to be removed for an administrator or supervisor, whoever uploaded it. Now it is
   removed only if the saver uploaded it or it is older than 15 minutes; another person's recent pending upload survives and can still be

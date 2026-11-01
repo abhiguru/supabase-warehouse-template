@@ -9,7 +9,7 @@ import { KEY_SET_MAX_BYTES, holdsPrivateKey, usableKeys } from './central-key-se
 import { addMissingDbValues, generatedDbValues } from './db-roles.mjs';
 import { isFixtureAddress, isProviderPlaceholder } from './provider-placeholder.mjs';
 import { LETTERHEAD_NAMES, readLetterhead } from './letterhead.mjs';
-import { LEGACY_WEBHOOK_FILE, SENSOR_WEBHOOK_FILE, WEBHOOK_FILE, assertSensorWebhookPlaceable, placeSensorWebhook, placeWebhook, readAlertWebhook, readSensorWebhook } from './alert-webhook.mjs';
+import { HEARTBEAT_FILE, LEGACY_WEBHOOK_FILE, SENSOR_WEBHOOK_FILE, WEBHOOK_FILE, assertSensorWebhookPlaceable, placeHeartbeatUrl, placeSensorWebhook, placeWebhook, readAlertWebhook, readHeartbeatUrl, readSensorWebhook } from './alert-webhook.mjs';
 
 export function canonicalOrigin(value, name = 'URL') {
   let url;
@@ -264,6 +264,15 @@ export function gatewayPortValue(value) {
   if (!/^[0-9]{4,5}$/.test(String(value)) || Number(value) < 1024 || Number(value) > 65535) throw new Error('--gateway-port must be a whole number from 1024 to 65535.');
   return String(Number(value));
 }
+// --db-memory <GiB>: the database container's memory limit and, from it, PostgreSQL's shared_buffers (a quarter of the limit) and
+// effective_cache_size (half of it). The three lines are read by docker/docker-compose.yml, which keeps the defaults (1G, 128MB, 512MB)
+// when they are absent or empty.
+export function dbMemoryValues(value) {
+  if (value === undefined) return null;
+  if (!/^[0-9]{1,3}$/.test(String(value)) || Number(value) < 1 || Number(value) > 256) throw new Error('--db-memory must be a whole number of GiB from 1 to 256.');
+  const gib = Number(value);
+  return { DB_MEMORY_LIMIT: `${gib}G`, DB_SHARED_BUFFERS: `${gib * 256}MB`, DB_EFFECTIVE_CACHE_SIZE: `${gib * 512}MB` };
+}
 // Test-bind 127.0.0.1:<port> in a child process, so configure() stays synchronous.
 function loopbackPortFree(port) {
   const probe = "const s=require('net').createServer();s.once('error',()=>process.exit(1));s.listen(Number(process.argv[1]),'127.0.0.1',()=>s.close(()=>process.exit(0)));";
@@ -280,8 +289,9 @@ function projectContainersRunning(project) {
 export { lanAddressValue, lanCidrValue, lanPortValue } from './lan-common.mjs';
 export const GATEWAY_PORT_REMINDER = 'Update the Cloudflare Tunnel ingress for this installation to http://127.0.0.1:<port> (deploy/cloudflared-config.example.yml), then restart the tunnel.';
 
-export function configure(root, { stateDir, apiUrl, appUrl, company, providerEnv, centralIssuer, centralJwksUrl, centralJwksFile, centralLocalCode, alertWebhookFile, sensorWebhookFile, letterheadFile, gatewayPort, portFree = loopbackPortFree, containersRunning = projectContainersRunning, faultAfterManifest = false } = {}) {
+export function configure(root, { stateDir, apiUrl, appUrl, company, providerEnv, centralIssuer, centralJwksUrl, centralJwksFile, centralLocalCode, alertWebhookFile, sensorWebhookFile, heartbeatUrlFile, letterheadFile, gatewayPort, dbMemory, portFree = loopbackPortFree, containersRunning = projectContainersRunning, faultAfterManifest = false } = {}) {
   const port = gatewayPortValue(gatewayPort);
+  const memory = dbMemoryValues(dbMemory);
   const central = centralValues(centralIssuer, centralJwksUrl, centralJwksFile);
   const letterhead = letterheadValue(letterheadFile);
   if (centralLocalCode !== undefined && centralLocalCode !== 'on' && centralLocalCode !== 'off') throw new Error('--central-local-code must be on or off.');
@@ -290,10 +300,13 @@ export function configure(root, { stateDir, apiUrl, appUrl, company, providerEnv
   // Checked before anything is written: a refused file changes nothing.
   const webhook = readAlertWebhook(alertWebhookFile, checkout);
   const sensorWebhook = readSensorWebhook(sensorWebhookFile, checkout);
+  const heartbeatUrl = readHeartbeatUrl(heartbeatUrlFile, checkout);
   // What the result says about it: true (an address was stored), null (removed), undefined (not given). Never the address.
   const state = resolve(stateDir);
   // `off` reports a removal only when a stored URL was there to remove.
   const hadWebhook = [WEBHOOK_FILE, LEGACY_WEBHOOK_FILE].some(file => lstatSync(join(state, file), { throwIfNoEntry: false }));
+  const hadHeartbeatUrl = Boolean(lstatSync(join(state, HEARTBEAT_FILE), { throwIfNoEntry: false }));
+  const heartbeatReport = typeof heartbeatUrl === 'string' ? true : heartbeatUrl === null && hadHeartbeatUrl ? null : undefined;
   const hadSensorWebhook = Boolean(lstatSync(join(state, SENSOR_WEBHOOK_FILE), { throwIfNoEntry: false }));
   const sensorWebhookReport = typeof sensorWebhook === 'string' ? true : sensorWebhook === null && hadSensorWebhook ? null : undefined;
   // The sensor webhook is an addition to the facility one: alerts for the facility never go to the sensor channel, so a sensor
@@ -340,6 +353,7 @@ export function configure(root, { stateDir, apiUrl, appUrl, company, providerEnv
       // Every check that can refuse runs before the first write, so a refused flag changes nothing.
       let gatewayPortChanged = false;
       let newPortText = null;
+      let newMemory = null;
       {
         const text = readFileSync(envPath, 'utf8');
         if (centralLocalCode !== undefined || central) centralLocalCodeValues(centralLocalCode, central, text, Boolean(providerEnv));
@@ -353,6 +367,11 @@ export function configure(root, { stateDir, apiUrl, appUrl, company, providerEnv
           if (containersRunning(text.match(/^WAREHOUSE_PROJECT_NAME=(.*)$/m)?.[1] ?? '')) throw new Error('This installation\'s containers are running; stop them (stop.sh) before changing --gateway-port.');
           if (!portFree(port)) throw new Error(`127.0.0.1:${port} is already in use; choose another --gateway-port.`);
           newPortText = port;
+        }
+        if (memory !== null && Object.entries(memory).some(([key, value]) => text.match(new RegExp(`^${key}=(.*)$`, 'm'))?.[1] !== value)) {
+          // The limit is set when the container is created, so the change waits for a stopped installation.
+          if (containersRunning(text.match(/^WAREHOUSE_PROJECT_NAME=(.*)$/m)?.[1] ?? '')) throw new Error('This installation\'s containers are running; stop them (stop.sh) before changing --db-memory.');
+          newMemory = memory;
         }
       }
       if (providerEnv) providerValues(providerEnv, checkout, manifest.canonicalOrigin);
@@ -422,13 +441,19 @@ export function configure(root, { stateDir, apiUrl, appUrl, company, providerEnv
       assertSensorWebhookPlaceable(state);   // refused before the facility webhook changes: no half-applied change
       const placed = placeWebhook(state, webhook);
       placeSensorWebhook(state, sensorWebhook);
+      placeHeartbeatUrl(state, heartbeatUrl);
       // The gateway port is written last: a refusal above (state faults, the webhook) leaves it unchanged,
       // so the rerun after the fix still reports the change and prints the tunnel reminder.
       if (newPortText !== null) {
         replaceFileAtomically(envPath, withGatewayPort(readFileSync(envPath, 'utf8'), newPortText));
         gatewayPortChanged = true;
       }
-      return { created: false, state, manifest, providerUpdated, centralUpdated, letterheadUpdated, letterhead: letterhead === undefined ? undefined : letterhead.bytes ? letterhead.name : letterheadUpdated ? null : undefined, gatewayPortChanged, gatewayPortRenamed, restSchemasUpdated, graphqlSchemaKept, retiredKeysRemoved, dbValuesAdded: withDbValues.added, backupKeyCreated, monitoringUpdated: placed.moved, monitoringCleaned: placed.cleaned, webhook: webhookReport, sensorWebhook: sensorWebhookReport };
+      let dbMemoryChanged = false;
+      if (newMemory !== null) {
+        replaceFileAtomically(envPath, setEnvLines(readFileSync(envPath, 'utf8'), newMemory));
+        dbMemoryChanged = true;
+      }
+      return { created: false, dbMemoryChanged, state, manifest, providerUpdated, centralUpdated, letterheadUpdated, letterhead: letterhead === undefined ? undefined : letterhead.bytes ? letterhead.name : letterheadUpdated ? null : undefined, gatewayPortChanged, gatewayPortRenamed, restSchemasUpdated, graphqlSchemaKept, retiredKeysRemoved, dbValuesAdded: withDbValues.added, backupKeyCreated, monitoringUpdated: placed.moved, monitoringCleaned: placed.cleaned, webhook: webhookReport, sensorWebhook: sensorWebhookReport, heartbeatUrl: heartbeatReport };
     }
     if (readdirSync(state).length) throw new Error('State directory is partially initialized; inspect it before retrying.');
   }
@@ -449,7 +474,7 @@ export function configure(root, { stateDir, apiUrl, appUrl, company, providerEnv
     SITE_URL: application, CORS_ALLOWED_ORIGIN: application,
     WAREHOUSE_DB_PATH: join(state, 'data', 'db'), WAREHOUSE_STORAGE_PATH: join(state, 'data', 'storage'),
     WAREHOUSE_MANIFEST_PATH: manifestPath, WAREHOUSE_PROJECT_NAME: `warehouse-${manifest.instanceId.slice(0, 12)}`,
-    POSTGRES_PASSWORD: randomBytes(32).toString('hex'), ...generatedDbValues(), ...generateSigningKeys(), ...(port === null ? {} : { GATEWAY_HTTP_PORT: port }),
+    POSTGRES_PASSWORD: randomBytes(32).toString('hex'), ...generatedDbValues(), ...generateSigningKeys(), ...(port === null ? {} : { GATEWAY_HTTP_PORT: port }), ...(memory ?? {}),
     ...provider,
     ...(central?.values ?? {}), ...centralLocalCodeValues(centralLocalCode, central, null, Boolean(providerEnv)), ...(letterhead?.bytes ? { LETTERHEAD_FILE: letterhead.name } : {}) };
   values.CUPS_ADMIN_PASSWORD = randomBytes(32).toString('hex');
@@ -467,18 +492,19 @@ export function configure(root, { stateDir, apiUrl, appUrl, company, providerEnv
     createBackupKey(join(stage, 'config'));
     placeWebhook(stage, webhook);
     placeSensorWebhook(stage, sensorWebhook);
+    placeHeartbeatUrl(stage, heartbeatUrl);
     renameSync(stage, state);
   } catch (error) { rmSync(stage, { recursive: true, force: true }); throw error; }
-  return { created: true, state, manifest, letterhead: letterhead?.bytes ? letterhead.name : undefined, gatewayPortChanged: port !== null, dbValuesAdded: [], backupKeyCreated: true, monitoringUpdated: true, webhook: webhookReport, sensorWebhook: sensorWebhookReport };
+  return { created: true, state, manifest, letterhead: letterhead?.bytes ? letterhead.name : undefined, gatewayPortChanged: port !== null, dbValuesAdded: [], backupKeyCreated: true, monitoringUpdated: true, webhook: webhookReport, sensorWebhook: sensorWebhookReport, heartbeatUrl: heartbeatReport };
 }
 
 export function parseConfigureArgs(args) {
   const options = {};
   const names = { '--state-dir': 'stateDir', '--api-url': 'apiUrl', '--app-url': 'appUrl', '--company': 'company', '--provider-env': 'providerEnv',
     '--central-issuer': 'centralIssuer', '--central-jwks-url': 'centralJwksUrl', '--central-jwks-file': 'centralJwksFile',
-    '--central-local-code': 'centralLocalCode', '--alert-webhook-file': 'alertWebhookFile', '--sensor-webhook-file': 'sensorWebhookFile', '--letterhead-file': 'letterheadFile', '--gateway-port': 'gatewayPort' };
+    '--central-local-code': 'centralLocalCode', '--alert-webhook-file': 'alertWebhookFile', '--sensor-webhook-file': 'sensorWebhookFile', '--heartbeat-url-file': 'heartbeatUrlFile', '--letterhead-file': 'letterheadFile', '--gateway-port': 'gatewayPort', '--db-memory': 'dbMemory' };
   for (let i = 0; i < args.length; i += 2) {
-    if (!names[args[i]] || !args[i + 1]) throw new Error('Usage: --state-dir ABSOLUTE [--api-url HTTPS --app-url HTTPS --company NAME --provider-env ABSOLUTE] [--central-issuer HTTPS|off (--central-jwks-url HTTPS | --central-jwks-file ABSOLUTE)] [--central-local-code on|off] [--alert-webhook-file ABSOLUTE|off] [--sensor-webhook-file ABSOLUTE|off] [--letterhead-file ABSOLUTE|off] [--gateway-port 1024-65535]');
+    if (!names[args[i]] || !args[i + 1]) throw new Error('Usage: --state-dir ABSOLUTE [--api-url HTTPS --app-url HTTPS --company NAME --provider-env ABSOLUTE] [--central-issuer HTTPS|off (--central-jwks-url HTTPS | --central-jwks-file ABSOLUTE)] [--central-local-code on|off] [--alert-webhook-file ABSOLUTE|off] [--sensor-webhook-file ABSOLUTE|off] [--heartbeat-url-file ABSOLUTE|off] [--letterhead-file ABSOLUTE|off] [--gateway-port 1024-65535] [--db-memory 1-256]');
     options[names[args[i]]] = args[i + 1];
   }
   return options;
@@ -493,6 +519,7 @@ if (isMain(import.meta.url)) {
         : result.centralUpdated ? 'Updated central sign-in settings in existing operator state.'
           : result.letterheadUpdated ? 'Updated the letterhead image in existing operator state.'
           : result.gatewayPortChanged ? 'Updated the gateway port in existing operator state.'
+            : result.dbMemoryChanged ? 'Updated the database memory settings in existing operator state.'
             : result.restSchemasUpdated ? 'Updated PostgREST\'s schema list in existing operator state (now `public` only).'
               : result.dbValuesAdded?.length ? 'Preserved existing operator state; only missing generated values were added.'
                 : result.retiredKeysRemoved?.length ? `Preserved existing operator state; removed the unused ${result.retiredKeysRemoved.join(', ')}.`
@@ -513,10 +540,13 @@ if (isMain(import.meta.url)) {
     else if (result.webhook === null) console.log('Removed the Slack webhook: the monitoring checker keeps alerts on this host only.');
     if (result.sensorWebhook) console.log('Stored the Slack webhook for sensor alerts (mode 0600, in the state).');
     else if (result.sensorWebhook === null) console.log('Removed the sensor Slack webhook: sensor alerts go to the facility webhook.');
+    if (result.heartbeatUrl) console.log('Stored the external heartbeat URL (mode 0600, config/heartbeat-url): the checker pings it at the end of each run.');
+    else if (result.heartbeatUrl === null) console.log('Removed the external heartbeat URL: the checker no longer pings anything outside this host.');
     if (result.gatewayPortChanged) {
       const gateway = readFileSync(join(result.state, 'config', 'compose.env'), 'utf8').match(/^GATEWAY_HTTP_PORT=(.*)$/m)?.[1];
       console.log(`Gateway port is ${gateway}. ${GATEWAY_PORT_REMINDER.replace('<port>', gateway)}`);
     }
+    if (result.dbMemoryChanged || (result.created && options.dbMemory !== undefined)) console.log(`Database memory is ${options.dbMemory} GiB (shared_buffers ${options.dbMemory * 256} MB). It applies when the database container is created: start.sh (or setup.sh) does that. Make sure the host has the memory.`);
     if (result.backupKeyCreated) console.log(`Created the backup key ${join(result.state, 'config', 'backup.key')}. Backups are signed with it and a lost-host restore needs it: keep a copy away from this machine and from the backup drive.`);
     // After the state is written, so a refused command prints no warning; the warning never fails setup.
     if (options.centralJwksUrl !== undefined && options.centralIssuer !== 'off') {

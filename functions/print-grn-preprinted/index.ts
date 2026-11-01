@@ -610,7 +610,7 @@ Deno.serve(async (req) => {
 
     // Handle auth errors with proper status codes
     if (error.status && (error.status === 401 || error.status === 403)) {
-      return createAuthErrorResponse(error);
+      return createAuthErrorResponse(error, {}, req);
     }
 
     return new Response(

@@ -4,7 +4,7 @@ import { mkdtempSync, mkdirSync, writeFileSync, rmSync, symlinkSync } from 'node
 import { spawnSync } from 'node:child_process';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
-import { interruptedMessage, interruptedUpgradeWarning, readUpgradeRecord, rollbackLines } from '../scripts/upgrade-record.mjs';
+import { hasSaveCommand, interruptedMessage, interruptedUpgradeWarning, readUpgradeRecord, rollbackLines } from '../scripts/upgrade-record.mjs';
 
 // The record upgrade.sh leaves while an upgrade has not finished (tests/upgrade.test.mjs runs the writer; this file is the reader).
 const root = new URL('..', import.meta.url).pathname;
@@ -85,6 +85,19 @@ test('the way back is the complete recipe, in order, with the recorded values', 
       at = found;
     }
     assert.doesNotMatch(text, /919888888871/, 'the administrator\'s number is masked');
+  } finally { w.cleanup(); }
+});
+
+test('the way back saves the logs first (before the checkout), only when this checkout has the save command', () => {
+  const w = world(record({}));
+  try {
+    const r = readUpgradeRecord(w.state);
+    const withSave = rollbackLines(r, { saveCommand: true }).join('\n');
+    const save = withSave.indexOf(`WAREHOUSE_STATE_DIR='${w.state}' node scripts/service-diagnostics.mjs save rollback || true`);
+    assert.ok(save >= 0 && save < withSave.indexOf('git checkout --detach'), withSave);
+    assert.doesNotMatch(rollbackLines(r, { saveCommand: false }).join('\n'), /service-diagnostics/);
+    assert.equal(hasSaveCommand(), true, 'this checkout has it');
+    assert.equal(hasSaveCommand('/nonexistent/service-diagnostics.mjs'), false);
   } finally { w.cleanup(); }
 });
 

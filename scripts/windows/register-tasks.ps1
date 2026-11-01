@@ -14,6 +14,11 @@ account whether or not anyone is signed in; new instances are ignored while one 
 "Warehouse USB" (only with -BusId): the same triggers and settings, running
 "usbipd attach --wsl <Distro> --busid <BusId> --auto-attach --unplugged". Run "usbipd bind --busid <BusId>" first.
 
+Best effort, with -Checkout and -State: "Warehouse WSL stop" runs when Windows starts a shutdown or restart (System log event 1074, source
+User32) and stops the stack cleanly: "wsl.exe -d <Distro> -- env WAREHOUSE_STATE_DIR=<State> bash <Checkout>/stop.sh --on-host-shutdown", with a 90 second
+limit. Windows may kill WSL before it finishes; PostgreSQL then recovers its log on the next start, as without the task. It does not hold the
+stack down after the restart (stop.sh --on-host-shutdown leaves no stopped-by-operator file). It is not started when it is registered.
+
 .PARAMETER Distro
 Name of the WSL distro that holds the installation. Default: Ubuntu-24.04.
 
@@ -46,13 +51,16 @@ param(
     [string]$Distro = 'Ubuntu-24.04',
     [string]$BusId,
     [switch]$Force,
-    [switch]$UsbOnly
+    [switch]$UsbOnly,
+    [string]$Checkout,
+    [string]$State
 )
 
 $ErrorActionPreference = 'Stop'
 
 $KeepAliveName = 'Warehouse WSL'
 $UsbName = 'Warehouse USB'
+$StopName = 'Warehouse WSL stop'
 $DefaultUsbipd = 'C:\Program Files\usbipd-win\usbipd.exe'
 
 function Stop-Script([string]$Message) {
@@ -104,9 +112,16 @@ if ($BusId) {
     if ($Matches.st -eq 'Incompatible hub') { Stop-Script "Bus id $BusId is behind a hub usbipd cannot share. Plug the drive into another port and check 'usbipd list'." }
 }
 
+if (($Checkout -and -not $State) -or ($State -and -not $Checkout)) { Stop-Script '-Checkout and -State go together (both are Linux paths inside the distro).' }
+foreach ($p in @($Checkout, $State)) {
+    if ($p -and $p -notmatch '^/[A-Za-z0-9._/-]+$') { Stop-Script "'$p' is not a plain absolute Linux path (letters, digits, . _ - / only)." }
+}
+if ($Checkout -and $UsbOnly) { Stop-Script '-UsbOnly cannot be combined with -Checkout.' }
+
 $names = @()
 if (-not $UsbOnly) { $names += $KeepAliveName }
 if ($BusId) { $names += $UsbName }
+if ($Checkout) { $names += $StopName }
 if (-not $Force) {
     foreach ($n in $names) {
         if (Get-ScheduledTask -TaskName $n -ErrorAction SilentlyContinue) {
@@ -131,11 +146,21 @@ function New-RepeatingTriggers {
     @((New-ScheduledTaskTrigger -AtStartup), (New-ScheduledTaskTrigger -Once -At (Get-Date) -RepetitionInterval (New-TimeSpan -Minutes 2)))
 }
 
-function Register-WarehouseTask([string]$Name, $Action, $Settings) {
+# System log event 1074 (source User32): Windows is about to shut down or restart, for an update or by request.
+function New-ShutdownTrigger {
+    $class = Get-CimClass -ClassName MSFT_TaskEventTrigger -Namespace Root/Microsoft/Windows/TaskScheduler
+    $trigger = New-CimInstance -CimClass $class -ClientOnly
+    $trigger.Enabled = $true
+    $trigger.Subscription = '<QueryList><Query Id="0" Path="System"><Select Path="System">*[System[Provider[@Name=''User32''] and EventID=1074]]</Select></Query></QueryList>'
+    $trigger
+}
+
+function Register-WarehouseTask([string]$Name, $Action, $Settings, $Trigger = $null, [switch]$NoStart) {
+    if (-not $Trigger) { $Trigger = New-RepeatingTriggers }
     $parameters = @{
         TaskName = $Name
         Action   = $Action
-        Trigger  = New-RepeatingTriggers
+        Trigger  = $Trigger
         Settings = $Settings
         User     = $credential.UserName
         Password = $credential.GetNetworkCredential().Password
@@ -150,6 +175,7 @@ function Register-WarehouseTask([string]$Name, $Action, $Settings) {
     } finally {
         $parameters.Password = $null
     }
+    if ($NoStart) { return }
     try {
         Start-ScheduledTask -TaskName $Name
     } catch {
@@ -169,6 +195,14 @@ if ($BusId) {
     $settings = New-ScheduledTaskSettingsSet -ExecutionTimeLimit ([TimeSpan]::Zero) -MultipleInstances IgnoreNew -StartWhenAvailable -AllowStartIfOnBatteries -DontStopIfGoingOnBatteries
     Register-WarehouseTask $UsbName $action $settings
     Write-Host "Registered and started '$UsbName'."
+}
+
+if ($Checkout) {
+    $stopArguments = "-d $Distro -- env WAREHOUSE_STATE_DIR=$State bash $Checkout/stop.sh --on-host-shutdown"
+    $action = New-ScheduledTaskAction -Execute 'C:\Windows\System32\wsl.exe' -Argument $stopArguments
+    $settings = New-ScheduledTaskSettingsSet -ExecutionTimeLimit (New-TimeSpan -Seconds 90) -MultipleInstances IgnoreNew -AllowStartIfOnBatteries -DontStopIfGoingOnBatteries
+    Register-WarehouseTask $StopName $action $settings (New-ShutdownTrigger) -NoStart
+    Write-Host "Registered '$StopName' (best effort: it runs when Windows starts a shutdown or restart; Windows may kill WSL before it finishes)."
 }
 
 $credential = $null
@@ -196,6 +230,11 @@ foreach ($n in $names) {
     Write-Host "User/LogonType:       $($task.Principal.UserId) / $($task.Principal.LogonType)"
     Write-Host "Restart:              $($s.RestartCount) every $($s.RestartInterval); TimeLimit $($s.ExecutionTimeLimit); StartWhenAvailable $($s.StartWhenAvailable)"
     Write-Host "Action:               $($task.Actions.Execute) $($task.Actions.Arguments)"
+}
+
+if ($Checkout) {
+    Write-Host ''
+    Write-Host "Note: '$StopName' is not started now; its State is Ready until a shutdown or restart runs it."
 }
 
 if ($BusId) {

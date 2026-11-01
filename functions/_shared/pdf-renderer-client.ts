@@ -37,6 +37,8 @@ export interface PdfRendererOptions {
   footerHtml?: string;
   /** Ask the renderer to run this job alone (header `X-Render-Solo: true`): a long document needs the browser's memory to itself. */
   solo?: boolean;
+  // The gateway's request id (requestId in auth-helpers.ts), added to the error log line; '-' when there is none.
+  requestId?: string;
 }
 
 /**
@@ -121,7 +123,7 @@ export async function htmlToPdf(
     } catch {
       // the status alone is enough
     }
-    console.error(`PDF renderer returned HTTP ${response.status}${detail}`);
+    console.error(`PDF renderer returned HTTP ${response.status}${detail} request_id=${/^[0-9a-f]{32}$/.test(options.requestId ?? '') ? options.requestId : '-'}`);
     throw new Error(`PDF generation failed: ${response.status}`);
   }
 

@@ -343,6 +343,9 @@ outside_psql_text() {
 close_api() {
   MAINTENANCE=on
   step 'Close the API to phones (maintenance mode)'
+  # Closing recreates the gateways, and a recreated container starts with an empty log: keep the last 48 hours of each service first
+  # (best effort, redacted; <state>/diagnostics/pre-upgrade-*). setup.sh saves them again before it recreates the rest.
+  node "$ROOT/scripts/service-diagnostics.mjs" save upgrade || true
   bash "$ROOT/scripts/maintenance.sh" on
 }
 # Exit status 2 of `off` is "the API is open, but the health check failed": the record then says the API is open (`opened`), not closed, because
@@ -616,6 +619,7 @@ main() {
   else say "  2. tag the running images <project>-<service>:pre-$FROM_LABEL (the way back uses them), then git checkout --detach ${TO_SHA:0:12}"; fi
   say "  3. setup.sh --operator --state-dir $STATE --admin-phone $MASKED --admin-name <administrator's name>$([[ "$WEBHOOK_OFF" == yes ]] && echo ' --alert-webhook-file off')${SETUP_EXTRA[*]+" ${SETUP_EXTRA[*]}"}"
   say '     (setup of the release also recreates the functions container and ends with node scripts/doctor.mjs --local)'
+  say "     (before the gateways are closed and again before setup recreates anything, the last 48 hours of each service's log are saved, redacted, in $STATE/diagnostics/pre-upgrade-* and pre-setup-*: new containers start with empty logs)"
   say '  4. print the operator actions of CHANGELOG.md between the two releases'
   say "  5. append a line to $STATE/config/upgrades.log, remove $RECORD, and remove the pre-* image tags of earlier upgrades"
   say '  The facility is closed for the backup, its verification and the migrations: before step 1 both gateways are put in maintenance mode (phones are told the server is being updated)'

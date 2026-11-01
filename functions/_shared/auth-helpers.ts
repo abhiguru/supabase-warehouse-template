@@ -53,9 +53,26 @@ export async function validatePrintAccess(req: Request, _supabase?: unknown): Pr
   return profile;
 }
 
-export function createAuthErrorResponse(error: unknown, extraHeaders: Record<string, string> = {}): Response {
+// The id the gateway gave this request (docker/nginx/api-locations.conf, X-Request-Id; random, no user data). Only a value of exactly
+// 32 lowercase hex characters is repeated into a log line: anything else (a request that did not come through the gateway, or one
+// whose header was altered) is '-', so a log line can never carry text chosen by a client.
+export function requestId(req?: Request): string {
+  const value = req?.headers.get('x-request-id') ?? '';
+  return /^[0-9a-f]{32}$/.test(value) ? value : '-';
+}
+
+// The class of the error (TypeError, TimeoutError, ...), never its message: a message can quote a URL or a value. Plain thrown objects have none.
+function errorName(error: unknown): string {
+  const name = typeof error === 'object' && error !== null && 'name' in error ? String(error.name) : '';
+  return /^[A-Za-z][A-Za-z0-9_]{0,39}$/.test(name) ? name : 'unknown';
+}
+
+// `req` is optional so existing callers keep working; pass it so the log line of a server-side failure carries the request id.
+export function createAuthErrorResponse(error: unknown, extraHeaders: Record<string, string> = {}, req?: Request): Response {
   const status = typeof error === 'object' && error !== null && 'status' in error ? Number(error.status) : 500;
   const safeStatus = [400, 401, 403, 404, 405, 503].includes(status) ? status : 500;
+  // A failure of ours (500 or 503) is the one a client cannot explain: log the status and the id, the class of the error and never its message, a token or a header.
+  if (safeStatus >= 500) console.error(`auth error status=${safeStatus} error=${errorName(error)} request_id=${requestId(req)}`);
   const message = safeStatus < 500 && typeof error === 'object' && error !== null && 'message' in error ? String(error.message) : 'Server unavailable';
   return new Response(JSON.stringify({ success: false, error: message }), {
     status: safeStatus, headers: { ...extraHeaders, 'Content-Type': 'application/json', 'Cache-Control': 'no-store' },

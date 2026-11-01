@@ -15,6 +15,13 @@ x-logging: &default-logging
   options:
     max-size: "10m"
     max-file: "3"
+# The gateway writes one line per request, so three files cover only a few hours of a busy day; it keeps ten of the same size
+# (max-size is copied from the anchor above and must stay equal to it). A request id found in an app report is then still in the log.
+x-gateway-logging: &gateway-logging
+  driver: "json-file"
+  options:
+    max-size: "10m"
+    max-file: "10"
 
 services:
 
@@ -26,7 +33,7 @@ services:
     build:
       context: ./nginx
     restart: unless-stopped
-    logging: *default-logging
+    logging: *gateway-logging
     # nginx runs as the user `nginx` (101) of the image: no capability is needed for port 8000, the root file system is
     # read-only, and the only writable places are two small tmpfs: /tmp (the pid file and nginx's temporary paths, which
     # stay empty: request bodies and answers are never written to a file, docker/nginx/nginx.conf) and the directory
@@ -98,7 +105,7 @@ services:
     pull_policy: never
     restart: unless-stopped
     profiles: ["lan"]
-    logging: *default-logging
+    logging: *gateway-logging
     # As the gateway: read-only root, no capability, tmpfs for the pid file and the rendered configuration.
     read_only: true
     tmpfs:
@@ -221,6 +228,8 @@ services:
       # The roles already exist (database bootstrap). Storage reads this as === "true", so unset is also off;
       # it is set explicitly for clarity.
       DB_INSTALL_ROLES: "false"
+      # Storage logs the id the gateway gave the request (docker/nginx/api-locations.conf) as the request id of its own log lines.
+      REQUEST_ID_HEADER: x-request-id
       # The newest of Storage's own migrations that this image may apply (name = docker/storage/migrations-head.txt, kept equal
       # by tests/storage-schema.test.mjs). Storage migrates the catalog at start; without a freeze an image bump applies
       # whatever the new image ships, in setup's wait, to years of photo rows. Move it with the image (docker/storage/README.md).
@@ -330,7 +339,7 @@ services:
       resources:
         limits:
           cpus: '2.0'
-          memory: 1G
+          memory: ${DB_MEMORY_LIMIT:-1G}
         reservations:
           cpus: '0.5'
           memory: 256M
@@ -408,8 +417,8 @@ services:
       -c log_temp_files=10240
       -c wal_level=replica
       -c archive_mode=off
-      -c shared_buffers=128MB
-      -c effective_cache_size=512MB
+      -c shared_buffers=${DB_SHARED_BUFFERS:-128MB}
+      -c effective_cache_size=${DB_EFFECTIVE_CACHE_SIZE:-512MB}
       -c work_mem=4MB
       -c maintenance_work_mem=64MB
       -c wal_buffers=32MB

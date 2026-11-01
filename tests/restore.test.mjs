@@ -698,3 +698,22 @@ test('an explicit --help prints the usage on standard output and exits 0; a miss
     assert.match(none.stderr, /Usage: npm run db:/, script);
   }
 });
+
+test('restore appends one line per phase and a total, with elapsed seconds, to <state>/restores.log (mode 0600); a refused restore writes none', () => {
+  const scratch = mkdtempSync(join(tmpdir(), 'warehouse-restore-timing-'));
+  try {
+    const state = makeState(scratch);
+    const backup = makeBackup(join(scratch, 'backup'), { env: composeEnv(state) });
+    const refused = restore(scratch, [backup]);   // no --yes
+    assert.notEqual(refused.status, 0);
+    assert.equal(existsSync(join(state, 'restores.log')), false, 'a refusal records nothing');
+    const result = restore(scratch, ['--yes', backup], { FAKE_CATALOG_FILE: join(backup, 'storage_objects.txt') }, standIns);
+    assert.equal(result.status, 0, result.stderr);
+    const log = join(state, 'restores.log');
+    assert.equal(statSync(log).mode & 0o777, 0o600);
+    const lines = readFileSync(log, 'utf8').trim().split('\n');
+    assert.deepEqual(lines.map(line => /^\d{4}-\d\d-\d\dT\d\d:\d\d:\d\dZ restore\.sh phase=(\w+) seconds=\d+$/.exec(line)?.[1]), ['verify', 'storage', 'database', 'start', 'total']);
+    const seconds = Object.fromEntries(lines.map(line => [/phase=(\w+)/.exec(line)[1], Number(/seconds=(\d+)/.exec(line)[1])]));
+    assert.ok(seconds.total >= seconds.verify + seconds.storage + seconds.database + seconds.start, 'the total covers the phases');
+  } finally { rmSync(scratch, { recursive: true, force: true }); }
+});

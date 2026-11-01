@@ -40,6 +40,11 @@ test('htmlToPdf posts to the renderer /render route and logs at most 2 KB of an 
     globalThis.fetch = async () => new Response(JSON.stringify({ error: 'x'.repeat(10000), code: 503 }), { status: 503 });
     await assert.rejects(() => htmlToPdf('<p>x</p>'), /PDF generation failed: 503/);
     assert.match(logged[0], /^PDF renderer returned HTTP 503 \{"error":"x+/);
+    assert.match(logged[0], / request_id=-$/);
+    await assert.rejects(() => htmlToPdf('<p>x</p>', { requestId: '0123456789abcdef0123456789abcdef' }), /PDF generation failed: 503/);
+    assert.match(logged[1], / request_id=0123456789abcdef0123456789abcdef$/);
+    await assert.rejects(() => htmlToPdf('<p>x</p>', { requestId: 'evil\nline' }), /PDF generation failed: 503/);
+    assert.match(logged[2], / request_id=-$/, 'only a gateway id is repeated');
     assert.ok(logged[0].length <= 2048 + 64, `log line is bounded (${logged[0].length})`);
   } finally { globalThis.Deno = oldDeno; globalThis.fetch = oldFetch; console.error = oldError; }
 });

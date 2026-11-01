@@ -1,11 +1,13 @@
-// Doctor warning for the USB backup drive (scripts/backup-usb.sh). Returns null when
-// USB backup is not set up for this state or the last copy is recent and successful (the saved images included) and,
+// Doctor warning for the USB backup drive (scripts/backup-usb.sh). When USB backup is not set up for this state it says so (the
+// backups and their key then sit only on this host), unless the decision not to keep an off-host copy is recorded. Returns null when
+// the last copy is recent and successful (the saved images included) and,
 // when archives are encrypted, the operator has confirmed a copy of the backup key. It warns first when the installation
 // still writes readable archives although nobody typed --no-encrypt: it never ran `backup-usb.sh setup` after encryption
 // became the default.
 import { readFileSync, lstatSync } from 'node:fs';
 import { createHmac } from 'node:crypto';
 import { resolve } from 'node:path';
+import { declinedMarker, OFFHOST_DECLINED_NAME, OFFHOST_DECLINED_SENTENCE } from './declined-marker.mjs';
 
 const fields = text => Object.fromEntries(text.split('\n').filter(line => line.includes('=')).map(line => [line.slice(0, line.indexOf('=')), line.slice(line.indexOf('=') + 1)]));
 const read = path => { try { return readFileSync(path, 'utf8'); } catch { return null; } };
@@ -32,14 +34,45 @@ export function escrowProblem(state) {
   return null;
 }
 
+// What an installation with no USB backup is told: the backups and the key that opens them sit on this one disk.
+export const NO_OFFHOST_COPY = `No copy of the backups is kept outside this host: set up the USB backup drive (docs/OPERATOR_INSTALL.md, "USB backup drive"), or record the decision in config/${OFFHOST_DECLINED_NAME}.`;
+
+// Information, never an alert: when the drives that wrote a copy in the last 30 days are fewer than two, the copy never leaves the building
+// (a drive that stays plugged in is in the same fire, flood or theft as the host). null when there is no history (config/usb-backup.history,
+// "<epoch> <filesystem UUID>" lines that scripts/backup-usb.sh appends after a good copy) or two drives wrote.
+export const ROTATION_NOTE = 'Only one USB drive has written a backup in the last 30 days: take a copy away from the building by enrolling a second drive and swapping them weekly.';
+export function usbRotationNote(state, now = Date.now()) {
+  const history = read(resolve(state, 'config/usb-backup.history'));
+  if (!history) return null;
+  const drives = new Set();
+  for (const line of history.split('\n')) {
+    const [epoch, uuid, ...rest] = line.trim().split(/\s+/);
+    if (rest.length || !uuid || !/^\d+$/.test(epoch)) continue;
+    const age = now - Number(epoch) * 1000;
+    if (age >= 0 && age <= 30 * 86400000) drives.add(uuid);
+  }
+  return drives.size === 1 ? ROTATION_NOTE : null;
+}
+
 export function usbBackupWarning(state, {
   now = Date.now(),
   maxAgeDays = Number(process.env.WAREHOUSE_USB_BACKUP_MAX_AGE_DAYS || 7),
   etc = process.env.WAREHOUSE_USB_BACKUP_ETC || '/etc',
+  graceOver = true,   // false: the checker is in its first 7 days, so "no copy yet" is not said (a failed, stale or key-copy fault always is)
 } = {}) {
   const conf = read(resolve(etc, 'warehouse-usb-backup.conf'));
   const last = read(resolve(state, 'config/usb-backup.last'));
-  if (!last && (!conf || fields(conf).STATE !== resolve(state))) return null;
+  const noConf = !conf || fields(conf).STATE !== resolve(state);
+  // Not set up here. A recorded decision (config/offhost-copy-declined, exact sentence, mode 0600) is the operator's answer, whatever an old
+  // usb-backup.last says; it does not excuse an unconfirmed copy of the backup key, which is said all the same.
+  const declined = noConf && declinedMarker(state, OFFHOST_DECLINED_NAME, OFFHOST_DECLINED_SENTENCE);
+  if (noConf && (!last || declined)) {
+    const problem = escrowProblem(state);
+    const show = `run WAREHOUSE_STATE_DIR=${resolve(state)} bash scripts/backup-key-escrow.sh show`;
+    const noCopy = !declined && graceOver;
+    if (noCopy) return problem ? `${NO_OFFHOST_COPY} The backup key copy is not confirmed either (${problem}): ${show}` : NO_OFFHOST_COPY;
+    return problem ? `The backup key copy is not confirmed (${problem}): ${show}` : null;
+  }
   const setUp = conf && fields(conf).STATE === resolve(state) ? fields(conf) : null;
   if (setUp) {
     // The setup of an earlier release stored ENCRYPT=no and wrote WAREHOUSE_BACKUP_ENCRYPT=0 into the unit as the default, not as
@@ -57,7 +90,7 @@ export function usbBackupWarning(state, {
     const problem = escrowProblem(state);
     if (problem) return `USB archives are encrypted but the backup key copy is not confirmed (${problem}); runs are refused until it is: run WAREHOUSE_STATE_DIR=${resolve(state)} bash scripts/backup-key-escrow.sh show`;
   }
-  if (!last) return 'USB backup is set up but no copy has been made yet: attach the enrolled USB drive.';
+  if (!last) return graceOver ? 'USB backup is set up but no copy has been made yet: attach the enrolled USB drive.' : null;
   const run = fields(last);
   if (run.result !== 'ok') return `The last USB backup failed at ${run.finished_utc || 'an unknown time'}: ${run.message || 'no detail'}. Run bash scripts/backup-usb.sh status.`;
   const success = Number(run.last_success_epoch) * 1000;
