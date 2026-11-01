@@ -15,6 +15,8 @@
 --    receipt, dispatch or invoice, nor its lines or photos. Administrators, supervisors and staff are unchanged. A cancelled
 --    invoice (cancelled_at) stays visible to its customer; only deletion hides a document.
 --
+-- The two user_profiles policies also read auth.uid() as a scalar subquery.
+--
 -- Each policy is dropped and created next to each other, small tables first, in this one transaction (readers never see a table
 -- without its policies). scripts/configure-storage.sql wraps the same helpers in the storage.objects policies.
 
@@ -39,10 +41,10 @@ CREATE POLICY starter_catalog ON public.items FOR SELECT TO authenticated USING 
 DROP POLICY IF EXISTS starter_staff ON public.items;
 CREATE POLICY starter_staff ON public.items FOR SELECT TO authenticated USING (((SELECT warehouse_security.active_role()) = ANY (ARRAY['admin'::text, 'supervisor'::text])));
 DROP POLICY IF EXISTS starter_profile_read ON public.user_profiles;
-CREATE POLICY starter_profile_read ON public.user_profiles FOR SELECT TO authenticated USING ((((SELECT warehouse_security.active_role()) = ANY (ARRAY['admin'::text, 'supervisor'::text])) OR ((auth_user_id = auth.uid()) AND active)));
+CREATE POLICY starter_profile_read ON public.user_profiles FOR SELECT TO authenticated USING ((((SELECT warehouse_security.active_role()) = ANY (ARRAY['admin'::text, 'supervisor'::text])) OR ((auth_user_id = (SELECT auth.uid())) AND active)));
 DROP POLICY IF EXISTS starter_profile_update ON public.user_profiles;
-CREATE POLICY starter_profile_update ON public.user_profiles FOR UPDATE TO authenticated USING (((auth_user_id = auth.uid()) AND active))
-  WITH CHECK (((auth_user_id = auth.uid()) AND active));
+CREATE POLICY starter_profile_update ON public.user_profiles FOR UPDATE TO authenticated USING (((auth_user_id = (SELECT auth.uid())) AND active))
+  WITH CHECK (((auth_user_id = (SELECT auth.uid())) AND active));
 DROP POLICY IF EXISTS starter_customer ON public.customers;
 CREATE POLICY starter_customer ON public.customers FOR SELECT TO authenticated USING ((SELECT warehouse_security.owns_customer(id)));
 DROP POLICY IF EXISTS starter_grn_staff_read ON public.customers;
