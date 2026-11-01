@@ -29,7 +29,7 @@ file used to carry for earlier installations are in git: `git show b45ae0b:CHANG
   order screen paid for the whole queue every refresh. The matching orders are now found from `orders` (filters, search, count), the page is cut
   with the same sort, and the item list, the pending totals and the dispatch fields are built only for the orders on the page. The answer is
   the same (same keys, same order, same count and `has_more`). New rules: `p_limit` is held to 1..200 (the answer's `pagination.limit` says
-  which), `p_offset` to 0 or more, and `p_user_id` counts only for `service_role` (any other caller is checked as the session user). New index
+  which), `p_offset` to 0 or more (a huge offset answers an empty page), `p_limit => NULL` means 50 (it used to mean every row), the latest dispatch of an order is now picked by creation time and then by id, so two dispatches with equal times always give the same one, and `p_user_id` counts only for `service_role` (any other caller is checked as the session user). New index
   `idx_dispatch_source_order_latest` on `dispatch (source_order_id, created_at DESC)`. The view is unchanged. Test: `tests/orders_list_135.sql`.
 
 - **Saving a GRN no longer deletes other people's photo uploads in progress (`update_grn`, no new migration).** When the photo list is sent, an

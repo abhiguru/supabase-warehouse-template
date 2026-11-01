@@ -51,6 +51,8 @@ INSERT INTO public.customers(name,mobile,city)
         CASE t WHEN 't1' THEN 'Pune135' WHEN 't2' THEN 'Surat135' ELSE 'Anand135' END
  FROM unnest(ARRAY['t1','t2','t3','t4','t5','t6','t7','t8','t9','t10','x']) WITH ORDINALITY AS u(t,n);
 UPDATE public.customers SET deleted_at=now() WHERE name='Ol135 Customer t10';
+UPDATE public.customers SET active=false WHERE name='Ol135 Customer t5';
+UPDATE public.customers SET city=NULL WHERE name='Ol135 Customer t6';
 INSERT INTO f135(tag,customer_id,order_id)
  SELECT substr(name,length('Ol135 Customer ')+1), id, gen_random_uuid() FROM public.customers WHERE name LIKE 'Ol135 Customer %';
 INSERT INTO public.orders(id,order_no,order_date,requested_dispatch_date,status,priority,customer_id,customer_name,created_at,updated_at,created_by,updated_by,deleted_at)
@@ -59,7 +61,7 @@ INSERT INTO public.orders(id,order_no,order_date,requested_dispatch_date,status,
         now()-(CASE f.tag WHEN 't1' THEN interval '1 hour' WHEN 't2' THEN interval '3 hours' WHEN 't7' THEN interval '3 hours' ELSE interval '30 minutes' END),
         :'admin_profile'::uuid, CASE f.tag WHEN 't1' THEN :'admin_profile'::uuid END,
         CASE f.tag WHEN 't9' THEN now() END
- FROM f135 f WHERE f.tag <> 'x';
+ FROM f135 f;
 -- t7 and t2 share an updated_at and a customer-created time on purpose: the tie falls to created_at, then to the id.
 UPDATE public.orders SET created_at=(SELECT created_at FROM public.orders WHERE order_no='OL135-t2') WHERE order_no='OL135-t7';
 INSERT INTO public.order_items(order_id,order_no,requested_quantity,fulfilled_quantity,grn_items_id,grn_items_item_id,grn_items_item_name,grn_items_package_mark,
@@ -78,12 +80,19 @@ INSERT INTO public.order_items(order_id,order_no,requested_quantity,fulfilled_qu
    ('t7','Ol135 Maize','PM-Theta','GRH135','pending',7,1),
    ('t7','Ol135 Cancelledword','PM-Iota','GRI135','cancelled',1,2),
    ('t9','Ol135 Deleted Order Item','PM-Kappa','GRJ135','pending',1,1),
+   ('x','Tie135 Maize','PM-Tie','GRT135','fulfilled',1,1),
    ('t10','Ol135 Deleted Customer Item','PM-Lambda','GRK135','pending',1,1)
  ) AS s(tag,nm,pm,gr,st,qty,so) ON s.tag=f.tag;
 INSERT INTO public.dispatch(disp_no,customer_id,customer_name,source_order_id,created_at)
  SELECT d.no, f.customer_id, 'Ol135 Customer '||f.tag, f.order_id, now()-d.ago
  FROM f135 f JOIN (VALUES ('t3','I9001',interval '2 hours'),('t4','I9002',interval '5 hours'),('t4','I9003',interval '9 hours'),
                           ('t1','I9004',interval '7 hours')) AS d(tag,no,ago) ON d.tag=f.tag;
+-- Customer x has an order of its own (named Tie135, so the Ol135 filter leaves it out) with two dispatches of exactly the same time:
+-- the lower id must always be the one shown (the old view picked either).
+INSERT INTO public.dispatch(id,disp_no,customer_id,customer_name,source_order_id,created_at)
+ SELECT v.id::uuid, v.no, f.customer_id, 'Tie135', f.order_id, now()-interval '4 hours' FROM f135 f,
+  (VALUES ('ffffffff-ffff-ffff-ffff-ffffffffffff','I9007'),('00000000-0000-0000-0000-000000000001','I9006')) v(id,no) WHERE f.tag='x';
+UPDATE public.customers SET name='Tie135 Customer x' WHERE name='Ol135 Customer x';
 -- t6's only dispatch belongs to customer x (not the order's customer): the list ignores it.
 INSERT INTO public.dispatch(disp_no,customer_id,customer_name,source_order_id,created_at)
  SELECT 'I9005', x.customer_id, 'Ol135 Customer x', t6.order_id, now()-interval '1 hour' FROM f135 x, f135 t6 WHERE x.tag='x' AND t6.tag='t6';
@@ -147,6 +156,11 @@ SELECT public.get_orders_list(p_customer_id=>:'cust_t4'::uuid) AS a_one \gset
 SELECT public.get_orders_list(p_customer_name=>'Ol135',p_limit=>100000) AS a_big \gset
 SELECT public.get_orders_list(p_customer_name=>'Ol135',p_limit=>0) AS a_zero \gset
 SELECT public.get_orders_list(p_customer_name=>'Ol135',p_limit=>-5,p_offset=>-3) AS a_neg \gset
+SELECT public.get_orders_list(p_customer_name=>'Ol135',p_offset=>2147483600) AS a_huge \gset
+SELECT public.get_orders_list(p_customer_name=>'Ol135',p_offset=>7) AS a_past \gset
+SELECT public.get_orders_list(p_customer_name=>'oL135 CUSTOMER T2') AS a_case \gset
+SELECT public.get_orders_list(p_customer_name=>'Tie135') AS a_tie \gset
+SELECT public.get_orders_list(p_customer_name=>'Ol135',p_search=>'anand135') AS a_nullcity \gset
 SELECT public.get_orders_list(p_limit=>NULL,p_offset=>NULL,p_customer_name=>'Ol135') AS a_null \gset
 SELECT public.get_orders_list(p_customer_name=>'Ol135',p_user_id=>gen_random_uuid()) AS a_foreign_user \gset
 RESET ROLE;
@@ -195,6 +209,17 @@ SELECT pg_temp.ol_assert(NOT (:'a_all'::jsonb::text ~ ((SELECT order_id FROM f13
 SELECT pg_temp.ol_assert(NOT (:'a_all'::jsonb::text ~ ((SELECT order_id FROM f135 WHERE tag='t10')::text)),'t10 (deleted customer) is not listed');
 SELECT pg_temp.ol_assert((SELECT bool_and(o->>'dispatch_no' IS NULL) FROM jsonb_array_elements(:'a_all'::jsonb#>'{data,orders}') o WHERE o->>'id'=(SELECT order_id::text FROM f135 WHERE tag='t6')),'a dispatch of another customer is not the order''s dispatch');
 
+SELECT pg_temp.ol_assert(:'a_huge'::jsonb->>'success'='true' AND jsonb_array_length(:'a_huge'::jsonb#>'{data,orders}')=0
+  AND NOT (:'a_huge'::jsonb#>>'{data,pagination,has_more}')::boolean AND (:'a_huge'::jsonb#>>'{data,pagination,total_count}')::int=7,'an offset of 2147483600 gives an empty page, no overflow');
+SELECT pg_temp.ol_assert(jsonb_array_length(:'a_past'::jsonb#>'{data,orders}')=0 AND NOT (:'a_past'::jsonb#>>'{data,pagination,has_more}')::boolean
+  AND (:'a_past'::jsonb#>>'{data,pagination,total_count}')::int=7,'an offset past the end: empty page, count kept');
+SELECT pg_temp.ol_assert(pg_temp.ol_ids(:'a_case'::jsonb)=ARRAY[(SELECT order_id FROM f135 WHERE tag='t2')],'p_customer_name ignores case');
+SELECT pg_temp.ol_assert(:'a_nullcity'::jsonb#>'{data,orders}'=pg_temp.ol_reference(p_search=>'anand135') AND jsonb_array_length(:'a_nullcity'::jsonb#>'{data,orders}')>0
+  AND NOT EXISTS (SELECT 1 FROM jsonb_array_elements(:'a_nullcity'::jsonb#>'{data,orders}') o WHERE o->>'id'=(SELECT order_id::text FROM f135 WHERE tag='t6')),'a customer with a NULL city is listed without a city match, and is not found by a city word');
+SELECT pg_temp.ol_assert((SELECT o#>'{customer}' FROM jsonb_array_elements(:'a_all'::jsonb#>'{data,orders}') o WHERE o->>'id'=(SELECT order_id::text FROM f135 WHERE tag='t5'))->>'active'='false'
+  AND (SELECT o#>'{customer}' FROM jsonb_array_elements(:'a_all'::jsonb#>'{data,orders}') o WHERE o->>'id'=(SELECT order_id::text FROM f135 WHERE tag='t6')) ->'city'='null'::jsonb,'an inactive customer''s order is listed with active:false; a NULL city shows as null');
+SELECT pg_temp.ol_assert(:'a_tie'::jsonb#>>'{data,orders,0,dispatch_id}'='00000000-0000-0000-0000-000000000001' AND :'a_tie'::jsonb#>>'{data,orders,0,dispatch_no}'='I9006','two dispatches with the same time: the lower id is the order''s dispatch');
+
 -- 3. Staff read the whole queue (full order access, decision 2026-10-09); a customer account reads only its assigned customers.
 SELECT set_config('request.jwt.claims',:'staff_claims',true);
 SET LOCAL ROLE authenticated;
@@ -206,7 +231,7 @@ SELECT public.get_orders_list(p_customer_name=>'Ol135') AS r_all \gset
 SELECT public.get_orders_list(p_customer_name=>'Ol135',p_user_id=>:'admin_user'::uuid) AS r_admin_id \gset
 SELECT public.get_orders_list(p_customer_id=>:'cust_t2'::uuid) AS r_foreign \gset
 RESET ROLE;
-SELECT pg_temp.ol_assert(:'s_all'::jsonb#>'{data,orders}'=:'ref_all'::jsonb,'staff list equals the whole old list');
+SELECT pg_temp.ol_assert(:'s_all'::jsonb#>'{data,orders}'=:'ref_all'::jsonb AND EXISTS (SELECT 1 FROM jsonb_array_elements(:'s_all'::jsonb#>'{data,orders}') o WHERE o#>>'{customer,active}'='false'),'staff list equals the whole old list, the inactive customer''s order included');
 SELECT pg_temp.ol_assert(:'r_all'::jsonb#>'{data,orders}'=pg_temp.ol_reference(p_customers=>ARRAY(SELECT customer_id FROM f135 WHERE tag IN ('t1','t3')))
   AND jsonb_array_length(:'r_all'::jsonb#>'{data,orders}')=2 AND (:'r_all'::jsonb#>>'{data,pagination,total_count}')::int=2,'a customer account sees only its two assigned customers, as the old list did');
 SELECT pg_temp.ol_assert(:'r_admin_id'::jsonb#>'{data,orders}'=:'r_all'::jsonb#>'{data,orders}','a customer account passing the administrator''s p_user_id still sees only its own');

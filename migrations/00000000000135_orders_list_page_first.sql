@@ -9,6 +9,7 @@
 --  * One index: dispatch (source_order_id, created_at DESC), the probe for the latest dispatch of an order. (An index on
 --    orders (deleted_at, updated_at DESC, created_at DESC, id) was measured with 5,000 orders and is not used: the page sort is a CASE
 --    over a dispatch time, which no orders index serves, and the planner reads the small table in one pass.)
+--  * The latest dispatch of an order is picked by created_at, then by id, so two dispatches with the same time always give the same one.
 --  * The view v_orders_list is unchanged (service_role reads it).
 -- CREATE OR REPLACE keeps the function's owner and its REVOKE/GRANT (same signature).
 
@@ -144,7 +145,7 @@ BEGIN
     ) ld ON true;
 
     v_total_count := COALESCE(v_total_count, 0);
-    v_has_more := v_total_count > (v_offset + v_limit);
+    v_has_more := v_total_count::bigint > v_offset::bigint + v_limit;
 
     RETURN jsonb_build_object(
         'success', true,
