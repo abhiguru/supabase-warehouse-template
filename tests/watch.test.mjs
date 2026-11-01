@@ -11,6 +11,7 @@ import { join } from 'node:path';
 import { createHash, createHmac } from 'node:crypto';
 import { repo } from './backup-test-helpers.mjs';
 import * as W from '../scripts/watch.mjs';
+import { statfsWithTimeout } from '../scripts/wsl-host.mjs';
 import { ADAPTERS } from '../scripts/notify.mjs';
 
 const HOUR = 3600 * 1000;
@@ -114,10 +115,11 @@ test('memory: failing above 85% used (MemAvailable)', () => {
 });
 
 // ---- the Windows drive that holds the WSL virtual disk (disk_vhdx_drive_low)
-const wslHost = (h, { statfs = { bavail: 0, blocks: 0 } } = {}) => {
+// A WSL2 host: the kernel release, and the Windows drive as the 9p mount it is (more drives by name).
+const wslHost = (h, { statfs = { bavail: 0, blocks: 0 }, drives = ['/mnt/c'] } = {}) => {
   mkdirSync(join(h.proc, 'sys/kernel'), { recursive: true });
   writeFileSync(join(h.proc, 'sys/kernel/osrelease'), '5.15.153.1-microsoft-standard-WSL2\n');
-  h.deps.vhdxDrive = '/mnt/c';
+  writeFileSync(join(h.proc, 'mounts'), `/dev/sdc / ext4 rw 0 0\n${drives.map(d => `C:\\134 ${d} 9p rw,dirsync 0 0\n`).join('')}`);
   h.statfsTable['/mnt/c'] = statfs;
 };
 const driveOf = (gib, percent) => ({ bavail: Math.round(gib * 1024 ** 3 / 4096), blocks: Math.round(gib * 1024 ** 3 / 4096 * 100 / percent) });
@@ -153,32 +155,52 @@ test('disk_vhdx_drive_low: no result when the host is not WSL, and none when the
   const h = harness();
   try {
     h.statfsTable['/mnt/c'] = driveOf(1, 1);
-    h.deps.vhdxDrive = '/mnt/c';
     assert.equal(find(W.checkDisks(h.ctx()), 'disk_vhdx_drive_low'), undefined, 'no osrelease file: not WSL');
     mkdirSync(join(h.proc, 'sys/kernel'), { recursive: true });
     writeFileSync(join(h.proc, 'sys/kernel/osrelease'), '6.8.0-45-generic\n');
     assert.equal(find(W.checkDisks(h.ctx()), 'disk_vhdx_drive_low'), undefined, 'an ordinary kernel');
     writeFileSync(join(h.proc, 'sys/kernel/osrelease'), '5.15.153.1-Microsoft-standard-WSL2\n');
+    writeFileSync(join(h.proc, 'mounts'), '/dev/sdc / ext4 rw 0 0\nC:\\134 /mnt/c 9p rw 0 0\n');
     assert.equal(find(W.checkDisks(h.ctx()), 'disk_vhdx_drive_low').ok, false, 'WSL, any letter case');
-    delete h.statfsTable['/mnt/c'];   // statfs throws
+    delete h.statfsTable['/mnt/c'];   // statfs throws: under WSL that is reported, not passed over in silence
     const r = W.checkDisks(h.ctx());
-    assert.equal(find(r, 'disk_vhdx_drive_low'), undefined);
+    assert.equal(find(r, 'disk_vhdx_drive_low').ok, false);
+    assert.match(find(r, 'disk_vhdx_drive_low').summary, /^Cannot read the free space of \/mnt\/c, the Windows drive that holds the WSL virtual disk \(no statfs for \/mnt\/c\)/);
+    assert.match(find(r, 'disk_vhdx_drive_low').detail, /VHDX_DRIVE=<its mount point> in config\/compose\.env/);
     assert.equal(find(r, 'disk_root_low').ok, true, 'the other checks still run');
+    // /mnt/c that is an empty folder of the Linux filesystem (no 9p mount) is not the drive, whatever statfs says about it.
+    h.statfsTable['/mnt/c'] = driveOf(900, 90);
+    writeFileSync(join(h.proc, 'mounts'), '/dev/sdc / ext4 rw 0 0\n');
+    const folder = find(W.checkDisks(h.ctx()), 'disk_vhdx_drive_low');
+    assert.equal(folder.ok, false);
+    assert.match(folder.summary, /\/mnt\/c is not a Windows drive mount \(filesystem type ext4\)/);
+    for (const type of ['drvfs', 'virtiofs']) {
+      writeFileSync(join(h.proc, 'mounts'), `/dev/sdc / ext4 rw 0 0\nC:\\134 /mnt/c ${type} rw 0 0\n`);
+      assert.equal(find(W.checkDisks(h.ctx()), 'disk_vhdx_drive_low').ok, true, type);
+    }
   } finally { clean(h); }
 });
 
-test('disk_vhdx_drive_low: the drive is the one deps name (WAREHOUSE_VHDX_DRIVE)', () => {
+test('disk_vhdx_drive_low: the drive is VHDX_DRIVE in config/compose.env (what reaches the timer units), WAREHOUSE_VHDX_DRIVE wins, a relative value is ignored', () => {
   const h = harness();
   try {
-    wslHost(h);
-    h.deps.vhdxDrive = '/mnt/d';
+    wslHost(h, { drives: ['/mnt/c', '/mnt/d', '/mnt/e'] });
     h.statfsTable['/mnt/d'] = driveOf(5, 50);
+    h.statfsTable['/mnt/e'] = driveOf(5, 50);
     h.statfsTable['/mnt/c'] = driveOf(500, 50);
-    const r = find(W.checkDisks(h.ctx()), 'disk_vhdx_drive_low');
-    assert.equal(r.ok, false);
-    assert.match(r.summary, /Windows drive \/mnt\/d/);
-    assert.equal(W.defaultDeps({ WAREHOUSE_STATE_DIR: '/s', WAREHOUSE_VHDX_DRIVE: '/mnt/e' }).vhdxDrive, '/mnt/e');
-    assert.equal(W.defaultDeps({ WAREHOUSE_STATE_DIR: '/s' }).vhdxDrive, '/mnt/c');
+    const composePath = join(h.state, 'config/compose.env');
+    const base = readFileSync(composePath, 'utf8');
+    const drive = () => find(W.checkDisks(h.ctx()), 'disk_vhdx_drive_low');
+    assert.equal(drive().ok, true, 'default /mnt/c');
+    writeFileSync(composePath, `${base}VHDX_DRIVE=/mnt/d\n`, { mode: 0o600 });
+    assert.match(drive().summary, /Windows drive \/mnt\/d/);
+    h.deps.env = { WAREHOUSE_VHDX_DRIVE: '/mnt/e' };
+    assert.match(drive().summary, /Windows drive \/mnt\/e/, 'the environment variable wins');
+    h.deps.env = {};
+    writeFileSync(composePath, `${base}VHDX_DRIVE=mnt/d\n`, { mode: 0o600 });
+    assert.equal(drive().ok, true, 'a value that is not an absolute path is ignored');
+    // The real checker probes the drive through a child process with a timeout.
+    assert.equal(W.defaultDeps({ WAREHOUSE_STATE_DIR: '/s' }).driveStatfs, statfsWithTimeout);
   } finally { clean(h); }
 });
 
@@ -3827,7 +3849,6 @@ test('restore_space_low under WSL also fails when the restore would leave the Wi
     dataSpace(h, 500 * GIB);
     // Not WSL: the drive is not looked at.
     h.statfsTable['/mnt/c'] = driveOf(1, 1);
-    h.deps.vhdxDrive = '/mnt/c';
     assert.equal(W.checkRestoreSpace(h.ctx())[0].ok, true);
     wslHost(h);
     h.statfsTable['/mnt/c'] = { bavail: (need + 20 * GIB - 4096) / 4096, blocks: 1e9 };

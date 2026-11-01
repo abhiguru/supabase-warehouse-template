@@ -2601,17 +2601,18 @@ Inside Ubuntu, `/` is the filesystem of `ext4.vhdx` and shows its virtual size (
 Windows drive that holds the file fills up. When that drive is full the file cannot grow and PostgreSQL stops with no earlier sign.
 The drive to watch is the one that holds the distro's `ext4.vhdx`: normally `C:`, which Ubuntu sees as `/mnt/c`.
 
-- **The floor is 20 GiB free on that drive** (and, for the monitoring alert, 10 % of the drive). `npm run doctor` refuses a new installation
+- **Keep 20 GiB free on that drive** (and, for the monitoring alert, 10 % of the drive). `npm run doctor` refuses a new installation
   below it (`--host-preflight`) and warns on a later run; `scripts/backup.sh` refuses a backup that would leave the drive below it, before
   anything is stopped; the monitoring checker raises `disk_vhdx_drive_low` ([MONITORING.md](MONITORING.md)) and counts the same floor into
-  `restore_space_low`. A drive that cannot be read is a warning only.
-- **If the distro is on another drive** (it was moved with `wsl --export` and `wsl --import`), name that drive's mount point for the
-  monitoring checker and the scripts: `WAREHOUSE_VHDX_DRIVE=/mnt/d`, in the environment of `scripts/backup.sh` and the checker (the
-  default is `/mnt/c`). Find the file with `wsl -l -v` and the registry key `HKCU\Software\Microsoft\Windows\CurrentVersion\Lxss`
-  (`BasePath`).
-- **Make the virtual disk give back space it no longer uses.** The file only grows by itself. Marking it sparse lets Windows reclaim
-  freed blocks: [PS-admin] `wsl --manage <distro> --set-sparse true` (the distro restarts; do it only on a host with no live
-  facility, or follow [Planned work and updates](#planned-work-and-updates)). Not verified on this stack yet.
+  `restore_space_low`. The drive counts only if it really is a Windows drive mount (type `9p`, `drvfs` or `virtiofs`); an empty `/mnt/c`
+  folder on the Linux filesystem does not.
+- **A drive that cannot be read** (not mounted, a mount that does not answer within 10 seconds, or not a Windows mount) is not passed over:
+  the checker raises `disk_vhdx_drive_low` saying it cannot read the drive, and `doctor` and `backup.sh` print a warning and go on.
+- **If the distro is on another drive** (it was moved with `wsl --export` and `wsl --import`), name that drive's mount point in the
+  installation's `config/compose.env`, on a line of its own: `VHDX_DRIVE=/mnt/d`. The monitoring checker, `doctor` and `scripts/backup.sh`
+  all read it (the default is `/mnt/c`), so no timer unit needs changing; a rerun of setup and a restore keep the line, because the
+  backup holds `compose.env`. `WAREHOUSE_VHDX_DRIVE` in the environment overrides it for one run. The file is the
+  one named by `BasePath` under `HKCU\Software\Microsoft\Windows\CurrentVersion\Lxss` for the distro's key.
 
 ### WSL and Ubuntu 24.04 with systemd
 
@@ -2816,6 +2817,13 @@ but the stack is stopped (for example after `stop.sh`); both are normal.
 version afterwards were not read back): it stopped the distro, which then stayed down while the task is disabled. Recovery after an update with the task enabled is not verified. The package work of
 [Monthly host maintenance](#monthly-host-maintenance) is done inside Ubuntu as written; a restart of the host is the Windows
 restart in step 4 of this list, not `sudo reboot` (not verified yet).
+
+**Reclaim space on the Windows drive (not verified).** The virtual disk file only grows by itself. Do not mark it sparse
+(`wsl --manage ... --set-sparse true`): that setting is reported to corrupt `ext4.vhdx`. To give freed space back, in a planned
+window with no live facility: take a fresh backup and copy it off the host first ([Backups off the host](#backups-off-the-host-windows)),
+run `sudo fstrim -av` inside Ubuntu, stop the distro with `wsl --shutdown`, then compact the file from an elevated PowerShell with
+`Optimize-VHD -Path <ext4.vhdx> -Mode Full` (Hyper-V module) or `diskpart` (`select vdisk file=<ext4.vhdx>`, `compact vdisk`). This
+sequence has not been run on this stack; if you cannot take the backup off the host first, do not compact.
 
 ### Sensors (Windows)
 

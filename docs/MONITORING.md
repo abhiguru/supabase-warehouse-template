@@ -66,7 +66,7 @@ An alert fires after two failing runs in a row (10 minutes), except the event al
 | `cpu_high` | CPU use averaged since the previous run is above 80% |
 | `memory_high` | Memory use is above 85% |
 | `disk_root_low` | `/` has less than 20% free |
-| `disk_vhdx_drive_low` | Only on a Windows host (Ubuntu in WSL2): the Windows drive that holds the virtual disk (`/mnt/c`, or `WAREHOUSE_VHDX_DRIVE`) has less than 20 GiB or less than 10% free. `/` cannot show it, because it has the virtual size of the disk. Free space on that drive: [OPERATOR_INSTALL.md](OPERATOR_INSTALL.md#watch-the-windows-drive). Not judged when the drive cannot be read |
+| `disk_vhdx_drive_low` | Only on a Windows host (Ubuntu in WSL2): the Windows drive that holds the virtual disk (`/mnt/c`, or `WAREHOUSE_VHDX_DRIVE`) has less than 20 GiB or less than 10% free. `/` cannot show it, because it has the virtual size of the disk. Free space on that drive: [OPERATOR_INSTALL.md](OPERATOR_INSTALL.md#watch-the-windows-drive). When the drive cannot be read (not mounted, no answer in 10 seconds, not a Windows mount) the alert fires too, saying so: set `VHDX_DRIVE=<mount point>` in `config/compose.env` if the distro is on another drive |
 | `disk_low:<path>` | Another ext4, xfs or btrfs filesystem has less than 10% free (Docker's own mounts and read-only mounts are skipped) |
 | `postgres_down` | `pg_isready` fails inside the database container |
 | `db_connections_high` | More than 80 client connections (the ceiling is 100) |

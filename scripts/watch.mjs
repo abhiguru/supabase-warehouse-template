@@ -56,7 +56,7 @@ import { RECORD_FILE, interruptedUpgradeWarning, readUpgradeRecord } from './upg
 import { centralKeyFault, gatewayPortText, letterheadProblem, readEnv, root as checkoutRoot } from './doctor-common.mjs';
 import { LAN_SERVICE, describeAddresses, hostHasAddress, lanOrigin, lanSettings, probeLanKeys, readHostInterfaces } from './lan-common.mjs';
 import { redactServiceLog } from './service-diagnostics.mjs';
-import { MIN_VHDX_DRIVE_FREE_BYTES, MIN_VHDX_DRIVE_FREE_PERCENT, isWsl, vhdxDrive } from './wsl-host.mjs';
+import { MIN_VHDX_DRIVE_FREE_BYTES, MIN_VHDX_DRIVE_FREE_PERCENT, driveSpace, isWsl, statfsWithTimeout, vhdxDrive } from './wsl-host.mjs';
 import { usbBackupWarning, usbRotationNote } from './usb-backup-status.mjs';
 import { ageText, sensorCheck, sensorLimitSeconds } from './sensors-check.mjs';
 import { postSlackMessage, sensorTestMessage, testMessage } from './alert-webhook.mjs';
@@ -381,8 +381,8 @@ export function defaultDeps(env = process.env) {
     // The host's IPv4 addresses (the LAN fallback check), replaceable for tests.
     interfaces: () => readHostInterfaces(env),
     usbEtc: env.WAREHOUSE_USB_BACKUP_ETC || '/etc',
-    // Under WSL2 the Windows drive that holds the virtual disk (checkDisks, checkRestoreSpace).
-    vhdxDrive: vhdxDrive(env),
+    // Under WSL2 the Windows drive is probed through a child process with a timeout (checkDisks, checkRestoreSpace).
+    driveStatfs: statfsWithTimeout,
     usbLibexec: env.WAREHOUSE_USB_BACKUP_LIBEXEC || '/usr/local/libexec',
     unitDir: env.WAREHOUSE_WATCH_UNIT_DIR || '/etc/systemd/system',
     nodeVersion: process.version,
@@ -474,17 +474,12 @@ export function checkMemory(ctx) {
   return [result('memory', 'memory_high', !(used > LIMITS.memoryPercent), `Memory usage ${used.toFixed(0)}% (limit ${LIMITS.memoryPercent}%)`)];
 }
 // Under WSL2 "/" is the filesystem inside ext4.vhdx and shows its virtual size (about 1 TB); what limits it is the free space of the
-// Windows drive that holds that file. Null when the host is not WSL or the drive cannot be read (a drive that is not mounted must not
-// stop the other checks, and a host that is not WSL has nothing to say).
+// Windows drive that holds that file. Null when the host is not WSL; { drive, free, percent } when the drive was read; { drive, error }
+// when it was not (not a Windows mount, a failure or a timeout): the host is WSL and its limiting disk is unknown.
 function wslDrive(ctx) {
   if (!isWsl(ctx.readText, ctx.proc)) return null;
-  const drive = ctx.vhdxDrive ?? vhdxDrive(ctx.env ?? {});
-  try {
-    const s = ctx.statfs(drive);
-    const free = Number(s.bavail) * Number(s.bsize);
-    const percent = 100 * Number(s.bavail) / Number(s.blocks);
-    return Number.isFinite(free) && Number.isFinite(percent) ? { drive, free, percent } : null;
-  } catch { return null; }
+  const drive = vhdxDrive(ctx.env ?? {}, ctx.env_());
+  try { return { drive, ...driveSpace(drive, { readText: ctx.readText, procDir: ctx.proc, statfs: ctx.driveStatfs ?? ctx.statfs }) }; } catch (e) { return { drive, error: clip(String(e.message ?? e), 200) }; }
 }
 const gibText = bytes => (bytes / 1024 ** 3).toFixed(1);
 const unescapeMount = s => s.replace(/\\([0-7]{3})/g, (_, o) => String.fromCharCode(parseInt(o, 8)));
@@ -494,7 +489,11 @@ export function checkDisks(ctx) {
   const root = free('/');
   out.push(result('disk', 'disk_root_low', !(root < LIMITS.diskRootFreePercent), `Disk space on / ${root.toFixed(0)}% free (limit ${LIMITS.diskRootFreePercent}%)`));
   const vhdx = wslDrive(ctx);
-  if (vhdx) {
+  if (vhdx?.error) {
+    out.push(result('disk', 'disk_vhdx_drive_low', false,
+      `Cannot read the free space of ${vhdx.drive}, the Windows drive that holds the WSL virtual disk (${vhdx.error})`,
+      'On a Windows host the disk that fills up is that drive, not "/", and without a reading it cannot be watched. If the distro is on another drive, set VHDX_DRIVE=<its mount point> in config/compose.env: docs/OPERATOR_INSTALL.md, "Windows host (Ubuntu in WSL2)", "Watch the Windows drive".'));
+  } else if (vhdx) {
     const low = vhdx.free < MIN_VHDX_DRIVE_FREE_BYTES || vhdx.percent < MIN_VHDX_DRIVE_FREE_PERCENT;
     out.push(result('disk', 'disk_vhdx_drive_low', !low,
       `Windows drive ${vhdx.drive}, which holds the WSL virtual disk, has ${gibText(vhdx.free)} GiB free (${vhdx.percent.toFixed(0)}%; limit ${gibText(MIN_VHDX_DRIVE_FREE_BYTES)} GiB and ${MIN_VHDX_DRIVE_FREE_PERCENT}%)`,
@@ -980,7 +979,7 @@ export function checkRestoreSpace(ctx) {
   const gib = bytes => (bytes / 1024 ** 3).toFixed(1);
   // Under WSL2 the restore grows the virtual disk on the Windows drive: that drive must keep its floor after the restore as well.
   const vhdx = wslDrive(ctx);
-  const driveShort = vhdx !== null && vhdx.free - need < MIN_VHDX_DRIVE_FREE_BYTES;
+  const driveShort = vhdx !== null && !vhdx.error && vhdx.free - need < MIN_VHDX_DRIVE_FREE_BYTES;
   if (free >= need && driveShort) {
     return [result('restore_space', 'restore_space_low', false,
       `Windows drive ${vhdx.drive}, which holds the WSL virtual disk, has ${gib(vhdx.free)} GiB free, and an in-place restore of ${newest.name} needs ${gib(need)} GiB, which would leave it below ${gib(MIN_VHDX_DRIVE_FREE_BYTES)} GiB`,

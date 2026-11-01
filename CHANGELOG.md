@@ -26,10 +26,10 @@ file used to carry for earlier installations are in git: `git show b45ae0b:CHANG
 
 - **WSL2: the Windows drive that holds the virtual disk is watched (`disk_vhdx_drive_low`).** Inside Ubuntu `/` shows the virtual size of
   `ext4.vhdx` (about 1 TB), so a filling `C:` stopped PostgreSQL with no warning. On a WSL2 host (kernel release contains "microsoft") the
-  monitoring checker now alerts when the drive that holds the file (`/mnt/c`, or `WAREHOUSE_VHDX_DRIVE`) has under 20 GiB or under 10 % free,
+  monitoring checker now alerts when the drive that holds the file (`/mnt/c`, or `VHDX_DRIVE` in `config/compose.env`, or `WAREHOUSE_VHDX_DRIVE` for one run) has under 20 GiB or under 10 % free,
   and `restore_space_low` also fails when an in-place restore would leave it under 20 GiB; `npm run doctor` refuses a new installation under 20 GiB
   (`--host-preflight`) and warns otherwise; `scripts/backup.sh` refuses a backup that would leave the drive under 20 GiB, before anything stops
-  (a drive `df` cannot read is a warning). Hosts that are not WSL are unchanged. Operator procedure: [OPERATOR_INSTALL.md](docs/OPERATOR_INSTALL.md),
+  (a drive that is not a Windows mount, or that `df` cannot read within 10 seconds, is a warning). A drive the checker cannot read raises the same alert, saying so. Hosts that are not WSL are unchanged. Operator procedure: [OPERATOR_INSTALL.md](docs/OPERATOR_INSTALL.md),
   "Watch the Windows drive". New file `scripts/wsl-host.mjs`. Tests: `tests/wsl-host.test.mjs`, `tests/watch.test.mjs`, `tests/doctor.test.mjs`,
   `tests/backup-storage.test.mjs`.
 

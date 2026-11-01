@@ -924,12 +924,13 @@ function spaceShims(dir) {
   mkdirSync(dir, { recursive: true });
   writeFileSync(join(dir, 'df'), [
     '#!/bin/sh',
-    // The Windows drive of a WSL2 host (WAREHOUSE_VHDX_DRIVE, FAKE_VHDX_DRIVE here): FAKE_DRIVE_AVAIL bytes free, FAKE_DRIVE_DF=fail fails; every call is logged.
+    // The Windows drive of a WSL2 host (WAREHOUSE_VHDX_DRIVE, FAKE_VHDX_DRIVE here): FAKE_DRIVE_AVAIL bytes free on a FAKE_DRIVE_FSTYPE (9p) filesystem, FAKE_DRIVE_DF=fail fails, =hang never answers; every call is logged.
     'if [ -n "$FAKE_VHDX_DRIVE" ] && [ "$4" = "$FAKE_VHDX_DRIVE" ]; then',
-    '  [ "$1" = "-B1" ] && [ "$2" = "--output=avail" ] && [ "$3" = "--" ] || { echo "df: unexpected arguments: $*" >&2; exit 2; }',
+    '  [ "$1" = "-B1" ] && [ "$2" = "--output=avail,fstype" ] && [ "$3" = "--" ] || { echo "df: unexpected arguments: $*" >&2; exit 2; }',
     '  [ -z "$FAKE_DRIVE_DF_LOG" ] || echo "$*" >> "$FAKE_DRIVE_DF_LOG"',
     '  [ "$FAKE_DRIVE_DF" = fail ] && { echo "df: /mnt/c: Input/output error" >&2; exit 1; }',
-    '  printf "Avail\\n%s\\n" "${FAKE_DRIVE_AVAIL:-0}"',
+    '  [ "$FAKE_DRIVE_DF" = hang ] && exec sleep 60',
+    '  printf "Avail Type\\n%s %s\\n" "${FAKE_DRIVE_AVAIL:-0}" "${FAKE_DRIVE_FSTYPE:-9p}"',
     '  exit 0',
     'fi',
     '[ "$1" = "-B1" ] && [ "$2" = "--output=avail" ] && [ "$3" = "--" ] && [ "$4" = "$FAKE_STAGE_PARENT" ] || { echo "df: unexpected arguments: $*" >&2; exit 2; }',
@@ -1136,6 +1137,30 @@ test('under WSL2 the Windows drive that holds the virtual disk must keep 20 GiB 
     const unreadable = attempt({ WAREHOUSE_OSRELEASE_FILE: wslOs, FAKE_DRIVE_DF: 'fail' });
     ok(unreadable, 'unreadable drive');
     assert.match(unreadable.stderr, /WARNING: could not read the free space of \/mnt\/c, the Windows drive that holds the WSL virtual disk/);
+    // /mnt/c that is only an empty folder of the Linux filesystem (ext4) is not the Windows drive: warned about, never judged.
+    const folder = attempt({ WAREHOUSE_OSRELEASE_FILE: wslOs, FAKE_DRIVE_FSTYPE: 'ext4', FAKE_DRIVE_AVAIL: '1' });
+    ok(folder, 'ext4 folder');
+    assert.match(folder.stderr, /WARNING: could not read the free space of \/mnt\/c[^]*not a Windows mount: filesystem type ext4/);
+    for (const type of ['drvfs', 'virtiofs']) assert.equal(attempt({ WAREHOUSE_OSRELEASE_FILE: wslOs, FAKE_DRIVE_FSTYPE: type, FAKE_DRIVE_AVAIL: '1' }).status, 1, type);
+    // A df that never answers costs ten seconds, then warns and goes on.
+    const started = Date.now();
+    const hung = attempt({ WAREHOUSE_OSRELEASE_FILE: wslOs, FAKE_DRIVE_DF: 'hang' });
+    ok(hung, 'hung drive');
+    assert.match(hung.stderr, /WARNING: could not read the free space of \/mnt\/c/);
+    assert.ok(Date.now() - started < 40000, 'the hung df was cut off');
+    // The drive can be named in config/compose.env (VHDX_DRIVE); the environment variable wins over it.
+    const composeEnv = join(f.state, 'config/compose.env');
+    const original = readFileSync(composeEnv, 'utf8');
+    writeFileSync(composeEnv, `${original}VHDX_DRIVE=/mnt/e\n`, { mode: 0o600 });
+    const named = attempt({ WAREHOUSE_OSRELEASE_FILE: wslOs, WAREHOUSE_VHDX_DRIVE: undefined, FAKE_VHDX_DRIVE: '/mnt/e', FAKE_DRIVE_AVAIL: '1' });
+    assert.equal(named.status, 1);
+    assert.match(lastLine(named.stderr), /Windows drive \/mnt\/e that holds/);
+    const winner = attempt({ WAREHOUSE_OSRELEASE_FILE: wslOs, WAREHOUSE_VHDX_DRIVE: '/mnt/d', FAKE_VHDX_DRIVE: '/mnt/d', FAKE_DRIVE_AVAIL: '1' });
+    assert.match(lastLine(winner.stderr), /Windows drive \/mnt\/d that holds/);
+    writeFileSync(composeEnv, `${original}VHDX_DRIVE=relative\n`, { mode: 0o600 });
+    const bad = attempt({ WAREHOUSE_OSRELEASE_FILE: wslOs, WAREHOUSE_VHDX_DRIVE: undefined, FAKE_DRIVE_AVAIL: '1' });
+    assert.match(lastLine(bad.stderr), /Windows drive \/mnt\/c that holds/, 'a value that is not an absolute path is ignored');
+    writeFileSync(composeEnv, original, { mode: 0o600 });
     // Not WSL (the fixture of every other test): the drive is never asked, even when it would be full.
     rmSync(driveLog, { force: true });
     ok(attempt({ FAKE_DRIVE_AVAIL: '1' }), 'plain Linux host');

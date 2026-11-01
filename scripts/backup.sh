@@ -294,18 +294,26 @@ if ((avail < need + 10#$reserve_mb * 1048576)); then
   exit 1
 fi
 # Under WSL2 the Linux filesystem is a file (ext4.vhdx) on a Windows drive, normally C: (/mnt/c). The df above sees the virtual
-# size of that filesystem (about 1 TB); the backup grows the file, so the Windows drive must keep 20 GiB free after it. A drive
-# that cannot be read is a warning only: the distro may be on another drive (WAREHOUSE_VHDX_DRIVE names it).
+# size of that filesystem (about 1 TB); the backup grows the file, so the Windows drive must keep 20 GiB free after it. The drive is
+# WAREHOUSE_VHDX_DRIVE, else VHDX_DRIVE in config/compose.env, else /mnt/c. It counts only if it really is a Windows mount (9p, drvfs
+# or virtiofs; an empty /mnt/c on the Linux filesystem would report the virtual disk's own space), and df gets ten seconds (a hung
+# mount must not hold the backup). A drive that cannot be read is a warning only: the distro may be on another drive.
 if grep -qi microsoft -- "${WAREHOUSE_OSRELEASE_FILE:-/proc/sys/kernel/osrelease}" 2>/dev/null; then
-  vhdx_drive="${WAREHOUSE_VHDX_DRIVE:-/mnt/c}"
-  drive_avail="$(df -B1 --output=avail -- "$vhdx_drive" 2>/dev/null | tail -n 1 | tr -d ' ' || true)"
-  if [[ "$drive_avail" =~ ^[0-9]{1,18}$ ]]; then
+  vhdx_drive="${WAREHOUSE_VHDX_DRIVE:-}"
+  if [[ -z "$vhdx_drive" ]]; then
+    vhdx_drive="$(sed -n 's/^VHDX_DRIVE[[:space:]]*=[[:space:]]*//p' "$state/config/compose.env" 2>/dev/null | head -n 1 | sed "s/[[:space:]]*#.*//; s/^['\"]//; s/['\"]\$//" || true)"
+    [[ "$vhdx_drive" == /* ]] || vhdx_drive=/mnt/c
+  fi
+  drive_avail=''; drive_type=''
+  read -r drive_avail drive_type < <(timeout 10 df -B1 --output=avail,fstype -- "$vhdx_drive" 2>/dev/null | tail -n 1 || true) || true
+  case "$drive_type" in 9p|drvfs|virtiofs) drive_ok=yes ;; *) drive_ok=no ;; esac
+  if [[ "$drive_ok" == yes && "$drive_avail" =~ ^[0-9]{1,18}$ ]]; then
     if ((drive_avail < need + 21474836480)); then
       echo "Refusing: not enough free space on the Windows drive $vhdx_drive that holds the WSL virtual disk: a backup needs about $(mib "$need") MiB ($need_text), and the drive must keep 20 GiB free after it, but only $((drive_avail / 1048576)) MiB are free. Nothing was stopped. See docs/OPERATOR_INSTALL.md, \"Windows host (Ubuntu in WSL2)\", \"Watch the Windows drive\"." >&2
       exit 1
     fi
   else
-    echo "WARNING: could not read the free space of $vhdx_drive, the Windows drive that holds the WSL virtual disk, so it was not checked (set WAREHOUSE_VHDX_DRIVE to its mount point if the distro is on another drive)." >&2
+    echo "WARNING: could not read the free space of $vhdx_drive, the Windows drive that holds the WSL virtual disk (df failed, timed out, or it is not a Windows mount${drive_type:+: filesystem type $drive_type}), so it was not checked. If the distro is on another drive, set VHDX_DRIVE=<its mount point> in config/compose.env." >&2
   fi
 fi
 preflight_lines="preflight_need_mb=$(mib "$need")"$'\n'"preflight_avail_mb=$((avail / 1048576))"$'\n'

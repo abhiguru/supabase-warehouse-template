@@ -503,30 +503,40 @@ test('free space: a new installation needs 10 GiB; a start only warns below 10 G
   assert.match(doctor, /freeSpaceVerdict\(Number\(fs\.bavail\) \* Number\(fs\.bsize\), \{ newInstall: hostPreflight \}\)/);
 });
 
-test('WSL drive check: nothing off WSL; at exactly 20 GiB passes; below it an error for a new installation and a warning for a start; an unreadable drive warns', () => {
+test('WSL drive check: nothing off WSL; at exactly 20 GiB passes; below it an error for a new installation and a warning for a start; an unreadable or non-Windows drive warns', () => {
   const GiB = 1024 ** 3;
-  const wsl = () => '5.15.153.1-microsoft-standard-WSL2\n';
-  const drive = bytes => path => { assert.equal(path, '/mnt/c'); return { bavail: bytes / 4096, bsize: 4096 }; };
-  assert.deepEqual(wslDriveCheck({ hostPreflight: true, readText: () => '6.8.0-generic\n', statfs: () => { throw new Error('not asked'); } }), {});
-  assert.deepEqual(wslDriveCheck({ hostPreflight: true, readText: () => { throw new Error('ENOENT'); }, statfs: () => { throw new Error('not asked'); } }), {});
-  for (const hostPreflight of [true, false]) assert.deepEqual(wslDriveCheck({ hostPreflight, readText: wsl, statfs: drive(20 * GiB), env: {} }), {}, `exactly 20 GiB, preflight ${hostPreflight}`);
-  const strict = wslDriveCheck({ hostPreflight: true, readText: wsl, statfs: drive(20 * GiB - 4096), env: {} });
+  const files = { '/os-wsl': '5.15.153.1-microsoft-standard-WSL2\n', '/os-plain': '6.8.0-generic\n', '/proc/mounts': '/dev/sdc / ext4 rw 0 0\nC:\\134 /mnt/c 9p rw 0 0\nD:\\134 /mnt/d drvfs rw 0 0\n' };
+  const readText = path => { if (!(path in files)) throw new Error('ENOENT'); return files[path]; };
+  const base = { readText, env: { WAREHOUSE_OSRELEASE_FILE: '/os-wsl' } };
+  const drive = (bytes, expected = '/mnt/c') => path => { assert.equal(path, expected); return { bavail: bytes / 4096, bsize: 4096, blocks: 1e9 }; };
+  const refuse = () => { throw new Error('not asked'); };
+  assert.deepEqual(wslDriveCheck({ ...base, env: { WAREHOUSE_OSRELEASE_FILE: '/os-plain' }, hostPreflight: true, statfs: refuse }), {}, 'a plain host');
+  assert.deepEqual(wslDriveCheck({ ...base, env: { WAREHOUSE_OSRELEASE_FILE: '/absent' }, hostPreflight: true, statfs: refuse }), {}, 'no kernel-release file');
+  for (const hostPreflight of [true, false]) assert.deepEqual(wslDriveCheck({ ...base, hostPreflight, statfs: drive(20 * GiB) }), {}, `exactly 20 GiB, preflight ${hostPreflight}`);
+  const strict = wslDriveCheck({ ...base, hostPreflight: true, statfs: drive(20 * GiB - 4096) });
   assert.deepEqual(Object.keys(strict), ['error']);
   assert.match(strict.error, /At least 20 GiB free space is required on the Windows drive that holds the WSL virtual disk \(\/mnt\/c\); 20\.0 GiB is free[^]*"Windows host \(Ubuntu in WSL2\)"/);
-  const running = wslDriveCheck({ hostPreflight: false, readText: wsl, statfs: drive(12.5 * GiB), env: {} });
+  const running = wslDriveCheck({ ...base, hostPreflight: false, statfs: drive(12.5 * GiB) });
   assert.deepEqual(Object.keys(running), ['warning']);
   assert.match(running.warning, /Only 12\.5 GiB is free on the Windows drive that holds the WSL virtual disk \(\/mnt\/c\) \(less than 20 GiB\)/);
-  assert.equal(wslDriveCheck({ readText: wsl, statfs: () => ({ bavail: 0, bsize: 4096 }), env: {} }).error, undefined, 'a start never refuses on this drive');
-  const named = wslDriveCheck({ hostPreflight: true, readText: wsl, statfs: path => { assert.equal(path, '/mnt/d'); return { bavail: 1, bsize: 4096 }; }, env: { WAREHOUSE_VHDX_DRIVE: '/mnt/d' } });
-  assert.match(named.error, /\(\/mnt\/d\)/);
+  assert.equal(wslDriveCheck({ ...base, statfs: drive(0) }).error, undefined, 'a start never refuses on this drive');
+  // The drive: WAREHOUSE_VHDX_DRIVE over VHDX_DRIVE in compose.env over /mnt/c.
+  assert.match(wslDriveCheck({ ...base, hostPreflight: true, composeEnv: { VHDX_DRIVE: '/mnt/d' }, statfs: drive(1, '/mnt/d') }).error, /\(\/mnt\/d\)/);
+  assert.match(wslDriveCheck({ ...base, env: { ...base.env, WAREHOUSE_VHDX_DRIVE: '/mnt/c' }, hostPreflight: true, composeEnv: { VHDX_DRIVE: '/mnt/d' }, statfs: drive(1) }).error, /\(\/mnt\/c\)/);
   for (const hostPreflight of [true, false]) {
-    const unreadable = wslDriveCheck({ hostPreflight, readText: wsl, statfs: () => { throw new Error('ENOENT'); }, env: {} });
+    const unreadable = wslDriveCheck({ ...base, hostPreflight, statfs: () => { throw new Error('ENOENT'); } });
     assert.deepEqual(Object.keys(unreadable), ['warning'], 'an unreadable drive never refuses');
-    assert.match(unreadable.warning, /could not read the free space of \/mnt\/c[^]*WAREHOUSE_VHDX_DRIVE/);
+    assert.match(unreadable.warning, /could not read the free space of \/mnt\/c[^]*\(ENOENT\)[^]*VHDX_DRIVE=<its mount point> in config\/compose\.env/);
+    // An empty /mnt/c on the Linux filesystem is not the Windows drive: never judged, however much space statfs reports.
+    files['/proc/mounts'] = '/dev/sdc / ext4 rw 0 0\n';
+    const folder = wslDriveCheck({ ...base, hostPreflight, statfs: refuse });
+    assert.deepEqual(Object.keys(folder), ['warning']);
+    assert.match(folder.warning, /\/mnt\/c is not a Windows drive mount \(filesystem type ext4\)/);
+    files['/proc/mounts'] = '/dev/sdc / ext4 rw 0 0\nC:\\134 /mnt/c 9p rw 0 0\n';
   }
-  // doctor() wires it in after the state-disk check, with the mode of the run.
+  // doctor() wires it in after the state-disk check, with the mode of the run and the installation's compose.env.
   const doctorSource = readFileSync(new URL('../scripts/doctor.mjs', import.meta.url), 'utf8');
-  assert.match(doctorSource, /wslDriveCheck\(\{ hostPreflight \}\)/);
+  assert.match(doctorSource, /wslDriveCheck\(\{ hostPreflight, composeEnv \}\)/);
 });
 
 // ---- the LAN fallback checks (scripts/lan.mjs, lanChecks), as doctor reports them ---------------------------------------------------
