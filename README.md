@@ -74,7 +74,7 @@ The operator copies every secret file onto the host. Never ask for a secret valu
 
 Run on the host itself, as the non-root installation user. When a command needs `sudo` and no password-less sudo is set up, give the operator the exact command to run in their own terminal and wait; never ask for the password. After the docker group change, use a new login shell or `sg docker -c '…'`.
 
-The installation user needs `sudo` for a few commands (Docker's install, the state's parent directory, `tunnel.sh install-service`, `watch-timer.sh install`). If it has none, the operator runs those commands in their own terminal as a user that has it, as above.
+The installation user needs `sudo` for a few commands (Docker's install, the state's parent directory, `tunnel.sh install-service`, `watch-timer.sh install`). `tunnel.sh install-service` and `watch-timer.sh install` must be run with `sudo` by the installation user itself (both refuse when the user who ran `sudo` does not own the state); another account with `sudo` can only do Docker's install and create the state's parent directory. If the installation user has no `sudo`, the operator gives it `sudo` for the install, or runs the commands in their own terminal as a user that has it, as above.
 
 **Read the guide from a local clone at the release tag, never through a web fetch:** [docs/OPERATOR_INSTALL.md](docs/OPERATOR_INSTALL.md) is about 244,000 characters, which a fetch cuts or summarises, and `main` is not a release. Clone it first, with the commands of the guide's [Host prerequisites](docs/OPERATOR_INSTALL.md#host-prerequisites) (Node and Docker come first there):
 

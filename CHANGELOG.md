@@ -24,6 +24,12 @@ file used to carry for earlier installations are in git: `git show b45ae0b:CHANG
 
 ### Changed
 
+- **Fixed: clearing the vehicle of a GRN stores nothing again (`update_grn`, `update_dispatch_smart`; definition files, no migration).** Since
+  migration 130 a blank vehicle sent on an edit turned into NULL and then kept the old value; a blank now clears it, and an edit that leaves the
+  vehicle out still keeps it. Runs of white space inside a vehicle number (spaces, tabs, non-breaking spaces) collapse to one space in all four
+  writers (`save_grn`, `update_grn`, `create_dispatch_with_stock_check`, `update_dispatch_smart`); stored rows are not changed. Tests:
+  `tests/rules_130.sql`. No operator action.
+
 - **Saving a GRN no longer deletes other people's photo uploads in progress (`update_grn`, no new migration).** When the photo list is sent, an
   unfinished (`pending`) photo that is not in the list used to be removed for an administrator or supervisor, whoever uploaded it. Now it is
   removed only if the saver uploaded it or it is older than 15 minutes; another person's recent pending upload survives and can still be
@@ -37,6 +43,20 @@ file used to carry for earlier installations are in git: `git show b45ae0b:CHANG
   on an installation with no provider, and a first install with neither a provider file nor `--central-issuer`.
   [OPERATOR_INSTALL.md](docs/OPERATOR_INSTALL.md), "MSG91 provider file". Tests: `tests/configure.test.mjs`, `tests/operator-otp-handler.test.mjs`.
 
+- Migration 128: the order history and the order effect of a save. `get_order_change_log` looks up the GRN quantity, rack, weight and packaging
+  of a quantity entry by the entry's own GRN number, item name and package mark, and leaves out entries whose previous and new quantity are
+  equal (count and paging follow). The dispatch and GRN writers answer with `order_effects` (the order lines a save changed), and new preview
+  RPCs (`preview_create_dispatch`, `preview_update_dispatch`, `preview_update_grn`, `preview_delete_grn`) tell it before the save.
+  No order is empty: `get_orders_list` leaves out an order with no line, `get_customer_order` reads an order without making one, and
+  `add_item_to_order` takes `p_customer_id` and makes the order with its first line. Details: `docs/API_CONTRACT.md`.
+- Migration 130: GRN and dispatch input rules. The last confirmed photo of a GRN cannot be deleted (`GRN_PHOTO_REQUIRED`); `dispatch.registration`
+  holds 20 characters (`registration_too_long`); a number with white space is refused (`DISPATCH_NUMBER_SPACES`, `GRN_NUMBER_SPACES`); the
+  vehicle number is trimmed and a blank one is NULL; an all-digit search of `search_customer_items_for_order` also finds item names, package
+  marks and GRN numbers that contain the digits; only `delete_dispatch_with_order_cleanup` deletes a dispatch; the daily job removes photo
+  uploads left `pending` for 24 hours. Details: `docs/API_CONTRACT.md`.
+- Migration 133: `get_order_change_log` tells the right counts around a deleted dispatch (`change_details.total_quantity_restored`, the chain of
+  a line's quantities, a line put back after removal is `added`); `get_grn_prefixes_with_stock` returns the whole leading non-digit run of a
+  GRN number as the prefix; new `get_items_without_rate` (staff and above) names the items that have no rate yet for the GRN Review step.
 - Migration 129: `replace_item_rates` and `set_standard_rate` take an optional `p_request_key` (a resend returns the first answer);
   a rate change from an earlier date is refused (`LATER_RATES_EXIST`) when a later rate has already begun, unless `p_replace_later`;
   an item's first default rate also covers earlier days (`find_storage_price`); `apply_grn_rates` refuses customer and everyone
