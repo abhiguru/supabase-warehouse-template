@@ -35,6 +35,8 @@ export interface PdfRendererOptions {
   preferCssPageSize?: boolean;
   headerHtml?: string;
   footerHtml?: string;
+  /** Ask the renderer to run this job alone (header `X-Render-Solo: true`): a long document needs the browser's memory to itself. */
+  solo?: boolean;
 }
 
 /**
@@ -88,6 +90,7 @@ export async function htmlToPdf(
   const response = await fetch(`${PDF_RENDERER_URL}/render`, {
     method: 'POST',
     body: formData,
+    headers: options.solo ? { 'X-Render-Solo': 'true' } : undefined,
     signal: AbortSignal.timeout(30000),
     redirect: 'error',
   });
@@ -123,6 +126,17 @@ export async function htmlToPdf(
   }
 
   return new Uint8Array(await response.arrayBuffer());
+}
+
+/**
+ * `htmlToPdf` for a document function: any failure (the renderer down, busy, restarted, or refusing) is the same 503 to the caller; the
+ * cause is logged by `htmlToPdf`.
+ */
+export async function renderDocumentPdf(html: string, options: PdfRendererOptions = {}): Promise<Uint8Array> {
+  try { return await htmlToPdf(html, options); } catch (error) {
+    console.error(`PDF renderer unavailable: ${error instanceof Error ? error.message : 'request failed'}`);
+    throw { status: 503, message: 'PDF renderer unavailable' };
+  }
 }
 
 /**

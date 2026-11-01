@@ -1,6 +1,6 @@
 // Minimal PostgREST and Storage client over plain fetch, replacing the vendored
 // supabase-js. It covers only what the functions use: table reads (select with
-// embedded resources, eq / is / gt filters, order, limit, range, single, maybeSingle,
+// embedded resources, eq / is / gt filters, order, limit, single, maybeSingle,
 // exact count), insert and update on a table, RPC calls, Storage upload and Storage
 // signed URLs. Same style as operator-otp and central-exchange: plain fetch,
 // `apikey` and `Authorization` headers, redirects refused.
@@ -82,21 +82,7 @@ export class Builder implements PromiseLike<RestResult> {
     else this.params.push(['order', term]);
     return this;
   }
-  limit(count: number): this {
-    if (this.headers.Range) throw new Error('limit() cannot be combined with range()');
-    this.params.push(['limit', String(count)]); return this;
-  }
-  /**
-   * Rows `from` to `to`, both inclusive and counted from 0, sent as the `Range-Unit: items` and `Range: from-to` headers
-   * (PostgREST pagination). Give the read an `order`, or the pages are not stable. Not combined with `limit`.
-   */
-  range(from: number, to: number): this {
-    if (!Number.isInteger(from) || !Number.isInteger(to) || from < 0 || to < from) throw new Error('range() needs integers with 0 <= from <= to');
-    if (this.params.some(([name]) => name === 'limit')) throw new Error('range() cannot be combined with limit()');
-    this.headers['Range-Unit'] = 'items';
-    this.headers.Range = `${from}-${to}`;
-    return this;
-  }
+  limit(count: number): this { this.params.push(['limit', String(count)]); return this; }
   single(): this { this.mode = 'single'; return this; }
   maybeSingle(): this { this.mode = 'maybeSingle'; return this; }
 
