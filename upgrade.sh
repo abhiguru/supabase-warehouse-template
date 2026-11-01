@@ -44,8 +44,9 @@
 # upgrade-in-progress (mode 0600; scripts/upgrade-record.mjs reads it): the old commit, the target, the setup inputs and the
 # current step, whether the release had a preflight (preflight=ok|absent) and the tag of the saved images (pre_images=); once the
 # backup is verified, also the backup's path. A rerun of the same command (the database may be down)
-# reads it, reuses that backup and takes no new one of the half-upgraded database, and names the right old commit. Success deletes
-# it; doctor, start.sh and the status commands report it while it exists. When a step fails the script prints the way forward and
+# reads it, reuses that backup and takes no new one of the half-upgraded database, and names the right old commit. Success removes it
+# and keeps a copy as config/upgrade-last (which only `node scripts/upgrade-record.mjs rollback --last` reads: the way back from a problem found
+# after the upgrade, with what it loses); doctor, start.sh and the status commands report the record while it exists. When a step fails the script prints the way forward and
 # the complete way back (the old commit, stop, the saved images put back, the in-place restore of that backup with --restore-config,
 # the old release's setup, the functions recreate, doctor).
 #
@@ -155,6 +156,20 @@ record_write() {
   mv -f -- "$tmp" "$RECORD" || { rm -f -- "$tmp"; return 1; }
 }
 
+# A successful upgrade keeps its record as config/upgrade-last (the same lines, plus when it finished and that it succeeded): it is history, not a
+# warning, and only `node scripts/upgrade-record.mjs rollback --last` reads it, to print the way back when a problem shows after the upgrade. The
+# next successful upgrade replaces it. A failure only warns: the upgrade itself stands.
+record_keep_last() {
+  [[ "$RECORD_LIVE" == yes && -f "$RECORD" ]] || return 0
+  local tmp
+  if ! tmp="$(umask 077; mktemp "$STATE/config/.upgrade-last.XXXXXX")" \
+    || ! { cat -- "$RECORD"; printf 'finished=%s\nresult=ok\n' "$(date -u +%Y-%m-%dT%H:%M:%SZ)"; } > "$tmp" \
+    || ! mv -f -- "$tmp" "$STATE/config/upgrade-last"; then
+    [[ -z "${tmp:-}" ]] || rm -f -- "$tmp"
+    warn "could not keep the record of this upgrade as $STATE/config/upgrade-last (node scripts/upgrade-record.mjs rollback --last will not know it)"
+  fi
+}
+
 record_remove() {
   [[ "$RECORD_LIVE" == yes ]] || return 0
   rm -f -- "$RECORD" || warn "could not remove $RECORD; remove it by hand once the facility is healthy"
@@ -216,6 +231,7 @@ finish() {
     ((code == 0)) || result="failed at: $STEP (exit $code)"
     log_line "$result"
     if ((code == 0)); then
+      record_keep_last
       record_remove
     else
       # Nothing of the facility changed: no half-done upgrade to report, and a rerun takes a fresh backup. The API this run closed is opened again

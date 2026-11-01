@@ -4,7 +4,7 @@ import { mkdtempSync, mkdirSync, writeFileSync, rmSync, symlinkSync } from 'node
 import { spawnSync } from 'node:child_process';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
-import { interruptedMessage, interruptedUpgradeWarning, readUpgradeRecord, rollbackLines } from '../scripts/upgrade-record.mjs';
+import { interruptedMessage, interruptedUpgradeWarning, lastRollbackText, readUpgradeRecord, rollbackLines } from '../scripts/upgrade-record.mjs';
 
 // The record upgrade.sh leaves while an upgrade has not finished (tests/upgrade.test.mjs runs the writer; this file is the reader).
 const root = new URL('..', import.meta.url).pathname;
@@ -211,5 +211,98 @@ test('a record that says the API was closed (maintenance=on) says so in the mess
       assert.doesNotMatch(oldText, /maintenance/, JSON.stringify(extra));
       assert.match(oldText, /Everything the facility recorded after the backup was taken is lost:/);
     }
+  } finally { w.cleanup(); }
+});
+
+// ---------------------------------------------------------------- upgrade-last: the way back from an upgrade that finished
+const lastRecord = (extra = {}) => record({ maintenance: 'none', step: 'Done', ...extra }) + 'finished=2026-10-26T11:30:00Z\nresult=ok\n';
+function lastWorld(extra = {}, { inProgress, backup = true } = {}) {
+  const w = world(inProgress);
+  const dir = join(w.state, 'backups/warehouse-20261026T100000Z');
+  if (backup) mkdirSync(dir, { recursive: true });
+  writeFileSync(join(w.state, 'config/upgrade-last'), lastRecord({ backup: dir, ...extra }), { mode: 0o600 });
+  return { ...w, dir };
+}
+const commandsOf = text => text.split('\n').filter(line => /^ {2}\S/.test(line));
+
+test('rollbackLines with last: a warning that names the loss and prefers the next patch release, the API closed first and opened before the doctor, and the removal of upgrade-last at the end', () => {
+  const w = lastWorld({ pre_images: 'pre-v0.6.0' });
+  try {
+    const last = readUpgradeRecord(w.state, 'config/upgrade-last');
+    assert.equal(last.finished, '2026-10-26T11:30:00Z');
+    assert.equal(last.maintenanceKnown, true);
+    const lines = rollbackLines(last, { last: true });
+    assert.match(lines[0], /^To go back to v0\.6\.0 \(a{40}\) after the upgrade to v0\.7\.0 that finished at 2026-10-26T11:30:00Z, run these in the checkout, in this order\. WARNING: everything the facility recorded after the backup \(taken 2026-10-26 10:00:00 UTC\) is lost/);
+    assert.match(lines[0], /every receipt, dispatch, invoice and order entered since is NOT in the backup/);
+    assert.match(lines[0], /last resort: when the problem can be fixed by a patch release of v0\.7\.0, wait for that and upgrade to it instead\./);
+    assert.equal(lines[1], '  bash scripts/maintenance.sh on', 'the first command closes the API');
+    const commands = lines.filter(line => /^ {2}\S/.test(line));
+    assert.deepEqual(commands.map(line => line.trim().split(' ').slice(0, 3).join(' ').replace(/^rm -f .*/, 'rm -f')), [
+      'bash scripts/maintenance.sh on', '(umask 022; git', 'bash stop.sh', 'bash scripts/pre-images.sh restore', 'npm run db:restore', 'bash setup.sh --operator',
+      'bash scripts/build-images.sh --save', 'bash scripts/compose.sh up', 'bash scripts/maintenance.sh off', 'node scripts/doctor.mjs --local', 'rm -f',
+    ]);
+    assert.equal(commands.at(-1), `  rm -f '${w.state}/config/upgrade-last'`);
+    assert.doesNotMatch(lines.join('\n'), /upgrade-in-progress/);
+    // The plain list of an interrupted upgrade is unchanged by the new option.
+    const plain = rollbackLines(readUpgradeRecord(w.state, 'config/upgrade-last'));
+    assert.doesNotMatch(plain.join('\n'), /WARNING|maintenance\.sh on/);
+    assert.equal(plain.at(-2), `  rm -f '${w.state}/config/upgrade-in-progress'`);
+  } finally { w.cleanup(); }
+  // A note written by an upgrade.sh from before maintenance mode has no maintenance= line: the old release may have no maintenance.sh, so none is named.
+  const old = world();
+  try {
+    writeFileSync(join(old.state, 'config/upgrade-last'), lastRecord().replace(/^maintenance=.*\n/m, ''));
+    const lines = rollbackLines(readUpgradeRecord(old.state, 'config/upgrade-last'), { last: true });
+    assert.ok(!lines.join('\n').includes('maintenance.sh'));
+    assert.match(lines[0], /^To go back to v0\.6\.0/);
+  } finally { old.cleanup(); }
+});
+
+test('lastRollbackText refuses, in one sentence each: no note, an unreadable note, an interrupted upgrade, a backup that is gone, a checkout on another commit', () => {
+  const none = world();
+  try { assert.match(lastRollbackText(none.state, { head: TO }).refusal, /No finished upgrade is recorded \(config\/upgrade-last does not exist/); } finally { none.cleanup(); }
+  const bad = world();
+  try {
+    writeFileSync(join(bad.state, 'config/upgrade-last'), 'format=1\nfrom_sha=nope\n');
+    assert.match(lastRollbackText(bad.state, { head: TO }).refusal, /config\/upgrade-last does not name the two commits/);
+  } finally { bad.cleanup(); }
+  const interrupted = lastWorld({}, { inProgress: record() });
+  try { assert.match(lastRollbackText(interrupted.state, { head: TO }).refusal, /An upgrade is recorded as interrupted \(config\/upgrade-in-progress\); use "node scripts\/upgrade-record\.mjs rollback"/); } finally { interrupted.cleanup(); }
+  const gone = lastWorld({}, { backup: false });
+  try { assert.match(lastRollbackText(gone.state, { head: TO }).refusal, /The backup of that upgrade \(.*warehouse-20261026T100000Z\) is not on this host any more/); } finally { gone.cleanup(); }
+  const moved = lastWorld();
+  try {
+    assert.match(lastRollbackText(moved.state, { head: FROM }).refusal, /This checkout is at a{12}, not at v0\.7\.0 \(b{12}\) that the last upgrade installed/);
+    assert.match(lastRollbackText(moved.state, { head: '' }).refusal, /an unknown commit/);
+    const fine = lastRollbackText(moved.state, { head: TO });
+    assert.equal(fine.refusal, undefined);
+    assert.match(fine.text, /^To go back to v0\.6\.0/);
+  } finally { moved.cleanup(); }
+});
+
+test('the command line: rollback --last prints the list for a finished upgrade; rollback alone still says no upgrade is interrupted when only upgrade-last exists; other arguments are a usage error', () => {
+  const head = spawnSync('git', ['-C', root, 'rev-parse', 'HEAD'], { encoding: 'utf8' }).stdout.trim();
+  const w = lastWorld({ to_sha: head });
+  const cli = (...args) => spawnSync('node', [join(root, 'scripts/upgrade-record.mjs'), ...args], { encoding: 'utf8', env: { ...process.env, WAREHOUSE_STATE_DIR: w.state } });
+  try {
+    const last = cli('rollback', '--last');
+    assert.equal(last.status, 0, last.stderr);
+    assert.equal(commandsOf(last.stdout)[0], '  bash scripts/maintenance.sh on');
+    assert.match(last.stdout, /WARNING: everything the facility recorded after the backup/);
+    const plain = cli('rollback');
+    assert.equal(plain.status, 1);
+    assert.match(plain.stderr, /No upgrade is recorded as interrupted\./);
+    assert.equal(plain.stdout, '');
+    assert.equal(cli('message').stdout, '', 'upgrade-last is history: the message stays quiet');
+    assert.equal(cli('report').status, 1);
+    assert.equal(cli('message', '--last').status, 2);
+    assert.equal(cli('rollback', '--first').status, 2);
+    assert.match(cli('rollback', '--last', 'extra').stderr, /Usage:/);
+    // The checkout is not at the release the note names.
+    writeFileSync(join(w.state, 'config/upgrade-last'), lastRecord({ backup: w.dir }));
+    const elsewhere = cli('rollback', '--last');
+    assert.equal(elsewhere.status, 1);
+    assert.match(elsewhere.stderr, /This checkout is at [0-9a-f]{12}, not at v0\.7\.0/);
+    assert.equal(elsewhere.stdout, '');
   } finally { w.cleanup(); }
 });

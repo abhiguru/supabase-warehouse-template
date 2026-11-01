@@ -1422,3 +1422,51 @@ test('the target\'s preflight pre-pulls the images before the running images are
     assert.deepEqual(preLog(w).filter(line => line.startsWith('prepull')), [], 'the resumed run does not pull again');
   } finally { w.cleanup(); }
 });
+
+test('a successful upgrade keeps its record as config/upgrade-last (0600, with finished= and result=ok); a failed run leaves the earlier one alone; the next success replaces it; rollback --last prints the way back', () => {
+  const w = world();
+  try {
+    const last = join(w.state, 'config/upgrade-last');
+    const lastText = () => readFileSync(last, 'utf8');
+    const rollbackLast = () => spawnSync('node', [join(w.install, 'scripts/upgrade-record.mjs'), 'rollback', '--last'], { encoding: 'utf8', env: { ...process.env, WAREHOUSE_STATE_DIR: w.state } });
+    const from = w.tag('v0.1.0');
+    const dir = `${w.state}/backups/warehouse-20260101T000000Z`;
+    const first = w.run(['v0.2.0']);
+    assert.equal(first.status, 0, first.stdout + first.stderr);
+    assert.equal(existsSync(w.recordPath), false, 'the record of an interrupted upgrade is gone');
+    assert.equal(statModeOf(last), 0o600);
+    assert.match(lastText(), new RegExp(`^from_sha=${from}$`, 'm'));
+    assert.match(lastText(), new RegExp(`^to_sha=${w.tag('v0.2.0')}$`, 'm'));
+    assert.match(lastText(), new RegExp(`^backup=${dir}$`, 'm'));
+    assert.match(lastText(), /^finished=\d{4}-\d\d-\d\dT\d\d:\d\d:\d\dZ$/m);
+    assert.match(lastText(), /^result=ok$/m);
+    assert.deepEqual(readdirSync(join(w.state, 'config')).filter(name => name.startsWith('.upgrade-last')), [], 'no temporary file is left');
+    // It is history, not a warning: the checker's message does not report it.
+    assert.equal(spawnSync('node', [join(w.install, 'scripts/upgrade-record.mjs'), 'message'], { encoding: 'utf8', env: { ...process.env, WAREHOUSE_STATE_DIR: w.state } }).stdout, '');
+    const printed = rollbackLast();
+    assert.equal(printed.status, 0, printed.stderr);
+    const lines = printed.stdout.split('\n').filter(line => line.startsWith('  ') && !line.startsWith('      '));
+    assert.equal(lines[0], '  bash scripts/maintenance.sh on', 'the API is closed first');
+    assert.equal(lines[1], `  (umask 022; git checkout --detach ${from})`);
+    assert.ok(lines.includes(`  rm -f '${last}'`) && lines.at(-1) === `  rm -f '${last}'`);
+    // A failed run of the next upgrade leaves it alone and writes none of its own; while the interrupted record exists, --last refuses.
+    const before = lastText();
+    const failed = w.run(['v0.2.12'], { FAKE_FAIL: 'setup' });
+    assert.notEqual(failed.status, 0);
+    assert.equal(lastText(), before);
+    assert.equal(existsSync(w.recordPath), true);
+    const refused = rollbackLast();
+    assert.equal(refused.status, 1);
+    assert.match(refused.stderr, /An upgrade is recorded as interrupted[^]*use "node scripts\/upgrade-record\.mjs rollback"/);
+    // The next success replaces it.
+    const second = w.run(['v0.2.12']);
+    assert.equal(second.status, 0, second.stdout + second.stderr);
+    assert.notEqual(lastText(), before);
+    assert.match(lastText(), new RegExp(`^to_sha=${w.tag('v0.2.12')}$`, 'm'));
+    assert.match(lastText(), /^from_label=v0\.2\.0$/m);
+    // A dry run and a refusal write nothing.
+    rmSync(last);
+    assert.equal(w.run(['--dry-run', 'v0.2.16']).status, 0);
+    assert.equal(existsSync(last), false);
+  } finally { w.cleanup(); }
+});
