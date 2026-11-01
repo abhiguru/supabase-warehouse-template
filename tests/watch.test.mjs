@@ -45,7 +45,7 @@ function harness({ webhook = true, dailyAt = '02:30', heartbeatAt = '09:00' } = 
     if (command === 'docker' && args[0] === 'inspect') return ok(args.slice(3).map(id => { const name = h.services.find(s => idOf(s) === id); return `${id}|${name}|${h.stateOf?.[name] ?? `running|${['db', 'gateway'].includes(name) ? 'healthy' : ''}`}|0|false|2026-10-18T00:00:00Z|False`; }).join('\n'));
     if (command === 'docker' && args[0] === 'events') return ok('');
     if (line.includes('pg_isready')) return ok('accepting connections');
-    if (line.includes('psql')) return ok('5|0|100000|100|50\n');
+    if (line.includes('psql')) return ok('5|0|100000|100|50|0\n');
     if (line.includes('docker logs')) return ok('');
     if (line.includes('exec -T functions')) return ok();
     if (command === 'flock') return ok();
@@ -235,19 +235,42 @@ test('database: pg_isready, connections > 80, transaction > 300 s, cache < 90%, 
   const h = harness();
   try {
     const q = row => { h.runs.psql = ok(`${row}\n`); return W.checkDatabase(h.ctx()); };
-    let r = q('80|300|9001|999|100000');
+    let r = q('80|300|9001|999|100000|4');
     assert.deepEqual(r.filter(x => !x.ok), []);
-    assert.equal(find(q('81|0|100000|0|0'), 'db_connections_high').ok, false);
-    assert.equal(find(q('0|301|100000|0|0'), 'db_long_transaction').ok, false);
-    assert.equal(find(q('0|0|8900|1100|0'), 'db_cache_hit_low').ok, false);
-    assert.equal(find(q('0|0|80|20|0'), 'db_cache_hit_low').ok, true, 'a tiny sample is not judged');
-    assert.equal(find(q('0|0|100000|0|100001'), 'db_dead_tuples_high').ok, false);
+    assert.equal(find(q('81|0|100000|0|0|0'), 'db_connections_high').ok, false);
+    assert.equal(find(q('0|301|100000|0|0|0'), 'db_long_transaction').ok, false);
+    assert.equal(find(q('0|0|8900|1100|0|0'), 'db_cache_hit_low').ok, false);
+    assert.equal(find(q('0|0|80|20|0|0'), 'db_cache_hit_low').ok, true, 'a tiny sample is not judged');
+    assert.equal(find(q('0|0|100000|0|100001|0'), 'db_dead_tuples_high').ok, false);
+    assert.equal(find(q('0|0|100000|0|0|4'), 'db_lock_waiters').ok, true, '4 waiters pass');
+    const five = find(q('0|0|100000|0|0|5'), 'db_lock_waiters');
+    assert.equal(five.ok, false, '5 waiters fail');
+    assert.match(five.summary, /5 sessions waiting for the stock lock \(limit 5\)/);
+    assert.ok(h.calls.some(c => c.includes("l.objid=71040 AND l.objsubid=1") && c.includes('NOT l.granted') && c.includes("a.backend_type='client backend'")), 'the query counts ungranted client waiters of lock 71040');
+    assert.throws(() => q('5|0|100000|100|50'), /unexpected database query output/, 'five fields is the old shape');
+    assert.throws(() => q('5|0|100000|100|50|0|1'), /unexpected database query output/);
+    assert.throws(() => q('5|0|100000|100|50|x'), /unexpected database query output/);
     assert.ok(h.calls.some(c => c.includes("exec -T -e PGOPTIONS=-c statement_timeout=10000 db psql")), 'the query has a statement timeout');
     h.runs.pg_isready = bad();
     r = W.checkDatabase(h.ctx());
     assert.deepEqual(r.map(x => [x.id, x.ok]), [['postgres_down', false]]);
     h.runs.pg_isready = ok(); h.runs.psql = bad('boom');
     assert.throws(() => W.checkDatabase(h.ctx()), /database query failed/);
+  } finally { clean(h); }
+});
+
+test('db_lock_waiters is an ordinary alert: fires on the second failing run, repeats after 4 hours, limit 5', () => {
+  const h = harness();
+  try {
+    assert.equal(W.LIMITS.lockWaiters, 5);
+    assert.equal(W.LIMITS.repeatMs, 4 * HOUR);
+    const data = W.loadState(h.state, h.clock.t, h.deps.readText);
+    const row = ok_ => [{ check: 'database', id: 'db_lock_waiters', ok: ok_, summary: '5 sessions waiting for the stock lock (limit 5)', detail: '' }];
+    let plan = W.evaluate(data, row(false), new Set(['database']), h.clock.t);
+    assert.deepEqual(plan.start.map(a => a.id), [], 'once is not enough');
+    h.advance(5 * 60000);
+    plan = W.evaluate(data, row(false), new Set(['database']), h.clock.t);
+    assert.deepEqual(plan.start.map(a => a.id), ['db_lock_waiters']);
   } finally { clean(h); }
 });
 

@@ -69,7 +69,7 @@ const DAY = 24 * HOUR;
 // Thresholds are those of the Prometheus alert rules this checker replaced (docs/MONITORING.md lists them).
 export const LIMITS = {
   cpuPercent: 80, memoryPercent: 85, diskRootFreePercent: 20, diskOtherFreePercent: 10,
-  dbConnections: 80, txSeconds: 300, cacheHitRatio: 0.9, cacheMinBlocks: 10000, deadTuples: 100000,
+  dbConnections: 80, txSeconds: 300, lockWaiters: 5, cacheHitRatio: 0.9, cacheMinBlocks: 10000, deadTuples: 100000,
   containerMemoryRatio: 0.9, restartsPerHour: 3, oomHoldMs: HOUR,
   errorRate: 0.05, latencySeconds: 2, minRequests: 10, backupMaxAgeMs: 26 * HOUR,
   failingRuns: 2, repeatMs: 4 * HOUR, busyGiveUpMs: 2 * HOUR, keepBackups: 7,
@@ -527,7 +527,10 @@ const DB_SQL = `SELECT (SELECT count(*) FROM pg_stat_activity WHERE backend_type
   COALESCE((SELECT floor(max(extract(epoch FROM now()-xact_start))) FROM pg_stat_activity WHERE xact_start IS NOT NULL AND backend_type='client backend' AND pid<>pg_backend_pid()),0),
   COALESCE((SELECT blks_hit FROM pg_stat_database WHERE datname='postgres'),0),
   COALESCE((SELECT blks_read FROM pg_stat_database WHERE datname='postgres'),0),
-  COALESCE((SELECT sum(n_dead_tup) FROM pg_stat_user_tables),0)`;
+  COALESCE((SELECT sum(n_dead_tup) FROM pg_stat_user_tables),0),
+  (SELECT count(*) FROM pg_locks l JOIN pg_stat_activity a USING (pid) WHERE l.locktype='advisory' AND NOT l.granted AND l.classid=0 AND l.objid=71040 AND l.objsubid=1 AND a.backend_type='client backend')`;
+// The sixth column counts the sessions waiting for advisory lock 71040, the lock that serializes stock-changing work (GRN, dispatch,
+// document numbers): pg_advisory_xact_lock(71040) shows in pg_locks as classid 0, objid 71040, objsubid 1.
 export const databaseReady = ctx => ctx.compose(['exec', '-T', 'db', 'pg_isready', '-U', 'supabase_admin', '-d', 'postgres']).status === 0;
 export function checkDatabase(ctx) {
   if (!databaseReady(ctx)) return [result('database', 'postgres_down', false, 'PostgreSQL is not responding', 'pg_isready failed.')];
@@ -535,8 +538,8 @@ export function checkDatabase(ctx) {
     '-v', 'ON_ERROR_STOP=1', '-U', 'supabase_admin', '-d', 'postgres', '-c', DB_SQL]);
   if (q.status !== 0) throw new Error(`database query failed: ${clip(q.stderr.trim(), 200)}`);
   const v = q.stdout.trim().split('\n').pop().split('|').map(Number);
-  if (v.length !== 5 || v.some(Number.isNaN)) throw new Error('unexpected database query output');
-  const [conns, txAge, hit, read, dead] = v;
+  if (v.length !== 6 || v.some(Number.isNaN)) throw new Error('unexpected database query output');
+  const [conns, txAge, hit, read, dead, waiters] = v;
   const ratio = hit / (hit + read + 0.001);
   const cacheBad = hit + read >= LIMITS.cacheMinBlocks && ratio < LIMITS.cacheHitRatio;
   return [
@@ -547,6 +550,8 @@ export function checkDatabase(ctx) {
     result('database', 'db_long_transaction', !(txAge > LIMITS.txSeconds), `Oldest transaction ${txAge} s (limit ${LIMITS.txSeconds} s)`),
     // Counters start at zero after a restart, so a handful of cold reads would read as a bad ratio: a minimum sample.
     result('database', 'db_cache_hit_low', !cacheBad, `Cache hit ratio ${(ratio * 100).toFixed(1)}% (limit ${LIMITS.cacheHitRatio * 100}%)`),
+    // Stock-changing requests queue behind one transaction that holds the lock for too long: the app then shows slow or timed-out saves.
+    result('database', 'db_lock_waiters', !(waiters >= LIMITS.lockWaiters), `${waiters} sessions waiting for the stock lock (limit ${LIMITS.lockWaiters})`, 'Sessions queue behind a transaction that holds advisory lock 71040 (GRN, dispatch and numbering work); see docs/MONITORING.md.'),
     result('database', 'db_dead_tuples_high', !(dead > LIMITS.deadTuples), `${dead} dead tuples (limit ${LIMITS.deadTuples}); consider VACUUM`),
   ];
 }
