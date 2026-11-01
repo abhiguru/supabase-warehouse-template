@@ -3,7 +3,7 @@
 -- get_dispatch_list_with_items and get_invoices_list took any p_limit, so one call with p_limit 100000 built the whole list in
 -- one answer (and, with items, every line of every dispatch). The page size is now clamped inside the function: p_limit to
 -- 1..200 (a missing value keeps the default, 10 for dispatches and 50 for invoices); p_page below 1 is page 1, p_offset below 0
--- is 0. The answer reports the page and limit actually used. get_invoices_list also adds offset and limit as bigint for
+-- is 0, and the dispatch list computes its offset in bigint, so a huge page number answers an empty page. The answer reports the page and limit actually used. get_invoices_list also adds offset and limit as bigint for
 -- `has_more`, so a huge p_offset cannot overflow it.
 --
 -- Marker-count patches of the current text (get_dispatch_list_with_items as migrations 125, 131 and 133 left it): each
@@ -25,6 +25,19 @@ BEGIN
     SELECT role INTO v_user_role FROM user_profiles WHERE auth_user_id = auth.uid();$m$;
   v_count := (length(v_def) - length(replace(v_def, v_before, ''))) / length(v_before);
   IF v_count <> 1 THEN RAISE EXCEPTION 'get_dispatch_list_with_items: expected the clamp marker once, found % times', v_count; END IF;
+  v_def := replace(v_def, v_before, v_after);
+  -- The offset is computed in bigint: p_page 20000000 with 200 rows a page is past the integer range.
+  v_before := $m$    v_offset integer;
+    v_total_count bigint;$m$;
+  v_after := $m$    v_offset bigint;
+    v_total_count bigint;$m$;
+  v_count := (length(v_def) - length(replace(v_def, v_before, ''))) / length(v_before);
+  IF v_count <> 1 THEN RAISE EXCEPTION 'get_dispatch_list_with_items: expected the v_offset declaration once, found % times', v_count; END IF;
+  v_def := replace(v_def, v_before, v_after);
+  v_before := $m$v_offset := (p_page - 1) * p_limit;$m$;
+  v_after := $m$v_offset := (p_page - 1)::bigint * p_limit;$m$;
+  v_count := (length(v_def) - length(replace(v_def, v_before, ''))) / length(v_before);
+  IF v_count <> 1 THEN RAISE EXCEPTION 'get_dispatch_list_with_items: expected the offset marker once, found % times', v_count; END IF;
   v_def := replace(v_def, v_before, v_after);
   EXECUTE v_def;
 

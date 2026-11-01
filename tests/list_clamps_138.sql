@@ -61,6 +61,10 @@ SELECT pg_temp.lc_assert(:'page_zero'::jsonb->>'success' = 'true' AND (:'page_ze
   'dispatch list: p_page 0 is page 1: ' || left(:'page_zero', 300));
 SELECT pg_temp.lc_assert(:'page_negative'::jsonb->>'success' = 'true' AND (:'page_negative'::jsonb#>>'{data,current_page}')::int = 1
   AND :'page_negative'::jsonb#>'{data,dispatches}' = :'page_one'::jsonb#>'{data,dispatches}', 'dispatch list: a negative p_page is page 1');
+-- a page number whose offset passes the integer range answers an empty page (the offset is computed in bigint)
+SELECT public.get_dispatch_list_with_items(p_customer_id => :'cust', p_page => 20000000, p_limit => 200) AS page_far \gset
+SELECT pg_temp.lc_assert(:'page_far'::jsonb->>'success' = 'true' AND jsonb_array_length(:'page_far'::jsonb#>'{data,dispatches}') = 0
+  AND (:'page_far'::jsonb#>>'{data,total_count}')::int = 250, 'dispatch list: p_page 20000000 answers an empty page, not an overflow: ' || left(:'page_far', 300));
 
 -- invoices: the page size
 SELECT public.get_invoices_list(p_limit => 100000, p_offset => 0, p_customer_id => :'cust') AS inv_big \gset

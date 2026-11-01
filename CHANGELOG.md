@@ -32,7 +32,7 @@ file used to carry for earlier installations are in git: `git show b45ae0b:CHANG
   (receipts, dispatches, invoices and their lines and photos) also require `deleted_at IS NULL` on the document, so a customer no longer
   reads a deleted document (nor the file of its photo in Storage: `starter_customer_grn_images`, `starter_customer_dispatch_images`); staff, supervisors and administrators are unchanged, and a cancelled invoice stays visible. `get_dispatch_list_with_items`
   and `get_invoices_list` clamp `p_limit` to 1..200 (page and offset to at least 1 and 0). PostgREST returns at most 2,000 rows
-  of a direct table read (`PGRST_DB_MAX_ROWS`, `docker/docker-compose.yml`). Tests: `tests/rls_wrapped_137.sql`, `tests/list_clamps_138.sql`
+  of a direct table read (`PGRST_DB_MAX_ROWS`, `docker/docker-compose.yml`). Tests: `tests/rls_wrapped_137.sql`, `tests/customer_rpc_deleted_137.sql`, `tests/list_clamps_138.sql`
   (new), `tests/database-settings.test.mjs`, `tests/grn_heavy_dispatch.sql` (pages in 200s). Docs: [API_CONTRACT.md](docs/API_CONTRACT.md), [STAFF_GRN_POLICY.md](docs/STAFF_GRN_POLICY.md).
 - **Saving a GRN no longer deletes other people's photo uploads in progress (`update_grn`, no new migration).** When the photo list is sent, an
   unfinished (`pending`) photo that is not in the list used to be removed for an administrator or supervisor, whoever uploaded it. Now it is
@@ -67,6 +67,36 @@ file used to carry for earlier installations are in git: `git show b45ae0b:CHANG
   timer, and the agent instructions read the guide from a local clone at the release tag; the release checklist covers a new image package and
   runs the live contract check from the stack's own checkout; the seed is described as a drill fixture. A pulled release image is reported as
   "not on this host".
+
+### Operator actions
+
+- **Before upgrading to the release with migrations 137 and 138: count the deleted documents.** From this release a customer account no
+  longer sees a soft-deleted receipt, dispatch or invoice (nor its lines, photos or photo files), and the customer-callable RPCs
+  `get_grn_details`, `get_dispatch_details`, `get_grn_item_dispatches`, `get_customer_dispatch_items` and `get_customer_stock_analysis_v2` answer
+  "not found" for a deleted receipt or dispatch and leave its lines out. Staff, supervisors and administrators are unchanged. A cancelled
+  invoice stays visible. Run these in `psql` as the database owner; all zeros means nothing changes for any customer:
+
+  ```sql
+  -- deleted documents
+  SELECT (SELECT count(*) FROM public.goodsreceived WHERE deleted_at IS NOT NULL) AS deleted_grns,
+         (SELECT count(*) FROM public.dispatch      WHERE deleted_at IS NOT NULL) AS deleted_dispatches,
+         (SELECT count(*) FROM public.invoice       WHERE deleted_at IS NOT NULL) AS deleted_invoices;
+  -- live dispatch lines of a deleted receipt
+  SELECT count(*) AS live_dispatch_lines_of_deleted_grns
+    FROM public.dispatch_trl dt
+    JOIN public.goodsreceived_trl t ON t.id = dt.gr_trl_id JOIN public.goodsreceived g ON g.id = t.gr_id
+    JOIN public.dispatch d ON d.id = dt.disp_id
+   WHERE g.deleted_at IS NOT NULL AND d.deleted_at IS NULL;
+  -- live invoice lines of a deleted dispatch
+  SELECT count(*) AS live_invoice_lines_of_deleted_dispatches
+    FROM public.invoice_trl it
+    JOIN public.invoice i ON i.id = it.invoice_id
+    JOIN public.dispatch_trl dt ON dt.id = it.disp_trl_id JOIN public.dispatch d ON d.id = dt.disp_id
+   WHERE d.deleted_at IS NOT NULL AND i.deleted_at IS NULL;
+  ```
+
+  Where a count is not zero, customers of those documents stop seeing them (and a customer's dispatch list and stock figures lose the lines
+  of a deleted receipt or dispatch). That is the intended rule; check that none of them is a document a customer still needs.
 
 ## v0.7.0 (2026-10-30)
 

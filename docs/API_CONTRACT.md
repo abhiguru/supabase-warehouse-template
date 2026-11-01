@@ -207,8 +207,10 @@ write.
   value and are not cut.
 - **`get_dispatch_list_with_items`** clamps `p_limit` to 1..200 (a missing value is 10) and `p_page` to at least 1; the answer's `limit` and
   `current_page` are the values used. **`get_invoices_list`** clamps `p_limit` to 1..200 (a missing value is 50) and `p_offset` to at least 0
-  (a negative offset used to fail). A client that needs more pages the list.
-- **Customers do not see deleted documents** in the direct reads either: see [STAFF_GRN_POLICY.md](STAFF_GRN_POLICY.md).
+  (a negative offset used to fail). A client that needs more rows pages through the list.
+- **Customers do not see deleted documents**, in the direct reads and in `get_grn_details`, `get_grn_item_dispatches`, `get_dispatch_details`,
+  `get_customer_dispatch_items` and `get_customer_stock_analysis_v2` (a deleted receipt or dispatch is "not found"; its lines are left out):
+  see [STAFF_GRN_POLICY.md](STAFF_GRN_POLICY.md).
 
 ### Sessions: the refresh lifetime and the break-glass code (migration 126, 2026-10-26)
 
