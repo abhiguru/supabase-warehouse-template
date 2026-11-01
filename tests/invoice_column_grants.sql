@@ -78,13 +78,14 @@ SELECT pg_temp.col_login('9888888833') AS staff_claims \gset
 SELECT pg_temp.col_login('9888888834') AS customer_claims \gset
 SELECT pg_temp.col_login('9888888835') AS other_claims \gset
 
--- The six internal columns plus the version token updated_at (migration 121: not granted, read only through the RPCs), and every other column of the table by name (what
+-- The six internal columns plus the version token updated_at (migration 121: not granted, read only through the RPCs) and cancelled_by (migration 134: who
+-- cancelled an invoice, read through get_invoice_detail and get_invoice_data by staff and above), and every other column of the table by name (what
 -- a direct read has to send now that `*` is refused).
-SELECT ARRAY['discount_reason','discount_set_by','discount_set_at','zero_charge_reason','zero_charge_set_by','zero_charge_set_at','updated_at'] AS internal \gset
+SELECT ARRAY['discount_reason','discount_set_by','discount_set_at','zero_charge_reason','zero_charge_set_by','zero_charge_set_at','updated_at','cancelled_by'] AS internal \gset
 SELECT string_agg(quote_ident(attname), ',' ORDER BY attnum) AS open_columns, count(*) AS open_count
  FROM pg_attribute WHERE attrelid='public.invoice'::regclass AND attnum>0 AND NOT attisdropped AND attname <> ALL(:'internal'::name[]) \gset
-SELECT pg_temp.col_assert((SELECT count(*)=7 FROM pg_attribute WHERE attrelid='public.invoice'::regclass AND attname=ANY(:'internal'::name[]) AND NOT attisdropped)
- AND :open_count>=21,'the table has the six internal columns, the version token and the others');
+SELECT pg_temp.col_assert((SELECT count(*)=8 FROM pg_attribute WHERE attrelid='public.invoice'::regclass AND attname=ANY(:'internal'::name[]) AND NOT attisdropped)
+ AND :open_count>=21,'the table has the six internal columns, the version token, cancelled_by and the others');
 
 -- Fixture, as the administrator: two customers, each with one login; one
 -- one-time receipt of 20 bags for the first, dispatched in full. Staff invoice
@@ -214,9 +215,10 @@ RESET ROLE;
 -- ---------------------------------------------------------------------------
 -- 5. Migration 134: a cancelled invoice. The three cancellation columns are open like deleted_at and deleted_by; the six internal ones stay closed.
 -- ---------------------------------------------------------------------------
-SELECT pg_temp.col_assert((SELECT bool_and(has_column_privilege('authenticated','public.invoice',c,'SELECT')) FROM unnest(ARRAY['cancelled_at','cancelled_by','cancel_reason','deleted_at','deleted_by']) c)
+SELECT pg_temp.col_assert((SELECT bool_and(has_column_privilege('authenticated','public.invoice',c,'SELECT')) FROM unnest(ARRAY['cancelled_at','cancel_reason','deleted_at','deleted_by']) c)
+ AND NOT has_column_privilege('authenticated','public.invoice','cancelled_by','SELECT')
  AND (SELECT NOT bool_or(has_column_privilege('authenticated','public.invoice',c,'INSERT,UPDATE')) FROM unnest(ARRAY['cancelled_at','cancelled_by','cancel_reason']) c)
- AND NOT has_column_privilege('anon','public.invoice','cancelled_at','SELECT'),'the app role reads the three cancellation columns and writes none; anonymous callers read none');
+ AND NOT has_column_privilege('anon','public.invoice','cancelled_at','SELECT'),'the app role reads cancelled_at and cancel_reason, not cancelled_by, and writes none; anonymous callers read none');
 SELECT set_config('request.jwt.claims',:'admin_claims',true);
 SET LOCAL ROLE authenticated;
 SELECT public.cancel_invoice(:'invoice_id'::uuid,'Column grant test',NULL) AS cancelled \gset
@@ -228,7 +230,7 @@ SELECT pg_temp.col_rows(format('SELECT %s FROM public.invoice',:'open_columns'))
 SELECT public.get_invoice_detail(:'invoice_id'::uuid)->'invoice' AS customer_cancelled_detail \gset
 RESET ROLE;
 SELECT pg_temp.col_assert(jsonb_array_length(:'customer_cancelled_rows'::jsonb)=1 AND :'customer_cancelled_rows'::jsonb#>>'{0,cancel_reason}'='Column grant test'
- AND :'customer_cancelled_rows'::jsonb#>>'{0,cancelled_at}' IS NOT NULL AND :'customer_cancelled_rows'::jsonb#>>'{0,cancelled_by}' IS NOT NULL
+ AND :'customer_cancelled_rows'::jsonb#>>'{0,cancelled_at}' IS NOT NULL AND NOT (:'customer_cancelled_rows'::jsonb->0 ? 'cancelled_by')
  AND (SELECT count(*)=:open_count FROM jsonb_object_keys(:'customer_cancelled_rows'::jsonb->0)) AND NOT (:'customer_cancelled_rows'::jsonb->0 ?| :'internal'::text[]),
  'a customer account still reads its cancelled invoice, with the cancellation, and still not the internal columns: '||:'customer_cancelled_rows');
 SELECT pg_temp.col_assert(:'customer_cancelled_detail'::jsonb->>'cancel_reason'='Column grant test' AND NOT (:'customer_cancelled_detail'::jsonb ?| ARRAY['discount_reason','cancelled_by_name','cancelled_by']),

@@ -465,9 +465,9 @@ DELETE FROM public.invoice_trl WHERE invoice_id='00000000-0000-4000-8000-0000000
 DELETE FROM public.invoice WHERE id='00000000-0000-4000-8000-000000000041';
 UPDATE public.goodsreceived SET invoiced=true WHERE id=:'grn_a'::uuid;
 
--- 5. An invoice with a payment cannot be deleted; without it, it can, the
+-- 5. An invoice with a payment cannot be cancelled (nor deleted: migration 134); without it, it can be cancelled, the
 -- receipt is free again, staff invoices it again, and the history of the
--- deleted invoice stays.
+-- cancelled invoice stays.
 INSERT INTO public.payments(payment_no,payment_date,customer_id,customer_name,amount,invoice_id)
  VALUES ('RULPAY1','2026-05-03T12:00:00Z',:'customer_id'::uuid,'Line Rule Customer',988,:'invoice_a'::uuid);
 SELECT set_config('request.jwt.claims',:'admin_claims',true);
@@ -493,7 +493,7 @@ RESET ROLE;
 SELECT pg_temp.rule_assert((SELECT total=998 FROM public.invoice WHERE id=(:'third'::jsonb->>'invoice_id')::uuid)
  AND (SELECT count(*)=1 FROM public.invoice WHERE gr_id=:'grn_a'::uuid AND cancelled_at IS NULL),'one live invoice of 998 for the receipt (the cancelled ones are not counted)');
 SELECT pg_temp.rule_assert((SELECT count(*)=4 FROM public.invoice_discount_history WHERE invoice_id=:'invoice_a'::uuid),
- 'the deleted invoice''s discount history is kept');
+ 'the cancelled invoice''s discount history is kept');
 -- A reason longer than 500 characters is cut to 500 on the invoice and in the history.
 SELECT set_config('request.jwt.claims',:'staff_claims',true);
 SET LOCAL ROLE authenticated;

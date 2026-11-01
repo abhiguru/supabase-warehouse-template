@@ -1374,6 +1374,8 @@ Refusals (the envelope of "One refusal envelope": `{success:false, error_code:'W
 | `INVOICE_HAS_PAYMENTS` | a payment refers to the invoice | `invoice_id`, `payments` (count) |
 | `USER_REQUIRED` | a service connection with no person behind it | none |
 
+The reason is trimmed like the discount reason (spaces, no-break spaces and zero-width characters count as blank) and the table refuses a cancelled invoice without a person or with a reason outside 3 to 500 characters. No payment can be recorded for a cancelled invoice (nor moved onto one): the insert fails with `WH409`, "Invoice … is cancelled: no payment can be recorded for it". `get_grn_details` `invoices_summary` counts live invoices only (not deleted, not cancelled) and adds `cancelled_count`. `get_invoice_range_for_print` (preprinted printing) leaves cancelled invoices out of `data` and lists them in `skipped` as `{inv_no, inv_fin_year, invoice_id, reason:'cancelled'}`; `print-invoice-preprinted` returns that list as `skipped`, and refuses a range that holds only cancelled invoices.
+
 An unknown or deleted invoice is `{success:false, error:'Invoice not found'}` (as `update_invoice` answers it). The GRN's `invoiced` flag is cleared
 unless another live invoice (not deleted, not cancelled) holds the GRN. A cancelled invoice is **not live**: its dispatch lines can go on a new invoice, and
 the GRN and dispatch edit rules, `get_grn_edit_state`, `get_grn_item_rates` and `get_dispatch_details` treat it as no invoice. Its number stays taken:
@@ -1387,7 +1389,7 @@ reason:'INVOICE_CANCELLED', error:'This invoice is cancelled and can not be chan
 
 New fields: `get_invoice_detail` `invoice.cancelled_at` and `invoice.cancel_reason` (every reader; `null` when not cancelled), and for administrators,
 supervisors and staff also `invoice.cancelled_by` and `invoice.cancelled_by_name`; `get_invoices_list` rows carry `cancelled_at` and `cancel_reason`; the
-`invoice` table columns `cancelled_at`, `cancelled_by` and `cancel_reason` are readable by name like `deleted_at`. `get_customer_invoice_summary` lists a
+`invoice` table columns `cancelled_at` and `cancel_reason` are readable by name like `deleted_at` (`cancelled_by` is not: who cancelled is read through `get_invoice_detail` and `get_invoice_data`, which answer `cancelled_by` and `cancelled_by_name` to administrators, supervisors and staff only; `get_invoice_data` also answers `cancelled_at` and `cancel_reason` in `data.header`). `get_customer_invoice_summary` lists a
 cancelled invoice with `payment_status.status = 'cancelled'` (and `cancelled_at`, `cancel_reason`, balance 0) and leaves it out of every sum and
 count (`summary.total_invoices`, `total_amount`, `paid_count`, `pending_count`, the months and the customers); `summary.cancelled_count` says how many
 there are. `get_customer_activity_detail` does the same (`summary.cancelled_count`, `recent_invoices[].status = 'cancelled'`), and

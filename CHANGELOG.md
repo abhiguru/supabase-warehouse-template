@@ -18,7 +18,9 @@ file used to carry for earlier installations are in git: `git show b45ae0b:CHANG
   rules, is listed marked cancelled (customers still see it), and is left out of every sum and count of the customer invoice summary, the customer
   activity and the invoice-history report (`cancelled_count`; status Cancelled); its PDF has a CANCELLED line. `invoice`, `invoice_trl`, `payments`
   and `dispatch_trl` write `audit_log`, and `audit_log` is kept 2920 days (was 730). **Operator note:** the app needs the matching app release to
-  show and call it; `delete_invoice` no longer works for any caller. Tests: `tests/invoice_cancel_134.sql` (new), `tests/invoice-cancel.test.mjs` (new),
+  show and call it; `delete_invoice` no longer works for any caller. No payment can be recorded for a cancelled invoice; the preprinted print range skips
+  cancelled invoices and reports them as `skipped`; `get_invoice_data` and `get_grn_details` know the cancellation; customers read `cancelled_at` and
+  `cancel_reason` but not `cancelled_by`. Tests: `tests/invoice_cancel_134.sql` (new), `tests/invoice-cancel.test.mjs` (new),
   and the suites that deleted invoices for set-up now cancel them. API: [API_CONTRACT.md](docs/API_CONTRACT.md), "Cancelling an invoice".
 - **Break-glass codes for every facility worker, with their own sign-in (migration 132).** `scripts/break-glass-admin.sh` now makes a one-time code
   (10 minutes, once, five wrong tries) for an active, approved administrator, **supervisor or staff member** (never a customer) and prints the

@@ -534,8 +534,13 @@ Deno.serve(async (req) => {
     const invoiceArray = rpcResponse.data || rpcResponse;
     const results = Array.isArray(invoiceArray) ? invoiceArray : [invoiceArray];
 
+    // Cancelled invoices (migration 134) are not printed: the RPC leaves them out and names them here as skipped with the reason 'cancelled'.
+    const skipped = Array.isArray(rpcResponse.skipped) ? rpcResponse.skipped : [];
+
     if (results.length === 0) {
-      throw new Error('No Invoices found in specified range');
+      throw new Error(skipped.length > 0
+        ? `All ${skipped.length} Invoices in the range are cancelled and were skipped (${skipped.map((item: any) => item.inv_no).join(', ')})`
+        : 'No Invoices found in specified range');
     }
 
     console.log('print-invoice-preprinted: Retrieved', results.length, 'Invoices');
@@ -579,6 +584,7 @@ Deno.serve(async (req) => {
             fin_year: finYear,
             count: results.length
           },
+          skipped,
           timestamp: new Date().toISOString()
         }, null, 2),
         {
@@ -697,6 +703,7 @@ Deno.serve(async (req) => {
           fin_year: finYear,
           count: results.length
         },
+        skipped,
         print_job: {
           print_job_id: printJobRecord?.id || null,
           cups_job_id: jobId,

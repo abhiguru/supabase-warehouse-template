@@ -1,24 +1,32 @@
 -- Migration 134: an invoice is cancelled, not deleted; the invoice records are audited and the audit trail is kept 8 years (review finding H5).
 --
---  1. invoice gets cancelled_at, cancelled_by and cancel_reason (all three together, the reason 3 to 500 characters). The app role reads
---     the three columns like deleted_at and deleted_by (column grant of migration 48), so a customer still sees a cancelled invoice.
+--  1. invoice gets cancelled_at, cancelled_by and cancel_reason (all three together, the reason 3 to 500 characters once trimmed by
+--     warehouse_security.trimmed_reason, as the discount reason is). The app role reads cancelled_at and cancel_reason (column grant of
+--     migration 48), so a customer still sees a cancelled invoice; cancelled_by (a person of the facility) is read only through
+--     get_invoice_detail and get_invoice_data, for administrators, supervisors and staff.
 --  2. cancel_invoice(p_invoice_id, p_reason, p_expected_updated_at): administrators and supervisors. The invoice keeps its number and its
 --     lines. Refused: an unknown or deleted invoice, one already cancelled (INVOICE_CANCELLED), one that changed after the caller read it
 --     (STALE_RECORD), one with payments (INVOICE_HAS_PAYMENTS). The GRN is invoiceable again unless another live invoice holds it.
 --  3. delete_invoice refuses (INVOICE_CANCEL_ONLY) and deletes nothing; its authorize_rpc call stays first.
 --  4. update_invoice and save_invoice_internal refuse a cancelled invoice (INVOICE_CANCELLED). The number stays taken:
 --     unique_inv_no_per_year counts every row, and get_next_invoice_number (migration 127) reads MAX(inv_no) of every row.
+--  4b. No payment can be recorded for a cancelled invoice (a BEFORE trigger on payments); the trigger that clears the GRN flag on a delete counts
+--     only invoices that are neither deleted nor cancelled.
 --  5. A cancelled invoice is not "live" any more where a live invoice matters: its lines may go on a new invoice (claim_invoice_lines), the
 --     GRN and the dispatch can be edited again (get_grn_edit_state, get_grn_item_rates, get_dispatch_details, delete_dispatch_with_order_cleanup;
 --     update_grn and update_dispatch_smart in their definition files), and the GRN list shows the GRN as not invoiced.
 --  6. Reads: get_invoices_list answers cancelled_at and cancel_reason; get_customer_invoice_summary and get_customer_activity_detail list a
 --     cancelled invoice with the status 'cancelled' and leave it out of every sum and count (cancelled_count says how many there are);
---     get_all_customer_activity_summary leaves it out of its invoice amount. get_invoice_detail (definition file) answers the three fields.
+--     get_all_customer_activity_summary leaves it out of its invoice amount; get_grn_details counts only live invoices and adds cancelled_count.
+--     get_invoice_detail and get_invoice_data (definition files) answer the fields. get_invoice_range_for_print (preprinted printing) leaves a
+--     cancelled invoice out and names it as skipped.
 --  7. Audit triggers on invoice, invoice_trl, payments and dispatch_trl, the two-trigger pattern of migration 121 (an UPDATE trigger with a
 --     WHEN cannot also cover INSERT and DELETE): every insert and delete, and every update that changes more than updated_at.
 --  8. audit_log keeps 2920 days (8 years; GST records are kept 72 months, with a margin) instead of 730.
 --
--- Run twice, the patch blocks fail on their count check (each before-text is gone after the first run and no after-text contains its before-text).
+-- Run twice, the patch statements fail on their count check (each before-text is gone after the first run and no after-text contains its
+-- before-text). The patch statements call a helper that exists only for this file: it is the marker-count DO $patch$ pattern of migration 129
+-- (count the marker, RAISE unless it is found exactly once, replace, EXECUTE), written once instead of thirteen times, and dropped at the end.
 
 -- 1. Columns
 ALTER TABLE public.invoice
@@ -26,9 +34,11 @@ ALTER TABLE public.invoice
   ADD COLUMN cancelled_by uuid REFERENCES public.user_profiles(id),
   ADD COLUMN cancel_reason text,
   ADD CONSTRAINT invoice_cancel_record_check CHECK (
-    cancelled_at IS NULL OR (cancelled_by IS NOT NULL AND length(btrim(cancel_reason)) BETWEEN 3 AND 500));
+    cancelled_at IS NULL OR (cancelled_by IS NOT NULL
+      AND COALESCE(char_length(warehouse_security.trimmed_reason(cancel_reason)), 0) BETWEEN 3 AND 500));
 COMMENT ON COLUMN public.invoice.cancelled_at IS 'Migration 134: set by cancel_invoice. A cancelled invoice keeps its number and its lines, is not live (no sums, the GRN is invoiceable again) and can not be edited.';
-GRANT SELECT (cancelled_at, cancelled_by, cancel_reason) ON TABLE public.invoice TO authenticated;
+-- cancelled_by is not granted: who cancelled is read through get_invoice_detail and get_invoice_data, for staff and above.
+GRANT SELECT (cancelled_at, cancel_reason) ON TABLE public.invoice TO authenticated;
 
 -- The one patch helper of this file. Every marker must occur exactly once in the function as it is stored, and no replacement may contain
 -- the marker it replaces (a second run would otherwise patch again instead of failing).
@@ -56,12 +66,12 @@ BEGIN
 END $$;
 
 -- 2. cancel_invoice
-CREATE FUNCTION public.cancel_invoice(p_invoice_id uuid, p_reason text, p_expected_updated_at timestamptz) RETURNS jsonb
+CREATE FUNCTION public.cancel_invoice(p_invoice_id uuid, p_reason text, p_expected_updated_at timestamptz DEFAULT NULL) RETURNS jsonb
     LANGUAGE plpgsql SECURITY DEFINER
     SET search_path TO 'pg_catalog', 'public', 'extensions', 'utils', 'pg_temp'
     AS $$
 DECLARE
-  v_reason text := btrim(p_reason);
+  v_reason text := warehouse_security.trimmed_reason(p_reason);
   v_by uuid;
   v_gr_id uuid;
   v_inv_no integer;
@@ -414,6 +424,80 @@ $m$FROM invoice
             AND inv_date$m$
 ]);
 
+-- Cancelled invoices in the GRN details: the summary counts live invoices only (not deleted, not cancelled) and says how many are cancelled.
+SELECT pg_temp.patch_function('public.get_grn_details(uuid)'::regprocedure, ARRAY[
+$m$'total_invoices', COUNT(DISTINCT inv.id),
+                            'total_amount', COALESCE(SUM(inv.total), 0),
+                            'invoice_numbers', COALESCE(
+                                jsonb_agg(
+                                    DISTINCT inv.inv_no
+                                    ORDER BY inv.inv_no
+                                ) FILTER (WHERE inv.inv_no IS NOT NULL),
+                                '[]'::jsonb
+                            )
+                        )
+                        FROM invoice inv
+                        WHERE inv.gr_id = gr.id$m$
+], ARRAY[
+$m$'total_invoices', COUNT(DISTINCT inv.id) FILTER (WHERE inv.cancelled_at IS NULL),
+                            'cancelled_count', COUNT(DISTINCT inv.id) FILTER (WHERE inv.cancelled_at IS NOT NULL),
+                            'total_amount', COALESCE(SUM(inv.total) FILTER (WHERE inv.cancelled_at IS NULL), 0),
+                            'invoice_numbers', COALESCE(
+                                jsonb_agg(
+                                    DISTINCT inv.inv_no
+                                    ORDER BY inv.inv_no
+                                ) FILTER (WHERE inv.inv_no IS NOT NULL AND inv.cancelled_at IS NULL),
+                                '[]'::jsonb
+                            )
+                        )
+                        FROM invoice inv
+                        WHERE inv.gr_id = gr.id AND inv.deleted_at IS NULL$m$
+]);
+
+-- The trigger that clears the GRN flag when an invoice row is deleted (service connections only now) counts only live invoices.
+SELECT pg_temp.patch_function('public.reset_grn_invoiced_flag()'::regprocedure, ARRAY[
+$m$AND i.deleted_at IS NULL AND i.id <> OLD.id)$m$
+], ARRAY[
+$m$AND i.deleted_at IS NULL AND i.cancelled_at IS NULL AND i.id <> OLD.id)$m$
+]);
+
+-- Preprinted printing: a cancelled invoice is left out of the range and named as skipped (reason 'cancelled'); the edge function reports it.
+SELECT pg_temp.patch_function('public.get_invoice_range_for_print(text, text, integer, integer)'::regprocedure, ARRAY[
+$m$          AND i.deleted_at IS NULL
+        ORDER BY i.inv_fin_year, i.inv_no
+        LIMIT get_invoice_range_for_print.limit_count$m$,
+$m$RETURN utils.success_response(v_result, NULL);$m$
+], ARRAY[
+$m$          AND i.deleted_at IS NULL AND i.cancelled_at IS NULL
+        ORDER BY i.inv_fin_year, i.inv_no
+        LIMIT get_invoice_range_for_print.limit_count$m$,
+$m$RETURN utils.success_response(v_result, NULL) || jsonb_build_object('skipped', COALESCE((
+        SELECT jsonb_agg(jsonb_build_object('inv_no', i.inv_no, 'inv_fin_year', i.inv_fin_year, 'invoice_id', i.id, 'reason', 'cancelled')
+                         ORDER BY i.inv_fin_year, i.inv_no)
+        FROM invoice i
+        WHERE i.inv_no >= start_inv_no
+          AND i.inv_no <= end_inv_no
+          AND (get_invoice_range_for_print.inv_fin_year IS NULL OR i.inv_fin_year = target_fin_year)
+          AND i.deleted_at IS NULL AND i.cancelled_at IS NOT NULL), '[]'::jsonb));$m$
+]);
+
+-- No payment is recorded for a cancelled invoice. The invoice row is read FOR KEY SHARE: a cancel in progress holds it FOR UPDATE, so a payment
+-- written at the same moment waits for the cancel and is refused, or the cancel waits for the payment and is refused (INVOICE_HAS_PAYMENTS).
+CREATE FUNCTION warehouse_security.refuse_payment_for_cancelled_invoice() RETURNS trigger
+    LANGUAGE plpgsql SECURITY DEFINER
+    SET search_path TO 'pg_catalog', 'public', 'pg_temp'
+    AS $$
+BEGIN
+  IF NEW.invoice_id IS NOT NULL AND EXISTS (SELECT 1 FROM public.invoice i WHERE i.id = NEW.invoice_id AND i.cancelled_at IS NOT NULL FOR KEY SHARE) THEN
+    RAISE EXCEPTION 'Invoice % is cancelled: no payment can be recorded for it', NEW.invoice_id USING ERRCODE = 'WH409';
+  END IF;
+  RETURN NEW;
+END $$;
+ALTER FUNCTION warehouse_security.refuse_payment_for_cancelled_invoice() OWNER TO supabase_admin;
+REVOKE ALL ON FUNCTION warehouse_security.refuse_payment_for_cancelled_invoice() FROM PUBLIC, anon, authenticated;
+CREATE TRIGGER payments_refuse_cancelled_invoice BEFORE INSERT OR UPDATE OF invoice_id ON public.payments
+  FOR EACH ROW EXECUTE FUNCTION warehouse_security.refuse_payment_for_cancelled_invoice();
+
 -- 7. Audit triggers (public.audit_trigger_func, the pattern of migration 121). The UPDATE triggers fire only when more than updated_at changed.
 CREATE TRIGGER audit_invoice AFTER INSERT OR DELETE ON public.invoice FOR EACH ROW EXECUTE FUNCTION public.audit_trigger_func();
 CREATE TRIGGER audit_invoice_update AFTER UPDATE ON public.invoice FOR EACH ROW
@@ -438,5 +522,7 @@ UPDATE warehouse_maintenance.retention_policy
    SET days = 2920,
        description = 'Audit trail (audit_log): whole monthly partitions that ended more than 8 years (2920 days) ago are dropped; new partitions are made 3 months ahead'
  WHERE key = 'audit_log';
+
+DROP FUNCTION pg_temp.patch_function(regprocedure, text[], text[]);
 
 NOTIFY pgrst, 'reload schema';

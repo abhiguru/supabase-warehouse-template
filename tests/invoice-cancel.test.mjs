@@ -58,3 +58,11 @@ test('the cancellation columns are read apart from the header list', () => {
   assert.equal(invoiceCancelColumns, 'cancelled_at,cancel_reason');
   assert.ok(!headerColumns('invoice').includes('cancel'));
 });
+
+test('the preprinted print function reports the invoices the range skipped as cancelled, and says so when nothing is left to print', async () => {
+  const { readFileSync } = await import('node:fs');
+  const source = readFileSync(new URL('../functions/print-invoice-preprinted/index.ts', import.meta.url), 'utf8');
+  assert.match(source, /const skipped = Array\.isArray\(rpcResponse\.skipped\) \? rpcResponse\.skipped : \[\];/);
+  assert.equal(source.match(/^\s+skipped,$/gm).length, 2, 'the debug answer and the print answer both carry skipped');
+  assert.match(source, /are cancelled and were skipped/);
+});

@@ -56,6 +56,10 @@ BEGIN
             i.notes,
             i.created_by,
             i.updated_at as invoice_updated_at,
+            i.cancelled_at,
+            i.cancel_reason,
+            i.cancelled_by,
+            (SELECT p.name FROM user_profiles p WHERE p.id = i.cancelled_by) as cancelled_by_name,
 
             c.address as customer_address,
             c.city as customer_city,
@@ -236,6 +240,11 @@ BEGIN
                     'notes', v_invoice_header.notes,
                     'created_by', v_invoice_header.created_by,
                     'updated_at', v_invoice_header.invoice_updated_at,
+                    -- Migration 134: a cancelled invoice says so; who cancelled it is for administrators, supervisors and staff only.
+                    'cancelled_at', v_invoice_header.cancelled_at,
+                    'cancel_reason', v_invoice_header.cancel_reason,
+                    'cancelled_by', CASE WHEN auth.jwt()->>'role' = 'service_role' OR v_user_role IN ('admin', 'supervisor', 'staff') THEN v_invoice_header.cancelled_by END,
+                    'cancelled_by_name', CASE WHEN auth.jwt()->>'role' = 'service_role' OR v_user_role IN ('admin', 'supervisor', 'staff') THEN v_invoice_header.cancelled_by_name END,
 
                     'customer', jsonb_build_object(
                         'id', v_invoice_header.customer_id,

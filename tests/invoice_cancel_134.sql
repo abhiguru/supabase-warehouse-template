@@ -294,7 +294,7 @@ SELECT public.get_invoice_detail(:'inv1'::uuid)->'invoice' AS d_staff \gset
 SELECT public.get_invoice_detail(:'inv_new'::uuid)->'invoice' AS d_live \gset
 SELECT set_config('request.jwt.claims',:'customer_claims',true);
 SELECT public.get_invoice_detail(:'inv1'::uuid)->'invoice' AS d_customer \gset
-SELECT jsonb_agg(to_jsonb(r)) AS c_rows FROM (SELECT id,cancelled_at,cancelled_by,cancel_reason FROM public.invoice WHERE customer_id=:'north'::uuid ORDER BY inv_no) r \gset
+SELECT jsonb_agg(to_jsonb(r)) AS c_rows FROM (SELECT id,cancelled_at,cancel_reason FROM public.invoice WHERE customer_id=:'north'::uuid ORDER BY inv_no) r \gset
 SELECT public.get_customer_invoice_summary(:'north'::uuid,'2026-01-01','2026-12-31') AS s_customer \gset
 SELECT public.get_customer_activity_detail(:'north'::uuid,'2026-01-01','2026-12-31') AS a_customer \gset
 SELECT set_config('request.jwt.claims',:'other_claims',true);
@@ -366,9 +366,105 @@ SELECT pg_temp.ic_assert(jsonb_path_query_first(:'rates1'::jsonb,'$.**.source') 
  'the stored rate of a line comes from a live invoice only, never a cancelled one: '||:'rates1'||:'rates2');
 SELECT pg_temp.ic_assert((SELECT max(v::text::numeric) FROM jsonb_path_query(:'all_activity'::jsonb,'$.**.total_invoice_amount') v) = (SELECT total FROM public.invoice WHERE id=:'inv_new'::uuid),
  'the all-customers activity summary leaves cancelled invoices out of the invoice amount: '||:'all_activity');
--- The date of a dispatch whose invoices are all cancelled can change (update_dispatch_smart); one with a live invoice keeps its date.
+-- 12b. More places where a cancelled invoice is not live (migration 134, review): the edit guards of GRN lots and dispatch lines, the line flags of the GRN
+-- edit form, the GRN edit rules (date, new lot), get_invoice_data, the preprinted print range, the GRN details summary, payments, the delete trigger and
+-- the reason rules. GRN CN2 has only cancelled invoices (7 and 9); GRN CN1 has the live invoice 6.
 SELECT t.id AS lot1 FROM public.goodsreceived_trl t WHERE t.gr_id=:'grn1'::uuid \gset
 SELECT t.id AS lot2 FROM public.goodsreceived_trl t WHERE t.gr_id=:'grn2'::uuid \gset
+SELECT pg_temp.ic_assert((SELECT bool_and((l->>'on_invoice')::boolean) AND count(*)>0 FROM jsonb_array_elements(:'e1'::jsonb#>'{data,lines}') l)
+ AND (SELECT NOT bool_or((l->>'on_invoice')::boolean) AND count(*)>0 FROM jsonb_array_elements(:'e2'::jsonb#>'{data,lines}') l),
+ 'GRN edit state: a line is on an invoice only through a live one: '||:'e1'||:'e2');
+SELECT set_config('request.jwt.claims',:'admin_claims',true);
+SET LOCAL ROLE authenticated;
+-- The lot fields (item, packing, weight) of a line on a live invoice are kept; on cancelled invoices only they can change.
+SELECT public.update_grn(p_grn_id=>:'grn1'::uuid,p_items=>jsonb_build_array(jsonb_build_object('id',:'lot1','item_id',:'item_id','item_name','Cancel Test Garlic','packaging','Bag','qty',20,'weight',11))) AS ug_lot_live \gset
+SELECT public.update_grn(p_grn_id=>:'grn2'::uuid,p_items=>jsonb_build_array(jsonb_build_object('id',:'lot2','item_id',:'item_id','item_name','Cancel Test Garlic','packaging','Bag','qty',20,'weight',11))) AS ug_lot_cancelled \gset
+-- The date and a new lot of an invoiced GRN are refused; of a GRN whose only invoices are cancelled they are accepted.
+SELECT public.update_grn(p_grn_id=>:'grn1'::uuid,p_date=>'2026-03-30T12:00:00Z',p_items=>jsonb_build_array(jsonb_build_object('id',:'lot1','item_id',:'item_id','item_name','Cancel Test Garlic','packaging','Bag','qty',20,'weight',10))) AS ug_date_live \gset
+SELECT public.update_grn(p_grn_id=>:'grn1'::uuid,p_items=>jsonb_build_array(jsonb_build_object('id',:'lot1','item_id',:'item_id','item_name','Cancel Test Garlic','packaging','Bag','qty',20,'weight',10),
+  jsonb_build_object('item_id',:'item_id','item_name','Cancel Test Garlic','packaging','Bag','qty',5,'weight',10))) AS ug_lot_new_live \gset
+SELECT public.update_grn(p_grn_id=>:'grn2'::uuid,p_date=>'2026-03-30T12:00:00Z',p_items=>jsonb_build_array(jsonb_build_object('id',:'lot2','item_id',:'item_id','item_name','Cancel Test Garlic','packaging','Bag','qty',20,'weight',11))) AS ug_date_cancelled \gset
+SELECT public.update_grn(p_grn_id=>:'grn2'::uuid,p_items=>jsonb_build_array(jsonb_build_object('id',:'lot2','item_id',:'item_id','item_name','Cancel Test Garlic','packaging','Bag','qty',20,'weight',11),
+  jsonb_build_object('item_id',:'item_id','item_name','Cancel Test Garlic','packaging','Bag','qty',5,'weight',10))) AS ug_lot_new_cancelled \gset
+-- A dispatch line on a live invoice keeps its quantity; one on cancelled invoices can change.
+SELECT public.update_dispatch_smart(:'disp1'::uuid,NULL,ARRAY[jsonb_build_object('gr_trl_id',:'lot1','disp_qty',19)]) AS ud_qty_live \gset
+SELECT public.update_dispatch_smart(:'disp2'::uuid,NULL,ARRAY[jsonb_build_object('gr_trl_id',:'lot2','disp_qty',19)]) AS ud_qty_cancelled \gset
+RESET ROLE;
+SELECT pg_temp.ic_assert(:'ug_lot_live'::jsonb->>'success'='false' AND :'ug_lot_cancelled'::jsonb->>'success'='true' AND (SELECT weight=11 FROM public.goodsreceived_trl WHERE id=:'lot2'::uuid)
+ AND (SELECT weight=10 FROM public.goodsreceived_trl WHERE id=:'lot1'::uuid),
+ 'update_grn: the weight of a lot on a live invoice is kept, on cancelled invoices it can change: '||:'ug_lot_live'||' / '||:'ug_lot_cancelled');
+SELECT pg_temp.ic_assert(:'ug_date_live'::jsonb->>'reason'='GRN_DATE_LOCKED' AND :'ug_date_cancelled'::jsonb->>'success'='true'
+ AND (SELECT warehouse_security.business_date(date)='2026-03-30' FROM public.goodsreceived WHERE id=:'grn2'::uuid),
+ 'update_grn: the date of a GRN with a live invoice is locked, with only cancelled invoices it changes: '||:'ug_date_live'||' / '||:'ug_date_cancelled');
+SELECT pg_temp.ic_assert(:'ug_lot_new_live'::jsonb->>'success'='false' AND :'ug_lot_new_cancelled'::jsonb->>'success'='true' AND (SELECT count(*)=2 FROM public.goodsreceived_trl WHERE gr_id=:'grn2'::uuid),
+ 'update_grn: a new lot is refused on a GRN with a live invoice and accepted when its invoices are all cancelled: '||:'ug_lot_new_live'||' / '||:'ug_lot_new_cancelled');
+SELECT pg_temp.ic_assert(:'ud_qty_live'::jsonb->>'success'='false' AND :'ud_qty_live'::jsonb->>'error' ~ 'Cannot modify invoiced items' AND :'ud_qty_cancelled'::jsonb->>'success'='true',
+ 'update_dispatch_smart: a line on a live invoice keeps its quantity, on cancelled invoices it can change: '||:'ud_qty_live'||' / '||:'ud_qty_cancelled');
+
+-- get_invoice_data (the print and detail data): the cancellation, and who cancelled it for staff and above only.
+SELECT set_config('request.jwt.claims',:'staff_claims',true);
+SET LOCAL ROLE authenticated;
+SELECT public.get_invoice_data(:'inv1'::uuid)#>'{data,header}' AS id_staff \gset
+SELECT public.get_invoice_data(:'inv_new'::uuid)#>'{data,header}' AS id_live \gset
+SELECT set_config('request.jwt.claims',:'customer_claims',true);
+SELECT public.get_invoice_data(:'inv1'::uuid)#>'{data,header}' AS id_customer \gset
+RESET ROLE;
+SELECT pg_temp.ic_assert(:'id_staff'::jsonb->>'cancel_reason'='Entered twice' AND :'id_staff'::jsonb->>'cancelled_at' IS NOT NULL AND :'id_staff'::jsonb->>'cancelled_by_name'='Cancel Test Supervisor'
+ AND :'id_staff'::jsonb->>'cancelled_by'=:'supervisor_profile','get_invoice_data for staff names the cancellation and who: '||:'id_staff');
+SELECT pg_temp.ic_assert(:'id_customer'::jsonb->>'cancel_reason'='Entered twice' AND :'id_customer'::jsonb->>'cancelled_at' IS NOT NULL
+ AND :'id_customer'::jsonb->'cancelled_by'='null'::jsonb AND :'id_customer'::jsonb->'cancelled_by_name'='null'::jsonb,'get_invoice_data for a customer account: the cancellation, not who: '||:'id_customer');
+SELECT pg_temp.ic_assert(:'id_live'::jsonb->'cancelled_at'='null'::jsonb AND :'id_live'::jsonb->'cancel_reason'='null'::jsonb,'get_invoice_data of a live invoice: null cancellation: '||:'id_live');
+
+-- Preprinted printing: the range holds the live invoice only, and names the cancelled ones as skipped.
+SELECT set_config('request.jwt.claims','{"role":"service_role"}',true);
+SET LOCAL ROLE service_role;
+SELECT public.get_invoice_range_for_print('1','99',2026,100) AS pr \gset
+RESET ROLE;
+SELECT pg_temp.ic_assert((SELECT array_agg((r->>'inv_no')::int ORDER BY (r->>'inv_no')::int) = ARRAY[6] FROM jsonb_array_elements(:'pr'::jsonb->'data') r)
+ AND (SELECT array_agg((r->>'inv_no')::int ORDER BY (r->>'inv_no')::int) = ARRAY[5,7,9] AND bool_and(r->>'reason'='cancelled') FROM jsonb_array_elements(:'pr'::jsonb->'skipped') r),
+ 'the print range leaves out cancelled invoices and lists them as skipped (cancelled): '||:'pr');
+
+-- GRN details: the invoice summary counts live invoices only and says how many are cancelled.
+SELECT set_config('request.jwt.claims',:'staff_claims',true);
+SET LOCAL ROLE authenticated;
+SELECT public.get_grn_details(:'grn1'::uuid)::text AS gd1 \gset
+SELECT public.get_grn_details(:'grn2'::uuid)::text AS gd2 \gset
+RESET ROLE;
+SELECT pg_temp.ic_assert(jsonb_path_query_first(:'gd1'::jsonb,'$.**.invoices_summary') @> '{"total_invoices":1,"cancelled_count":1,"invoice_numbers":[6]}'
+ AND jsonb_path_query_first(:'gd2'::jsonb,'$.**.invoices_summary') @> '{"total_invoices":0,"cancelled_count":2,"invoice_numbers":[]}',
+ 'get_grn_details counts live invoices only: '||jsonb_path_query_first(:'gd1'::jsonb,'$.**.invoices_summary')::text||jsonb_path_query_first(:'gd2'::jsonb,'$.**.invoices_summary')::text);
+
+-- Payments: none is recorded for a cancelled invoice, nor moved onto one.
+SELECT pg_temp.ic_call(format('INSERT INTO public.payments(payment_no,payment_date,customer_id,invoice_id,amount,payment_mode) VALUES (''CNPX'',now(),%L,%L,1,''cash'') RETURNING to_jsonb(payments)',:'north',:'inv1')) AS pay_cancelled \gset
+INSERT INTO public.payments(payment_no,payment_date,customer_id,invoice_id,amount,payment_mode) VALUES ('CNPY',now(),:'north'::uuid,:'inv_new'::uuid,1,'cash');
+SELECT pg_temp.ic_call(format('UPDATE public.payments SET invoice_id=%L WHERE payment_no=''CNPY'' RETURNING to_jsonb(payments)',:'inv1')) AS pay_moved \gset
+SELECT pg_temp.ic_assert(:'pay_cancelled'::jsonb->>'state'='WH409' AND :'pay_cancelled'::jsonb->>'raised' ~ 'is cancelled' AND :'pay_moved'::jsonb->>'state'='WH409'
+ AND (SELECT invoice_id=:'inv_new'::uuid FROM public.payments WHERE payment_no='CNPY') AND NOT EXISTS (SELECT 1 FROM public.payments WHERE payment_no='CNPX'),
+ 'no payment is recorded for a cancelled invoice or moved onto one: '||:'pay_cancelled'||:'pay_moved');
+DELETE FROM public.payments WHERE payment_no='CNPY';
+
+-- The trigger that clears the GRN flag when an invoice row is deleted does not count cancelled invoices as live.
+INSERT INTO public.invoice(inv_fin_year,inv_no,gr_id,gr_no,customer_id,customer_name,inv_date,total) SELECT 2026,11,gr_id,gr_no,customer_id,customer_name,inv_date,0 FROM public.invoice WHERE id=:'inv2'::uuid;
+UPDATE public.goodsreceived SET invoiced=true WHERE id=:'grn2'::uuid;
+DELETE FROM public.invoice WHERE inv_fin_year=2026 AND inv_no=11;
+SELECT pg_temp.ic_assert(NOT (SELECT invoiced FROM public.goodsreceived WHERE id=:'grn2'::uuid),'deleting the only live invoice row of a GRN clears its flag although cancelled rows remain');
+
+-- The reason: trimmed like the discount reason (spaces, no-break spaces and zero-width characters), 3 to 500 characters left; the table refuses a bad record too.
+SELECT set_config('request.jwt.claims',:'admin_claims',true);
+SET LOCAL ROLE authenticated;
+SELECT public.cancel_invoice(:'inv_new'::uuid,U&' \00A0\200B\3000 ') AS r_blank_unicode \gset
+SELECT public.cancel_invoice(:'inv_new'::uuid,U&'\00A0ab\200B') AS r_short_unicode \gset
+SELECT public.cancel_invoice(:'inv_new'::uuid,'ab') AS r_two_args \gset
+RESET ROLE;
+SELECT pg_temp.ic_assert((SELECT count(*)=3 AND bool_and(COALESCE(a->>'reason'='CANCEL_REASON_INVALID',false)) FROM unnest(ARRAY[:'r_blank_unicode'::jsonb,:'r_short_unicode'::jsonb,:'r_two_args'::jsonb]) a)
+ AND (SELECT cancelled_at IS NULL FROM public.invoice WHERE id=:'inv_new'::uuid),'a reason that is only invisible characters, or under 3 characters once they are trimmed, is refused; the token argument has a default');
+SELECT pg_temp.ic_assert((SELECT count(*)=4 AND bool_and(COALESCE(pg_temp.ic_call(format('UPDATE public.invoice SET cancelled_at=now(), cancelled_by=%L, cancel_reason=%s WHERE id=%L',:'supervisor_profile',reason,:'inv_new'))->>'state'='23514',false))
+   FROM (VALUES ('NULL'),('''ab'''),('U&'' \00A0\200B '''),(quote_literal(repeat('x',501)))) v(reason))
+ AND pg_temp.ic_call(format('UPDATE public.invoice SET cancelled_at=now(), cancel_reason=''long enough'' WHERE id=%L',:'inv_new'))->>'state'='23514',
+ 'the CHECK refuses a cancelled invoice with no person, no reason, an invisible reason, a short one or a long one');
+SELECT pg_temp.ic_assert((SELECT cancelled_at IS NULL FROM public.invoice WHERE id=:'inv_new'::uuid),'the refused updates changed nothing');
+
+-- The date of a dispatch whose invoices are all cancelled can change (update_dispatch_smart); one with a live invoice keeps its date.
 SELECT set_config('request.jwt.claims',:'admin_claims',true);
 SET LOCAL ROLE authenticated;
 SELECT public.update_dispatch_smart(:'disp1'::uuid,jsonb_build_object('disp_date','2026-05-03T12:00:00Z'),ARRAY[jsonb_build_object('gr_trl_id',:'lot1','disp_qty',20)]) AS ud_live \gset
@@ -388,9 +484,9 @@ SELECT pg_temp.ic_assert(:'dd_live'::jsonb->>'blocking_reason'='invoices_exist' 
 -- 13. Audit: every insert and delete, and every update that changes more than updated_at, on the four tables; none for an updated_at-only change.
 CREATE FUNCTION pg_temp.ic_audit(t text, a text) RETURNS bigint LANGUAGE sql AS $$ SELECT count(*) FROM public.audit_log WHERE table_name=t AND action=a $$;
 -- Inserts happened in the fixture and by the saves (invoice, invoice_trl, dispatch_trl) and the payment above (payments).
-SELECT pg_temp.ic_assert(pg_temp.ic_audit('invoice','INSERT')>=4 AND pg_temp.ic_audit('invoice_trl','INSERT')>=3 AND pg_temp.ic_audit('dispatch_trl','INSERT')>=2 AND pg_temp.ic_audit('payments','INSERT')=1,
+SELECT pg_temp.ic_assert(pg_temp.ic_audit('invoice','INSERT')>=4 AND pg_temp.ic_audit('invoice_trl','INSERT')>=3 AND pg_temp.ic_audit('dispatch_trl','INSERT')>=2 AND pg_temp.ic_audit('payments','INSERT')=2,
  'inserts are audited on the four tables');
-SELECT pg_temp.ic_assert(pg_temp.ic_audit('payments','DELETE')=1,'the payment deleted in section 7 is audited');
+SELECT pg_temp.ic_assert(pg_temp.ic_audit('payments','DELETE')=2,'the two payments deleted (sections 7 and 12b) are audited');
 SELECT pg_temp.ic_assert((SELECT new_data->>'cancel_reason'='Entered twice' AND old_data->>'cancel_reason' IS NULL AND user_id IS NOT NULL FROM public.audit_log
    WHERE table_name='invoice' AND action='UPDATE' AND new_data->>'id'=:'inv1' AND new_data->>'cancelled_at' IS NOT NULL),'the cancellation is one audited update with the old and the new row and the user');
 -- An update that changes only updated_at writes nothing; a real change writes one row; a delete writes one.

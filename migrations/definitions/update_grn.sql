@@ -275,10 +275,10 @@ BEGIN
         END IF;
 
         -- ---- Migration 121 refusals. Each answers before the first write; nothing here changes a row. ----
-        -- An invoiced GRN is one with a live invoice, or whose invoiced flag is set.
+        -- An invoiced GRN is one with a live invoice (not deleted, not cancelled: migration 134), or whose invoiced flag is set.
         SELECT i.inv_no, i.inv_fin_year INTO v_inv_no, v_inv_year
         FROM invoice i
-        WHERE i.gr_id = p_grn_id AND i.deleted_at IS NULL
+        WHERE i.gr_id = p_grn_id AND i.deleted_at IS NULL AND i.cancelled_at IS NULL
         ORDER BY i.inv_fin_year, i.inv_no, i.id
         LIMIT 1;
         v_is_invoiced := v_inv_no IS NOT NULL OR v_stored_invoiced;
