@@ -114,6 +114,9 @@ cleanup() {
 }
 trap cleanup EXIT
 
+# Before the first change: the recreate further down empties the logs of these services, so the last 48 hours are kept now, redacted with the
+# passwords still in compose.env and with the stack whole (best effort; <state>/diagnostics/pre-rotate-db-passwords-*).
+node "$ROOT/scripts/service-diagnostics.mjs" save rotate-db-passwords || true
 node "$ROOT/scripts/db-roles.mjs" stage "$live" "$staged" "${superuser[@]}"
 # 1. The database, in one transaction, signed in with the current superuser
 #    password. From here on the staged file is kept unless the database is known
@@ -157,8 +160,6 @@ rollback() {
   fi
   exit 1
 }
-# The recreate below empties the logs of these services: keep the last 48 hours first (best effort, redacted; <state>/diagnostics/pre-rotate-db-passwords-*).
-node "$ROOT/scripts/service-diagnostics.mjs" save rotate-db-passwords || true
 if ((${#recreate[@]})) && ! compose --profile '*' up -d --force-recreate --wait --wait-timeout 180 "${recreate[@]}"; then rollback; fi
 bash "$ROOT/scripts/db-roles.sh" check || rollback
 node "$ROOT/scripts/doctor.mjs" --local || rollback

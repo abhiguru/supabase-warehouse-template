@@ -213,6 +213,7 @@ test('CORS: the one configured origin, with credentials, answered at the gateway
   // The errors the gateway makes carry the CORS headers too, so a browser can read them.
   for (const status of [401, 404, 413, 429, 502, 503, 504]) {
     assert.match(block(CODE.locations, `location @json_${status}`), /include \/etc\/nginx\/cors-headers\.conf;/, `the ${status} answer`);
+    // 502 and 504 need a dead upstream, so they are not answered live in the nginx test: the id comes with that include (cors-headers.conf adds it).
     assert.match(CODE.locations, new RegExp(`^error_page ${status} @json_${status};$`, 'm'));
   }
 });

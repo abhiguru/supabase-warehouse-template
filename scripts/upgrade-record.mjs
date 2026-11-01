@@ -13,6 +13,7 @@
 // to the format it has (`format=1`): fields are added, never renamed, so the reader of one release understands the writer of
 // another. This module only reads: upgrade.sh (bash) is the only writer.
 import { lstatSync, readFileSync } from 'node:fs';
+import { fileURLToPath } from 'node:url';
 import { join } from 'node:path';
 import { isMain } from './is-main.mjs';
 
@@ -74,13 +75,23 @@ export function interruptedMessage(record, { own = false } = {}) {
 
 // What an operator runs to put the facility back on the old release, in order. Everything recorded after the backup is lost: with the API closed
 // (maintenance mode, from before the backup) that is only what reached the database another way, fas-sync if it was not paused.
-export function rollbackLines(record) {
+// The checkout that prints the way back may be one whose service-diagnostics.mjs has no `save` command; the line is left out then.
+const DIAGNOSTICS = fileURLToPath(new URL('./service-diagnostics.mjs', import.meta.url));
+export function hasSaveCommand(path = DIAGNOSTICS) {
+  try { return readFileSync(path, 'utf8').includes("services[0] === 'save'"); } catch { return false; }
+}
+
+export function rollbackLines(record, { saveCommand = hasSaveCommand() } = {}) {
   const phone = mask(record.adminPhone);
   const setup = `bash setup.sh --operator --state-dir ${quote(record.state)} --admin-phone 91XXXXXXXXXX --admin-name NAME${record.webhookOff ? ' --alert-webhook-file off' : ''}`;
   return [
     `To go back to ${record.fromLabel} (${record.fromSha}) instead, run these in the checkout, in this order. ${record.maintenance
       ? 'The API has been closed to phones since before the backup, so phones recorded nothing after it; what reached the database another way (fas-sync, if it was not paused, or a psql session) is lost:'
       : 'Everything the facility recorded after the backup was taken is lost:'}`,
+    ...(saveCommand ? [
+      `  WAREHOUSE_STATE_DIR=${quote(record.state)} node scripts/service-diagnostics.mjs save rollback || true`,
+      '      (first: the logs of the running services are about to be emptied by the restore and the setup; this keeps the last 48 hours, redacted, in the state\'s diagnostics folder; it never stops the way back)',
+    ] : []),
     `  (umask 022; git checkout --detach ${record.fromSha})`,
     '  bash stop.sh',
     ...(record.preImages ? [

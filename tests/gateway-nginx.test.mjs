@@ -256,6 +256,7 @@ test('the key check is on the REST route only, with the messages the app reads, 
   // A request over the body limit is refused before the key is looked at, with the documented body.
   const big = await request('/rest/v1/rpc/x', { method: 'POST', headers: { ...ip, apikey: ANON, 'content-length': String(10 * 1024 * 1024 + 1) }, body: Buffer.alloc(10 * 1024 * 1024 + 1, 120) }).catch(error => ({ status: error.code, text: '' }));
   assert.ok(big.status === 413 || big.status === 'ECONNRESET' || big.status === 'EPIPE', `HTTP ${big.status}`);
+  if (big.status === 413) assertRequestId(big, 'the 413');
 });
 
 test('CORS preflights: 204 with the origin, credentials, the route\'s lists and a day of cache; any other OPTIONS goes upstream', { skip }, async t => {
@@ -454,6 +455,7 @@ test('rate limits per client address: 100 then a refusal on functions, 1800 then
   assert.ok(passed >= 100 && passed <= 101 + Math.ceil(seconds * 100 / 60) + 2, `${passed} requests passed in ${seconds} s`);
   assert.equal(refused.text, '{"message":"API rate limit exceeded"}');
   assert.equal(refused.headers['retry-after'], '1');
+  assertRequestId(refused, 'the 429');
   assert.match(refused.headers['content-type'], /^application\/json/);
   assert.deepEqual(refused.all('access-control-allow-origin'), [ORIGIN]);
   assert.equal((await request('/functions/v1/x', { headers: { 'CF-Connecting-IP': address() } })).status, 200, 'another address has a bucket of its own');
@@ -867,6 +869,7 @@ test('maintenance mode: every API route answers 503 with the body that says upgr
   const ip = address();
   const burst = await Promise.all(Array.from({ length: 150 }, () => closed('/functions/v1/get-public-config', { headers: { 'CF-Connecting-IP': ip } })));
   assert.deepEqual([...new Set(burst.map(item => item.status))], [503]);
+  assertRequestId(burst[0], 'the 503');
   const upstream = docker(['logs', STUB]);
   assert.doesNotMatch(`${upstream.stdout}\n${upstream.stderr}`, new RegExp(`maintenance-${marker}`), 'the stand-in never saw a request of the closed gateway');
   assert.doesNotMatch(`${upstream.stdout}\n${upstream.stderr}`, /operator-otp|abc/);

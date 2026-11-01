@@ -16,7 +16,7 @@ file used to carry for earlier installations are in git: `git show b45ae0b:CHANG
   server-side error lines (only an id of exactly that form is repeated). `scripts/watch.mjs` still reads old lines. Before an upgrade, `setup.sh`
   on an existing state, `rotate-keys.sh` and `scripts/rotate-db-passwords.sh` recreate containers, they save the last 48 hours of each
   service log, redacted, in `<state>/diagnostics/pre-<label>-<utc>/` (`node scripts/service-diagnostics.mjs save <label>`, the newest 5 kept, best
-  effort). The gateway services keep 10 log files instead of 3. See [MONITORING.md](docs/MONITORING.md#finding-one-request). Operator action: none.
+  effort). The saves run before each script's first change and the printed way back of an interrupted upgrade starts with one; copies are redacted of query strings and keep the newest `pre-upgrade-*`. Storage logs the request id (`REQUEST_ID_HEADER`). The gateway services keep 10 log files instead of 3. See [MONITORING.md](docs/MONITORING.md#finding-one-request). Operator action: none.
   Tests: `tests/gateway-config.test.mjs`, `tests/gateway-nginx.test.mjs`, `tests/watch.test.mjs`, `tests/access.test.mjs`,
   `tests/pdf-renderer-footer.test.mjs`, `tests/service-diagnostics.test.mjs`, `tests/compose-networks.test.mjs`, `tests/diagnostics-wiring.test.mjs`.
 

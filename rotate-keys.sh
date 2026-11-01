@@ -43,6 +43,10 @@ cleanup() {
 }
 trap cleanup EXIT
 
+# Before the first change: the recreate below starts containers with empty logs, so the last 48 hours of each service are kept now, redacted
+# with the secrets still in compose.env and with the stack whole (best effort; <state>/diagnostics/pre-rotate-keys-*, docs/MONITORING.md, "Finding one request").
+node "$ROOT/scripts/service-diagnostics.mjs" save rotate-keys || true
+
 node "$ROOT/scripts/rotate-keys.mjs" "$live" "$staged"
 secret="$(sed -n 's/^JWT_SECRET=//p' "$staged")"
 [[ "$secret" =~ ^[0-9a-f]{96}$ ]] || { echo 'Staged configuration has no valid JWT_SECRET.' >&2; exit 1; }
@@ -54,10 +58,6 @@ secret="$(sed -n 's/^JWT_SECRET=//p' "$staged")"
 # The database now signs with the new secret. If this process dies before the
 # rename below, rerunning the command stages and applies a newer secret again.
 mv -f "$staged" "$live"
-
-# A recreated container starts with an empty log: keep the last 48 hours of each service first (best effort, redacted;
-# <state>/diagnostics/pre-rotate-keys-*, docs/MONITORING.md, "Finding one request").
-node "$ROOT/scripts/service-diagnostics.mjs" save rotate-keys || true
 
 # Recreate only the running key consumers so an intentionally stopped optional
 # service is not started. db is included so its environment matches on reruns.

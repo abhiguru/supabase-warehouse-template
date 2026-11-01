@@ -1,10 +1,11 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { mkdtempSync, mkdirSync, readdirSync, readFileSync, statSync, rmSync, existsSync } from 'node:fs';
+import { fileURLToPath } from 'node:url';
+import { mkdtempSync, mkdirSync, symlinkSync, readdirSync, readFileSync, statSync, rmSync, existsSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { spawnSync } from 'node:child_process';
-import { diagnoseService, redactServiceLog, saveLogs, showUnhealthyServices } from '../scripts/service-diagnostics.mjs';
+import { SAVE_TAIL_LINES, cutSince, diagnoseService, redactServiceLog, saveLogs, showUnhealthyServices } from '../scripts/service-diagnostics.mjs';
 
 test('service diagnostics redact literal, URL and JSON encoded credentials', () => {
   const secret = 'fictional p@ss"\\word';
@@ -101,7 +102,9 @@ test('saveLogs writes each allowed service log, redacted, in a private pre-<labe
       assert.ok(!text.includes(SECRET), `${name} is redacted`);
       assert.match(text, /\[REDACTED\]/);
     }
-    for (const args of calls) assert.deepEqual(args.slice(args.indexOf('logs')).slice(0, 5), ['logs', '--timestamps', '--no-color', '--since', '48h']);
+    // No --since (some Docker versions return nothing for it): a bounded tail, cut by the time stamps below.
+    for (const args of calls) assert.deepEqual(args.slice(args.indexOf('logs')).slice(0, 5), ['logs', '--timestamps', '--no-color', '--tail', String(SAVE_TAIL_LINES)]);
+    assert.ok(calls.every(args => !args.includes('--since')));
     assert.ok(calls.some(args => args.includes('--profile') && args.includes('pooler')) && calls.some(args => args.includes('lan')), 'profile services are asked with their profile');
     assert.equal(said.length, 1);
   } finally { rmSync(state, { recursive: true, force: true }); }
@@ -116,7 +119,8 @@ test('saveLogs keeps the newest 5 pre-* directories and leaves other entries alo
     mkdirSync(join(base, 'notes'));
     saveLogs({ label: 'upgrade', stateDir: state, run: okRun([]), env: () => ({}), now: () => new Date('2026-11-01T10:00:00Z'), report: () => {} });
     const left = readdirSync(base).sort();
-    assert.deepEqual(left, ['notes', 'pre-rotate-keys-20261003T010000Z', 'pre-rotate-keys-20261004T010000Z', 'pre-rotate-keys-20261005T010000Z', 'pre-rotate-keys-20261006T010000Z', 'pre-upgrade-20261101T100000Z']);
+    // The newest pre-upgrade-* directory is outside the count (it is the one just written here), so five others stay beside it.
+    assert.deepEqual(left, ['notes', 'pre-rotate-keys-20261002T010000Z', 'pre-rotate-keys-20261003T010000Z', 'pre-rotate-keys-20261004T010000Z', 'pre-rotate-keys-20261005T010000Z', 'pre-rotate-keys-20261006T010000Z', 'pre-upgrade-20261101T100000Z']);
   } finally { rmSync(state, { recursive: true, force: true }); }
 });
 
@@ -140,9 +144,63 @@ test('saveLogs is best effort: a failing compose, a bad label or a bad state pri
 test('the save command exits 0 even when it can save nothing', () => {
   const state = freshState();
   try {
-    const result = spawnSync(process.execPath, ['scripts/service-diagnostics.mjs', 'save', 'upgrade'], { encoding: 'utf8', env: { PATH: '/nonexistent', WAREHOUSE_STATE_DIR: state }, timeout: 60000 });
+    const result = spawnSync(process.execPath, [fileURLToPath(new URL('../scripts/service-diagnostics.mjs', import.meta.url)), 'save', 'upgrade'], { encoding: 'utf8', env: { PATH: '/nonexistent', WAREHOUSE_STATE_DIR: state }, timeout: 60000 });
     assert.equal(result.status, 0, result.stderr);
     assert.equal(result.stderr.trim().split('\n').length, 1);
     assert.equal(existsSync(join(state, 'diagnostics')) ? readdirSync(join(state, 'diagnostics')).length : 0, 0);
   } finally { rmSync(state, { recursive: true, force: true }); }
+});
+
+test('saveLogs cuts each log by its time stamps: lines older than the window go, a line without a stamp follows the one before it', () => {
+  const text = ['gateway-1  | 2026-10-29T10:00:00.000000000Z old', 'continuation of old', 'gateway-1  | 2026-10-31T11:00:00.5Z new', 'continuation of new', '2026-11-01T01:00:00Z bare'].join('\n');
+  assert.equal(cutSince(text, Date.parse('2026-10-30T10:00:00Z')), ['gateway-1  | 2026-10-31T11:00:00.5Z new', 'continuation of new', '2026-11-01T01:00:00Z bare'].join('\n'));
+  const state = freshState();
+  try {
+    saveLogs({ label: 'cut', stateDir: state, run: () => ({ status: 0, stdout: text, stderr: '' }), env: () => ({}), now: () => new Date('2026-11-01T10:00:00Z'), report: () => {} });
+    const file = join(state, 'diagnostics', 'pre-cut-20261101T100000Z', 'rest.log');
+    assert.ok(!readFileSync(file, 'utf8').includes('old'));
+  } finally { rmSync(state, { recursive: true, force: true }); }
+});
+
+test('saveLogs keeps what it could read when one service fails, and leaves a symlinked diagnostics folder alone', () => {
+  const state = freshState();
+  try {
+    const said = [];
+    saveLogs({ label: 'partial', stateDir: state, run: (command, args) => (args.includes('functions') ? { status: 1, stdout: '', stderr: 'boom' } : { status: 0, stdout: '2026-11-01T09:00:00Z ok\n', stderr: '' }),
+      env: () => ({}), now: () => new Date('2026-11-01T10:00:00Z'), report: line => said.push(line) });
+    assert.deepEqual(readdirSync(join(state, 'diagnostics', 'pre-partial-20261101T100000Z')).sort(), ['gateway-lan.log', 'gateway.log', 'rest.log', 'supavisor.log']);
+    const elsewhere = freshState(), linked = freshState();
+    symlinkSync(elsewhere, join(linked, 'diagnostics'));
+    saveLogs({ label: 'link', stateDir: linked, run: okRun([]), env: () => ({}), report: line => said.push(line) });
+    assert.deepEqual(readdirSync(elsewhere), [], 'nothing was written through the link');
+    assert.match(said.at(-1), /not saved/);
+    rmSync(elsewhere, { recursive: true, force: true }); rmSync(linked, { recursive: true, force: true });
+  } finally { rmSync(state, { recursive: true, force: true }); }
+});
+
+test('saveLogs never removes the newest pre-upgrade directory, whatever the count; five others stay', () => {
+  const state = freshState();
+  try {
+    const base = join(state, 'diagnostics');
+    mkdirSync(base, { recursive: true });
+    mkdirSync(join(base, 'pre-upgrade-20260901T010000Z'));
+    for (let day = 1; day <= 6; day += 1) mkdirSync(join(base, `pre-rotate-keys-2026100${day}T010000Z`));
+    saveLogs({ label: 'setup', stateDir: state, run: okRun([]), env: () => ({}), now: () => new Date('2026-11-01T10:00:00Z'), report: () => {} });
+    const left = readdirSync(base).sort();
+    assert.ok(left.includes('pre-upgrade-20260901T010000Z'), 'the oldest by date, but the only upgrade one, stays');
+    assert.equal(left.length, 6, 'the upgrade one and five others');
+    assert.ok(left.includes('pre-setup-20261101T100000Z') && !left.includes('pre-rotate-keys-20261001T010000Z'));
+  } finally { rmSync(state, { recursive: true, force: true }); }
+});
+
+test('redaction removes a query string from a quoted request line, and the referer and user agent PostgREST appends', () => {
+  const nginx = '2026/11/01 10:00:00 [error] 30#30: *3 upstream timed out (110: Operation timed out), client: 10.0.0.3, server: _, request: "GET /storage/v1/object/sign/docs/a.pdf?token=eyJsecretvalue&x=1 HTTP/1.1", upstream: "http://storage_up/object/sign/docs/a.pdf?token=eyJsecretvalue", host: "gateway:8000", referrer: "https://app.example.test/?q=1"';
+  const cleaned = redactServiceLog(nginx, {});
+  assert.ok(!cleaned.includes('secretvalue') && !cleaned.includes('x=1') && !cleaned.includes('referrer'), cleaned);
+  assert.match(cleaned, /request: "GET \/storage\/v1\/object\/sign\/docs\/a\.pdf\?\[REDACTED\] HTTP\/1\.1"/);
+  assert.match(cleaned, /client: 10\.0\.0\.3/, 'the rest of the line stays');
+  const rest = '172.18.0.5 - authenticated [01/Nov/2026:10:00:00 +0000] "GET /customers?select=name&mobile=eq.919888888871 HTTP/1.1" 500 - "https://app.example.test/x" "Mozilla/5.0 (Phone)"';
+  const cleanedRest = redactServiceLog(rest, {});
+  assert.equal(cleanedRest, '172.18.0.5 - authenticated [01/Nov/2026:10:00:00 +0000] "GET /customers?[REDACTED] HTTP/1.1" 500 -');
+  assert.equal(redactServiceLog('"GET /rest/v1/x HTTP/1.1" 200 12 0.01 0123456789abcdef0123456789abcdef', {}), '"GET /rest/v1/x HTTP/1.1" 200 12 0.01 0123456789abcdef0123456789abcdef', 'a gateway line is untouched');
 });

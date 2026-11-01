@@ -153,6 +153,7 @@ test('storage names its database superuser and does not install roles (its migra
   const { environment } = renderedCompose().services.storage;
   assert.equal(environment.DB_SUPER_USER, 'supabase_storage_admin');
   assert.equal(environment.DB_INSTALL_ROLES, 'false');
+  assert.equal(environment.REQUEST_ID_HEADER, 'x-request-id', 'storage logs the id the gateway sends');
 });
 
 test('every service has bounded logs', { skip }, () => {

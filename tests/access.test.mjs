@@ -73,9 +73,9 @@ test('the request id is repeated into a log line only when it is the gateway\'s 
   console.error = (...args) => logged.push(args.join(' '));
   try {
     createAuthErrorResponse({ status: 503, message: 'Profile lookup unavailable' }, {}, withHeader(id));
-    createAuthErrorResponse(new Error('Bearer secret-token leaked'), {}, withHeader('not-an-id'));
+    createAuthErrorResponse(new TypeError('Bearer secret-token leaked'), {}, withHeader('not-an-id'));
     createAuthErrorResponse(new Error('x'));
     createAuthErrorResponse({ status: 403, message: 'Session expired or revoked' }, {}, withHeader(id));
   } finally { console.error = oldError; }
-  assert.deepEqual(logged, [`auth error status=503 request_id=${id}`, 'auth error status=500 request_id=-', 'auth error status=500 request_id=-'], 'a 4xx is the client\'s and logs nothing');
+  assert.deepEqual(logged, [`auth error status=503 error=unknown request_id=${id}`, 'auth error status=500 error=TypeError request_id=-', 'auth error status=500 error=Error request_id=-'], 'a 4xx is the client\'s and logs nothing');
 });

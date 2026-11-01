@@ -225,6 +225,8 @@ services:
       # The roles already exist (database bootstrap). Storage reads this as === "true", so unset is also off;
       # it is set explicitly for clarity.
       DB_INSTALL_ROLES: "false"
+      # Storage logs the id the gateway gave the request (docker/nginx/api-locations.conf) as the request id of its own log lines.
+      REQUEST_ID_HEADER: x-request-id
       # The newest of Storage's own migrations that this image may apply (name = docker/storage/migrations-head.txt, kept equal
       # by tests/storage-schema.test.mjs). Storage migrates the catalog at start; without a freeze an image bump applies
       # whatever the new image ships, in setup's wait, to years of photo rows. Move it with the image (docker/storage/README.md).

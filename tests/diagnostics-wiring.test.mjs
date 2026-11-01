@@ -9,13 +9,15 @@ const read = path => readFileSync(new URL(`../${path}`, import.meta.url), 'utf8'
 const SAVE = label => new RegExp(`^\\s*node "\\$ROOT/scripts/service-diagnostics\\.mjs" save ${label} \\|\\| true$`, 'm');
 const at = (text, pattern) => { const found = text.search(pattern); assert.ok(found >= 0, `${pattern} is in the script`); return found; };
 
-test('rotate-keys.sh saves the logs before it recreates the key consumers', () => {
+test('rotate-keys.sh saves the logs before the first change (the staging of the new keys), so before any recreate', () => {
   const text = read('rotate-keys.sh');
+  assert.ok(at(text, SAVE('rotate-keys')) < at(text, /^node "\$ROOT\/scripts\/rotate-keys\.mjs"/m), 'before the first change');
   assert.ok(at(text, SAVE('rotate-keys')) < at(text, /compose --profile '\*' up -d --force-recreate/));
 });
 
-test('rotate-db-passwords.sh saves the logs before the recreate of the rotation (the rollback function above it only runs after it)', () => {
+test('rotate-db-passwords.sh saves the logs before the first change (the staging of the new passwords), so before any recreate', () => {
   const text = read('scripts/rotate-db-passwords.sh');
+  assert.ok(at(text, SAVE('rotate-db-passwords')) < at(text, /^node "\$ROOT\/scripts\/db-roles\.mjs" stage/m), 'before the first change');
   assert.ok(at(text, SAVE('rotate-db-passwords')) < at(text, /^if \(\(\$\{#recreate\[@\]\}\)\) && ! compose --profile '\*' up -d --force-recreate/m));
 });
 

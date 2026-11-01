@@ -462,8 +462,8 @@ bash scripts/compose.sh logs --since 48h functions | grep "$ID"
 The gateway line gives the time, path, status and duration; the functions log writes `request_id=<id>` on its server-side error lines
 (the profile lookup and the PDF renderer among them). The id carries no user data, so it is safe to paste into a message. The gateway keeps ten
 10 MB log files, and a recreated container starts with an empty log; before an upgrade, a key rotation or a database password rotation the
-last 48 hours of each service's log are saved, redacted, in `$WAREHOUSE_STATE_DIR/diagnostics/pre-<label>-<utc>/` (the newest five stay), so
-search there too when the request is older than the restart. By hand: `node scripts/service-diagnostics.mjs save <label>`.
+last 48 hours of the log of each of `gateway`, `gateway-lan`, `functions`, `rest` and `supavisor` are saved, redacted, in `$WAREHOUSE_STATE_DIR/diagnostics/pre-<label>-<utc>/` (the newest five stay), so
+search there too when the request is older than the restart. By hand: `node scripts/service-diagnostics.mjs save <label>`. The printed way back of an interrupted upgrade starts with the same command (`save rollback`).
 
 ## What it does not cover
 
