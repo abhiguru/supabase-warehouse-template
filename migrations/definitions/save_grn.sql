@@ -52,7 +52,7 @@ BEGIN
   END IF;
   -- Migration 121 (D13): the registration fits the column (20 characters), as the item name and packaging fit theirs.
   -- Migration 130: surrounding white space (spaces, tabs, line breaks, non-breaking spaces) is not stored, a blank one is NULL; the length is checked on the trimmed value.
-  p_registration := NULLIF(regexp_replace(p_registration, '^[\s ]+|[\s ]+$', '', 'g'), '');
+  p_registration := NULLIF(regexp_replace(regexp_replace(p_registration, '^[\s ]+|[\s ]+$', '', 'g'), '[\s ]+', ' ', 'g'), '');
   IF p_registration IS NOT NULL AND char_length(p_registration) > 20 THEN
     RETURN warehouse_security.grn_rate_failure('registration_too_long',
       'Registration can have at most 20 characters', jsonb_build_object('limit', 20));
