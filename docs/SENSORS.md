@@ -83,6 +83,15 @@ recorded separately before anyone is told the screen works.
 - **Retention.** `sensor_readings` older than 90 days (3 months) are removed by the database retention job (key
   `sensor_readings`, `npm run retention:preview`, deleted at the next
   `retention:apply`).
+- **Hourly summary, kept 24 months (migration 136).** Before the raw readings go, the same job summarizes them in
+  `sensor_hourly`: one row per device and **UTC hour** with the number of readings (`n`) and the minimum, maximum and
+  average of temperature and humidity (a value no reading of the hour carries is NULL). Only completed hours are rolled up;
+  the last rolled hour is rolled again on the next run so a late reading is folded in. A run rolls at most 2,000 hours that
+  have readings, and the raw readings are deleted only up to the hour already summarized for that device, so a first run on
+  a long backlog loses nothing (the rest follows on the next days). Rows older than the `sensor_hourly` policy (730 days,
+  24 months) are removed by the same job. `retention:preview` reports `sensor_hourly_rolled` (hours it would summarize) and
+  `sensor_hourly` (summary rows it would delete) next to `sensor_readings`, and writes nothing. The table has no app-role
+  grant; staff read it with `get_sensor_hourly(p_device_id, p_from, p_to)` ([API_CONTRACT.md](API_CONTRACT.md)).
 
 ## The ingest contract
 

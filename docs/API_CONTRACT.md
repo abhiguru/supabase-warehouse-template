@@ -1432,6 +1432,16 @@ What the app reads:
 - `get_sensor_history`: same signature, buckets on `measured_at`, averages
   ignore nulls, a sample count per bucket, and period `1` (today, 5-minute
   buckets).
+- `get_sensor_hourly(p_device_id uuid, p_from timestamptz, p_to timestamptz)` (migration 136; administrator, supervisor and
+  staff, a customer account gets PostgREST's 403 `42501` like the other sensor reads): the hourly minimum, maximum and average of
+  one device from `sensor_hourly`, which keeps 24 months (raw readings keep 90 days). Hours are UTC hour starts; `p_from` is
+  included, `p_to` excluded; rows are ordered by `hour`. Answer:
+  `{success:true, data:{device_id, device_name, location, from, to, hours:[{hour, sample_count, temperature_min,
+  temperature_max, temperature_avg, humidity_min, humidity_max, humidity_avg}]}, metadata:{row_count, bucket:'hour',
+  timezone:'UTC'}}`; `hour` is an ISO timestamp (`2026-10-02T03:00:00+00:00`), the figures are numbers with two decimals, and a
+  temperature or humidity that no reading of the hour carried is `null`. Hours without readings have no row. A 200
+  `{success:false, error, error_code}` for `INVALID_RANGE` (a null bound, or `p_to` not after `p_from`), `RANGE_TOO_LARGE` (more
+  than 400 days) and `DEVICE_NOT_FOUND`.
 - `get_sensor_device(p_device_id)` (new; administrator, supervisor and staff):
   one device's status, its first reading and its hub. `data` also carries the
   keys of a `devices[]` entry of `get_sensor_polling_data`, so the app reads it

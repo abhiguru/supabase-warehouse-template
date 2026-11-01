@@ -24,6 +24,7 @@ A ^function\|public\.create_dispatch_with_stock_check_internal\(
 B ^function\|public\.create_dispatch_with_stock_check_internal\(
 A ^function\|warehouse_security\.authorize_rpc\(
 B ^function\|warehouse_security\.authorize_rpc\(
+# Migration 136 (hourly sensor summary, 2026-11-01): authorize_rpc knows get_sensor_hourly (administrators, supervisors and staff).
 A ^function\|public\.update_dispatch_smart\(
 B ^function\|public\.update_dispatch_smart\(
 #

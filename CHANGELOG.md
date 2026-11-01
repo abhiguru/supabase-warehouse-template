@@ -10,6 +10,13 @@ file used to carry for earlier installations are in git: `git show b45ae0b:CHANG
 
 ### Added
 
+- **Hourly sensor summary kept 24 months (migration 136).** New table `sensor_hourly` (per device and UTC hour: reading count and
+  minimum, maximum and average of temperature and humidity). The daily retention job rolls completed hours up before it deletes the raw
+  `sensor_readings` (still kept 90 days; at most 2,000 hours per run, and raw rows are removed only once summarized), and deletes summary
+  rows older than the new policy row `sensor_hourly` (730 days). `retention:preview` and `retention:apply` report `sensor_hourly_rolled`
+  and `sensor_hourly`. New RPC `get_sensor_hourly(p_device_id, p_from, p_to)` for administrators, supervisors and staff (range up to
+  400 days; `INVALID_RANGE`, `RANGE_TOO_LARGE`, `DEVICE_NOT_FOUND`); shape in [API_CONTRACT.md](docs/API_CONTRACT.md). Tests:
+  `tests/sensor_hourly_136.sql` (new), `tests/role_allowlist.sql`, `tests/audit_log_retention.sql`.
 - **Break-glass codes for every facility worker, with their own sign-in (migration 132).** `scripts/break-glass-admin.sh` now makes a one-time code
   (10 minutes, once, five wrong tries) for an active, approved administrator, **supervisor or staff member** (never a customer) and prints the
   role. The app signs in with it through `POST /functions/v1/operator-otp/break-glass` `{phone_number, code}` (service-role RPC

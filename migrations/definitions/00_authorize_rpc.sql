@@ -76,6 +76,8 @@ BEGIN
     'get_grn_item_rates',
     -- Sensors (owner decision, 2026-10-11).
     'get_sensor_polling_data','get_sensor_history',
+    -- The hourly summary kept 24 months (migration 136).
+    'get_sensor_hourly',
     -- One sensor (migration 74).
     'get_sensor_device',
     -- The print "View jobs" sheet (migration 123); customers stay refused by the final ELSE.
