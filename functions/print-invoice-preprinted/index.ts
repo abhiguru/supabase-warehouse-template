@@ -716,7 +716,7 @@ Deno.serve(async (req) => {
 
     // Handle auth errors and a refused request (400) with proper status codes
     if (error.status && (error.status === 400 || error.status === 401 || error.status === 403)) {
-      return createAuthErrorResponse(error);
+      return createAuthErrorResponse(error, {}, req);
     }
 
     return new Response(

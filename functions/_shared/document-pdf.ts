@@ -1,6 +1,6 @@
 import { documentRequestBody } from './request-body.ts';
 import { restClient } from './supabase-rest.ts';
-import { validateUserAccess, createAuthErrorResponse } from './auth-helpers.ts';
+import { validateUserAccess, createAuthErrorResponse, requestId } from './auth-helpers.ts';
 import { securityHeaders } from './security-headers.ts';
 import { htmlToPdf } from './pdf-renderer-client.ts';
 import { documentDate, documentHtml, kgEach } from './document-html.ts';
@@ -79,7 +79,7 @@ export const documentPdf = (kind: Kind) => async (req: Request): Promise<Respons
     // The optional letterhead: the router read the file and passed the data URI. Nothing here can fail a PDF; documentHtml
     // ignores a value that is not exactly a JPEG or PNG data URI.
     const html = documentHtml(kind.toUpperCase(),company.data.value,metadata,columns,rows,Deno.env.get('LETTERHEAD_DATA_URI') || undefined);
-    const pdf = await htmlToPdf(html);
+    const pdf = await htmlToPdf(html, { requestId: requestId(req) });
     // Upload uses server authority only after document reads were authorized.
     const path = `${kind}/${header.id}/${crypto.randomUUID()}.pdf`;
     const upload = await writer.storage.from('documents').upload(path,pdf,{ contentType:'application/pdf',upsert:false });
@@ -91,5 +91,5 @@ export const documentPdf = (kind: Kind) => async (req: Request): Promise<Respons
       document:{type:kind,number,date,customer:header.customer_name,items_count:rows.length} }), {
       headers:{...securityHeaders,'Content-Type':'application/json','Cache-Control':'no-store'},
     });
-  } catch(error) { return createAuthErrorResponse(error,securityHeaders); }
+  } catch(error) { return createAuthErrorResponse(error,securityHeaders,req); }
 };

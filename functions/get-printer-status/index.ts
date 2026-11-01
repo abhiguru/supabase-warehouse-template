@@ -68,7 +68,7 @@ Deno.serve(async (req) => {
     console.error('get-printer-status ERROR:', error);
 
     if (error.status && error.message) {
-      return createAuthErrorResponse(error);
+      return createAuthErrorResponse(error, {}, req);
     }
 
     const { status: errorStatus, message: errorMessage } = printerStatusFailure(error);

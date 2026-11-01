@@ -71,7 +71,7 @@ Deno.serve(async (req) => {
     console.error('print-via-ipp ERROR:', error);
 
     if (error.status && error.message) {
-      return createAuthErrorResponse(error, securityHeaders);
+      return createAuthErrorResponse(error, securityHeaders, req);
     }
 
     return new Response(

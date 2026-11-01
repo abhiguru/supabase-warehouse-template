@@ -59,3 +59,23 @@ test('a network error or timeout reaching PostgREST is a 503, not a 500', async 
     }
   } finally { globalThis.fetch = oldFetch; globalThis.Deno = oldDeno; }
 });
+
+test('the request id is repeated into a log line only when it is the gateway\'s 32 hex characters, and a 5xx writes it without the error text', async () => {
+  const { requestId, createAuthErrorResponse } = await import('../functions/_shared/auth-helpers.ts');
+  const id = '0123456789abcdef0123456789abcdef';
+  const withHeader = value => new Request('http://example.test', { headers: { 'X-Request-Id': value } });
+  assert.equal(requestId(withHeader(id)), id);
+  for (const bad of [id.toUpperCase(), id.slice(1), `${id}0`, 'abc', 'Bearer secret-token', '']) assert.equal(requestId(withHeader(bad)), '-', JSON.stringify(bad));
+  assert.equal(requestId(new Request('http://example.test')), '-');
+  assert.equal(requestId(undefined), '-');
+  const oldError = console.error;
+  const logged = [];
+  console.error = (...args) => logged.push(args.join(' '));
+  try {
+    createAuthErrorResponse({ status: 503, message: 'Profile lookup unavailable' }, {}, withHeader(id));
+    createAuthErrorResponse(new Error('Bearer secret-token leaked'), {}, withHeader('not-an-id'));
+    createAuthErrorResponse(new Error('x'));
+    createAuthErrorResponse({ status: 403, message: 'Session expired or revoked' }, {}, withHeader(id));
+  } finally { console.error = oldError; }
+  assert.deepEqual(logged, [`auth error status=503 request_id=${id}`, 'auth error status=500 request_id=-', 'auth error status=500 request_id=-'], 'a 4xx is the client\'s and logs nothing');
+});

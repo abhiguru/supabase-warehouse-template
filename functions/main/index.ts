@@ -73,6 +73,6 @@ Deno.serve(async (req: Request) => {
     });
     return await worker.fetch(req);
   } catch (error) {
-    return createAuthErrorResponse(error, securityHeaders);
+    return createAuthErrorResponse(error, securityHeaders, req);
   }
 });
