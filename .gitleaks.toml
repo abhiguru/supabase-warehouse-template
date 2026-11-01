@@ -2,9 +2,9 @@
 [extend]
 useDefault = true
 
-# The public fingerprint of the release-signing key (README "Security", CHANGELOG, .github/allowed_signers). It is the hash of a PUBLIC key, published on purpose
-# so that operators can compare it; it is not a secret.
+# tests/service-diagnostics.test.mjs lists fictional folder names (pre-rotate-keys-<date>) that the generic-api-key rule takes for a key.
 [[allowlists]]
-description = "published fingerprint of the release-signing public key"
-regexTarget = "match"
-regexes = ['''SHA256:JfbT0\+bW7PmoB/HA7HsW\+K150PQgTMimV2pPijMC8vM''']
+description = "fictional folder names in the service-diagnostics retention test"
+condition = "AND"
+paths = ['''^tests/service-diagnostics\.test\.mjs$''']
+targetRules = ["generic-api-key"]
