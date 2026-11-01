@@ -90,7 +90,7 @@ file used to carry for earlier installations are in git: `git show b45ae0b:CHANG
   `git verify-tag` against ITS OWN list and refuse, before anything is changed, a tag that is unsigned, lightweight, signed by another key or
   published under another name; git 2.34 or newer and `ssh-keygen` are then needed. A checkout that lists no key (older releases) warns and
   goes on, so the first signed release can be reached; `--ref` is not verified. Only an SSH signature counts (PGP and X.509 are refused whatever the host keyring holds), a release that drops the key list is refused, the warning of a checkout without a key shows the fingerprints the release lists, and the upgrade record keeps `signature=checked|unchecked|ref`. `release.yml` checks the pushed tag against the previous release's
-  list (`scripts/check-release-signature.sh`). Operator action: none.
+  list (`scripts/check-release-signature.sh`). Operator action: git 2.34 or newer and `ssh-keygen` must be on the host (see Operator actions).
 - **The way back from an upgrade is drilled in CI, kept after success, and the images are pulled before the freeze.** (1) The `operator-upgrade` job makes an
   upgrade fail inside setup (a throwaway commit with a migration that raises only on the facility's database) and runs the lines that
   `node scripts/upgrade-record.mjs rollback` prints, exactly as printed; the previous release must be running again, healthy, with the same
@@ -131,7 +131,7 @@ file used to carry for earlier installations are in git: `git show b45ae0b:CHANG
 - **Fixed: clearing the vehicle of a GRN stores nothing again (`update_grn`, `update_dispatch_smart`; definition files, no migration).** Since
   migration 130 a blank vehicle sent on an edit turned into NULL and then kept the old value; a blank now clears it, and an edit that leaves the
   vehicle out still keeps it. Runs of white space inside a vehicle number (spaces, tabs, non-breaking spaces) collapse to one space in all four
-  writers (`save_grn`, `update_grn`, `create_dispatch_with_stock_check`, `update_dispatch_smart`); stored rows are not changed. A vehicle sent to `update_dispatch_smart` as a JSON number or boolean is stored as text (only `null` or leaving the key out keeps the vehicle), as a new dispatch does; a JSON object, array or boolean vehicle is refused with `registration_invalid`. Tests:
+  writers (`save_grn`, `update_grn`, `create_dispatch_with_stock_check`, `update_dispatch_smart`); stored rows are not changed. A vehicle sent to `update_dispatch_smart` as a JSON number is stored as text (only `null` or leaving the key out keeps the vehicle), as a new dispatch does; a JSON object, array or boolean vehicle is refused with `registration_invalid`. Tests:
   `tests/rules_130.sql`. No operator action.
 
 - **Document PDFs page their lines instead of refusing over 1,000 (review finding M12).** The GRN, dispatch, invoice and customer stock PDFs read
@@ -231,7 +231,9 @@ file used to carry for earlier installations are in git: `git show b45ae0b:CHANG
 
 - **Before upgrading to the release with migration 139 (foreign keys and positive payments): count the rows that break the new rules.** The migration
   refuses, changing nothing, while any of these counts is not zero. The upgrade rehearsal (`scripts/upgrade-rehearse.sh`, run by the preflight on a restored
-  copy of the newest verified backup) applies the migration plan, so it runs this guard too and refuses the upgrade before any change to the facility. To
+  copy of the newest verified backup) applies the migration plan, so it runs this guard too, but only on that backup: with no verified backup on record it prints a
+  warning and exits 0 without rehearsing, and rows entered after the newest backup are not on the copy. In those cases the manual count below is the only
+  check before the upgrade, and the guard first fires during the real upgrade. To
   count first, run in `psql` as the database owner (all zeros means the migration applies):
 
   ```sql
@@ -244,8 +246,9 @@ file used to carry for earlier installations are in git: `git show b45ae0b:CHANG
          (SELECT count(*) FROM public.payments t WHERE t.amount <= 0) AS payment_amount_not_positive;
   ```
 
-- **App 0.7.0 is needed with this release.** `delete_invoice` now always refuses (`INVOICE_CANCEL_ONLY`); cancelling an invoice, the `payments` capability switch
-  and the devices list (migration 140) are in the 0.7.0 app only. Upgrade the app in the same window.
+- **Upgrade the app to 0.7.0 in the same window as this release.** An older app build keeps working and is not told to update (`minimumClientVersion` stays 0.6.0), but on it
+  invoice delete fails (`delete_invoice` now always refuses, `INVOICE_CANCEL_ONLY`), and Cancel invoice, the `payments` capability switch and the devices list
+  (migration 140) are missing; they are in the 0.7.0 app only.
 - **git 2.34 or newer and `ssh-keygen` are needed on the host from now on**: `upgrade.sh` verifies the SSH signature of every release tag against the key
   list this release ships.
 

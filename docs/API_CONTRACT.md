@@ -396,7 +396,7 @@ The app switches on `reason`, not on the English. It is built by `warehouse_secu
 app role). A refusal is returned before the function's first write. The refusals that can only be known after a write (`RATES_NEED_MANAGER`,
 `RATES_WOULD_DROP`, `TOTAL_CHANGED`) are raised as `rate_fail` with the refusal in `DETAIL`; the handler of `update_grn`, `update_invoice`
 and `save_invoice_internal` rolls the whole block back and answers it (nothing is saved). The three legacy length refusals of the GRN
-(`item_name_too_long`, `packaging_too_long`, and new `registration_too_long`, which the dispatch create and `update_dispatch_smart` also answer, limit 20 since migration 130) (the dispatch create and `update_dispatch_smart` also answer `registration_invalid`, "Registration must be text", for a vehicle sent as a JSON object, array or boolean; a JSON number is stored as text) keep the older shape `{success:false, error, error_code, data:{limit, index?}, message}`.
+(`item_name_too_long`, `packaging_too_long`, and new `registration_too_long`, which the dispatch create and `update_dispatch_smart` also answer, limit 20 since migration 130) keep the older shape `{success:false, error, error_code, data:{limit, index?}, message}`. The dispatch create and `update_dispatch_smart` also answer `registration_invalid` ("Registration must be text") for a vehicle sent as a JSON object, array or boolean; its data is `{field}` (`field: 'registration'`), not `{limit, index?}`. A JSON number is stored as text.
 
 | `reason` | Returned by | Fields (top level) | English `error` |
 |---|---|---|---|
