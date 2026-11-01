@@ -72,6 +72,10 @@ Sections: [host prerequisites](#host-prerequisites),
   the backups and the backup key sit only on this host: set up the drive, or record the decision not to keep a copy
   (see "Recovery point and recovery time" under [Backup and restore](#backup-and-restore)).
 - `cloudflared` for the tunnel ([Cloudflare Tunnel ingress](#cloudflare-tunnel-ingress)).
+- **Recommended: a router with dual-WAN or 4G/5G failover.** The Cloudflare Tunnel is the only way in, so an outage of the
+  facility's single internet line stops goods receipt (GRN), dispatch and every other app request, even though the host is fine.
+  A second line (another ISP, or a 4G/5G modem on the router's failover port) lets the tunnel reconnect by itself within a minute
+  or two. The tunnel dials out, so no address or port needs to be kept the same. Test it once (step "WAN pulled" of the [Windows acceptance list](#acceptance), which applies to any host).
 
 Record the host before changing it (`cat /etc/os-release`, `uname -m`, `free -h`, `df -h`, `docker ps`) so that an existing
 runtime is never removed by accident.
@@ -2855,6 +2859,9 @@ nothing is published to the Windows network.
   networking (`networkingMode=mirrored` in `.wslconfig`) is not verified. A facility on this route has no fallback if the
   internet or Cloudflare is down.
 - The external doctor runs inside the distro, on the install host ([External doctor](#external-doctor)).
+- Because there is no LAN fallback here, an internet outage stops the facility. Put the host behind a **dual-WAN or 4G/5G-failover
+  router** (a second line that takes over when the first fails) so that an ISP outage does not stop GRN and dispatch; the tunnel
+  reconnects by itself over the other line.
 
 ### Windows Update
 
@@ -3016,3 +3023,6 @@ Before the facility goes live, on this host, with nobody signed in to Windows:
    ([Backups off the host](#backups-off-the-host-windows)). If it shows Shared, this host does not pass: report it; a manual
    `usbipd attach` is only a stopgap, not acceptance.
    Printing, where the facility uses it, is not verified on this route either.
+6. **WAN pulled** (a facility with a dual-WAN or failover router): unplug the primary internet line. Within a few minutes the public address
+   answers `get-public-config` again over the other line and `node scripts/doctor.mjs` passes; plug the line back in. A facility with one line
+   instead records that an ISP outage stops GRN and dispatch.
