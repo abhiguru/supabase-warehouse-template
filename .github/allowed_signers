@@ -7,3 +7,4 @@
 #   release namespaces="git" ssh-ed25519 AAAA... warehouse-release-signing
 #
 # upgrade.sh trusts the copy of this file in the checkout it runs from, never the copy in the release it installs.
+release namespaces="git" ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAIEpdiLqMc98EWCGJ7FmNEtREDCsOW1zPulpDiQoLSgxD warehouse-release-signing

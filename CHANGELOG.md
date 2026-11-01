@@ -121,10 +121,11 @@ file used to carry for earlier installations are in git: `git show b45ae0b:CHANG
 
 ### Changed
 
+- **The packaging word on invoice and report lines (migration 141, owner decision D18).** `build_invoice_form_lines` (so `generate_invoice_data_for_grn_with_pricing`) answers `grn_items_packaging`, `get_invoice_detail` and `get_customer_dispatch_activity` answer `packaging` on each line, and `get_customer_activity_detail` on each top-stock row (`null` when the lots of an item differ). Additive: no existing key changes. Test: `tests/packaging_lines_141.sql`; table in [API_CONTRACT.md](docs/API_CONTRACT.md).
 - **Fixed: clearing the vehicle of a GRN stores nothing again (`update_grn`, `update_dispatch_smart`; definition files, no migration).** Since
   migration 130 a blank vehicle sent on an edit turned into NULL and then kept the old value; a blank now clears it, and an edit that leaves the
   vehicle out still keeps it. Runs of white space inside a vehicle number (spaces, tabs, non-breaking spaces) collapse to one space in all four
-  writers (`save_grn`, `update_grn`, `create_dispatch_with_stock_check`, `update_dispatch_smart`); stored rows are not changed. Tests:
+  writers (`save_grn`, `update_grn`, `create_dispatch_with_stock_check`, `update_dispatch_smart`); stored rows are not changed. A vehicle sent to `update_dispatch_smart` as a JSON number or boolean is stored as text (only `null` or leaving the key out keeps the vehicle). Tests:
   `tests/rules_130.sql`. No operator action.
 
 - **Document PDFs page their lines instead of refusing over 1,000 (review finding M12).** The GRN, dispatch, invoice and customer stock PDFs read
@@ -163,7 +164,7 @@ file used to carry for earlier installations are in git: `git show b45ae0b:CHANG
   see "Recovery point and recovery time"; the key-copy check stays on). `offhost_copy_missing` is in the never-muted list with `backup_missing`, `backup_failed`,
   `daily_timer_legacy` and `upgrade_interrupted`; a stored `usb_backup` alert is carried over to the new name. `backup-usb.sh uninstall` renames
   `config/usb-backup.last` to `usb-backup.last.uninstalled`. Also: on Mondays the daily status adds a note when only one USB drive wrote in the last 30 days
-  (`config/usb-backup.history`, kept by `backup-usb.sh`); `restore.sh` and `restore-host.sh` append per-phase seconds to `<state>/restores.log`.
+  (`config/usb-backup.history`, kept by `backup-usb.sh`; **a drive set up before this release records nothing there until `bash scripts/backup-usb.sh setup` is run again**); `restore.sh` and `restore-host.sh` append per-phase seconds to `<state>/restores.log`.
   Tests: `tests/declined-marker.test.mjs`, `tests/backup-usb.test.mjs`, `tests/backup-usb-drive.test.mjs`, `tests/watch.test.mjs`, `tests/restore.test.mjs`, `tests/restore-host.test.mjs`.
 - **The oldest supported app is a window, not a pin.** `minimumClientVersion` in `app-compat.json` was still `0.1.0` although migration 123 had
   dropped functions that older builds call. It is now `0.6.0`, the first build with the update screen. CI checks every app build handed out

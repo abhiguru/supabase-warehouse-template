@@ -744,7 +744,7 @@ SELECT pg_temp.gr_assert((SELECT count(DISTINCT dt.id)>=3 FROM public.dispatch_t
 DO $parity$
 DECLARE
   g record; m text; form jsonb; recalc jsonb; stripped jsonb; compared integer := 0; line_count integer := 0;
-  keys text[] := ARRAY['grn_items_id','grn_items_item_id','grn_items_item_name','grn_items_original_qty',
+  keys text[] := ARRAY['grn_items_id','grn_items_item_id','grn_items_item_name','grn_items_packaging','grn_items_original_qty',
     'grn_items_package_mark','grn_items_rack','grn_items_weight','grn_items_pricing_mode','dispatches_items_id',
     'dispatches_items_disp_qty','dispatches_id','dispatches_no','dispatches_date','items_catalog_name','grn_date',
     'no_of_days','billable_days','duration','unit_price','labour_rate','tax_percent'];

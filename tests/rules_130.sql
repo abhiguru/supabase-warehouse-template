@@ -241,7 +241,7 @@ RESET ROLE;
 SELECT pg_temp.r130_assert((SELECT registration = 'GJ01 AB1234' FROM public.goodsreceived WHERE id = :'grn_reg'::uuid), 'update_grn collapses inner spaces: '||:'grn_inner');
 SELECT set_config('request.jwt.claims',:'admin_claims',true);
 SET LOCAL ROLE authenticated;
-SELECT public.update_grn(p_grn_id => :'grn_reg'::uuid, p_registration => E'T31\t   X18', p_items => pg_temp.r130_lines(:'grn_reg'::uuid)) AS grn_tab \gset
+SELECT public.update_grn(p_grn_id => :'grn_reg'::uuid, p_registration => E'T31\t  \u00a0X18', p_items => pg_temp.r130_lines(:'grn_reg'::uuid)) AS grn_tab \gset
 RESET ROLE;
 SELECT pg_temp.r130_assert((SELECT registration = 'T31 X18' FROM public.goodsreceived WHERE id = :'grn_reg'::uuid), 'update_grn collapses tabs and non-breaking spaces inside: '||:'grn_tab');
 -- The length counts the cleaned value: 23 raw characters that collapse to 20 are accepted, 21 after collapsing are refused.
@@ -259,7 +259,7 @@ SELECT public.save_grn(p_gr_no => 'R130REG2', p_date => now(), p_customer_id => 
     p_customer_name => 'Rules 130 Customer', p_registration => E' GJ01  AB1234\t',
     p_items => jsonb_build_array(jsonb_build_object('item_id', current_setting('test.r130_item'), 'item_name', 'Rules 130 Potatoes',
       'packaging', 'Bag', 'qty', 10, 'weight', 50, 'rack', '1', 'package_mark', 'MK4455'))) AS grn_save_inner \gset
-SELECT public.create_dispatch_with_stock_check(:'header'::jsonb || jsonb_build_object('disp_no','R130D5','registration',E'T31 \t   X18'),
+SELECT public.create_dispatch_with_stock_check(:'header'::jsonb || jsonb_build_object('disp_no','R130D5','registration',E'T31 \t \u00a0 X18'),
          ARRAY[jsonb_build_object('gr_trl_id', :'lot_id', 'disp_qty', 1)], false, 0, 'r130-reg-inner') AS disp_inner \gset
 RESET ROLE;
 SELECT pg_temp.r130_assert(:'grn_save_inner'::jsonb->>'success' = 'true'
@@ -280,6 +280,19 @@ SELECT public.update_dispatch_smart(:'disp_one'::uuid, '{"registration":"  "}'::
 RESET ROLE;
 SELECT pg_temp.r130_assert(:'disp_edit_blank'::jsonb->>'success' = 'true'
   AND (SELECT registration IS NULL FROM public.dispatch WHERE id = :'disp_one'::uuid), 'a dispatch edit that sends a blank vehicle clears it: '||:'disp_edit_blank');
+SELECT set_config('request.jwt.claims',:'admin_claims',true);
+SET LOCAL ROLE authenticated;
+SELECT public.update_dispatch_smart(:'disp_one'::uuid, '{"registration":"KEEP 1"}'::jsonb, NULL) AS disp_edit_set3,
+       public.update_dispatch_smart(:'disp_one'::uuid, '{"registration":null}'::jsonb, NULL) AS disp_edit_null \gset
+RESET ROLE;
+SELECT pg_temp.r130_assert(:'disp_edit_null'::jsonb->>'success' = 'true'
+  AND (SELECT registration = 'KEEP 1' FROM public.dispatch WHERE id = :'disp_one'::uuid), 'a dispatch edit that sends registration null keeps the vehicle: '||:'disp_edit_set3'||' '||:'disp_edit_null');
+SELECT set_config('request.jwt.claims',:'admin_claims',true);
+SET LOCAL ROLE authenticated;
+SELECT public.update_dispatch_smart(:'disp_one'::uuid, '{"registration":12345}'::jsonb, NULL) AS disp_edit_number \gset
+RESET ROLE;
+SELECT pg_temp.r130_assert(:'disp_edit_number'::jsonb->>'success' = 'true'
+  AND (SELECT registration = '12345' FROM public.dispatch WHERE id = :'disp_one'::uuid), 'a dispatch edit that sends a number as the vehicle stores it as text: '||:'disp_edit_number');
 
 -- ===== App 34. No whitespace in a dispatch number or a new GRN number =====
 SELECT set_config('request.jwt.claims',:'admin_claims',true);

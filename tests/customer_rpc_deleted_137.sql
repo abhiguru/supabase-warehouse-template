@@ -86,8 +86,8 @@ SELECT pg_temp.cr_assert(:'c_gra'::jsonb->>'success' = 'true' AND :'s_gra'::json
 SELECT pg_temp.cr_assert(:'c_grd'::jsonb->>'success' = 'false' AND :'c_grd'::jsonb->>'message' = 'GRN not found or access denied',
   'get_grn_details: a customer gets not-found for a deleted receipt: ' || :'c_grd');
 SELECT pg_temp.cr_assert(:'s_grd'::jsonb->>'success' = 'true' AND :'s_grd'::jsonb#>>'{data,grn,gr_no}' = 'DRD', 'get_grn_details: staff still read the deleted receipt');
-SELECT pg_temp.cr_assert((:'c_gra'::jsonb#>>'{data,grn,invoices_summary,total_invoices}')::int = 1 AND (:'s_gra'::jsonb#>>'{data,grn,invoices_summary,total_invoices}')::int = 2,
-  'get_grn_details: the deleted invoice counts for staff (2) and not for the customer (1)');
+SELECT pg_temp.cr_assert((:'c_gra'::jsonb#>>'{data,grn,invoices_summary,total_invoices}')::int = 1 AND (:'s_gra'::jsonb#>>'{data,grn,invoices_summary,total_invoices}')::int = 1,
+  'get_grn_details: the deleted invoice counts for nobody (migration 134 counts live invoices only, for every role)');
 SELECT pg_temp.cr_assert((:'c_gra'::jsonb#>>'{data,grn,dispatches_summary,total_dispatches}')::int = 1 AND (:'s_gra'::jsonb#>>'{data,grn,dispatches_summary,total_dispatches}')::int = 2,
   'get_grn_details: the deleted dispatch counts for staff (2) and not for the customer (1)');
 SELECT pg_temp.cr_assert((:'c_gra'::jsonb#>>'{data,grn,statistics,total_dispatched}')::int = 1 AND (:'s_gra'::jsonb#>>'{data,grn,statistics,total_dispatched}')::int = 3,

@@ -43,8 +43,12 @@ A ^function\|warehouse_security\.apply_grn_rates\(
 B ^function\|warehouse_security\.apply_grn_rates\(
 # Migration 134 (invoice cancel, 2026-11-01): get_invoice_data answers the same fields; get_invoice_detail answers cancelled_at, cancel_reason and (for staff and above) the name of
 # who cancelled; update_grn and update_dispatch_smart (already listed above) no longer count a cancelled invoice as an invoice of the GRN or
-# of the dispatch; authorize_rpc (listed above) names cancel_invoice in a comment.
+# of the dispatch; authorize_rpc (listed above) names cancel_invoice in a comment. Migration 141: get_invoice_detail answers packaging on its items.
 A ^function\|public\.get_invoice_detail\(
 B ^function\|public\.get_invoice_detail\(
 A ^function\|public\.get_invoice_data\(
 B ^function\|public\.get_invoice_data\(
+
+# Vehicle number, 2026-11-01 (definition files, no migration): save_grn, update_grn, create_dispatch_with_stock_check_internal and update_dispatch_smart
+# collapse runs of white space inside a vehicle number to one space; update_grn and update_dispatch_smart store a blank vehicle that is sent (NULL when omitted keeps it).
+# All four are listed above for their earlier changes; the reason is the same entry.

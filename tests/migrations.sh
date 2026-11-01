@@ -557,6 +557,7 @@ test_files=(
   "$ROOT/tests/rack_presets_131.sql"
   "$ROOT/tests/invoice_cancel_134.sql"
   "$ROOT/tests/payments_integrity_139.sql"
+  "$ROOT/tests/packaging_lines_141.sql"
   "$ROOT/tests/orders_list_135.sql"
   "$ROOT/tests/sensor_hourly_136.sql"
   "$ROOT/tests/rls_wrapped_137.sql" "$ROOT/tests/customer_rpc_deleted_137.sql" "$ROOT/tests/list_clamps_138.sql"

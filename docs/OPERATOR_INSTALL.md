@@ -41,8 +41,8 @@ Sections: [host prerequisites](#host-prerequisites),
   - Docker Compose v5.6.1 (the current build of Docker's Ubuntu repository, which the commands below install; verified for the facility backend).
 - The installation user (not root) needs `sudo`: for Docker's install, for the state's parent directory, and for `scripts/tunnel.sh install-service`
   and `scripts/watch-timer.sh install`. Those last two must be run with `sudo` **by the installation user itself** (give it `sudo` for the install, or
-  log in as it): both refuse when the user who ran `sudo` does not own the state. Another account with `sudo` can only do Docker's install and create the
-  state's parent directory; the installation user then runs the rest, naming the state with `--state` because `sudo` drops the environment.
+  log in as it), naming the state with `--state` because `sudo` drops the environment: both refuse when the user who ran `sudo` does not own the state. Another account with `sudo` can only do Docker's install and create the
+  state's parent directory; the installation user then runs the rest.
 - Network access to `storage.googleapis.com` while the pdf-renderer image is built (it downloads Chrome headless shell).
 - Node.js 22.18 or newer with npm, Git, OpenSSL, `curl` and util-linux (`flock`), and `dig` (package `dnsutils`).
 - `rsync` and GNU `tar` (Ubuntu and Debian have `tar`; `rsync` is a package of its own): backups copy the stored photos with `rsync`

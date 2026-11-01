@@ -205,6 +205,19 @@ keeps its arguments, sorts, filters and answer; rows that tie on every sort key 
 `update_dispatch_smart`, `save_invoice`, `update_invoice`, ...) is still the authoritative result of that
 write.
 
+### The packaging word on invoice and report lines (migration 141)
+
+Additive only: every key that was there is unchanged. The value is `goodsreceived_trl.packaging` of the line's receipt lot (the same column the GRN and dispatch RPCs answer).
+
+| RPC | Where | New key |
+|---|---|---|
+| `generate_invoice_data_for_grn_with_pricing` (through `build_invoice_form_lines`) | `items[]` | `grn_items_packaging` |
+| `get_invoice_detail` | `items[]` | `packaging` |
+| `get_customer_dispatch_activity` | `dispatches[].items[]` | `packaging` |
+| `get_customer_activity_detail` | `top_stock_items[]` | `packaging` (the lots' word; `null` when the lots of that item have different words) |
+
+`get_invoice_data` (`items[].grn_item.packaging`, `items[].catalog.packaging`) and `get_customer_grn_activity` (`grns[].items[].packaging`) already answered it. `get_all_customer_activity_summary`, `get_all_dispatch_activity` and `get_all_grn_activity` list customers, not items, and have no line to carry it. Test: `tests/packaging_lines_141.sql`.
+
 ### Direct table reads and list page sizes (migrations 137 and 138)
 
 - **Direct table reads return at most 2,000 rows; page with `Range`.** The PostgREST setting `PGRST_DB_MAX_ROWS` is 2000 in

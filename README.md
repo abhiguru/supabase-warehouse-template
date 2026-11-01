@@ -164,6 +164,14 @@ figures of the invoice reports; the app does not write them. The ungranted
 baseline functions are not API
 ([docs/API_CONTRACT.md](docs/API_CONTRACT.md), "Legacy and dormant functions").
 
+## Security
+
+Release tags are signed. The release-signing key is an ed25519 key with the comment `warehouse-release-signing`; its fingerprint is
+
+    SHA256:JfbT0+bW7PmoB/HA7HsW+K150PQgTMimV2pPijMC8vM
+
+`upgrade.sh` checks the signature of a release tag against the public keys in [`.github/allowed_signers`](.github/allowed_signers) in the checkout it runs from (never the copy in the release it installs). Compare the fingerprint with `ssh-keygen -lf` of the key in that file. To report a vulnerability, see [SECURITY.md](SECURITY.md).
+
 ## Contributing, CI and history
 
 `npm test` runs the node tests without Docker; `bash tests/migrations.sh` runs

@@ -139,9 +139,11 @@ const STUB_CONF = `server {
 }
 `;
 const agent = new http.Agent({ keepAlive: true, maxSockets: 100 });
-function request(path, { method = 'GET', headers = {}, body, port: target = port } = {}) {
+// `fresh` sends the request on a connection of its own (no shared keep-alive socket): a pooled socket that the gateway closed while it was idle
+// (a 15 s keepalive_timeout, a container started or reloaded between two tests) fails the next request with "socket hang up" under host load.
+function request(path, { method = 'GET', headers = {}, body, port: target = port, fresh = false } = {}) {
   return new Promise((resolve, reject) => {
-    const req = http.request({ host: '127.0.0.1', port: target, path, method, headers, agent }, res => {
+    const req = http.request({ host: '127.0.0.1', port: target, path, method, headers, agent: fresh ? false : agent }, res => {
       const chunks = [];
       res.on('data', chunk => chunks.push(chunk));
       res.on('end', () => {
@@ -637,9 +639,9 @@ test('LAN: the address is the connection\'s, whatever a client writes in a heade
   // Storage is still not sent an address.
   assert.equal(echoed(fromStub('/storage/v1/object/x', forged).text).cfip, '');
   // The public container on the same network trusts the hop (the tunnel's) and takes the header: this is the difference between the two.
-  const publicSeen = echoed((await request('/functions/v1/x', { headers: forged })).text);
+  const publicSeen = echoed((await request('/functions/v1/x', { headers: forged, fresh: true })).text);
   assert.equal(publicSeen.cfip, '203.0.113.9');
-  assert.equal((await request('/functions/v1/x', { headers: forged })).headers['x-warehouse-path'], 'public');
+  assert.equal((await request('/functions/v1/x', { headers: forged, fresh: true })).headers['x-warehouse-path'], 'public');
   // The log line is the checker's format with the connection's address in front.
   const log = docker(['logs', GATEWAY_LAN]);
   assert.match(`${log.stdout}\n${log.stderr}`, new RegExp(`^${stubAddress.replace(/\./g, '\\.')} \\[[^\\]]+\\] "GET /functions/v1/get-public-config HTTP/1\\.1" 200 \\d+ [0-9.]+ [0-9a-f]{32}$`, 'm'));

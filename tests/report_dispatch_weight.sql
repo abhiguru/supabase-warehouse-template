@@ -272,7 +272,7 @@ SELECT pg_temp.dwt_assert(pg_temp.dwt_keys(:'staff_quince'::jsonb) = 'dispatches
   'staff: the keys of the answer and of its summary, the days and the supervisors');
 SELECT pg_temp.dwt_assert(count(*) = 4
     AND bool_and(pg_temp.dwt_keys(x) = 'disp_date,disp_id,disp_no,items,supervisor_name,total_qty,total_weight')
-    AND bool_and(pg_temp.dwt_keys(i) = 'item_name,orig_qty,package_mark,qty,rack,source_grn,source_grn_id,weight')
+    AND bool_and(pg_temp.dwt_keys(i) = 'item_name,orig_qty,package_mark,packaging,qty,rack,source_grn,source_grn_id,weight')
     AND bool_and(x->>'disp_id' ~ '^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$'),
   'staff: the keys of each dispatch and of each of its lines')
 FROM jsonb_array_elements((:'staff_quince'::jsonb)->'dispatches') AS t(x)

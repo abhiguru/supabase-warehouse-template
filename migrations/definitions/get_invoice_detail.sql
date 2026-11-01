@@ -61,6 +61,7 @@ BEGIN
             'tax', it.tax,
             'labour_rate', it.labour_rate,
             'item_name', gt.item_name,
+            'packaging', gt.packaging,
             'grn_item_id', gt.id,
             'grn_date', gr.date,
             'qty', dt.disp_qty,

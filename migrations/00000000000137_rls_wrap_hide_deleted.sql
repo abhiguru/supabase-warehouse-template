@@ -144,23 +144,14 @@ BEGIN
   v_count := (length(v_def) - length(replace(v_def, v_before, ''))) / length(v_before);
   IF v_count <> 1 THEN RAISE EXCEPTION 'get_grn_details: expected marker 2 1 time(s), found %', v_count; END IF;
   v_def := replace(v_def, v_before, v_after);
-  v_before := $m$                        FROM invoice inv
-                        WHERE inv.gr_id = gr.id
-                    ),$m$;
-  v_after := $m$                        FROM invoice inv
-                        WHERE (inv.deleted_at IS NULL OR v_role IN ('admin', 'supervisor', 'staff'))
-                        AND inv.gr_id = gr.id
-                    ),$m$;
-  v_count := (length(v_def) - length(replace(v_def, v_before, ''))) / length(v_before);
-  IF v_count <> 1 THEN RAISE EXCEPTION 'get_grn_details: expected marker 3 1 time(s), found %', v_count; END IF;
-  v_def := replace(v_def, v_before, v_after);
+  -- (The invoice count in the summary needs no marker here: migration 134 already counts live invoices only, for every role.)
   v_before := $m$                        FROM dispatch d
                         WHERE EXISTS ($m$;
   v_after := $m$                        FROM dispatch d
                         WHERE (d.deleted_at IS NULL OR v_role IN ('admin', 'supervisor', 'staff'))
                         AND EXISTS ($m$;
   v_count := (length(v_def) - length(replace(v_def, v_before, ''))) / length(v_before);
-  IF v_count <> 1 THEN RAISE EXCEPTION 'get_grn_details: expected marker 4 1 time(s), found %', v_count; END IF;
+  IF v_count <> 1 THEN RAISE EXCEPTION 'get_grn_details: expected marker 3 1 time(s), found %', v_count; END IF;
   v_def := replace(v_def, v_before, v_after);
   EXECUTE v_def;
 END
