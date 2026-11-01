@@ -750,6 +750,31 @@ test('--from-release at a release tag pulls each image that needs building by di
   } finally { cleanup(f); }
 });
 
+test('--from-release: an image of the released digest that is already on the host (pre-pulled by the upgrade preflight) is not pulled again, and is still checked, tagged and recorded', () => {
+  const f = fixture();
+  try {
+    atTag(f, 'v1.2.3');
+    releaseFile(f);
+    const first = run(f, FROM_RELEASE);
+    assert.equal(first.pulls, `${refOf('db')}\n${refOf('functions')}`, 'absent: pulled');
+    // The tags and the build record are gone (a new release's setup finds the pre-pulled images by digest, not by tag); the digest images stay.
+    rmSync(f.record);
+    const second = run(f, FROM_RELEASE);
+    assert.equal(second.status, 0, second.stderr);
+    assert.equal(second.pulls, '', 'present: no docker pull, so the downtime needs no registry');
+    assert.match(second.stdout, new RegExp(`The db image of release v1\\.2\\.3 is already on this host \\(${refOf('db').replace(/[.]/g, '\\.')}\\)\\.`));
+    assert.match(second.stdout, /Pulled 2 image\(s\) from the release \(db functions\)/, 'it still counts as the release\'s image');
+    assert.deepEqual(recorded(f.record).map(line => line[1]), ['db', 'functions'], 'recorded as a build would');
+    // An image of that digest that carries another commit is refused and built, as for a pulled one.
+    rmSync(f.record);
+    writeFileSync(join(f.scratch, 'labels', refOf('db').replace(/[/:]/g, '_')), 'b'.repeat(40));
+    const stale = run(f, FROM_RELEASE);
+    assert.equal(stale.pulls, '');
+    assert.match(stale.stderr, /the pulled db image was built from commit b{12}/);
+    assert.equal(stale.builds, 'db');
+  } finally { cleanup(f); }
+});
+
 test('--from-release: a recipe that differs from the released one is built here, the others are pulled', () => {
   const f = fixture();
   try {

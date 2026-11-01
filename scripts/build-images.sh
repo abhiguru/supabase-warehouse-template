@@ -245,7 +245,10 @@ pull_release_image() {
   local service="$1" ref="$2" image="$3" out digests revision limit="${WAREHOUSE_IMAGE_PULL_TIMEOUT:-1200}" rc=0
   [[ "$limit" =~ ^[1-9][0-9]*$ ]] || limit=1200
   # A pull that stalls would hold setup inside the downtime window of an upgrade; after the limit the image is built here instead.
-  if command -v timeout >/dev/null; then out="$(timeout -k 10 "$limit" docker pull --quiet "$ref" 2>&1)" || rc=$?
+  # An image of this digest that is already on the host (the upgrade preflight pulled it before the API was closed, scripts/upgrade-prepull.sh)
+  # is not fetched again: the digest and revision checks below are made on it all the same, and the downtime needs no registry.
+  if docker image inspect --format '{{.Id}}' "$ref" >/dev/null 2>&1; then echo "The $service image of release $release_tag_used is already on this host ($ref)."
+  elif command -v timeout >/dev/null; then out="$(timeout -k 10 "$limit" docker pull --quiet "$ref" 2>&1)" || rc=$?
   else out="$(docker pull --quiet "$ref" 2>&1)" || rc=$?; fi
   if ((rc != 0)); then
     if ((rc == 124 || rc == 137)); then echo "Warning: pulling the $service image of release $release_tag_used ($ref) took longer than $limit seconds and was stopped; it is built here." >&2

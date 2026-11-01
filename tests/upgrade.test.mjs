@@ -193,7 +193,8 @@ function world({ at = 'v0.1.0' } = {}) {
   const realPreflight = (floor, sections = S0212) => ({ upgrade: true, changelog: changelog(sections + S020 + S011 + S010), migrations: ['00000000000000_baseline.sql', '00000000000001_more.sql'],
     copy: ['scripts/upgrade-preflight.sh', 'scripts/upgrade-lib.sh', 'scripts/upgrade-rehearse.sh', 'scripts/migration-plan.mjs'],
     // The real preflight's `# needs:` line also names docker/ (the rehearsal reads the database image from it); these facilities have no verified backup, so nothing is rehearsed.
-    files: { 'docker/.keep': '', 'scripts/upgrade-floor.txt': `# fixture\n${floor}`, 'scripts/doctor.mjs': `import { appendFileSync } from 'node:fs';
+    // The pre-pull of images (scripts/upgrade-prepull.sh, tests/upgrade-prepull.test.mjs) is a stand-in: it logs, to the log of the other helpers, that it ran and for what.
+    files: { 'docker/.keep': '', 'scripts/upgrade-prepull.sh': '#!/usr/bin/env bash\n[ -z "$FAKE_PREPULL_FAIL" ] || { echo "Refusing: pre-pull (fake). Nothing was changed." >&2; exit 1; }\necho "prepull label=$TO_LABEL dry=$DRY" >> "$FAKE_LOG.pre"\n', 'scripts/upgrade-floor.txt': `# fixture\n${floor}`, 'scripts/doctor.mjs': `import { appendFileSync } from 'node:fs';
 import { dirname } from 'node:path';
 import { fileURLToPath } from 'node:url';
 appendFileSync(process.env.FAKE_LOG + '.pre', 'doctor ' + process.argv.slice(2).join(' ') + ' from=' + dirname(fileURLToPath(import.meta.url)) + '\\n');
@@ -1397,4 +1398,27 @@ test('fas-sync: the plan says to pause it, and a psql session from outside the s
     assert.deepEqual(r.log, []);
     assert.equal(existsSync(v.recordPath), false);
   } finally { v.cleanup(); }
+});
+
+test('the target\'s preflight pre-pulls the images before the running images are tagged; a dry run says so; a refusal of the pre-pull changes nothing; a resumed run does not pull again', () => {
+  const w = world();
+  try {
+    const dry = w.run(['--dry-run', 'v0.2.12']);
+    assert.equal(dry.status, 0, dry.stdout + dry.stderr);
+    assert.deepEqual(preLog(w).filter(line => line.startsWith('prepull')), ['prepull label=v0.2.12 dry=yes']);
+    rmSync(`${w.log}.pre`);
+    // A refusal: no operator command ran, the checkout did not move, nothing was recorded (the closing of the API comes after the preflight).
+    refusing(w)(['v0.2.12'], /Refusing: pre-pull \(fake\)\. Nothing was changed\.[^]*the preflight of v0\.2\.12 stopped this upgrade/, { FAKE_PREPULL_FAIL: '1' });
+    assert.equal(existsSync(join(w.state, 'config/maintenance')), false, 'the API was not closed');
+    rmSync(`${w.log}.pre`, { force: true });
+    const first = w.run(['v0.2.12'], { FAKE_FAIL: 'setup' });
+    assert.notEqual(first.status, 0);
+    const lines = preLog(w);
+    assert.equal(lines[lines.findIndex(line => line.startsWith('doctor ')) + 1], 'prepull label=v0.2.12 dry=no', 'right after the host checks of the preflight');
+    assert.ok(lines.findIndex(line => line.startsWith('prepull')) < lines.findIndex(line => line.startsWith('pre-images tag')), 'before the running images are tagged');
+    rmSync(`${w.log}.pre`);
+    const second = w.run(['v0.2.12']);
+    assert.equal(second.status, 0, second.stdout + second.stderr);
+    assert.deepEqual(preLog(w).filter(line => line.startsWith('prepull')), [], 'the resumed run does not pull again');
+  } finally { w.cleanup(); }
 });

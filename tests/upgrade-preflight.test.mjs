@@ -40,7 +40,7 @@ Git has it.
 const NAME = 'warehouse-20260101T000000Z';
 
 // `doctor` is the exit status of the stand-in doctor.mjs (it records its arguments and WAREHOUSE_STATE_DIR in doctor.log next to it).
-function world({ floor = 'from_floor=\nstepping_stone=\n', doctor = 0, changelog = CHANGELOG, withFloorFile = true, definitions = [] } = {}) {
+function world({ floor = 'from_floor=\nstepping_stone=\n', doctor = 0, changelog = CHANGELOG, withFloorFile = true, definitions = [], realPrepull = false } = {}) {
   const scratch = mkdtempSync(join(tmpdir(), 'warehouse-preflight-'));
   const tree = join(scratch, 'tree');
   const state = join(scratch, 'state');
@@ -58,6 +58,10 @@ function world({ floor = 'from_floor=\nstepping_stone=\n', doctor = 0, changelog
     const fn = name.replace(/\.sql$/, '').replace(/^[0-9]+_/, '');
     writeFileSync(join(tree, 'migrations/definitions', name), `CREATE OR REPLACE FUNCTION public.${fn}() RETURNS integer LANGUAGE sql AS $$ SELECT 1 $$;\nREVOKE ALL ON FUNCTION public.${fn}() FROM PUBLIC;\n`);
   }
+  // The pre-pull of images (scripts/upgrade-prepull.sh, tests/upgrade-prepull.test.mjs has its own test) is a stand-in that logs to prepull.log
+  // (FAKE_PREPULL_EXIT makes it refuse); realPrepull puts the real file there.
+  if (realPrepull) copyFileSync(join(root, 'scripts/upgrade-prepull.sh'), join(tree, 'scripts/upgrade-prepull.sh'));
+  else writeFileSync(join(tree, 'scripts/upgrade-prepull.sh'), '#!/bin/bash\necho "prepull label=$TO_LABEL sha=$TO_SHA dry=$DRY state=$STATE" >> "$FAKE_LOG.prepull"\nif [ -n "$FAKE_PREPULL_EXIT" ]; then echo "Refusing: pre-pull stand-in failed. Nothing was changed." >&2; exit "$FAKE_PREPULL_EXIT"; fi\necho "Pre-pull of images: stand-in."\n');
   writeFileSync(join(tree, 'scripts/verify-restore.sh'), `#!/bin/bash
 echo "verify-restore $*" >> "$FAKE_LOG"
 if [ "$1" = --rm ]; then exit 0; fi
@@ -100,7 +104,7 @@ console.log('Host prerequisites and state filesystem preflight passed.');
       env: { ...process.env, PATH: `${join(scratch, 'bin')}:${process.env.PATH}`, STATE: state, FAKE_LOG: join(scratch, 'rehearsal.log'), ...env, ...extra } })
       : spawnSync(command, args, { cwd: tree, encoding: 'utf8', input,
       env: { ...process.env, PATH: `${join(scratch, 'bin')}:${process.env.PATH}`, STATE: state, FAKE_LOG: join(scratch, 'rehearsal.log'), ...env, ...extra } });
-    return { ...r, rehearsalLog: existsSync(join(scratch, 'rehearsal.log')) ? readFileSync(join(scratch, 'rehearsal.log'), 'utf8') : '',
+    return { ...r, prepullLog: existsSync(join(scratch, 'rehearsal.log.prepull')) ? readFileSync(join(scratch, 'rehearsal.log.prepull'), 'utf8') : '', rehearsalLog: existsSync(join(scratch, 'rehearsal.log')) ? readFileSync(join(scratch, 'rehearsal.log'), 'utf8') : '',
       plan: existsSync(join(scratch, 'rehearsal.log.plan')) ? readFileSync(join(scratch, 'rehearsal.log.plan'), 'utf8') : '', doctorLog: existsSync(join(tree, 'scripts/doctor.log')) ? readFileSync(join(tree, 'scripts/doctor.log'), 'utf8') : '' };
   };
   // A verified backup with the size of its stored files (format v6: storage_bytes in metadata.txt) and, when `dump` is given, of its database
@@ -483,5 +487,33 @@ test('only the migrations are timed, not the restore; a failed restore shows its
     assert.match(offline.stderr, /The restore said: docker: Error response from daemon: .*no such host \(fake\)\. The host may be/, 'the error, not Docker\'s help hint after it');
     assert.doesNotMatch(offline.stderr, /The restore said: Run /);
     assert.doesNotMatch(failed.stderr, /Take a new backup/, 'a backup that is only made is not used; the advice no longer says that');
+  } finally { w.cleanup(); }
+});
+
+test('the images are pre-pulled after the rehearsal and before the pause and the "passed" line, with the commit and --dry-run handed on; a refusal of the pre-pull refuses the preflight', () => {
+  const w = world();
+  try {
+    w.backup(NAME, 1024, { dump: 1024 });
+    const entered = w.run({}, { terminal: true, input: '\n' });
+    assert.equal(entered.status, 0, entered.stdout + entered.stderr);
+    assert.equal(entered.prepullLog, `prepull label=v0.2.0 sha=${'b'.repeat(40)} dry=no state=${w.state}\n`, 'called once, with the target commit');
+    const at = text => entered.stdout.indexOf(text);
+    assert.ok(at('Rehearsal of the migrations: passed') < at('Pre-pull of images: stand-in.'), 'after the rehearsal');
+    assert.ok(at('Pre-pull of images: stand-in.') < at('Press Enter to continue'), 'before the pause: the operator is not asked to confirm a run the registry then refuses');
+    assert.ok(at('Pre-pull of images: stand-in.') < at('Preflight of v0.2.0 passed'));
+    rmSync(join(w.scratch, 'rehearsal.log.prepull'));
+    const dry = w.run({ DRY: 'yes' });
+    assert.equal(dry.status, 0, dry.stdout + dry.stderr);
+    assert.match(dry.prepullLog, / dry=yes /, 'a dry run tells it, so that it pulls nothing');
+    // A refusal of the pre-pull ends the preflight there: no pause, no "passed".
+    const refused = w.run({ FAKE_PREPULL_EXIT: '1' }, { terminal: true, input: '\n' });
+    assert.equal(refused.status, 1);
+    assert.match(refused.stderr, /Refusing: pre-pull stand-in failed\. Nothing was changed\./);
+    assert.ok(!refused.stdout.includes('Press Enter') && !refused.stdout.includes('Preflight of v0.2.0 passed'));
+    // A refusal earlier (the rehearsal) never reaches the network.
+    rmSync(join(w.scratch, 'rehearsal.log.prepull'), { force: true });
+    const early = w.run({ FAKE_FAIL_FILE: '00000000000002_two.sql' });
+    assert.equal(early.status, 1);
+    assert.equal(early.prepullLog, '', 'nothing is pulled for an upgrade that is refused anyway');
   } finally { w.cleanup(); }
 });

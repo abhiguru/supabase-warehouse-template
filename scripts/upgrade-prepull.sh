@@ -1,0 +1,83 @@
+#!/usr/bin/env bash
+# Pre-pull of an upgrade, run by scripts/upgrade-preflight.sh of the release an installation moves to, before the API is closed. The images
+# the move needs are fetched while the facility still serves, so that the setup inside the downtime window (and the way back, which runs the
+# old images again) does not depend on a registry that may be slow or unreachable at that moment:
+#   - every image that release-images.json of the release lists (ghcr.io/abhiguru/supabase-warehouse-template/<service>@sha256:<digest>),
+#     fetched the way scripts/build-images.sh --from-release fetches it, checked against the tag and the commit, and pulled by its digest;
+#   - every image that docker/docker-compose.yml of the release names by digest (the Docker Hub images, such as PostgREST).
+# Pulling is all it does: it never runs `docker tag`, because the tag <project>-<service> names the images the facility runs now (upgrade.sh
+# tags them as pre-<release> next, and the way back puts them back); setup of the new release tags the pulled images itself and finds them
+# on this host. Anything that is not a release tag (--ref), a host that is not x86-64 (the images are built for x86-64 only) or without
+# curl is skipped with one line. A download that fails, a file that does not fit the release, a pull that fails or times out, or a pulled
+# image of another digest or commit refuses the upgrade: nothing has been changed yet, and the same command can be run again.
+#
+# From the preflight, in the environment: STATE, TO_SHA, TO_LABEL, DRY (yes for --dry-run: the file is fetched and checked, nothing is pulled).
+set -euo pipefail
+
+HERE="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+TREE="$(dirname "$HERE")"
+say() { printf '%s\n' "$*"; }
+refuse() { printf 'Refusing: %s Nothing was changed.\n' "$*" >&2; exit 1; }
+
+: "${STATE:?the preflight sets STATE}"
+: "${TO_SHA:?the preflight sets TO_SHA}"
+: "${TO_LABEL:?the preflight sets TO_LABEL}"
+DRY="${DRY:-no}"
+SEMVER='^v[0-9]+\.[0-9]+\.[0-9]+(-[0-9A-Za-z.-]+)?(\+[0-9A-Za-z.-]+)?$'
+[[ "$STATE" == /* && -d "$STATE/config" ]] || refuse "STATE is not an installed operator state ('$STATE')."
+
+skip() { say "Pre-pull of images: not done: $*"; exit 0; }
+[[ "$TO_LABEL" =~ $SEMVER ]] || skip "$TO_LABEL is not a release tag, so its images are built on this host during setup."
+[[ "$TO_SHA" =~ ^[0-9a-f]{40}$ ]] || refuse "the commit of $TO_LABEL is not a 40-digit SHA ('$TO_SHA'), so its images cannot be checked."
+arch="$(uname -m 2>/dev/null || true)"
+[[ "$arch" == x86_64 ]] || skip "the release images are built for x86-64 and this host is ${arch:-of an unknown architecture}; setup builds them here."
+command -v curl >/dev/null || skip 'curl is not installed; setup builds the images here.'
+command -v docker >/dev/null || refuse 'docker is not installed, so the images of the release cannot be pulled.'
+
+# The same address and the same curl as scripts/build-images.sh (select_release_images); tests/upgrade-prepull.test.mjs compares the two.
+url="https://github.com/abhiguru/supabase-warehouse-template/releases/download/${TO_LABEL//+/%2B}/release-images.json"
+file="$(mktemp "$STATE/config/.release-images.XXXXXX")" || refuse "a temporary file cannot be made in $STATE/config."
+trap 'rm -f -- "$file"' EXIT
+if ! why="$(curl --fail --silent --show-error --location --proto '=https' --proto-redir '=https' --tlsv1.2 --max-time 60 --max-filesize 1048576 --output "$file" "$url" 2>&1)"; then
+  refuse "$url could not be fetched (${why:-curl failed}), so the images of $TO_LABEL cannot be pulled before the downtime. Run this command again when the network is back."
+fi
+# Checks the file against the release and the commit (and its recipes hash); with no service named it prints nothing.
+if ! selection="$(node "$HERE/image-recipes.mjs" release-select "$file" "$TO_LABEL" "$TO_SHA" 2>&1)"; then
+  refuse "$selection."
+fi
+refs=()
+while IFS= read -r ref; do [[ -z "$ref" ]] || refs+=("$ref"); done < <(node -e '
+  const manifest = JSON.parse(require("node:fs").readFileSync(process.argv[1], "utf8"));
+  for (const [, entry] of Object.entries(manifest.images).sort(([a], [b]) => a.localeCompare(b))) console.log(entry.ref);' "$file")
+((${#refs[@]})) || refuse "release-images.json of $TO_LABEL lists no image."
+hub=()
+while IFS= read -r ref; do [[ -z "$ref" ]] || hub+=("$ref"); done < <(sed -n 's/^[[:space:]]*image:[[:space:]]*\([^$[:space:]]*@sha256:[0-9a-f]\{64\}\)[[:space:]]*$/\1/p' "$TREE/docker/docker-compose.yml")
+
+if [[ "$DRY" == yes ]]; then
+  say "Pre-pull of images: a real run would pull ${#refs[@]} image(s) of $TO_LABEL and ${#hub[@]} base image(s) before the API is closed (this dry run pulls nothing)."
+  exit 0
+fi
+
+limit="${WAREHOUSE_IMAGE_PULL_TIMEOUT:-1200}"
+[[ "$limit" =~ ^[1-9][0-9]*$ ]] || limit=1200
+pull() {
+  local ref="$1" rc=0 out
+  if command -v timeout >/dev/null; then out="$(timeout -k 10 "$limit" docker pull --quiet "$ref" 2>&1)" || rc=$?
+  else out="$(docker pull --quiet "$ref" 2>&1)" || rc=$?; fi
+  if ((rc == 124 || rc == 137)); then refuse "pulling $ref took longer than $limit seconds and was stopped. Run this command again, or raise WAREHOUSE_IMAGE_PULL_TIMEOUT."; fi
+  ((rc == 0)) || refuse "could not pull $ref: ${out##*$'\n'}. Run this command again when the registry answers."
+  if ! grep -qxF -- "$ref" <<< "$(docker image inspect --format '{{range .RepoDigests}}{{println .}}{{end}}' "$ref" 2>/dev/null || true)"; then
+    refuse "the pulled image does not carry the digest ${ref##*@} that was asked for ($ref)."
+  fi
+}
+say "Pre-pull of images: pulling ${#refs[@]} image(s) of $TO_LABEL and ${#hub[@]} base image(s) while the facility still serves (nothing is tagged; setup finds them on this host)."
+for ref in "${refs[@]}"; do
+  pull "$ref"
+  revision="$(docker image inspect --format '{{index .Config.Labels "org.opencontainers.image.revision"}}' "$ref" 2>/dev/null || true)"
+  if [[ "$revision" != "$TO_SHA" ]]; then
+    docker image rm "$ref" >/dev/null 2>&1 || true
+    refuse "the pulled image $ref was built from commit ${revision:-<no revision label>}, not from the commit ${TO_SHA:0:12} of $TO_LABEL."
+  fi
+done
+for ref in "${hub[@]}"; do pull "$ref"; done
+say "Pre-pull of images: done (${#refs[@]} image(s) of $TO_LABEL, ${#hub[@]} base image(s))."
