@@ -2392,7 +2392,7 @@ the old release's setup, the `functions` recreate, `doctor`), with three differe
 `cp -p .../config/upgrade-last .../config/upgrade-in-progress`**: it puts the finished upgrade back on record as an interrupted one, so
 that from then on `doctor`, `start.sh` and the checker say "an upgrade was interrupted" and name the way out, and the checker repairs
 nothing meanwhile (the mode 0600 is kept). The second line is `bash scripts/maintenance.sh on`, which closes the API so that phones record
-nothing more that the restore would then lose, and `bash scripts/maintenance.sh off` opens it again before the `doctor`. The last line
+nothing more that the restore would then lose; then, when the checkout has it, the diagnostics save (`service-diagnostics.mjs save rollback`), and only then the old commit (`git checkout`). `bash scripts/maintenance.sh off` opens it again before the `doctor`. The last line
 removes both `config/upgrade-in-progress` and `config/upgrade-last`; run it when `doctor` is green on the old release. When the images the
 upgrade saved (`pre-<release>`) are no longer on the host, the printout leaves out the two image lines and says the old release's setup builds
 its images again, which needs the network. `rollback --last` exists from the release after the one that introduced `upgrade-last`: an

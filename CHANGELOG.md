@@ -79,10 +79,10 @@ file used to carry for earlier installations are in git: `git show b45ae0b:CHANG
   could land on a commit where they failed or never ran. `release.yml` now runs `scripts/check-release-ci.mjs` first: it asks the GitHub API for the
   check runs of the tagged commit and fails, naming the missing or failed one, unless the newest run of each is a completed success. It does not
   wait or poll, and adds one job permission, `checks: read` (it reads the public endpoint anonymously when the token is refused, and only counts check runs made by GitHub Actions on the commit the tag names). Operator action: none.
-- **Release tags are SSH-signed, and `upgrade.sh` verifies them.** `.github/allowed_signers` lists the keys that may sign a release tag (it ships
-  with no key yet: the maintainer adds one before the first signed tag). A checkout that lists a key makes `upgrade.sh vX.Y.Z` run
+- **Release tags are SSH-signed, and `upgrade.sh` verifies them.** `.github/allowed_signers` lists the keys that may sign a release tag; the maintainer's
+  key now ships there (fingerprint `SHA256:JfbT0+bW7PmoB/HA7HsW+K150PQgTMimV2pPijMC8vM`, also in the README under "Security"), so a checkout that has this release verifies every later tag. A checkout that lists a key makes `upgrade.sh vX.Y.Z` run
   `git verify-tag` against ITS OWN list and refuse, before anything is changed, a tag that is unsigned, lightweight, signed by another key or
-  published under another name; git 2.34 or newer and `ssh-keygen` are then needed. A checkout that lists no key (every release so far) warns and
+  published under another name; git 2.34 or newer and `ssh-keygen` are then needed. A checkout that lists no key (older releases) warns and
   goes on, so the first signed release can be reached; `--ref` is not verified. Only an SSH signature counts (PGP and X.509 are refused whatever the host keyring holds), a release that drops the key list is refused, the warning of a checkout without a key shows the fingerprints the release lists, and the upgrade record keeps `signature=checked|unchecked|ref`. `release.yml` checks the pushed tag against the previous release's
   list (`scripts/check-release-signature.sh`). Operator action: none.
 - **The way back from an upgrade is drilled in CI, kept after success, and the images are pulled before the freeze.** (1) The `operator-upgrade` job makes an
@@ -125,7 +125,7 @@ file used to carry for earlier installations are in git: `git show b45ae0b:CHANG
 - **Fixed: clearing the vehicle of a GRN stores nothing again (`update_grn`, `update_dispatch_smart`; definition files, no migration).** Since
   migration 130 a blank vehicle sent on an edit turned into NULL and then kept the old value; a blank now clears it, and an edit that leaves the
   vehicle out still keeps it. Runs of white space inside a vehicle number (spaces, tabs, non-breaking spaces) collapse to one space in all four
-  writers (`save_grn`, `update_grn`, `create_dispatch_with_stock_check`, `update_dispatch_smart`); stored rows are not changed. A vehicle sent to `update_dispatch_smart` as a JSON number or boolean is stored as text (only `null` or leaving the key out keeps the vehicle). Tests:
+  writers (`save_grn`, `update_grn`, `create_dispatch_with_stock_check`, `update_dispatch_smart`); stored rows are not changed. A vehicle sent to `update_dispatch_smart` as a JSON number or boolean is stored as text (only `null` or leaving the key out keeps the vehicle), as a new dispatch does; a JSON object, array or boolean vehicle is refused with `registration_invalid`. Tests:
   `tests/rules_130.sql`. No operator action.
 
 - **Document PDFs page their lines instead of refusing over 1,000 (review finding M12).** The GRN, dispatch, invoice and customer stock PDFs read
@@ -222,6 +222,26 @@ file used to carry for earlier installations are in git: `git show b45ae0b:CHANG
   "not on this host".
 
 ### Operator actions
+
+- **Before upgrading to the release with migration 139 (foreign keys and positive payments): count the rows that break the new rules.** The migration
+  refuses, changing nothing, while any of these counts is not zero. The upgrade rehearsal (`scripts/upgrade-rehearse.sh`, run by the preflight on a restored
+  copy of the newest verified backup) applies the migration plan, so it runs this guard too and refuses the upgrade before any change to the facility. To
+  count first, run in `psql` as the database owner (all zeros means the migration applies):
+
+  ```sql
+  SELECT (SELECT count(*) FROM public.invoice t WHERE t.gr_id IS NOT NULL AND NOT EXISTS (SELECT 1 FROM public.goodsreceived p WHERE p.id = t.gr_id)) AS invoice_without_grn,
+         (SELECT count(*) FROM public.invoice t WHERE t.customer_id IS NOT NULL AND NOT EXISTS (SELECT 1 FROM public.customers p WHERE p.id = t.customer_id)) AS invoice_without_customer,
+         (SELECT count(*) FROM public.invoice_trl t WHERE NOT EXISTS (SELECT 1 FROM public.invoice p WHERE p.id = t.invoice_id)) AS invoice_line_without_invoice,
+         (SELECT count(*) FROM public.dispatch t WHERE t.customer_id IS NOT NULL AND NOT EXISTS (SELECT 1 FROM public.customers p WHERE p.id = t.customer_id)) AS dispatch_without_customer,
+         (SELECT count(*) FROM public.payments t WHERE t.customer_id IS NOT NULL AND NOT EXISTS (SELECT 1 FROM public.customers p WHERE p.id = t.customer_id)) AS payment_without_customer,
+         (SELECT count(*) FROM public.payments t WHERE t.supervisor_id IS NOT NULL AND NOT EXISTS (SELECT 1 FROM public.user_profiles p WHERE p.id = t.supervisor_id)) AS payment_without_profile,
+         (SELECT count(*) FROM public.payments t WHERE t.amount <= 0) AS payment_amount_not_positive;
+  ```
+
+- **App 0.7.0 is needed with this release.** `delete_invoice` now always refuses (`INVOICE_CANCEL_ONLY`); cancelling an invoice, the `payments` capability switch
+  and the devices list (migration 140) are in the 0.7.0 app only. Upgrade the app in the same window.
+- **git 2.34 or newer and `ssh-keygen` are needed on the host from now on**: `upgrade.sh` verifies the SSH signature of every release tag against the key
+  list this release ships.
 
 - **Before upgrading to the release with migrations 137 and 138: count the deleted documents.** From this release a customer account no
   longer sees a soft-deleted receipt, dispatch or invoice (nor its lines, photos or photo files), and the customer-callable RPCs

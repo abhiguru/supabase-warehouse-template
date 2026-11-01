@@ -136,7 +136,7 @@ export async function htmlToPdf(
  */
 export async function renderDocumentPdf(html: string, options: PdfRendererOptions = {}): Promise<Uint8Array> {
   try { return await htmlToPdf(html, options); } catch (error) {
-    console.error(`PDF renderer unavailable: ${error instanceof Error ? error.message : 'request failed'}`);
+    console.error(`PDF renderer unavailable: ${error instanceof Error ? error.message : 'request failed'} request_id=${/^[0-9a-f]{32}$/.test(options.requestId ?? '') ? options.requestId : '-'}`);
     throw { status: 503, message: 'PDF renderer unavailable' };
   }
 }

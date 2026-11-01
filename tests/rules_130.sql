@@ -293,6 +293,22 @@ SELECT public.update_dispatch_smart(:'disp_one'::uuid, '{"registration":12345}':
 RESET ROLE;
 SELECT pg_temp.r130_assert(:'disp_edit_number'::jsonb->>'success' = 'true'
   AND (SELECT registration = '12345' FROM public.dispatch WHERE id = :'disp_one'::uuid), 'a dispatch edit that sends a number as the vehicle stores it as text: '||:'disp_edit_number');
+SELECT set_config('request.jwt.claims',:'admin_claims',true);
+SET LOCAL ROLE authenticated;
+SELECT public.update_dispatch_smart(:'disp_one'::uuid, '{"registration":{"a":1}}'::jsonb, NULL) AS disp_edit_obj,
+       public.update_dispatch_smart(:'disp_one'::uuid, '{"registration":["x"]}'::jsonb, NULL) AS disp_edit_arr,
+       public.update_dispatch_smart(:'disp_one'::uuid, '{"registration":true}'::jsonb, NULL) AS disp_edit_bool,
+       public.create_dispatch_with_stock_check(:'header'::jsonb || '{"disp_no":"R130D6","registration":{"a":1}}',
+         ARRAY[jsonb_build_object('gr_trl_id', :'lot_id', 'disp_qty', 1)], false, 0, 'r130-reg-obj') AS disp_create_obj,
+       public.create_dispatch_with_stock_check(:'header'::jsonb || '{"disp_no":"R130D7","registration":1234}',
+         ARRAY[jsonb_build_object('gr_trl_id', :'lot_id', 'disp_qty', 1)], false, 0, 'r130-reg-num') AS disp_create_num \gset
+RESET ROLE;
+SELECT pg_temp.r130_assert(:'disp_edit_obj'::jsonb->>'error_code' = 'registration_invalid' AND :'disp_edit_arr'::jsonb->>'error_code' = 'registration_invalid'
+  AND :'disp_edit_bool'::jsonb->>'error_code' = 'registration_invalid' AND :'disp_create_obj'::jsonb->>'error_code' = 'registration_invalid'
+  AND (SELECT registration = '12345' FROM public.dispatch WHERE id = :'disp_one'::uuid),
+  'an object, array or boolean vehicle is refused (edit and create) and the stored vehicle stays: '||:'disp_edit_obj'||' '||:'disp_edit_arr'||' '||:'disp_edit_bool'||' '||:'disp_create_obj');
+SELECT pg_temp.r130_assert(:'disp_create_num'::jsonb->>'success' = 'true' AND (SELECT registration = '1234' FROM public.dispatch WHERE disp_no = 'R130D7'),
+  'a new dispatch with a number as the vehicle stores it as text: '||:'disp_create_num');
 
 -- ===== App 34. No whitespace in a dispatch number or a new GRN number =====
 SELECT set_config('request.jwt.claims',:'admin_claims',true);
