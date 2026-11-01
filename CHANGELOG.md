@@ -10,6 +10,7 @@ file used to carry for earlier installations are in git: `git show b45ae0b:CHANG
 
 ### Added
 
+- **A repeatable 5-year scale check.** `tests/seed/make-seed.mjs --years N` writes a scale fixture (per year 12,000 receipts, 9,000 dispatches, 2,400 invoices, 3 lines per document, 200 customers of which 20% hold 80%, 1,500 items, 90 days of sensor readings; the default seed is unchanged), and the new `scale-check` CI job (weekly and on demand, not a required check) loads five years of it into a fictional installation and runs `tests/scale-check.mjs`: 20 workers for 60 seconds as an administrator, a staff member and a customer, calling the list and polled RPCs as the app does. It uploads `scale-check.json` (p50, p95, max per RPC) and warns when a p95 is above `SCALE_P95_MS` (300); `SCALE_ENFORCE=1` makes that a failure. Operator action: none.
 - **A release needs green end-to-end CI on its commit.** `operator-install` and `operator-upgrade` are not required checks on `main`, so a tag
   could land on a commit where they failed or never ran. `release.yml` now runs `scripts/check-release-ci.mjs` first: it asks the GitHub API for the
   check runs of the tagged commit and fails, naming the missing or failed one, unless the newest run of each is a completed success. It does not

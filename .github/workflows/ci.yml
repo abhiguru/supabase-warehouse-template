@@ -1052,3 +1052,75 @@ jobs:
         run: |
           cd "$RUNNER_TEMP/previous" || exit 0
           test -z "${WAREHOUSE_STATE_DIR:-}" || test ! -f "$WAREHOUSE_STATE_DIR/config/compose.env" || bash scripts/compose.sh --profile '*' down
+
+  scale-check:
+    name: Scale check (5 years of data)
+    # A repeatable scale check (tests/scale-check.mjs): a fictional installation holding five years of a busy facility
+    # (tests/seed/make-seed.mjs --years 5: 60,000 receipts, 45,000 dispatches, 12,000 invoices, 200 customers, 90 days of sensor
+    # readings), then 60 seconds of 20 concurrent signed-in workers (administrator, staff, customer) calling the list and polled RPCs
+    # as the app does. It uploads scale-check.json (p50, p95 and max per RPC). A p95 above 300 ms is a warning here (SCALE_ENFORCE is
+    # 0 until the numbers have settled); a failed or timed-out call fails the job. Weekly and on demand, never on a pull request,
+    # and not a required check. The runner rules of operator-install apply (docs/DEVELOPER_HANDOFF.md).
+    if: github.event_name == 'schedule' || github.event_name == 'workflow_dispatch'
+    runs-on: ${{ github.event.pull_request.head.repo.fork && 'ubuntu-latest' || fromJSON(vars.OPERATOR_INSTALL_RUNNER || '"ubuntu-latest"') }}
+    timeout-minutes: 60
+    needs: validate
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          path: backend
+          persist-credentials: false
+      - uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0
+        with:
+          node-version: '22'
+      - run: npm ci
+        working-directory: backend
+      - name: Prepare private operator state
+        run: |
+          mkdir -m 700 "$RUNNER_TEMP/core-backend-test-20261101"   # the operator-api fixtures only accept this name pattern
+          echo "WAREHOUSE_STATE_DIR=$RUNNER_TEMP/core-backend-test-20261101" >> "$GITHUB_ENV"
+      - name: Fresh private operator installation
+        run: |
+          # The fixture sentinel of docs/OPERATOR_INSTALL.md, "Test installations": accepted only for this .example.test address,
+          # and the OTP function never sends with it.
+          install -m 600 /dev/null "$RUNNER_TEMP/msg91-ci.env"
+          cat > "$RUNNER_TEMP/msg91-ci.env" <<'ENV'
+          SMS_PROVIDER=msg91
+          MSG91_AUTH_KEY=isolated-no-delivery-key
+          MSG91_TEMPLATE_ID=000000000000000000000001
+          MSG91_PE_ID=0000000000000000001
+          MSG91_SENDER_ID=CITEST
+          ENV
+          bash setup.sh --operator --state-dir "$WAREHOUSE_STATE_DIR" \
+            --api-url https://backend-core.example.test --company 'Fictional Core Warehouse' \
+            --provider-env "$RUNNER_TEMP/msg91-ci.env" \
+            --admin-phone 919888888871 --admin-name 'Core Demo Administrator' \
+            --alert-webhook-file off \
+            --letterhead-file off
+        working-directory: backend
+      - run: node scripts/doctor.mjs --local
+        working-directory: backend
+      - name: Load five years of data
+        run: |
+          set -euo pipefail
+          node tests/seed/make-seed.mjs --years 5 > "$RUNNER_TEMP/scale-seed.sql"
+          time bash scripts/compose.sh exec -T db psql -X -q -v ON_ERROR_STOP=1 -U supabase_admin -d postgres < "$RUNNER_TEMP/scale-seed.sql"
+          test "$(bash scripts/compose.sh exec -T db psql -X -qAt -U supabase_admin -d postgres -c 'SELECT count(*) FROM public.goodsreceived')" = 60000
+        working-directory: backend
+      - name: Call the list and polled RPCs for 60 seconds
+        env:
+          SCALE_ENFORCE: '0'
+          SCALE_OUTPUT: ${{ runner.temp }}/scale-check.json
+        run: node tests/scale-check.mjs
+        working-directory: backend
+      - name: Per-RPC timings (p50, p95, max)
+        if: always()
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        with:
+          name: scale-check
+          path: ${{ runner.temp }}/scale-check.json
+          if-no-files-found: ignore
+      - name: Stop only this checkout's operator project
+        if: always()
+        run: test ! -f "$WAREHOUSE_STATE_DIR/config/compose.env" || bash scripts/compose.sh --profile '*' down
+        working-directory: backend

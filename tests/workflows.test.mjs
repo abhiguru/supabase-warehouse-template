@@ -818,3 +818,27 @@ test('release: the end-to-end CI gate runs after setup-node and before anything 
   assert.match(checklist, /green `operator-install` and `operator-upgrade` on the commit/);
   assert.match(checklist, /scripts\/check-release-ci\.mjs/);
 });
+
+test('scale-check is scheduled only, needs validate, runs the 5-year seed and the check on the operator runner, uploads its timings and always stops the stack', () => {
+  const ci = readFileSync(new URL('../.github/workflows/ci.yml', import.meta.url), 'utf8');
+  const job = ci.slice(ci.indexOf('\n  scale-check:\n') + 1).split(/\n  [a-z-]+:\n/)[0];
+  assert.ok(job.length > 500, 'the job exists');
+  assert.match(job, /\n    if: github\.event_name == 'schedule' \|\| github\.event_name == 'workflow_dispatch'\n/, 'never on a push or a pull request');
+  assert.match(job, /\n    needs: validate\n/);
+  assert.match(job, /\n    runs-on: \$\{\{ github\.event\.pull_request\.head\.repo\.fork && 'ubuntu-latest' \|\| fromJSON\(vars\.OPERATOR_INSTALL_RUNNER \|\| '"ubuntu-latest"'\) \}\}\n/, 'same runner rule (and fork guard) as operator-install');
+  assert.match(job, /\n    timeout-minutes: 60\n/, 'a hung job ends');
+  assert.match(job, /bash setup\.sh --operator --state-dir "\$WAREHOUSE_STATE_DIR"/);
+  assert.match(job, /--api-url https:\/\/backend-core\.example\.test/, 'a fictional installation');
+  assert.match(job, /core-backend-test-[0-9]+/, 'the state name the operator fixtures accept');
+  assert.match(job, /node tests\/seed\/make-seed\.mjs --years 5 >/);
+  assert.ok(job.indexOf('make-seed.mjs --years 5') < job.indexOf('node tests/scale-check.mjs'), 'the data is loaded before the check');
+  assert.match(job, /SCALE_ENFORCE: '0'/, 'a warning only until the numbers have settled');
+  assert.match(job, /\n        run: node tests\/scale-check\.mjs\n/);
+  const upload = /- name: Per-RPC timings[^\n]*\n(?: {8}[^\n]*\n)+/.exec(job)?.[0] ?? '';
+  assert.match(upload, /if: always\(\)/, 'the timings are kept when the check fails');
+  assert.match(upload, /uses: actions\/upload-artifact@[0-9a-f]{40} # v\d+\.\d+\.\d+\n/, 'pinned by SHA with its version');
+  assert.match(upload, /path: \$\{\{ runner\.temp \}\}\/scale-check\.json/);
+  assert.match(job, /SCALE_OUTPUT: \$\{\{ runner\.temp \}\}\/scale-check\.json/, 'the file the check writes is the file that is uploaded');
+  assert.match(job, /- name: Stop only this checkout's operator project\n {8}if: always\(\)\n {8}run: test ! -f "\$WAREHOUSE_STATE_DIR\/config\/compose\.env" \|\| bash scripts\/compose\.sh --profile '\*' down\n/);
+  assert.doesNotMatch(job, /continue-on-error/, 'no step is softened');
+});
