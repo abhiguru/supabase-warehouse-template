@@ -332,18 +332,18 @@ BEGIN
     PERFORM pg_temp.hv_assert(jsonb_array_length(pg#>'{data,items}')=100 AND NOT EXISTS (
         SELECT 1 FROM jsonb_array_elements(pg#>'{data,items}') x LEFT JOIN pg_temp.hv_lot() hl ON hl.rcpt=r AND hl.mark=x->>'package_mark'
         WHERE hl.packaging IS DISTINCT FROM x->>'packaging'),'page of HVD'||r||': packaging of every row equals the plan');
-    -- list screens: the Dispatches list (get_dispatch_list_with_items, which reads the tables) in pages of 1000,
+    -- list screens: the Dispatches list (get_dispatch_list_with_items, which reads the tables) in pages of 200 (the most it returns),
     -- then the stock summary
     total := NULL; seen := 0; qsum := 0; ids := '{}'; off := 1;
     LOOP
-      pg := public.get_dispatch_list_with_items(p_customer_id => cust, p_sort_by => 'disp_no', p_sort_order => 'asc', p_page => off, p_limit => 1000);
+      pg := public.get_dispatch_list_with_items(p_customer_id => cust, p_sort_by => 'disp_no', p_sort_order => 'asc', p_page => off, p_limit => 200);
       PERFORM pg_temp.hv_assert(pg->>'success'='true','dispatch list HVD'||r||' page '||off||': '||left(pg::text,200));
       total := (pg#>>'{data,total_count}')::int;
       EXIT WHEN jsonb_array_length(pg#>'{data,dispatches}')=0;
       SELECT seen + count(*), qsum + sum((x->>'total_qty')::int), ids || array_agg(x->>'disp_no')
         INTO seen, qsum, ids FROM jsonb_array_elements(pg#>'{data,dispatches}') x;
       off := off + 1;
-      EXIT WHEN off > 6;
+      EXIT WHEN off > 30;
     END LOOP;
     PERFORM pg_temp.hv_assert(total=plan_n AND seen=plan_n AND (SELECT count(DISTINCT i) FROM unnest(ids) i)=plan_n AND qsum=plan_q,
       'dispatch list HVD'||r||': count '||seen||' of '||plan_n||', quantity '||qsum||' of '||plan_q);

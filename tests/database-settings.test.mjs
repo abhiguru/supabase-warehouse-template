@@ -30,6 +30,11 @@ test('PostgREST reads the API roles\' own settings, so anon\'s 3 s and authentic
   assert.match(live, /ci_timeout_probe/); assert.match(live, /57014/); assert.match(live, /DROP FUNCTION IF EXISTS public\.ci_timeout_probe/);
 });
 
+test('PostgREST cuts a direct table read at 2,000 rows (the app asks for at most 500), and the contract says so', () => {
+  assert.match(compose, /\n\s+PGRST_DB_MAX_ROWS: "2000"\n/);
+  assert.match(read('docs/API_CONTRACT.md'), /Direct table reads return at most 2,000 rows; page with `Range`/);
+});
+
 test('the database container has 256 MB of shared memory and logs slow statements, not connections', () => {
   assert.match(dbBlock, /\n    shm_size: 256m\n/);
   assert.equal(flags.log_min_duration_statement, '1000', 'statements slower than 1 s are logged');
@@ -46,6 +51,7 @@ test('the database container has 256 MB of shared memory and logs slow statement
 test('the rendered project carries the same settings', { skip: !composeAvailable() && !process.env.CI ? 'docker compose is not installed' : false }, () => {
   const { services } = renderedCompose();
   assert.equal(services.rest.environment.PGRST_DB_CONFIG, 'true');
+  assert.equal(services.rest.environment.PGRST_DB_MAX_ROWS, '2000');
   assert.equal(Number(services.db.shm_size), 256 * 1024 * 1024);
   const command = [].concat(services.db.command).join(' ');
   for (const setting of ['log_min_duration_statement=1000', 'log_connections=off', 'log_disconnections=off', 'log_temp_files=10240', 'log_parameter_max_length=0']) {

@@ -173,6 +173,9 @@ services:
       # exists in the database, so the environment variables below stay the only configuration.
       PGRST_DB_CONFIG: "true"
       PGRST_DB_PREPARED_STATEMENTS: "true"
+      # A direct table read answers at most 2,000 rows, whatever Range or limit the caller sends (the app's paged reads ask for at most 500).
+      # RPCs are not affected: they answer one jsonb value. docs/API_CONTRACT.md, "Direct table reads".
+      PGRST_DB_MAX_ROWS: "2000"
       PGRST_DB_URI: postgres://authenticator:${DB_PASSWORD_AUTHENTICATOR:?Run setup.sh to generate the per-role database passwords}@${POSTGRES_HOST}:${POSTGRES_PORT}/${POSTGRES_DB}
       PGRST_DB_SCHEMAS: ${PGRST_DB_SCHEMAS}
       PGRST_DB_ANON_ROLE: anon

@@ -15,6 +15,14 @@ The operator selected this policy on 3 October 2026: active, approved staff may
 view, create and edit warehouse GRNs. GRN deletion remains limited to admins
 and supervisors. Customers retain their assigned-customer read boundary.
 
+**Customers do not see deleted documents (migration 137, owner decision).** A customer account reads a goods receipt, dispatch or invoice
+of an assigned customer only while it is not deleted (`deleted_at IS NULL` on the document), and never the lines or photos of a deleted
+one (`goodsreceived_trl`, `grn_images`, `dispatch_trl`, `dispatch_images`, `invoice_trl`), nor the photo files of a deleted receipt or dispatch in Storage. The RPCs that read documents past the policies follow the same rule for a customer caller: `get_grn_details`,
+`get_dispatch_details` and `get_grn_item_dispatches` answer "not found" for a deleted receipt or dispatch (and leave deleted dispatches and invoices out of
+the totals), and `get_customer_dispatch_items` and `get_customer_stock_analysis_v2` leave out the lines of deleted receipts and dispatches. Administrators, supervisors and staff read
+deleted documents as before. Only deletion hides a document from a customer: an invoice that is cancelled (not deleted) stays visible to
+its customer. `tests/rls_wrapped_137.sql` proves it for every role.
+
 Migration 18 adds an explicit GRN RPC allowlist and read policies for GRN
 headers, items and attachments, plus customer lookup needed by the receipt
 form. Existing business RPCs retain their quantity/stock and dependency checks.

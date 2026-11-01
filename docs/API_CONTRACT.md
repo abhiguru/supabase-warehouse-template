@@ -199,6 +199,19 @@ keeps its arguments, sorts, filters and answer; rows that tie on every sort key 
 `update_dispatch_smart`, `save_invoice`, `update_invoice`, ...) is still the authoritative result of that
 write.
 
+### Direct table reads and list page sizes (migrations 137 and 138)
+
+- **Direct table reads return at most 2,000 rows; page with `Range`.** The PostgREST setting `PGRST_DB_MAX_ROWS` is 2000 in
+  `docker/docker-compose.yml`, so a read of `dispatch_trl`, `goodsreceived_trl` or any of the 12 readable tables is cut at 2,000 rows
+  whatever `limit` or `Range` it asks for. The app's paged direct reads ask for at most 500 rows per request. RPCs answer one `jsonb`
+  value and are not cut.
+- **`get_dispatch_list_with_items`** clamps `p_limit` to 1..200 (a missing value is 10) and `p_page` to at least 1; the answer's `limit` and
+  `current_page` are the values used. **`get_invoices_list`** clamps `p_limit` to 1..200 (a missing value is 50) and `p_offset` to at least 0
+  (a negative offset used to fail). A client that needs more rows pages through the list.
+- **Customers do not see deleted documents**, in the direct reads and in `get_grn_details`, `get_grn_item_dispatches`, `get_dispatch_details`,
+  `get_customer_dispatch_items` and `get_customer_stock_analysis_v2` (a deleted receipt or dispatch is "not found"; its lines are left out):
+  see [STAFF_GRN_POLICY.md](STAFF_GRN_POLICY.md).
+
 ### Sessions: the refresh lifetime and the break-glass code (migration 126, 2026-10-26)
 
 No function changes its arguments or the shape of an answer; the app needs no change. What changed is how long a refresh token's session lasts and one more code that `operator-otp/verify` accepts.
