@@ -218,6 +218,19 @@ Additive only: every key that was there is unchanged. The value is `goodsreceive
 
 `get_invoice_data` (`items[].grn_item.packaging`, `items[].catalog.packaging`) and `get_customer_grn_activity` (`grns[].items[].packaging`) already answered it. `get_all_customer_activity_summary`, `get_all_dispatch_activity` and `get_all_grn_activity` list customers, not items, and have no line to carry it. Test: `tests/packaging_lines_141.sql`.
 
+### The packaging rule of stock and preview rows (migration 142)
+
+Additive only; `null` still means "the lots differ". One rule (`warehouse_security.shared_packaging`) decides the word of a set of lots, as the app reads a packaging word: `Box`/`Boxes` is `Box`, `Crate`/`Crates` is `Crate`, and everything else (`Bag`, `Unit`, `Sack`, any other text, `NULL`, blank) is `Bag`, compared after trim (tabs, line breaks and no-break spaces included) and case folding. The answer is `Bag`, `Box` or `Crate` when every lot agrees, and `null` when they differ (`Box` next to a `NULL` lot is mixed). Migration 141 answered `null` for an item whose lots all had `NULL` packaging and compared the raw text.
+
+| RPC | Where | Key |
+|---|---|---|
+| `get_customer_activity_detail` | `top_stock_items[]` | `packaging` (now by the rule) |
+| `get_customer_activity_detail` | `recent_grns[]` | `packaging` (new; the receipt's lots) |
+| `get_customer_activity_detail` | `recent_dispatches[]` | `packaging` (new; the receipt lots the dispatch took from) |
+| `get_customer_activity_detail` | `data.summary` | `current_stock_packaging` (new; the rule over every lot the customer still holds, the same lots as `summary.current_stock`; `Bag` at zero stock; `null` when they differ) |
+
+Test: `tests/packaging_rule_142.sql`.
+
 ### Direct table reads and list page sizes (migrations 137 and 138)
 
 - **Direct table reads return at most 2,000 rows; page with `Range`.** The PostgREST setting `PGRST_DB_MAX_ROWS` is 2000 in
@@ -384,7 +397,7 @@ The app switches on `reason`, not on the English. It is built by `warehouse_secu
 app role). A refusal is returned before the function's first write. The refusals that can only be known after a write (`RATES_NEED_MANAGER`,
 `RATES_WOULD_DROP`, `TOTAL_CHANGED`) are raised as `rate_fail` with the refusal in `DETAIL`; the handler of `update_grn`, `update_invoice`
 and `save_invoice_internal` rolls the whole block back and answers it (nothing is saved). The three legacy length refusals of the GRN
-(`item_name_too_long`, `packaging_too_long`, and new `registration_too_long`, which the dispatch create and `update_dispatch_smart` also answer, limit 20 since migration 130) (the dispatch create and `update_dispatch_smart` also answer `registration_invalid`, "Registration must be text", for a vehicle sent as a JSON object, array or boolean; a JSON number is stored as text) keep the older shape `{success:false, error, error_code, data:{limit, index?}, message}`.
+(`item_name_too_long`, `packaging_too_long`, and new `registration_too_long`, which the dispatch create and `update_dispatch_smart` also answer, limit 20 since migration 130) keep the older shape `{success:false, error, error_code, data:{limit, index?}, message}`. The dispatch create and `update_dispatch_smart` also answer `registration_invalid` ("Registration must be text") for a vehicle sent as a JSON object, array or boolean; its data is `{field}` (`field: 'registration'`), not `{limit, index?}`. A JSON number is stored as text.
 
 | `reason` | Returned by | Fields (top level) | English `error` |
 |---|---|---|---|

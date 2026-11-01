@@ -506,10 +506,10 @@ SELECT pg_temp.rip_assert((:'staff_detail_rowan'::jsonb#>>'{data,summary,total_i
   AND pg_temp.rip_nums(:'staff_detail_rowan'::jsonb#>'{data,recent_invoices}', 'net_total') = ARRAY[0, 66, 108, 71]::numeric[]
   AND pg_temp.rip_nums(:'staff_detail_rowan'::jsonb#>'{data,monthly_trends}', 'invoice_amount') = ARRAY[71, 174]::numeric[],
   'staff: Rowan activity detail: invoiced 245, payments 257.50, pending 0 (never negative), 6210 of 0 is paid: ' || :'staff_detail_rowan');
--- Key sets: unchanged (migration 134 adds cancelled_count to the summary).
+-- Key sets: unchanged (migration 134 adds cancelled_count to the summary, migration 142 current_stock_packaging).
 SELECT pg_temp.rip_assert(pg_temp.rip_keys(:'staff_detail'::jsonb) = 'data,metadata,success'
   AND pg_temp.rip_keys(:'staff_detail'::jsonb->'data') = 'by_bucket,customer_city,customer_id,customer_name,monthly_trends,recent_dispatches,recent_grns,recent_invoices,summary,top_stock_items'
-  AND pg_temp.rip_keys(:'staff_detail'::jsonb#>'{data,summary}') = 'average_stock_age_days,cancelled_count,current_stock,total_dispatch_quantity,total_dispatches,total_grn_quantity,total_grns,total_invoice_amount,total_paid_amount,total_pending_amount'
+  AND pg_temp.rip_keys(:'staff_detail'::jsonb#>'{data,summary}') = 'average_stock_age_days,cancelled_count,current_stock,current_stock_packaging,total_dispatch_quantity,total_dispatches,total_grn_quantity,total_grns,total_invoice_amount,total_paid_amount,total_pending_amount'
   AND pg_temp.rip_keys(:'staff_detail'::jsonb#>'{data,monthly_trends,0}') = 'dispatch_count,dispatch_quantity,grn_count,grn_quantity,invoice_amount,month,stock_level_end'
   AND pg_temp.rip_keys(:'staff_detail'::jsonb#>'{data,recent_invoices,0}') = 'invoice_date,invoice_id,invoice_number,net_total,status',
   'staff: the keys of the activity detail are unchanged: ' || :'staff_detail');
