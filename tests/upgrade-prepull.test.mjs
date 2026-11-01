@@ -132,7 +132,7 @@ test('a download that fails, or a file of another release or commit, refuses wit
   const w = world();
   try {
     // The network, or the server, failing refuses; a 404 is the release having no file (see the next test).
-    for (const [code, pattern] of [['network', /could not be fetched \(curl: \(6\) Could not resolve host: github\.com , HTTP 000\)/], ['503', /could not be fetched \(curl: \(22\)[^)]*503 , HTTP 503\)/]]) {
+    for (const [code, pattern] of [['network', /could not be fetched \(curl: \(6\) Could not resolve host: github\.com , HTTP 000\)/], ['403', /could not be fetched \(curl: \(22\)[^)]*403 , HTTP 403\)/], ['503', /could not be fetched \(curl: \(22\)[^)]*503 , HTTP 503\)/]]) {
       const down = w.run({ FAKE_CURL_FAIL: code });
       assert.equal(down.status, 1, code);
       assert.match(down.stderr, /Refusing: https:\/\/github\.com\/.*release-images\.json could not be fetched/);
