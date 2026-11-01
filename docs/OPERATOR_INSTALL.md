@@ -1364,13 +1364,19 @@ export WAREHOUSE_STATE_DIR=/absolute/path/to/this/warehouse
 bash rotate-keys.sh --yes
 ```
 
+**Rotation is required** when the host, the state directory, a backup (or the USB drive) that holds `config/compose.env`, or
+a copy of the signing keys is lost, stolen, sold or handed to someone else, and when anyone who should not have it may have read
+the JWT secret or the service key. It is **not** a substitute for the other secrets: see
+[Retire or lose a host](#retire-or-lose-a-host) for the full list. Break-glass sign-in codes that were issued and not used are
+**voided** by a rotation (they are deleted in step 2); issue a new one afterwards if it is still needed.
+
 Without `--yes` the command prints a usage message, changes nothing and exits with status 1. With `--yes` it takes the
 operator lock, requires a healthy database, and then:
 
 1. stages a copy of `config/compose.env` with a new 96-hex `JWT_SECRET` and newly signed `ANON_KEY` and
    `SERVICE_ROLE_KEY` (only those three lines change);
 2. in one database transaction under advisory lock 71042: stores the new secret in `warehouse_security.auth_config`,
-   deletes every refresh session and voids pending OTP challenges. The secret reaches `psql` only on standard input,
+   deletes every refresh session and every unused break-glass code and voids pending OTP challenges. The secret reaches `psql` only on standard input,
    never as an argument;
 3. renames the staged file over `config/compose.env` (mode 0600);
 4. recreates the running key consumers (`db gateway rest storage functions`, plus `supavisor` when the pooler is on (`POOLER_ENABLED=true` and
@@ -2044,6 +2050,30 @@ one rerun with both sets of options does.
    passwords under
    [Secrets that rotate-keys does not change](#secrets-that-rotate-keys-does-not-change),
    then take a new backup.
+## Retire or lose a host
+
+A host that is lost, stolen, sold, scrapped, or whose disk goes for repair holds everything that matters in its state directory and
+in the backups beside it. If the disk was **not encrypted** ([Host prerequisites](#host-prerequisites)) assume the files were read.
+Do these, in this order, from another machine when the host is gone (the installation itself is replaced by
+[Recover a lost host from the USB drive](#recover-a-lost-host-from-the-usb-drive)):
+
+1. **Rotate the signing keys** on the installation that now serves the facility (the replacement host, after the recovery):
+   `bash rotate-keys.sh --yes` ([Rotate signing keys](#rotate-signing-keys)). Until it is done, whoever holds the old
+   `compose.env` can mint API keys that this backend still accepts. Everyone signs in again; unused break-glass codes are voided.
+2. **Delete the tunnel in Cloudflare** (Zero Trust, Networks, Tunnels) of the retired host, so its credential stops working; the
+   replacement host uses its own tunnel ([Cloudflare Tunnel ingress](#cloudflare-tunnel-ingress)).
+3. **Replace the MSG91 key**: create a new one in the MSG91 account, delete the old one there, and give the new one to the
+   replacement through `setup.sh --operator --provider-env`.
+4. **Revoke the Slack webhook URLs** (facility and sensors) and the heartbeat URL, and create new ones
+   ([Secrets that rotate-keys does not change](#secrets-that-rotate-keys-does-not-change)).
+5. **Rotate the database passwords, the superuser included**: `npm run db:rotate-passwords -- --yes --superuser`
+   ([Rotating the database passwords](#rotating-the-database-passwords)).
+6. **Re-enrol the USB backup drives** that were used with the retired host ([USB backup drive](#usb-backup-drive)), and decide what
+   to do with the old backups on them: they hold the whole database and the photos, unencrypted.
+7. **Keep the backup key** (`config/backup.key`) copy that is stored away from the host: a restore needs it. If a copy of it
+   was on the retired host or its drive, see its row in the table in the next section.
+8. Wipe the retired disk (a full-disk-encrypted one needs only its key destroyed) before it leaves your hands.
+
 ### Secrets that rotate-keys does not change
 
 `rotate-keys.sh` replaces the JWT secret and the two API keys derived from it. `compose.env`, and so every unencrypted
@@ -2060,6 +2090,10 @@ from the internet through the tunnel: they matter to someone who also reaches th
 | `SENSOR_INGEST_KEY` | Posting sensor readings to this installation's ingest function, from anywhere the gateway is reachable (sensors profile). | Mint a new key with a new label (`bash scripts/compose.sh exec -T db psql -X -qAt -v ON_ERROR_STOP=1 -U supabase_admin -d postgres -v label=<new label> < scripts/sensor-ingest-key.sql`, which prints it once), set it, recreate the bridge, then revoke the old one (`bash scripts/compose.sh exec -T db psql -X -q -v ON_ERROR_STOP=1 -U supabase_admin -d postgres -c "UPDATE warehouse_security.sensor_ingest_keys SET revoked_at = now() WHERE label = '<old label>' AND revoked_at IS NULL"`); [SENSORS.md](SENSORS.md#ingest-keys). |
 | `POSTGRES_PASSWORD` | The superuser login (`supabase_admin`), from inside the Compose network or the host. | `npm run db:rotate-passwords -- --yes --superuser`; see [Rotating the database passwords](#rotating-the-database-passwords). |
 | `DB_PASSWORD_AUTHENTICATOR`, `DB_PASSWORD_STORAGE` (every install), `DB_PASSWORD_POOLER` (only after `pooler.sh on`) | Each one database login of one service (PostgREST, Storage, the pooler's pool user), from inside the Compose network. | `npm run db:rotate-passwords -- --yes`; see [Rotating the database passwords](#rotating-the-database-passwords). |
+| The MSG91 key (`MSG91_AUTH_KEY` in `compose.env`, with the template, PE and sender ids) | Sending SMS from the facility's MSG91 account, at the facility's cost, by anyone who holds the key. | Create a new key in the MSG91 account and delete the old one there, then rerun `setup.sh --operator` with your usual inputs and `--provider-env` (a private file holding the new key); see "MSG91 provider file" in the setup options table above. |
+| The backup key (`config/backup.key`, and every copy of it) | Signing backups (a leaked key lets someone forge a backup that a restore accepts) and opening the USB archives, which are encrypted with it (with a copy of a drive, a leaked key reads the whole database and the photos). | Replace it, with the steps under [Backup key](#backup-key) ("If the key itself may have been disclosed"): move it aside, take a new backup, store and confirm the new copy, re-sign the saved images and enrol each USB drive again. |
+| The Cloudflare Tunnel credential (`~/.cloudflared/<id>.json` or the tunnel token, and `cert.pem`) | Running a connector for this facility's hostname: whoever holds it can answer requests for the public address. | Delete the tunnel in Cloudflare (Zero Trust, Networks, Tunnels) and create a new one with `scripts/tunnel.sh create`; see [Cloudflare Tunnel ingress](#cloudflare-tunnel-ingress). |
+| The heartbeat URL (`config/heartbeat-url`) | Pinging the dead-man switch, by anyone who holds the URL. | Create a new check in the monitoring service, delete the old one, and rerun `setup.sh --operator` with `--heartbeat-url-file`. |
 | `SECRET_KEY_BASE`, `VAULT_ENC_KEY` (only after `pooler.sh on`) | Pooler session signing; encryption of the pooler's stored tenant credentials. | No supported procedure yet; see below. |
 
 These procedures are **not exercised by CI**. Take a `db:backup` first and check with `node scripts/doctor.mjs --local`

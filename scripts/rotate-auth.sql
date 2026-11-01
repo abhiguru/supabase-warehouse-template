@@ -20,4 +20,8 @@ ON CONFLICT(key) DO UPDATE SET value=excluded.value;
 DELETE FROM warehouse_security.refresh_sessions;
 -- Pending challenges hold HMACs of the previous secret and can never verify.
 UPDATE public.otp_verifications SET verified=true, otp_code_hash=NULL WHERE NOT verified;
+-- An unused break-glass sign-in code (scripts/break-glass-admin.sh) is a sign-in path of its own: it ends with the keys it was issued under.
+DO $$ BEGIN
+  IF to_regclass('warehouse_security.break_glass_codes') IS NOT NULL THEN DELETE FROM warehouse_security.break_glass_codes; END IF;
+END $$;
 COMMIT;

@@ -10,6 +10,7 @@ file used to carry for earlier installations are in git: `git show b45ae0b:CHANG
 
 ### Added
 
+- **Retiring or losing a host.** A new section "Retire or lose a host" lists what to do in order (rotate the signing keys, delete the tunnel, replace the MSG91 key, revoke the Slack and heartbeat URLs, rotate the database passwords with `--superuser`, re-enrol USB drives, keep the backup key copy), "Rotate signing keys" says when rotation is required, and "Secrets that rotate-keys does not change" gains the MSG91 key, backup key, tunnel credential and heartbeat URL. Key rotation now also deletes unused break-glass codes.
 - **Disk-encryption warning.** `doctor` warns when the root filesystem has no `crypt` (LUKS) device under it (not under WSL, silent when `findmnt` or `lsblk` fail); the host prerequisites recommend full-disk encryption, and the Windows ones give the `manage-bde -status` check.
 - **`setup.sh --db-memory <GiB>`** (1 to 256) sets the database container's memory limit and, from it, `shared_buffers` (a quarter) and `effective_cache_size` (half) through `DB_MEMORY_LIMIT`, `DB_SHARED_BUFFERS` and `DB_EFFECTIVE_CACHE_SIZE` in `config/compose.env`; refused while the containers run. Without it the values are the old fixed ones (1G, 128MB, 512MB).
 - **Host minimum checked.** `doctor --host-preflight` warns (never refuses) below 4 vCPU, 7.5 GiB of memory and 55 GiB of disk in total on the state's filesystem; "Host prerequisites" states 4 vCPU / 8 GiB / SSD / 60 GB.
