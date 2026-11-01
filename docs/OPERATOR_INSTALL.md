@@ -2611,9 +2611,10 @@ console session signed in at all, a physical re-plug of the drive, a USB run tha
 
 ### Prerequisites
 
-- Windows 10 22H2 (verified) or Windows 11 (not verified yet), Pro or Enterprise, x64. Windows 10 22H2 is out of Microsoft's
-  support. The Home edition is not verified. This route has the Cloudflare tunnel only, with no LAN fallback
-  ([Ingress and the LAN](#ingress-and-the-lan)).
+- **Windows 11 (Pro, Enterprise or Home), x64, is the supported host.** Windows 10 is at your own risk: the steps below were
+  verified on Windows 10 22H2, which is out of Microsoft's support, and not yet on Windows 11. Home has no Group Policy editor, so
+  the "no auto-restart" policy of [Windows Update](#windows-update) is set in the registry there. This route has the Cloudflare tunnel only,
+  with no LAN fallback ([Ingress and the LAN](#ingress-and-the-lan)).
 - **Full-disk encryption is recommended**: BitLocker (Pro, Enterprise) or device encryption (Home) on the drive that holds the
   distro's virtual disk, because the whole installation, its keys included, is one file on it. `doctor` cannot see this from
   inside Ubuntu and stays silent. Check from PowerShell [PS-admin]: `manage-bde -status C:` should say `Protection On`
@@ -2810,7 +2811,7 @@ powershell -NoProfile -ExecutionPolicy Bypass -File \\wsl.localhost\Ubuntu-24.04
   `powershell -NoProfile -ExecutionPolicy Bypass -File $env:TEMP\register-tasks.ps1`. Use the temp folder of your own account,
   not `C:\Temp`: a folder that other users can write to is unsafe for a script that runs elevated. An execution policy set by
   Group Policy overrides `-ExecutionPolicy Bypass`.
-- Parameters: `-Distro` (default `Ubuntu-24.04`), `-BusId` (also registers the USB task, see
+- Parameters: `-Checkout` with `-State` (also register the best-effort shutdown task below), `-Distro` (default `Ubuntu-24.04`), `-BusId` (also registers the USB task, see
   [Backups off the host](#backups-off-the-host-windows)), `-UsbOnly`, and `-Force` (replace tasks that exist (verified); without it the
   script refuses). The script checks that it is elevated and that the distro exists before it changes anything, asks once for the
   password, never stores or prints it, starts the task, and reads it back: State, LastRunTime, LastTaskResult, the triggers
@@ -2829,8 +2830,16 @@ powershell -NoProfile -ExecutionPolicy Bypass -File \\wsl.localhost\Ubuntu-24.04
   again about 40 seconds to 2 minutes after `wsl --shutdown`, about 85 seconds after `wsl --terminate`, and about 70 to 90
   seconds after a host reboot with nobody signed in.
 
-Nothing stops the stack cleanly when Windows shuts down or restarts for an update (not verified yet): the processes are killed
-and PostgreSQL recovers its log on the next start. For a planned shutdown follow the next section.
+**Best-effort clean stop at shutdown.** With `-Checkout` and `-State` (the Linux paths of the checkout and of the state directory
+inside the distro) the script also registers "Warehouse WSL stop": it runs when Windows starts a shutdown or restart (System log
+event 1074, source User32) and runs `wsl.exe -d <distro> -- env WAREHOUSE_STATE_DIR=<state> bash <checkout>/stop.sh --on-host-shutdown`
+with a 90-second limit. It is not started when it is registered. It is **best effort and not verified**: Windows may kill WSL
+before the stop finishes, and then, as without the task, PostgreSQL recovers its log on the next start. `--on-host-shutdown`
+stops the stack like `stop.sh` but writes no `config/stopped-by-operator` file, so the stack starts again by itself after the
+restart (a plain `stop.sh` keeps it down until `start.sh`). Without the task nothing stops the stack cleanly when Windows
+shuts down or restarts for an update: the processes are killed and PostgreSQL recovers its log on the next start. For a
+planned shutdown follow [Planned work and updates](#planned-work-and-updates). After a restart the next daily "Monitoring is alive"
+message says "Host restarted at HH:MM" once ([MONITORING.md](MONITORING.md)).
 
 ### Ingress and the LAN
 
@@ -2846,6 +2855,24 @@ nothing is published to the Windows network.
   networking (`networkingMode=mirrored` in `.wslconfig`) is not verified. A facility on this route has no fallback if the
   internet or Cloudflare is down.
 - The external doctor runs inside the distro, on the install host ([External doctor](#external-doctor)).
+
+### Windows Update
+
+An update that restarts Windows in the middle of the day or of the backup window stops the facility for minutes and kills
+PostgreSQL abruptly. Keep it to a time nobody works, and set it once (not verified on a facility host):
+
+- **Active hours** (Settings, Windows Update, Advanced options, Active hours; up to 18 hours): cover the working day **and the backup
+  window** (the daily backup runs at `--daily-at` and up to 6 hours after, [Monitoring](MONITORING.md)), so Windows does not restart then.
+- **No auto-restart with logged on users** (Pro and Enterprise: Group Policy, Computer Configuration, Administrative Templates,
+  Windows Components, Windows Update, "No auto-restart with logged on users for scheduled automatic updates installations", Enabled;
+  Home: the registry value `NoAutoRebootWithLoggedOnUsers` = 1 under `HKLM\SOFTWARE\Policies\Microsoft\Windows\WindowsUpdate\AU`).
+  A host that nobody is signed in to can still restart, which is why the active hours matter.
+- **Defer feature updates** (Group Policy "Select when Preview Builds and Feature Updates are received", or Settings, Pause updates)
+  until you have run [Planned work and updates](#planned-work-and-updates) for them on a quiet day.
+- **WSL comes from the Store**: keep its updates on (Microsoft Store, Library, Get updates) and run `wsl --version` **once a month**; update
+  it in a planned window (`wsl --update` is in the order below), because it shuts the distro down.
+- Register the best-effort shutdown task above, and read the "Host restarted at" line of the daily message: a restart you did not plan
+  is a reason to check the update settings.
 
 ### Planned work and updates
 

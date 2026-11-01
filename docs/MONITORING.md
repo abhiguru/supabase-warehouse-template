@@ -196,7 +196,9 @@ alone.
 
 - An alert is posted once when it starts, again every 4 hours while it keeps firing, and once when it clears. New alerts
   of one run go out as one message.
-- Once a day, after 09:00 local time, one "Monitoring is alive" message says how many alerts are firing. **A day
+- Once a day, after 09:00 local time, one "Monitoring is alive" message says how many alerts are firing. When the host restarted since the
+  previous run (the kernel's boot id changed) it adds one line, "Host restarted at HH:MM." (with the date if it was on an earlier day), once;
+  it is information, never an alert, and the first run after an upgrade only records the boot id. **A day
   without that message means monitoring is down**: the timer, the host or the webhook (revoked, channel deleted).
 - If Slack does not accept a post, it is tried again at the next run; `status` shows the last failure.
 - Nothing printed or posted carries a secret: passwords, tokens, database URLs and the webhook are replaced by `[REDACTED]`.

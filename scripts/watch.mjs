@@ -139,7 +139,7 @@ export const mutesPath = state => join(state, 'config/watch-mutes.json');
 export const freshState = now => ({
   version: 1, firstRun: now, alerts: {}, containers: {}, cpu: null, lastRunAt: null,
   lastDailyRun: {}, releaseCheck: null, dailyAttempt: null, dailyRunning: null, dailySkipped: null, busySince: null, delivery: {},
-  memoryNote: null, heal: {}, lastSmsCheck: null, stackRestarts: [],
+  memoryNote: null, heal: {}, lastSmsCheck: null, stackRestarts: [], bootId: null, hostRestart: null,
   // Mutes live in their own file (loadMutes) and are filled in from it; they are never part of the run state.
   muteUntil: null, mutes: {},
 });
@@ -220,6 +220,8 @@ export function normalizeState(raw, now, log = () => {}) {
   normalizeDelivery(raw, out, log);
   take('memoryNote', v => v === null || typeof v === 'string');
   take('lastSmsCheck', numOrNull);
+  take('bootId', v => v === null || typeof v === 'string');
+  take('hostRestart', v => v === null || (isObj(v) && isNum(v.at)));
   take('stackRestarts', v => Array.isArray(v) && v.every(isNum));   // absent in older state files: the fresh default stays
   take('heal', v => isObj(v) && Object.values(v).every(x => isObj(x) && isNum(x.unhealthyRuns) && numOrNull(x.lastAt) && typeof x.lastAction === 'string'
     && (x.actions === undefined || (Array.isArray(x.actions) && x.actions.every(isNum)))));
@@ -1616,6 +1618,20 @@ async function notifyTo(ctx, plan, audience) {
   });
 }
 
+// A restart of the host (the kernel's boot id changed since the previous run) is remembered once and said once in the daily status
+// ("Host restarted at HH:MM"); it is information, never an alert. The first run only records the id. An unreadable id changes nothing.
+export function noteHostBoot(ctx) {
+  const { data } = ctx;
+  const id = String(ctx.readText(join(ctx.proc, 'sys/kernel/random/boot_id')) ?? '').trim();
+  if (!/^[0-9a-f-]{8,64}$/i.test(id)) return;
+  if (data.bootId !== null && data.bootId !== id) data.hostRestart = { at: ctx.now() };
+  data.bootId = id;
+}
+export function hostRestartLine(restart, now) {
+  const when = `${pad(new Date(restart.at).getHours())}:${pad(new Date(restart.at).getMinutes())}`;
+  return `Host restarted at ${when}${localDate(restart.at) === localDate(now) ? '' : ` on ${localDate(restart.at)}`}.`;
+}
+
 // ---------------------------------------------------------------- calendar rules
 const pad = n => String(n).padStart(2, '0');
 export const localDate = ms => { const d = new Date(ms); return `${d.getFullYear()}-${pad(d.getMonth() + 1)}-${pad(d.getDate())}`; };
@@ -1657,8 +1673,10 @@ async function heartbeat(ctx) {
       else { try { release = (await ctx.releaseLine()) ?? null; data.releaseCheck = { date: day, line: release }; } catch { /* information only */ } }
       if (release) text += `\nRelease: ${release}`;
     }
+    const restart = target.audience === 'sensors' ? null : data.hostRestart;
+    if (restart) text += `\n${hostRestartLine(restart, now)}`;
     const message = { audience: target.audience, kind: 'heartbeat', name: describe(ctx), text: redact(text, ctx.env_(), ctx.secrets()) };
-    await postThenKeep(ctx, [target], message, () => { deliveryOf(data, target.id).lastHeartbeat = now; }, () => { deliveryOf(data, target.id).lastHeartbeat = before; });
+    await postThenKeep(ctx, [target], message, () => { deliveryOf(data, target.id).lastHeartbeat = now; if (restart && data.hostRestart === restart) data.hostRestart = null; }, () => { deliveryOf(data, target.id).lastHeartbeat = before; if (restart && data.hostRestart === null) data.hostRestart = restart; });
   }
 }
 
@@ -2033,6 +2051,7 @@ export async function runOnce(deps, { checks = CHECKS, heal = selfHeal } = {}) {
   }
   ran.add('daily_timer');   // every run, so the alert clears once the unit is replaced
   data.lastRunAt = now;
+  noteHostBoot(ctx);
   const plan = evaluate(data, results, ran, now);
   await notify(ctx, plan);
   await heartbeat(ctx);

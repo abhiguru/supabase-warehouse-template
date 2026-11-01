@@ -6,7 +6,11 @@ state="$(operator_state)"
 operator_lock "$state"
 # Written first: if the stop is cut short, or the host reboots before the operator is done (a restore, an upgrade, a manual
 # procedure), the boot unit (watch-timer.sh) and the checker's self-healing leave the stack down. start.sh removes it.
-printf 'stopped by stop.sh at %s\n' "$(date -u +%Y-%m-%dT%H:%M:%SZ)" > "$state/config/stopped-by-operator"
+# --on-host-shutdown (the Windows "Warehouse WSL stop" task, scripts/windows/register-tasks.ps1) stops the stack for a host shutdown that is
+# followed by a start: it must not hold the stack down afterwards, so it writes no such file.
+if [[ "${1:-}" != --on-host-shutdown ]]; then
+  printf 'stopped by stop.sh at %s\n' "$(date -u +%Y-%m-%dT%H:%M:%SZ)" > "$state/config/stopped-by-operator"
+fi
 # Preserve volumes/data. The wrapper verifies ownership before stopping anything.
 # Every profile (pooler, printing, sensors) stops too: a plain `down` would
 # leave profile-gated containers running and the restore preflight would refuse.

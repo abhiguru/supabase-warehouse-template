@@ -4806,6 +4806,47 @@ test('the release lookup runs once per local day, also while a failed post is re
   } finally { clean(h); }
 });
 
+test('a changed kernel boot id adds "Host restarted at HH:MM" to the next daily status once; never on the first run, never an alert', async () => {
+  const h = harness();
+  try {
+    const bootId = id => { mkdirSync(join(h.proc, 'sys/kernel/random'), { recursive: true }); writeFileSync(join(h.proc, 'sys/kernel/random/boot_id'), `${id}\n`); };
+    const beats = () => h.posts.filter(p => /^Monitoring is alive/.test(p.text));
+    bootId('11111111-aaaa-bbbb-cccc-000000000001');
+    await W.runOnce(h.deps, { checks: [], ...NO_JOBS });
+    assert.equal(beats().length, 1);
+    assert.doesNotMatch(beats()[0].text, /Host restarted/, 'the first run only records the id');
+    assert.equal(W.loadState(h.state, h.clock.t, h.deps.readText).bootId, '11111111-aaaa-bbbb-cccc-000000000001');
+    // Same id on a later day: nothing.
+    h.clock.t = new Date(2026, 9, 21, 9, 0).getTime();
+    await W.runOnce(h.deps, { checks: [], ...NO_JOBS });
+    assert.equal(beats().length, 2);
+    assert.doesNotMatch(beats()[1].text, /Host restarted/);
+    // A restart at 03:07 the next night: the heartbeat of that day says so, with the time, and a failed post keeps it for the retry.
+    bootId('22222222-aaaa-bbbb-cccc-000000000002');
+    h.clock.t = new Date(2026, 9, 22, 3, 7).getTime();
+    const plan = await W.runOnce(h.deps, { checks: [], ...NO_JOBS });
+    assert.equal(beats().length, 2, 'the daily status is not due before 09:00');
+    assert.equal(W.loadState(h.state, h.clock.t, h.deps.readText).hostRestart.at, h.clock.t);
+    assert.deepEqual(Object.keys(plan.data.alerts), [], 'not an alert');
+    h.clock.t = new Date(2026, 9, 22, 9, 0).getTime();
+    h.postFails = true;
+    await W.runOnce(h.deps, { checks: [], ...NO_JOBS });
+    assert.notEqual(W.loadState(h.state, h.clock.t, h.deps.readText).hostRestart, null, 'kept while the post fails');
+    h.postFails = false;
+    h.advance(5 * 60000);
+    await W.runOnce(h.deps, { checks: [], ...NO_JOBS });
+    assert.equal(beats().length, 3);
+    assert.match(beats()[2].text, /\nHost restarted at 03:07\.$/);
+    assert.equal(W.loadState(h.state, h.clock.t, h.deps.readText).hostRestart, null, 'said once');
+    // An unreadable boot id changes nothing.
+    rmSync(join(h.proc, 'sys/kernel/random/boot_id'));
+    h.clock.t = new Date(2026, 9, 23, 9, 0).getTime();
+    await W.runOnce(h.deps, { checks: [], ...NO_JOBS });
+    assert.doesNotMatch(beats()[3].text, /Host restarted/);
+    assert.equal(W.loadState(h.state, h.clock.t, h.deps.readText).bootId, '22222222-aaaa-bbbb-cccc-000000000002');
+  } finally { clean(h); }
+});
+
 test('the checker\'s own release lookup asks GitHub through its fetch: no redirects, with a time limit, releases list of the origin', async () => {
   const h = harness();
   try {
