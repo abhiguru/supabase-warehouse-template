@@ -3967,6 +3967,40 @@ test('upgrade_interrupted: raised at once when the record exists and the lock is
   } finally { clean(h); }
 });
 
+test('upgrade_interrupted: a maintenance marker that nothing owns (a killed backup, or left on) is raised at once and never muted; silent while the lock is held or an upgrade is recorded; clears with the marker', async () => {
+  const h = harness();
+  try {
+    const checks = [['upgrade', W.checkUpgrade]];
+    h.seed();
+    writeFileSync(join(h.state, 'config/maintenance'), 'upgrading\n');
+    writeFileSync(join(h.state, 'config/maintenance-owner'), 'backup 4242 2026-10-31T21:30:00Z\n');
+    // The backup holds the lock: it is running, not killed.
+    h.holdLock();
+    assert.equal(W.checkUpgrade(h.ctx()), null);
+    h.releaseLock();
+    const r = await W.runOnce(h.deps, { checks, heal: null, ...NO_JOBS });
+    const alert = find(r.results, 'upgrade_interrupted');
+    assert.equal(alert.ok, false); assert.equal(alert.immediate, true);
+    assert.equal(alert.summary, 'Maintenance mode is on and nothing is running that owns it');
+    assert.match(alert.detail, /turned on by a backup \(pid 4242, started 2026-10-31T21:30:00Z\) that no longer runs/);
+    assert.match(alert.detail, /bash scripts\/maintenance\.sh off/);
+    assert.ok(h.posts.some(p => /^\[FIRING\]/.test(p.text) && /nothing is running that owns it/.test(p.text)));
+    // Never muted.
+    const out = [];
+    assert.equal(await W.main(['mute', '600', 'upgrade_interrupted'], h.deps, t => out.push(t)), 1);
+    // A marker with no tag is unowned and alerts as well.
+    rmSync(join(h.state, 'config/maintenance-owner'));
+    assert.match(W.checkUpgrade(h.ctx())[0].detail, /^Nothing that runs owns it/);
+    // An upgrade record explains the marker: the upgrade alert speaks, not this one.
+    upgradeRecord(h, '/state/backups/warehouse-20261019T020000Z', { from_label: 'v0.6.0', to_label: 'v0.7.0', command: 'v0.7.0', maintenance: 'on', step: 'Setup' });
+    assert.equal(W.checkUpgrade(h.ctx())[0].summary, 'An upgrade from v0.6.0 to v0.7.0 did not finish');
+    rmSync(join(h.state, 'config/upgrade-in-progress'));
+    // Opened: it clears.
+    rmSync(join(h.state, 'config/maintenance'));
+    assert.equal(W.checkUpgrade(h.ctx())[0].ok, true);
+  } finally { clean(h); }
+});
+
 test('self-heal: nothing is started or restarted while config/upgrade-in-progress exists (the functions container would load the new code on a half-migrated schema); without it the same run heals', async () => {
   const h = harness();
   try {

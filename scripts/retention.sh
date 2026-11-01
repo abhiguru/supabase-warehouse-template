@@ -31,8 +31,24 @@ if [[ "$apply" == true && "$count" -gt 0 ]]; then
     exit 1
   fi
 fi
+# Unfinished photo uploads (a row still pending after 24 hours): the database names the files, the Storage API removes them, and only
+# then are the rows deleted (the database deletes a row only when its file is gone, so a failed removal is tried again tomorrow).
+# Photos that were confirmed are never touched.
+pending="$(mktemp)"
+trap 'rm -f "$expired" "$pending"' EXIT
+for bucket in grn-images dispatch-images; do
+  query "SELECT name FROM warehouse_maintenance.expired_pending_images('$bucket', now()) AS name" > "$pending"
+  count="$(grep -c . "$pending" || true)"
+  echo "Unfinished uploads older than 24 hours in $bucket: $count"
+  if [[ "$apply" == true && "$count" -gt 0 ]]; then
+    compose exec -T -e "REMOVE_BUCKET=$bucket" storage node -e "$(cat "$ROOT/scripts/remove-expired-documents.cjs")" < "$pending"
+  fi
+done
 if [[ "$apply" == true ]]; then
-  echo 'Database retention applied and expired generated documents removed. Business records and stored image objects require an approved operator policy and are not deleted.'
+  query "SELECT warehouse_maintenance.delete_expired_pending_images(now())"
+fi
+if [[ "$apply" == true ]]; then
+  echo 'Database retention applied and expired generated documents removed. Unfinished photo uploads older than 24 hours removed. Business records and confirmed image objects require an approved operator policy and are not deleted.'
 else
   echo 'Preview only; no data changed.'
 fi

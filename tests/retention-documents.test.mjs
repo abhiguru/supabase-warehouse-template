@@ -53,6 +53,20 @@ test('expired documents are deleted through the Storage API in batches with the 
   } finally { api.server.close(); }
 });
 
+test('the photo buckets can be cleaned by name, any other bucket is refused', async () => {
+  const api = await storageApi();
+  try {
+    const photos = await runRemoval({ STORAGE_API_URL: api.url, SERVICE_KEY: 'fictional-service-key', REMOVE_BUCKET: 'grn-images' }, 'grn/a/b.jpg\n');
+    assert.equal(photos.status, 0, photos.stderr);
+    assert.match(photos.stdout, /Files of grn-images removed from storage: 1 of 1/);
+    assert.deepEqual(api.requests.map(request => [request.method, request.url]), [['DELETE', '/object/grn-images']]);
+    const other = await runRemoval({ STORAGE_API_URL: api.url, SERVICE_KEY: 'fictional-service-key', REMOVE_BUCKET: 'avatars' }, 'x.jpg');
+    assert.equal(other.status, 1);
+    assert.match(other.stderr, /bucket avatars is not one this script may clean/);
+    assert.equal(api.requests.length, 1, 'no request for another bucket');
+  } finally { api.server.close(); }
+});
+
 test('a Storage API refusal or a missing key fails the removal', async () => {
   const api = await storageApi(500);
   try {

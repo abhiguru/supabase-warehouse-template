@@ -37,6 +37,10 @@ Sections: [host prerequisites](#host-prerequisites),
     this service and for the facility backend);
   - Docker Compose v5.6.0 with Docker Engine 29.9.1 (the development host; verified
     for this service and for the facility backend).
+  - Docker Compose v5.6.1 (the current build of Docker's Ubuntu repository, which the commands below install; verified for the facility backend).
+- The installation user (not root) needs `sudo`: for Docker's install, for the state's parent directory, and for `scripts/tunnel.sh install-service`
+  and `scripts/watch-timer.sh install`. If it has none, the operator runs those commands as a user that does (the installation user then runs
+  the rest), naming the state with `--state` because `sudo` drops the environment.
 - Network access to `storage.googleapis.com` while the pdf-renderer image is built (it downloads Chrome headless shell).
 - Node.js 22.18 or newer with npm, Git, OpenSSL, `curl` and util-linux (`flock`), and `dig` (package `dnsutils`).
 - `rsync` and GNU `tar` (Ubuntu and Debian have `tar`; `rsync` is a package of its own): backups copy the stored photos with `rsync`
@@ -118,9 +122,8 @@ node --version && npm --version
 Repeat the `PATH` export in every shell that runs setup, doctor, start or stop, and add it to `~/.profile`.
 
 Install Docker from [Docker's Ubuntu repository](https://docs.docker.com/engine/install/ubuntu/). Any Compose plugin whose
-`up` accepts `--wait-timeout` works; the commands below install the build the review verified. That build can leave the
-repository's index later: if `apt-get install` cannot find `docker-compose-plugin=2.40.3-…`, take a current build from the
-`apt-cache madison` list instead of stopping.
+`up` accepts `--wait-timeout` works; the commands below install the current build, which `apt-cache madison` lists first (the builds
+in "Tested with" above are the ones that were run; a later build of the same major version is expected to work).
 
 ```bash
 sudo install -m 0755 -d /etc/apt/keyrings
@@ -129,7 +132,7 @@ sudo chmod a+r /etc/apt/keyrings/docker.asc
 printf 'Types: deb\nURIs: https://download.docker.com/linux/ubuntu\nSuites: noble\nComponents: stable\nArchitectures: amd64\nSigned-By: /etc/apt/keyrings/docker.asc\n' | sudo tee /etc/apt/sources.list.d/docker.sources
 sudo apt-get update
 apt-cache madison docker-compose-plugin        # lists the available builds
-sudo apt-get install -y docker-ce docker-ce-cli containerd.io docker-buildx-plugin docker-compose-plugin=2.40.3-1~ubuntu.24.04~noble
+sudo apt-get install -y docker-ce docker-ce-cli containerd.io docker-buildx-plugin docker-compose-plugin
 sudo systemctl enable --now docker
 sudo usermod -aG docker "$(id -un)"
 ```
@@ -160,7 +163,7 @@ The operator scripts use only Node's built-in modules; `npm ci` is needed only t
 | App origin | `--app-url` (optional) | HTTPS origin (no path or port) stored as the trusted browser origin. Leave it out and it is the `--api-url` origin. |
 | Company name | `--company` | Display name of the facility, up to 120 characters. Required on a first install. |
 | Cloudflare Tunnel | `scripts/tunnel.sh adopt` (needs the state, so after setup) | A **new** tunnel for this host with a route for the `--api-url` hostname: its `config.yml` with the credentials JSON, or a dashboard token file. Not a config copied from another machine. See [Cloudflare Tunnel ingress](#cloudflare-tunnel-ingress). |
-| MSG91 provider file | `--provider-env` | Mode-0600 file with five keys; see **MSG91 provider file** below. Required on a first install. |
+| MSG91 provider file | `--provider-env` | Mode-0600 file with five keys; see **MSG91 provider file** below. Required on a first install, **except** a member installation that signs in through the association alone (`--central-issuer` given, no `--central-local-code on`): that one needs no SMS provider and stores none. |
 | First administrator | `--admin-phone`, `--admin-name` (both required) | `91` and ten digits, and a display name; see **First administrator** below. |
 | Slack webhook file | `--alert-webhook-file` | Private file with the facility's incoming-webhook URL. `off` only for a non-production install; without the option a terminal is asked and no terminal means setup refuses. See [Setup](#setup). |
 | Sensor Slack webhook file | `--sensor-webhook-file` | Private file with a second, separate incoming-webhook URL for sensor alerts. Required when Slack alerts are on and sensors are on; `off` removes it; leave it out to keep what is stored. See [Setup](#setup). |
@@ -198,6 +201,16 @@ be named exactly `OTP`. Do not copy a complete `.env` into this file: `SMS_PRODU
 rejected. The OTP worker accepts a request only after MSG91 confirms it, but an accepted API response does not prove
 handset delivery, so test with an owned phone. Real credentials are mandatory: there is no fixed-OTP or local delivery
 mode. Keep the file out of shell history and version control, and include it in your encrypted off-host backups.
+
+**No MSG91 file for a member that signs in through the association.** A facility that gives `--central-issuer` with its key set and does
+**not** turn on its own extra code (`--central-local-code`) never sends an SMS itself: the association sends the codes. Such an
+installation is set up **without** `--provider-env`. Setup then stores no SMS provider (the five provider lines of `config/compose.env` are
+left empty), `node scripts/doctor.mjs` accepts that as long as `CENTRAL_ISSUER` is set, and `operator-otp/request` answers
+`503 {"success": false, "code": "sms_not_configured", "error": "SMS sign-in is not set up on this facility. Use the association sign-in."}`.
+Three things are refused, so that nobody is left without a sign-in: `--central-local-code on` (the extra code is an SMS) on an installation
+with no provider; `--central-issuer off` on one (nothing could sign in); and a first install with neither `--provider-env` nor
+`--central-issuer`. To add a provider later, rerun setup with `--provider-env` (the provider lines are replaced as always). The break-glass
+code ([below](#break-glass-administrator-sign-in)) needs no provider either.
 
 **What setup keeps for you.** This backend stores the sign-in codes itself, as an HMAC
 (the `otp_verifications` table, checked by `operator_verify_otp`), and setup writes the `public.sms_config` row from the
@@ -696,21 +709,30 @@ an hour, which MSG91 bills.
 
 ### Break-glass administrator sign-in
 
-When SMS does not work (the MSG91 balance is used up, the sender header is suspended, the provider is down) and nobody can get a code, the
-operator can sign an **administrator** in without one. Once the administrator is in, they can approve or fix everything else from the app.
-Sessions that are already open keep working ([Sessions](#authentication-and-otp-limits): they are renewed while used), so this is for the
-person whose session has ended.
+(The name is kept for the links; since migration 132 the code is for **every facility worker**: administrators, supervisors and staff, never
+customers.) When neither the association's sign-in nor SMS can be used (the association's service is down, the internet is down, the MSG91
+balance is used up) and a worker's session has ended, the operator can sign that worker in with a one-time code made on this server. Once an
+administrator is in, they can approve or fix everything else from the app. Sessions that are already open keep working
+([Sessions](#authentication-and-otp-limits): they are renewed while used), so this is for the person whose session has ended.
+
+**Who runs it, who signs in.** The operator (whoever can open a terminal on the facility's server) runs the script and gives the code to the
+worker in person or by a call they trust. The worker opens the app; on the **Sign in** screen they tap **Sign in with a code from your
+facility**, choose the facility, enter their mobile number and the code. That works over the internet and, during an outage, over the
+[LAN fallback](#lan-fallback-plain-http-on-the-warehouse-network) (plain HTTP on the facility network). The session it opens lasts **24 hours**
+from that sign-in, whatever the use; then the worker signs in again through the association, or with a new code. The app's wording and the
+endpoint: [API_CONTRACT.md](API_CONTRACT.md), "Break-glass sign-in".
 
 On the server, with the stack running:
 
 ```bash
 export WAREHOUSE_STATE_DIR=/absolute/path/to/this/warehouse
-bash scripts/break-glass-admin.sh 9XXXXXXXXX      # the administrator's 10-digit mobile number
+bash scripts/break-glass-admin.sh 9XXXXXXXXX      # the worker's 10-digit mobile number (administrator, supervisor or staff)
 ```
 
-It prints a six-digit code **once**, with the name of the administrator it belongs to and this warning: *this code signs in the admin
-`<name>` on any phone within 10 minutes; use it only when SMS is down.* It refuses (and prints no code) when the number is not an active,
-approved administrator (staff, a supervisor, a customer, a switched-off or pending account, a service account, an unknown number). The
+It prints a six-digit code **once**, with the name and role of the worker it belongs to and this warning: *this code signs in `<name>` on
+any phone within 10 minutes; use it only when the association sign-in and SMS cannot be used.* It refuses (and prints no code) when the
+number is not an active, approved administrator, supervisor or staff member (a customer, a switched-off or pending account, a service
+account, an unknown number). The
 command takes the operator lock like setup and backup do: if one of them is running it says so; wait for it and run it again. It prints the
 code only to a terminal: run it in a terminal session on the server, not through a pipe, `tee`, a redirect or a logged wrapper (it
 refuses with a message, and makes no code, when standard output is not a terminal; `--to-stdout` before the number overrides that on
@@ -721,18 +743,17 @@ every run, and so does an upgrade with `upgrade.sh`. If you changed the checkout
 (`bash scripts/compose.sh up -d --force-recreate functions`, [Rerun and upgrade](#rerun-and-upgrade)); a stale `operator-otp` shows the app
 "SMS delivery unavailable" and never its code screen when the provider refuses, and the break-glass code cannot be typed.
 
-Give the code to that administrator in person or by a call you trust. On their phone: open the app, enter their number, ask for a code (the
-app shows its code screen even while the SMS provider refuses the request, as long as the break-glass code is open), and type the break-glass
-code instead of the SMS code.
+Give the code to that worker in person or by a call you trust. On their phone: **Sign in** screen › **Sign in with a code from your
+facility** › the facility › their number › the code. (An older app build has no such link: the worker asks for an SMS code and types the break-glass code
+instead; the app shows its code screen even while the SMS provider refuses the request, as long as the code is open, and the session that
+follows also ends after 24 hours.)
 
-**An administrator can sign in over the LAN fallback with a break-glass code.** An internet outage is exactly when SMS fails, so the
-sign-in functions `operator-otp` (the request for a code and the verification) may be used over the
-[LAN fallback](#lan-fallback-plain-http-on-the-warehouse-network) as well: the provider cannot be reached (the name does not resolve, the
-connection is refused or times out; it can take up to 10 seconds to give up), and while a break-glass code is open for that number the
-request is answered "OTP sent successfully" anyway, as above, so the app reaches its code screen. Only that sign-in goes over the LAN: the
-association's sign-in (`central-exchange`) needs the internet, and a phone that is not an administrator's gets "SMS delivery unavailable"
-and cannot sign in until the line is back. The cost is the one of the fallback: the code crosses the Wi-Fi in clear. It is valid for
-10 minutes and works once, so give it only to the administrator who is standing there, and make it just before it is typed.
+**A worker can sign in over the LAN fallback with a break-glass code.** An internet outage is exactly when the association's sign-in and SMS
+fail, so `operator-otp/break-glass` (and `request` and `verify` for the older build) may be used over the
+[LAN fallback](#lan-fallback-plain-http-on-the-warehouse-network) as well. The association's sign-in (`central-exchange`) needs the
+internet and a phone with no open session and no code cannot sign in until the line is back. The cost is the one of the fallback: the code
+crosses the Wi-Fi in clear (owner decision: no extra transport restriction). It is valid for 10 minutes and works once, so give it only to
+the worker who is standing there, and make it just before it is typed.
 
 Making the code also clears that number's own per-phone request counters (the same two statements as `reset_otp_limits`, [above](#authentication-and-otp-limits)),
 because they fill during an SMS outage: a request the provider refused is not given back, so an administrator who tried five times before
@@ -753,13 +774,15 @@ requests: wait and ask again):
 The rules:
 
 - It is valid for **10 minutes**, works **once**, and ends after **five wrong tries** from any address (run the command again for a new
-  one; a new code ends the earlier open one of that number). It belongs to that number and that administrator: if the administrator is
-  switched off or is no longer an administrator before it is used, it stops working.
+  one; a new code ends the earlier open one of that number). It belongs to that number and that worker: if the worker is switched off or
+  is no longer an administrator, supervisor or staff member before it is used, it stops working. A customer never gets one. Wrong tries from
+  one address also count against that address's failed-verification limit (`otp_source_hourly_failures`, 20 an hour), as for SMS codes.
 - Nobody else can make one: the database function (`warehouse_security.break_glass_code`) can be executed by `supabase_admin` alone; no
   app role, the service role included, can call it or read its table. The code is stored only as a keyed hash (HMAC-SHA256 with the JWT
   secret, like the SMS codes).
-- A break-glass sign-in opens a normal session (renewed like any other). It does not mark the number as verified by SMS and does not make
-  the sign-in address a trusted source of the phone.
+- A break-glass sign-in opens a session that **ends 24 hours after the sign-in** (`refresh_sessions.hard_expires_at`; a refresh renews the
+  access token but never moves the end), after which the worker must sign in again. It does not mark the number as verified by SMS and does
+  not make the sign-in address a trusted source of the phone.
 - Making a code and using one are each written to `public.audit_log` (kept 24 months: [audit_log retention](CONTAINER_SECURITY.md#audit_log-retention)); the code itself never is. To see them:
 
   ```sql
@@ -769,12 +792,10 @@ The rules:
   ```
 
   A `CODE_ISSUED` row with no `SIGN_IN` after it means the code expired unused; a `SIGN_IN` you did not expect means the code was shared.
-- **What it does not cover: the association's sign-in.** Break-glass replaces this facility's own SMS code only. In the app with association
-  sign-in, a facility that accepts association sign-in is reached through the association's sign-in: the app sends everyone who is not
-  signed in to it first. If the association's service cannot send codes, a break-glass code cannot be typed anywhere, and only sessions that
-  are still open (they slide, [Sessions](#authentication-and-otp-limits)) keep people in. With `--central-local-code on`, the break-glass
-  code stands in for the facility's own code after a successful association sign-in, and for nothing else. So it covers a facility that
-  uses its own SMS (MSG91) for sign-in, not an outage at the association's.
+- **It also covers an outage at the association.** The app's link **Sign in with a code from your facility** is on the Sign in screen
+  whatever the association's service does, so a worker whose session has ended can still get in with a code made here. With
+  `--central-local-code on` the code stands in for the facility's own SMS code only after a successful association sign-in; the link above
+  is the way in when that sign-in cannot be done at all.
 - It does not fix the SMS service: top up or repair MSG91 ([Replacing MSG91 credentials](#authentication-and-otp-limits)) and send yourself
   a code. Administrators who need no sign-in right now do not need a break-glass code.
 
@@ -1228,7 +1249,8 @@ answering with errors, and not the timers. To retire the installation, in this o
 environment, so name the state); `sudo bash scripts/backup-usb.sh uninstall` if a USB drive was set up (it removes the rule, units,
 helper and configuration and leaves the drives untouched); then, only
 once you have a copy of the data you need, delete the tunnel and its DNS record in Cloudflare, which also revokes every copy of
-its credential, including those in backups. Deleting the state directory is a separate step that destroys the data.
+its credential, including those in backups. Deleting the state directory is a separate step that destroys the data; it needs
+`sudo rm -rf "$WAREHOUSE_STATE_DIR"`, because `data/db` and `data/storage` belong to the container users, not to the installation user.
 
 To look at the data, open a SQL prompt inside the database container:
 
@@ -1305,7 +1327,9 @@ It removes expired sign-in records and old security logs from the database
 (`warehouse_maintenance.retention_policy`), and generated PDF files older than
 7 days from the private `documents` bucket (the PDFs are removed through the
 Storage API, so the storage container must be running; see
-[PDF_GENERATION.md](PDF_GENERATION.md)). Business records and photos are never
+[PDF_GENERATION.md](PDF_GENERATION.md)). It also removes unfinished photo uploads: a GRN or dispatch photo
+that was registered but never confirmed within 24 hours is deleted with its file from the `grn-images` or `dispatch-images` bucket (also through the Storage
+API; a row whose file could not be removed stays and is tried again the next day). Business records and confirmed photos are never
 removed by it. The daily pass also deletes local backup directories beyond the newest 7 in `<state>/backups`, except the newest one that
 passed its verify (`config/backups-verified.list`) and the backup that an interrupted `upgrade.sh` names as its way back
 ([MONITORING.md](MONITORING.md#the-daily-backup-verify-prune-and-retention)); the USB backup drive is not pruned by it.

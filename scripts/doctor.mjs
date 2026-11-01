@@ -61,11 +61,12 @@ function sensorsOn(state) {
 // webhook is stored, the operator stopped the stack (stop.sh) and has not started it again. `timerActive(unit)` and `now` are
 // injectable for tests.
 // The owner of <state>/config (the state owner), as names where the system can resolve them, else the numeric ids.
-// Falls back to the current user when the folder cannot be read.
+// Falls back to the current user when the folder cannot be read. The lookups give up after 5 seconds each (a slow directory service must not
+// hang doctor); checkerWarnings asks only when a log path is not writable.
 export function stateOwner(state) {
   let uid, gid;
   try { ({ uid, gid } = statSync(join(state, 'config'))); } catch { const me = userInfo(); uid = me.uid; gid = me.gid; }
-  const name = (cmd, args) => { const r = spawnSync(cmd, args, { encoding: 'utf8' }); return r.status === 0 && r.stdout.trim() ? r.stdout.trim() : null; };
+  const name = (cmd, args) => { const r = spawnSync(cmd, args, { encoding: 'utf8', timeout: 5000 }); return r.status === 0 && r.stdout.trim() ? r.stdout.trim() : null; };
   return {
     user: name('id', ['-un', String(uid)]) ?? String(uid),
     group: name('getent', ['group', String(gid)])?.split(':')[0] ?? String(gid),
@@ -119,9 +120,12 @@ export function checkerWarnings(state, {
   }
   // The alert record (logs/alerts.jsonl) is written by the checker and the daily pass as the operator user; a root-owned copy
   // (made by a sudo run of watch.mjs) would make every write fail quietly.
-  const owner = stateOwner(state);
+  let owner;
   for (const path of [join(state, 'logs'), join(state, 'logs/alerts.jsonl')]) {
-    if (!canWrite(path)) out.push(`${path} is not writable by this user (probably created by a run with sudo): the alert record cannot be written. Fix it with: sudo chown -R ${owner.user}:${owner.group} ${join(state, 'logs')}`);
+    if (!canWrite(path)) {
+      owner ??= stateOwner(state);
+      out.push(`${path} is not writable by this user (probably created by a run with sudo): the alert record cannot be written. Fix it with: sudo chown -R ${owner.user}:${owner.group} ${join(state, 'logs')}`);
+    }
   }
   return out;
 }
@@ -156,11 +160,22 @@ export { projectPublishesPort };
 
 export function validateOperatorEnv(env, stateDir) {
   const state = resolve(stateDir);
-  if (env.AUTH_MODE !== 'operator' || env.APP_ENV !== 'production' || env.SMS_PROVIDER !== 'msg91' || env.SMS_PRODUCTION_MODE !== 'true') throw new Error('Operator configuration must use production mode and MSG91.');
-  // One rule with the edge function (scripts/provider-placeholder.mjs): template text is never accepted,
-  // the fixture sentinel `isolated-` only for a reserved .test address (CI and fixtures).
-  const fixture = isFixtureAddress(env.SUPABASE_PUBLIC_URL);
-  for (const key of ['MSG91_AUTH_KEY', 'MSG91_TEMPLATE_ID', 'MSG91_PE_ID', 'MSG91_SENDER_ID']) if (isProviderPlaceholder(env[key], { allowFixtureSentinel: fixture })) throw new Error(`Missing production MSG91 setting: ${key}.`);
+  if (env.AUTH_MODE !== 'operator' || env.APP_ENV !== 'production' || env.SMS_PRODUCTION_MODE !== 'true') throw new Error('Operator configuration must use production mode and MSG91.');
+  // An installation that signs in through the association alone (setup.sh --central-issuer without --provider-env) has no SMS provider:
+  // all five lines empty. That is accepted only with CENTRAL_ISSUER set (without it nobody could sign in) and without the facility's
+  // own SMS code (CENTRAL_LOCAL_CODE=on needs a provider to send it). Any other set must be a complete production MSG91 provider.
+  const providerKeys = ['SMS_PROVIDER', 'MSG91_AUTH_KEY', 'MSG91_TEMPLATE_ID', 'MSG91_PE_ID', 'MSG91_SENDER_ID'];
+  const noProvider = providerKeys.every(key => !(env[key] || '').trim());
+  if (noProvider) {
+    if (!(env.CENTRAL_ISSUER || '').trim()) throw new Error('Operator configuration must use production mode and MSG91 (no SMS provider is set, and central sign-in is off: nobody could sign in).');
+    if (env.CENTRAL_LOCAL_CODE === 'on') throw new Error('CENTRAL_LOCAL_CODE=on needs an SMS provider, and none is set: run setup.sh --central-local-code off, or give --provider-env.');
+  } else {
+    if (env.SMS_PROVIDER !== 'msg91') throw new Error('Operator configuration must use production mode and MSG91.');
+    // One rule with the edge function (scripts/provider-placeholder.mjs): template text is never accepted,
+    // the fixture sentinel `isolated-` only for a reserved .test address (CI and fixtures).
+    const fixture = isFixtureAddress(env.SUPABASE_PUBLIC_URL);
+    for (const key of ['MSG91_AUTH_KEY', 'MSG91_TEMPLATE_ID', 'MSG91_PE_ID', 'MSG91_SENDER_ID']) if (isProviderPlaceholder(env[key], { allowFixtureSentinel: fixture })) throw new Error(`Missing production MSG91 setting: ${key}.`);
+  }
   const origin = canonicalOrigin(env.SUPABASE_PUBLIC_URL, 'SUPABASE_PUBLIC_URL');
   if (canonicalOrigin(env.API_EXTERNAL_URL, 'API_EXTERNAL_URL') !== origin) throw new Error('Public API origins differ.');
   if (canonicalOrigin(env.CORS_ALLOWED_ORIGIN, 'CORS_ALLOWED_ORIGIN') !== canonicalOrigin(env.SITE_URL, 'SITE_URL')) throw new Error('Trusted browser origins differ.');
@@ -193,7 +208,7 @@ export function validateOperatorEnv(env, stateDir) {
   if (!manifestStat?.isFile() || manifestStat.uid !== process.getuid()) throw new Error('Public manifest must be an owned regular file.');
   const manifest = JSON.parse(readFileSync(env.WAREHOUSE_MANIFEST_PATH, 'utf8'));
   if (manifest.schemaVersion !== 1 || !/^[0-9a-f-]{36}$/.test(manifest.instanceId) || manifest.canonicalOrigin !== origin || !manifest.companyName || !Array.isArray(manifest.supportedApiVersions) || !manifest.supportedApiVersions.includes('1')) throw new Error('Invalid public instance manifest.');
-  if (JSON.stringify(manifest).includes(env.MSG91_AUTH_KEY)) throw new Error('Public manifest contains a provider secret.');
+  if (env.MSG91_AUTH_KEY && JSON.stringify(manifest).includes(env.MSG91_AUTH_KEY)) throw new Error('Public manifest contains a provider secret.');
   if (env.WAREHOUSE_PROJECT_NAME !== `warehouse-${manifest.instanceId.slice(0, 12)}`) throw new Error('Compose project differs from instance identity.');
   return { port, origin, manifest };
 }

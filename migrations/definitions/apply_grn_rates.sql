@@ -1,6 +1,7 @@
 -- warehouse_security.apply_grn_rates: the definition setup applies after the numbered migrations whenever this file's checksum changes
 -- (scripts/migration-plan.mjs, table warehouse_migrations.definitions). Edit the function here, never in a new migration.
 -- Starts as the function migrations 000 to 126 leave (the numbered files that patched it stay as they are, never edited).
+-- Migration 129 added the refusal of customer and everyone entries for an invoiced GRN (see "Migration 129" below).
 CREATE OR REPLACE FUNCTION warehouse_security.apply_grn_rates(p_gr_id uuid, p_rates jsonb)
  RETURNS jsonb
  LANGUAGE plpgsql
@@ -22,6 +23,18 @@ BEGIN
 
   IF jsonb_typeof(p_rates) <> 'array' THEN
     RETURN warehouse_security.grn_rate_failure('INVALID_BANDS', 'Rates must be a list');
+  END IF;
+
+  -- Migration 129: an invoiced GRN may keep its own rates (the equal set is accepted, step 3) but never changes the item's:
+  -- a customer or everyone entry for it is refused, whatever else the list holds. index is the first such entry, scope its scope.
+  IF v_invoiced THEN
+    SELECT (e.ord - 1)::integer, e.value->>'scope' INTO v_ord, v_scope
+      FROM jsonb_array_elements(p_rates) WITH ORDINALITY e(value, ord)
+     WHERE jsonb_typeof(e.value) = 'object' AND e.value->>'scope' IN ('customer','everyone') ORDER BY e.ord LIMIT 1;
+    IF FOUND THEN
+      RETURN warehouse_security.grn_rate_failure('GRN_INVOICED', 'The rates of an invoiced GRN cannot change',
+        jsonb_build_object('index', v_ord, 'scope', v_scope));
+    END IF;
   END IF;
 
   -- 1. Every entry.

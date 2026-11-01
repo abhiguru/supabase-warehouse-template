@@ -39,12 +39,18 @@ function failure(result: { code?: string; retry_at?: string }): Response {
   const code = result.code || 'invalid_request';
   const status = code === 'rate_limited' || code === 'resend_cooldown' || code === 'enrollment_limited' ? 429
     : code === 'account_unavailable' ? 403
+    : code === 'sms_not_configured' ? 503
     : code === 'unavailable' ? 503 : 400;
   const error = code === 'rate_limited' ? 'Too many OTP requests. Try again later.'
     : code === 'resend_cooldown' ? 'Please wait before requesting another OTP.'
     : code === 'enrollment_limited' ? 'Too many new access requests. Try again tomorrow.'
     : code === 'account_unavailable' ? 'Account unavailable'
     : code === 'invalid_otp' ? 'Invalid or expired OTP'
+    : code === 'sms_not_configured' ? 'SMS sign-in is not set up on this facility. Use the association sign-in.'
+    : code === 'invalid_code' ? 'Invalid facility code'
+    : code === 'code_expired' ? 'This facility code has expired. Ask the facility for a new one.'
+    : code === 'code_used' ? 'This facility code was already used. Ask the facility for a new one.'
+    : code === 'code_locked' ? 'Too many wrong tries for this facility code. Ask the facility for a new one.'
     : code === 'invalid_token' ? 'Enrollment session expired. Sign in again.'
     : code === 'unavailable' ? 'OTP service unavailable' : 'Invalid request';
   // Say how long the 60 s resend wait still lasts; the app shows it.
@@ -53,7 +59,9 @@ function failure(result: { code?: string; retry_at?: string }): Response {
     const seconds = Math.max(1, Math.ceil((retryAt - Date.now()) / 1000));
     return respond({ success: false, error, retry_after_seconds: seconds }, status, { 'Retry-After': String(seconds) });
   }
-  return respond({ success: false, error }, status);
+  // The facility-code answers (and the missing provider) carry their code, so the app can tell them apart without reading the text.
+  const named = ['sms_not_configured', 'invalid_code', 'code_expired', 'code_used', 'code_locked'].includes(code);
+  return respond(named ? { success: false, error, code } : { success: false, error }, status);
 }
 
 // Trust boundary: Cloudflare Tunnel is the only ingress and the gateway is
@@ -76,7 +84,7 @@ export async function handle(req: Request, overrides: Partial<HandlerDeps> = {})
     return failure({ code: 'unavailable' });
   }
   const operation = new URL(req.url).pathname.split('/').filter(Boolean).at(-1);
-  if (!['request', 'verify', 'status', 'signout'].includes(operation || '')) return respond({ success: false, error: 'Not found' }, 404);
+  if (!['request', 'verify', 'break-glass', 'status', 'signout'].includes(operation || '')) return respond({ success: false, error: 'Not found' }, 404);
   let body: Record<string, unknown>;
   try {
     body = await readBoundedJson(req);
@@ -112,6 +120,9 @@ export async function handle(req: Request, overrides: Partial<HandlerDeps> = {})
           return respond({ success: true, data: { request_id: `OTP_${data.request_id}`, expires_at: data.expires_at },
             message: 'OTP sent successfully' });
         }
+        // No SMS provider is stored (an installation that signs in through the association alone, setup.sh --central-issuer without
+        // --provider-env): say so with its own code. A provider the SMS service refuses stays "SMS delivery unavailable".
+        if (error instanceof Msg91DeliveryError && error.code === 'provider_configuration') return failure({ code: 'sms_not_configured' });
         return respond({ success: false, error: 'SMS delivery unavailable. Try again later.' }, 503);
       }
       // MSG91 accepted the request without giving its ID: the code is treated as sent (a second SMS
@@ -135,6 +146,16 @@ export async function handle(req: Request, overrides: Partial<HandlerDeps> = {})
         // The source address separates the requester's wrong-attempt budget from everyone else's.
         p_ip_address: clientAddress(req),
       });
+      return result.success ? respond(result) : failure(result);
+    }
+    if (operation === 'break-glass') {
+      // A code the facility's operator made on its server (scripts/break-glass-admin.sh) for a worker, typed when the association's
+      // sign-in cannot be used. The answer has the shape of `verify` and carries the facility's own session, which ends 24 hours
+      // after this sign-in whatever the use (migration 132).
+      if (typeof body.phone_number !== 'string' || typeof body.code !== 'string') return failure({ code: 'invalid_request' });
+      const phone = body.phone_number.replace(/\D/g, '');
+      if (!/^(?:91)?[0-9]{10}$/.test(phone) || !/^[0-9]{6}$/.test(body.code)) return failure({ code: 'invalid_request' });
+      const result = await rpc(deps, 'operator_break_glass_sign_in', { p_phone_number: phone, p_code: body.code, p_ip_address: clientAddress(req) });
       return result.success ? respond(result) : failure(result);
     }
     if (typeof body.enrollment_token !== 'string' || !/^[0-9a-f]{64}$/.test(body.enrollment_token)) return failure({ code: 'invalid_request' });

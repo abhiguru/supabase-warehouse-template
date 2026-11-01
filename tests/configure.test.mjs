@@ -1105,3 +1105,62 @@ test('a sensor webhook that cannot be placed is refused before the facility webh
     assert.equal(readFileSync(join(state, 'config/slack-webhook-url'), 'utf8'), `${first}\n`, 'the facility webhook was not changed');
   } finally { rmSync(scratch, { recursive: true, force: true }); }
 });
+
+test('central sign-in alone (--central-issuer without --provider-env): no SMS provider is stored, the doctor accepts it, and nothing needing SMS is allowed', () => {
+  const scratch = mkdtempSync(join(tmpdir(), 'warehouse-config-central-only-'));
+  const root = join(scratch, 'checkout');
+  const providerEnv = join(scratch, 'provider.env');
+  const issuer = 'https://login.association.example.test';
+  const jwks = 'https://login.association.example.test/.well-known/jwks.json';
+  try {
+    mkdirSync(root);
+    copyFileSync(new URL('../.env.example', import.meta.url), join(root, '.env.example'));
+    writeFileSync(providerEnv, 'SMS_PROVIDER=msg91\nMSG91_AUTH_KEY=provider-key\nMSG91_TEMPLATE_ID=flow-id\nMSG91_PE_ID=pe-id\nMSG91_SENDER_ID=WHOUSE\n', { mode: 0o600 });
+    const base = { apiUrl: 'https://api.example.com', company: 'Acme Stores' };
+    const stateDir = join(scratch, 'state');
+    const envPath = join(stateDir, 'config/compose.env');
+
+    // A first install without a provider file and without central sign-in is still refused.
+    assert.throws(() => configure(root, { ...base, stateDir: join(scratch, 'none') }), /Fresh setup requires --api-url, --company and --provider-env/);
+    assert.equal(existsSync(join(scratch, 'none')), false);
+    // The facility's own SMS code needs a provider: refused before anything is written.
+    assert.throws(() => configure(root, { ...base, stateDir: join(scratch, 'refused'), centralIssuer: issuer, centralJwksUrl: jwks, centralLocalCode: 'on' }), /needs an SMS provider/);
+    assert.equal(existsSync(join(scratch, 'refused')), false);
+
+    assert.equal(configure(root, { ...base, stateDir, centralIssuer: issuer, centralJwksUrl: jwks }).created, true);
+    const text = readFileSync(envPath, 'utf8');
+    for (const key of ['SMS_PROVIDER', 'MSG91_AUTH_KEY', 'MSG91_TEMPLATE_ID', 'MSG91_PE_ID', 'MSG91_SENDER_ID']) assert.match(text, new RegExp(`^${key}=$`, 'm'), `${key} is stored empty`);
+    assert.doesNotMatch(text, /your-msg91|WHOUSE/, 'no template provider text is left in the state');
+    const env = readEnv(envPath);
+    assert.equal(env.CENTRAL_ISSUER, issuer);
+    assert.equal(validateOperatorEnv(env, stateDir).origin, base.apiUrl, 'the doctor accepts an installation with central sign-in and no provider');
+    assert.equal(configure(root, { stateDir }).created, false);
+    assert.equal(readFileSync(envPath, 'utf8'), text, 'a rerun changes nothing');
+
+    // The doctor refuses what cannot sign anyone in or send the facility code.
+    assert.throws(() => validateOperatorEnv({ ...env, CENTRAL_ISSUER: '' }, stateDir), /nobody could sign in/);
+    assert.throws(() => validateOperatorEnv({ ...env, CENTRAL_LOCAL_CODE: 'on' }, stateDir), /CENTRAL_LOCAL_CODE=on needs an SMS provider/);
+    assert.throws(() => validateOperatorEnv({ ...env, SMS_PROVIDER: 'msg91' }, stateDir), /Missing production MSG91 setting: MSG91_AUTH_KEY/, 'a half-filled provider is not "no provider"');
+    assert.throws(() => validateOperatorEnv({ ...env, MSG91_AUTH_KEY: 'provider-key' }, stateDir), /must use production mode and MSG91/);
+
+    // Rerun: the extra code and turning central sign-in off are refused (nothing could sign in), and nothing is written.
+    assert.throws(() => configure(root, { stateDir, centralLocalCode: 'on' }), /needs an SMS provider/);
+    assert.throws(() => configure(root, { stateDir, centralIssuer: 'off' }), /no SMS provider/);
+    assert.equal(readFileSync(envPath, 'utf8'), text);
+    // Adding the provider later works, and then both are allowed.
+    assert.equal(configure(root, { stateDir, providerEnv }).providerUpdated, true);
+    assert.equal(validateOperatorEnv(readEnv(envPath), stateDir).origin, base.apiUrl);
+    assert.equal(configure(root, { stateDir, centralLocalCode: 'on' }).centralUpdated, true);
+    assert.equal(readEnv(envPath).CENTRAL_LOCAL_CODE, 'on');
+    assert.equal(configure(root, { stateDir, centralLocalCode: 'off' }).centralUpdated, true);
+    assert.equal(configure(root, { stateDir, centralIssuer: 'off' }).centralUpdated, true);
+
+    // The database side: compose passes the empty lines, and configure-sms.sql stores nothing for them.
+    const compose = readFileSync(new URL('../docker/docker-compose.yml', import.meta.url), 'utf8');
+    assert.match(compose, /MSG91_AUTH_KEY: \$\{MSG91_AUTH_KEY:-\}/);
+    assert.doesNotMatch(compose, /MSG91_[A-Z_]+: \$\{MSG91_[A-Z_]+:\?/);
+    const sql = readFileSync(new URL('../scripts/configure-sms.sql', import.meta.url), 'utf8');
+    assert.ok(sql.indexOf('\\quit') > 0 && sql.indexOf('\\quit') < sql.indexOf('INSERT INTO public.sms_config'), 'no provider: the script stops before it stores anything');
+    assert.match(sql, /:'sms_provider'='' AND :'sms_production_mode'='true' AND :'sms_auth_key'='' AND :'sms_flow_id'='' AND :'sms_pe_id'='' AND :'sms_sender_id'=''/);
+  } finally { rmSync(scratch, { recursive: true, force: true }); }
+});

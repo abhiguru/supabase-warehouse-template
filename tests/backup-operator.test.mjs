@@ -1,7 +1,7 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import { mkdtempSync, mkdirSync, writeFileSync, readFileSync, existsSync, readdirSync, rmSync, statSync, truncateSync, symlinkSync } from 'node:fs';
-import { makeBackup, fakeDocker, fakeBackupDocker, backupKey, signBackup, writeKey, hmacHex, centralKeySet, currentDatabaseImage, pngLetterhead, jpegLetterhead } from './backup-test-helpers.mjs';
+import { backupScript, makeBackup, fakeDocker, fakeBackupDocker, backupKey, signBackup, writeKey, hmacHex, centralKeySet, currentDatabaseImage, pngLetterhead, jpegLetterhead } from './backup-test-helpers.mjs';
 import { spawnSync } from 'node:child_process';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
@@ -12,7 +12,7 @@ import { createHash } from 'node:crypto';
 process.env.WAREHOUSE_BACKUP_RESERVE_MB ??= '0';
 
 test('backup refuses an unspecified operator state before using Docker', () => {
-  const result = spawnSync('bash', [new URL('../scripts/backup.sh', import.meta.url).pathname], {
+  const result = spawnSync('bash', [backupScript()], {
     encoding: 'utf8', env: { ...process.env, WAREHOUSE_STATE_DIR: '' },
   });
   assert.notEqual(result.status, 0);
@@ -50,7 +50,7 @@ test('backup pauses owned writers, preserves credentials and resumes writers', (
     writeFileSync(join(state, 'public/instance.json'), '{"schemaVersion":1}\n');
     writeFileSync(join(state, 'data/storage/object'), 'object data');
     fakeBackupDocker(bin);
-    const result = spawnSync('bash', [new URL('../scripts/backup.sh', import.meta.url).pathname, destination], {
+    const result = spawnSync('bash', [backupScript(), destination], {
       encoding: 'utf8', env: { ...process.env, PATH: `${bin}:${process.env.PATH}`, WAREHOUSE_STATE_DIR: state, FAKE_DOCKER_LOG: log },
     });
     assert.equal(result.status, 0, result.stderr);
@@ -94,21 +94,30 @@ test('backup pauses owned writers, preserves credentials and resumes writers', (
     assert.ok(mainDump && !mainDump.includes('--no-owner'), 'main dump keeps owners for in-place restore');
     assert.equal(calls.includes('_supabase'), false, 'no command touches the _supabase database');
     assert.equal(calls.split('\n').filter(line => line.includes('pg_dump')).length, 1, 'one dump: the application database');
-    assert.ok(calls.indexOf('stop gateway') < calls.indexOf('pg_dump'));
-    assert.ok(calls.indexOf('stop supavisor') < calls.indexOf('pg_dump'));
-    assert.ok(calls.indexOf('pg_dump') < calls.indexOf('up -d --no-recreate --no-deps --wait --wait-timeout 180 gateway'));
-    assert.match(calls, /up -d --no-recreate --no-deps --wait --wait-timeout 180 gateway/);
+    // The gateways are never stopped: maintenance mode closes the API (503 "upgrading") before the first service stops and opens it again
+    // after the others are back, so a phone gets a definite "being updated" answer, not a refused connection.
+    assert.doesNotMatch(calls, / stop gateway\b/, 'the gateway is not stopped');
+    assert.equal(calls.split('\n').filter(line => line === 'maintenance on').length, 1, 'maintenance mode is turned on once');
+    assert.equal(calls.split('\n').filter(line => line === 'maintenance off').length, 1, 'and off once');
+    const restartCall = 'up -d --no-recreate --no-deps --wait --wait-timeout 180 storage';
+    assert.ok(calls.indexOf('maintenance on') < calls.indexOf(' stop storage'), 'the API is closed before the first service stops');
+    assert.ok(calls.indexOf(' stop storage') < calls.indexOf('pg_dump'));
+    assert.ok(calls.indexOf('pg_dump') < calls.indexOf(restartCall));
+    assert.ok(calls.indexOf(restartCall) < calls.indexOf('maintenance off'), 'the API is opened after the services are back');
+    assert.equal(existsSync(join(state, 'config/maintenance')), false, 'the backup leaves no marker behind');
     assert.doesNotMatch(calls, /up -d --no-recreate --wait/, 'no restart without --no-deps');
     assert.equal(existsSync(join(destination, 'storage.tar.gz')), false, 'no tarball any more');
     writeFileSync(log, '');
-    const failed = spawnSync('bash', [new URL('../scripts/backup.sh', import.meta.url).pathname, join(scratch, 'failed-backup')], {
+    const failed = spawnSync('bash', [backupScript(), join(scratch, 'failed-backup')], {
       encoding: 'utf8', env: { ...process.env, PATH: `${bin}:${process.env.PATH}`, WAREHOUSE_STATE_DIR: state, FAKE_DOCKER_LOG: log, FAKE_DOCKER_FAIL: 'yes', FAKE_FAIL_UP: 'yes' },
     });
     assert.notEqual(failed.status, 0);
     assert.match(failed.stderr, /Service storage is running \(unhealthy\)\. Its last log lines:\nfake log of storage\n/);
     assert.equal(existsSync(join(scratch, 'failed-backup')), false);
     const failureCalls = readFileSync(log, 'utf8');
-    assert.ok(failureCalls.indexOf('pg_dump') < failureCalls.indexOf('up -d --no-recreate --no-deps --wait --wait-timeout 180 gateway'));
+    assert.ok(failureCalls.indexOf('pg_dump') < failureCalls.indexOf('up -d --no-recreate --no-deps --wait --wait-timeout 180 storage'));
+    assert.ok(failureCalls.indexOf('up -d --no-recreate') < failureCalls.indexOf('maintenance off'), 'a failed restart still opens the API again');
+    assert.equal(existsSync(join(state, 'config/maintenance')), false);
     assert.equal(existsSync(join(destination, 'tunnel')), false, 'no tunnel directory without an adopted credential');
 
     // A tunnel credential adopted into the state (scripts/tunnel.sh) travels with every backup.
@@ -116,7 +125,7 @@ test('backup pauses owned writers, preserves credentials and resumes writers', (
     writeFileSync(join(state, 'config/tunnel/config.yml'), `tunnel: x\ncredentials-file: ${state}/config/tunnel/credentials.json\n`, { mode: 0o600 });
     writeFileSync(join(state, 'config/tunnel/credentials.json'), '{"TunnelSecret":"s"}', { mode: 0o600 });
     const withTunnel = join(scratch, 'backup-tunnel');
-    const tunnelRun = spawnSync('bash', [new URL('../scripts/backup.sh', import.meta.url).pathname, withTunnel], {
+    const tunnelRun = spawnSync('bash', [backupScript(), withTunnel], {
       encoding: 'utf8', env: { ...process.env, PATH: `${bin}:${process.env.PATH}`, WAREHOUSE_STATE_DIR: state, FAKE_DOCKER_LOG: log },
     });
     assert.equal(tunnelRun.status, 0, tunnelRun.stderr);
@@ -136,7 +145,7 @@ test('backup pauses owned writers, preserves credentials and resumes writers', (
     }
     writeFileSync(join(state, 'public/central-jwks.json'), centralKeySet, { mode: 0o644 });
     const withKeys = join(scratch, 'backup-keys');
-    const keysRun = spawnSync('bash', [new URL('../scripts/backup.sh', import.meta.url).pathname, withKeys], {
+    const keysRun = spawnSync('bash', [backupScript(), withKeys], {
       encoding: 'utf8', env: { ...process.env, PATH: `${bin}:${process.env.PATH}`, WAREHOUSE_STATE_DIR: state, FAKE_DOCKER_LOG: log },
     });
     assert.equal(keysRun.status, 0, keysRun.stderr);
@@ -150,7 +159,7 @@ test('backup pauses owned writers, preserves credentials and resumes writers', (
     // Something that is not a plain file in its place is refused, and no backup is left behind.
     rmSync(join(state, 'public/central-jwks.json'));
     symlinkSync(join(state, 'public/instance.json'), join(state, 'public/central-jwks.json'));
-    const linked = spawnSync('bash', [new URL('../scripts/backup.sh', import.meta.url).pathname, join(scratch, 'backup-linked')], {
+    const linked = spawnSync('bash', [backupScript(), join(scratch, 'backup-linked')], {
       encoding: 'utf8', env: { ...process.env, PATH: `${bin}:${process.env.PATH}`, WAREHOUSE_STATE_DIR: state, FAKE_DOCKER_LOG: log },
     });
     assert.notEqual(linked.status, 0);
@@ -166,7 +175,7 @@ test('backup pauses owned writers, preserves credentials and resumes writers', (
     }
     const backupWith = (name, bytes, target) => {
       writeFileSync(join(state, 'public', name), bytes, { mode: 0o644 });
-      return [target, spawnSync('bash', [new URL('../scripts/backup.sh', import.meta.url).pathname, target], {
+      return [target, spawnSync('bash', [backupScript(), target], {
         encoding: 'utf8', env: { ...process.env, PATH: `${bin}:${process.env.PATH}`, WAREHOUSE_STATE_DIR: state, FAKE_DOCKER_LOG: log },
       })];
     };
@@ -183,7 +192,7 @@ test('backup pauses owned writers, preserves credentials and resumes writers', (
     }
     // A link in its place is refused, and no backup is left behind.
     symlinkSync(join(state, 'public/instance.json'), join(state, 'public/letterhead.png'));
-    const linkedImage = spawnSync('bash', [new URL('../scripts/backup.sh', import.meta.url).pathname, join(scratch, 'backup-linked-image')], {
+    const linkedImage = spawnSync('bash', [backupScript(), join(scratch, 'backup-linked-image')], {
       encoding: 'utf8', env: { ...process.env, PATH: `${bin}:${process.env.PATH}`, WAREHOUSE_STATE_DIR: state, FAKE_DOCKER_LOG: log },
     });
     assert.notEqual(linkedImage.status, 0);
@@ -773,7 +782,7 @@ case "$1" in
 esac
 `, { mode: 0o700 });
       const destination = join(scratch, 'backup');
-      const result = spawnSync('bash', [new URL('../scripts/backup.sh', import.meta.url).pathname, destination], {
+      const result = spawnSync('bash', [backupScript(), destination], {
         encoding: 'utf8', env: { ...process.env, PATH: `${bin}:${process.env.PATH}`, WAREHOUSE_STATE_DIR: state, FAKE_DOCKER_LOG: log, FAKE_SERVER: server },
       });
       assert.notEqual(result.status, 0, label);
@@ -888,27 +897,84 @@ exec "${join(bin, 'docker')}" "$@"
   delete env.COMPOSE_PROFILES; delete env.WAREHOUSE_MAINTENANCE;
   const run = (extra = {}, destination = join(scratch, 'backup')) => {
     writeFileSync(log, ''); writeFileSync(envLog, '');
-    return spawnSync('bash', [new URL('../scripts/backup.sh', import.meta.url).pathname, destination], { encoding: 'utf8', env: { ...env, FAKE_DEST: destination, ...extra } });
+    return spawnSync('bash', [backupScript(), destination], { encoding: 'utf8', env: { ...env, FAKE_DEST: destination, ...extra } });
   };
   const lines = () => readFileSync(log, 'utf8').split('\n').filter(Boolean);
   const at = pattern => lines().findIndex(line => pattern.test(line));
   return { scratch, state, run, lines, at, envCalls: () => readFileSync(envLog, 'utf8').split('\n').filter(Boolean), done: () => rmSync(scratch, { recursive: true, force: true }) };
 }
 
-test('backup stops gateway-lan before the other services and starts it again apart, after they are back; a failed backup starts it again too', () => {
+// The wrapper's answer for a gateway that does not run (the backup then stops the LAN ingress itself); the shared fake says it runs.
+const gatewayDownDocker = (w) => `#!/bin/sh
+case "$*" in
+  *' ps -q gateway') exit 0 ;;
+  *' ps -q gateway-lan') printf '%s\\n' "$*" >> "$FAKE_DOCKER_LOG"; echo dddddddddddd; exit 0 ;;
+  *' up -d --no-deps --wait --wait-timeout 60 gateway-lan') m=before-manifest; ls "$FAKE_STAGE_PARENT"/.warehouse-backup-staging.*/storage.manifest >/dev/null 2>&1 && m=after-manifest; [ -e "$FAKE_DEST/metadata.txt" ] && m=backup-finished; printf 'LAN-UP %s\\n' "$m" >> "$FAKE_DOCKER_LOG" ;;
+esac
+exec "${join(w.scratch, 'bin/docker')}" "$@"
+`;
+
+test('with the gateway running the backup closes the API in maintenance mode (which covers gateway-lan) and stops neither gateway; it opens it again after the services are back, also after a failure', () => {
   const w = lanBackupWorld();
   try {
     const result = w.run();
     assert.equal(result.status, 0, result.stderr);
+    const on = w.at(/^maintenance on$/), off = w.at(/^maintenance off$/);
+    const stop = w.at(/ stop storage$/), dump = w.at(/pg_dump/);
+    const back = w.at(/up -d --no-recreate --no-deps --wait --wait-timeout 180 storage$/);
+    assert.ok(on >= 0 && stop >= 0 && dump >= 0 && back >= 0 && off >= 0, w.lines().join('\n'));
+    assert.ok(on < stop && stop < dump && dump < back && back < off, 'closed, services stopped, dump, services back, opened');
+    assert.equal(w.lines().filter(line => /(stop|up) .*gateway/.test(line) && !/ps -q/.test(line)).length, 0, 'neither gateway is stopped or started by the backup itself');
+    assert.equal(existsSync(join(w.state, 'config/maintenance')), false);
+    // The dump fails: the cleanup brings the services back and opens the API.
+    const failed = w.run({ FAKE_DOCKER_FAIL: 'yes' }, join(w.scratch, 'failed-backup'));
+    assert.notEqual(failed.status, 0);
+    assert.ok(w.at(/^maintenance on$/) < w.at(/pg_dump/));
+    assert.ok(w.at(/up -d --no-recreate --no-deps --wait --wait-timeout 180 storage$/) < w.at(/^maintenance off$/), 'opened again after a failure');
+    assert.equal(existsSync(join(w.state, 'config/maintenance')), false);
+    // Maintenance mode cannot be turned on: nothing is stopped, the cleanup turns it off, and the backup is refused.
+    const refused = w.run({ FAKE_MAINT: 'on' }, join(w.scratch, 'refused-backup'));
+    assert.notEqual(refused.status, 0);
+    assert.match(refused.stderr, /Refusing: the API could not be put in maintenance mode/);
+    assert.equal(w.lines().some(line => / stop /.test(line)), false, 'nothing was stopped');
+    assert.ok(w.at(/^maintenance off$/) >= 0, 'a half-closed API is opened again');
+    // Turning it off fails after a complete backup: the backup is kept, and the run fails loudly.
+    const stuck = w.run({ FAKE_MAINT: 'off' }, join(w.scratch, 'stuck-backup'));
+    assert.notEqual(stuck.status, 0);
+    assert.match(stuck.stderr, /The API is not open again/);
+    assert.match(readFileSync(join(w.state, 'config/maintenance-owner'), 'utf8'), /^backup \d+ \d{4}-\d\d-\d\dT\d\d:\d\d:\d\dZ\n$/, 'a marker the backup could not lift carries its owner tag');
+    assert.equal(existsSync(join(w.state, 'config/maintenance')), true);
+    assert.equal(readFileSync(join(w.scratch, 'stuck-backup/database.dump'), 'utf8'), 'fake database dump\n', 'the backup itself is complete');
+    // Exit status 2 of maintenance.sh off: the API is open and only the health check failed. The backup says so and still fails.
+    rmSync(join(w.state, 'config/maintenance'), { force: true }); rmSync(join(w.state, 'config/maintenance-owner'), { force: true });
+    const unhealthy = w.run({ FAKE_MAINT: 'off', FAKE_MAINT_RC: '2' }, join(w.scratch, 'unhealthy-backup'));
+    assert.notEqual(unhealthy.status, 0);
+    assert.match(unhealthy.stderr, /The API is open again, but the health check after opening it failed/);
+    assert.doesNotMatch(unhealthy.stderr, /not open again/);
+    assert.equal(existsSync(join(w.state, 'config/maintenance-owner')), false, 'the API is open, so the tag is gone');
+    // A normal run leaves neither marker nor tag.
+    rmSync(join(w.state, 'config/maintenance'), { force: true });
+    assert.equal(w.run({}, join(w.scratch, 'clean-backup')).status, 0);
+    assert.equal(existsSync(join(w.state, 'config/maintenance-owner')), false);
+  } finally { w.done(); }
+});
+
+test('with the gateway not running the backup stops gateway-lan before the other services and starts it again apart, after they are back; a failed backup starts it again too', () => {
+  const w = lanBackupWorld();
+  try {
+    writeFileSync(join(w.scratch, 'wrapper/docker'), gatewayDownDocker(w), { mode: 0o700 });
+    const result = w.run();
+    assert.equal(result.status, 0, result.stderr);
     const lanStop = w.at(/--profile lan stop gateway-lan$/);
-    const gatewayStop = w.at(/ stop gateway$/);
+    const serviceStop = w.at(/ stop storage$/);
     const dump = w.at(/pg_dump/);
-    const back = w.at(/up -d --no-recreate --no-deps --wait --wait-timeout 180 gateway/);
+    const back = w.at(/up -d --no-recreate --no-deps --wait --wait-timeout 180 storage$/);
     const lanStart = w.at(/--profile lan up -d --no-deps --wait --wait-timeout 60 gateway-lan$/);
-    assert.ok(lanStop >= 0 && gatewayStop >= 0 && dump >= 0 && back >= 0 && lanStart >= 0, w.lines().join('\n'));
-    assert.ok(lanStop < gatewayStop, 'the LAN ingress is stopped first, with the gateway');
-    assert.ok(gatewayStop < dump, 'both are stopped before the dump');
+    assert.ok(lanStop >= 0 && serviceStop >= 0 && dump >= 0 && back >= 0 && lanStart >= 0, w.lines().join('\n'));
+    assert.ok(lanStop < serviceStop, 'the LAN ingress is stopped first');
+    assert.ok(serviceStop < dump, 'both are stopped before the dump');
     assert.ok(dump < back && back < lanStart, 'the services come back, then the LAN fallback apart');
+    assert.equal(w.at(/^maintenance /), -1, 'no gateway runs, so maintenance mode is not used (it would start one)');
     assert.equal(w.lines().filter(line => /--profile lan stop gateway-lan$/.test(line)).length, 1);
     assert.equal(w.lines().filter(line => /--profile lan up -d .* gateway-lan$/.test(line)).length, 1, 'started once');
     assert.deepEqual(w.lines().filter(line => line.startsWith('LAN-UP')), ['LAN-UP before-manifest'], 'started as soon as the other services are back, not when the backup is finished');
@@ -916,7 +982,7 @@ test('backup stops gateway-lan before the other services and starts it again apa
     const failed = w.run({ FAKE_DOCKER_FAIL: 'yes' }, join(w.scratch, 'failed-backup'));
     assert.notEqual(failed.status, 0);
     assert.ok(w.at(/--profile lan stop gateway-lan$/) < w.at(/pg_dump/));
-    assert.ok(w.at(/up -d --no-recreate --no-deps --wait --wait-timeout 180 gateway/) < w.at(/--profile lan up -d --no-deps --wait --wait-timeout 60 gateway-lan$/), 'started again after a failure');
+    assert.ok(w.at(/up -d --no-recreate --no-deps --wait --wait-timeout 180 storage$/) < w.at(/--profile lan up -d --no-deps --wait --wait-timeout 60 gateway-lan$/), 'started again after a failure');
     assert.deepEqual(w.lines().filter(line => line.startsWith('LAN-UP')), ['LAN-UP before-manifest']);
   } finally { w.done(); }
 });
@@ -929,8 +995,8 @@ test('backup with the LAN fallback off or its container not running does not tou
     const off = w.run();
     assert.equal(off.status, 0, off.stderr);
     assert.equal(w.lines().some(line => /gateway-lan$/.test(line) && /\b(stop|up)\b/.test(line)), false, w.lines().join('\n'));
-    // Running, and the host has lost the address (the router gave it another): lan.sh start says why and the backup is fine.
-    writeFileSync(join(w.scratch, 'wrapper/docker'), `#!/bin/sh\ncase "$*" in *' ps -q gateway-lan') echo dddddddddddd; exit 0 ;; esac\nexec "${join(w.scratch, 'bin/docker')}" "$@"\n`, { mode: 0o700 });
+    // Running without the gateway, and the host has lost the address (the router gave it another): lan.sh start says why and the backup is fine.
+    writeFileSync(join(w.scratch, 'wrapper/docker'), gatewayDownDocker(w), { mode: 0o700 });
     const moved = w.run({ WAREHOUSE_LAN_INTERFACES: JSON.stringify([{ name: 'ens33', address: '192.168.77.9', prefix: 24, defaultRoute: true }]) }, join(w.scratch, 'moved'));
     assert.equal(moved.status, 0, moved.stderr);
     assert.match(moved.stderr, /LAN fallback: this host no longer has 192\.168\.77\.5/);
@@ -938,20 +1004,27 @@ test('backup with the LAN fallback off or its container not running does not tou
   } finally { w.done(); }
 });
 
-test('backup never lifts maintenance mode: with the marker every Compose command it runs carries the word and none recreates a container; without it none does', () => {
+test('backup never lifts maintenance mode: with the marker every Compose command it runs carries the word, none recreates a container and maintenance.sh is not run; without it the backup turns it on and off', () => {
   const w = lanBackupWorld();
   try {
     writeFileSync(join(w.state, 'config/maintenance'), 'upgrading\n', { mode: 0o600 });
     const closed = w.run();
     assert.equal(closed.status, 0, closed.stderr);
     const compose = w.envCalls().filter(line => /\|compose /.test(line) && / (up|stop) /.test(line));
-    assert.ok(compose.length >= 4, `${compose.length} start/stop commands`);
+    assert.ok(compose.length >= 2, `${compose.length} start/stop commands`);
     assert.deepEqual([...new Set(compose.map(line => line.split('|')[0]))], ['upgrading'], 'every one of them hands Compose the word');
     assert.equal(w.envCalls().some(line => /--force-recreate/.test(line)), false, 'nothing is recreated');
+    assert.equal(w.at(/^maintenance /), -1, 'maintenance mode was on already: the backup leaves it alone');
+    assert.equal(existsSync(join(w.state, 'config/maintenance')), true, 'and still on afterwards');
     rmSync(join(w.state, 'config/maintenance'));
     const open = w.run({}, join(w.scratch, 'open'));
     assert.equal(open.status, 0, open.stderr);
-    assert.deepEqual([...new Set(w.envCalls().filter(line => /\|compose /.test(line)).map(line => line.split('|')[0]))], ['unset']);
+    // Between its own "on" and "off" the marker exists, so the commands of that time carry the word too; the ones before and after do not.
+    const word = pattern => w.envCalls().filter(line => /\|compose /.test(line) && pattern.test(line)).map(line => line.split('|')[0]);
+    assert.deepEqual([...new Set(word(/ stop storage$/))], ['upgrading'], 'the services stop while the API is closed');
+    assert.deepEqual([...new Set(word(/ ps -q db$/))], ['unset'], 'before it was closed');
+    assert.equal(w.envCalls().some(line => /--force-recreate/.test(line)), false, 'nothing is recreated by the backup itself');
+    assert.ok(w.at(/^maintenance on$/) >= 0 && w.at(/^maintenance off$/) > w.at(/^maintenance on$/));
   } finally { w.done(); }
 });
 

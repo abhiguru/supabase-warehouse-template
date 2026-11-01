@@ -22,7 +22,8 @@ The `contract` CI job compares names only against the pinned app commit
 - [ ] Move the pin (`MOBILE_REF`) to the app commit being released, in the same
       pull request as any backend change that commit needs.
 - [ ] With that app commit checked out and its `node_modules` installed, run the
-      live comparison against a running stack of this backend commit:
+      live comparison against a running stack of this backend commit, run **from that stack's own checkout** (the script reads the compose
+      files and the images of the checkout it sits in, so another checkout would compare another commit):
       `WAREHOUSE_STATE_DIR=<state> node scripts/check-mobile-contract.mjs <app checkout> --live`.
       It must report no missing RPC, table or function and no `mismatches`
       (overloads, argument names and the grant to signed-in users).
@@ -121,6 +122,9 @@ names the candidate it was built for; the revision is the commit of both.
       is, and there may be no draft to publish with `gh release edit --draft=false`): publish that release with `gh release create vX.Y.Z --verify-tag`
       (facilities then build the images from the recipe, as for any release without a list), or cut the next patch release. Re-running the job on a draft release builds again and replaces `release-images.json` (the
       digests change; a facility that already pulled keeps what it has); on a published release the upload is refused.
+- [ ] **A new image package** (a service that gets its own image for the first time, so `ghcr.io` has no package for it yet): its first push
+      creates the package private and without this repository's write access. Give it the access and the visibility of the next item, then
+      re-run `publish-images` once for the tag: one re-run for each new package.
 - [ ] **Once, with the first release candidate (nothing in this job has run against `ghcr.io` before it):** if the push is refused
       (`denied: permission_denied`), open each package's settings, "Manage Actions access", and add this repository with the Write role,
       then re-run the job. GitHub creates each package private. For every package of the repository

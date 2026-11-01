@@ -3,11 +3,13 @@
 // its catalog row together. Deleting the storage.objects row in SQL would leave
 // the file on disk. scripts/retention.sh runs this inside the storage container
 // (`node -e`), where SERVICE_KEY is already set, so the key never leaves it.
+// REMOVE_BUCKET names the bucket (default documents; the two photo buckets are the unfinished uploads of the daily job).
 const http = require('node:http');
 
 const base = new URL(process.env.STORAGE_API_URL || 'http://storage:5000');
 const key = process.env.SERVICE_KEY || '';
-const bucket = 'documents';
+const allowedBuckets = ['documents', 'grn-images', 'dispatch-images'];
+const bucket = process.env.REMOVE_BUCKET || 'documents';
 const batchSize = 100;
 
 function remove(names) {
@@ -37,6 +39,7 @@ function remove(names) {
 
 async function main() {
   if (!key) throw new Error('SERVICE_KEY is not set in this container');
+  if (!allowedBuckets.includes(bucket)) throw new Error(`bucket ${bucket} is not one this script may clean`);
   const chunks = [];
   for await (const chunk of process.stdin) chunks.push(chunk);
   const names = Buffer.concat(chunks).toString('utf8').split('\n').map(name => name.trim()).filter(Boolean);
@@ -44,7 +47,7 @@ async function main() {
   for (let start = 0; start < names.length; start += batchSize) {
     removed += await remove(names.slice(start, start + batchSize));
   }
-  console.log(`Generated documents removed from storage: ${removed} of ${names.length}`);
+  console.log(`${bucket === 'documents' ? 'Generated documents' : `Files of ${bucket}`} removed from storage: ${removed} of ${names.length}`);
 }
 
 main().catch(error => { console.error(`Document removal failed: ${error.message}`); process.exit(1); });

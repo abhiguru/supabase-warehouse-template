@@ -1,6 +1,7 @@
 -- public.create_dispatch_with_stock_check_internal: the definition setup applies after the numbered migrations whenever this file's checksum changes
 -- (scripts/migration-plan.mjs, table warehouse_migrations.definitions). Edit the function here, never in a new migration.
 -- Starts as the function migrations 000 to 126 leave (the numbered files that patched it stay as they are, never edited).
+-- Migration 128 adds the order effect of the save (order_effects in the answer) to this file; see the section 3 note of migration 128.
 CREATE OR REPLACE FUNCTION public.create_dispatch_with_stock_check_internal(p_dispatch_data jsonb, p_dispatch_items jsonb[], p_generate_invoice boolean DEFAULT false, p_idempotency_key text DEFAULT NULL::text)
  RETURNS jsonb
  LANGUAGE plpgsql
@@ -47,6 +48,9 @@ DECLARE
     v_duplicate jsonb;
     v_detail text;
     v_number_failure jsonb;
+    v_order_before jsonb;
+    v_order_lots uuid[];
+    v_order_effects jsonb;
 BEGIN
     -- The document lock comes before the idempotency lookup, as in save_grn (migration 87):
     -- an overlapping retry waits here and then finds the first call's cached answer.
@@ -146,10 +150,27 @@ BEGIN
         RAISE EXCEPTION 'The same lot appears twice in the dispatch lines' USING ERRCODE = 'WH409';
     END IF;
 
+    -- Migration 130: a dispatch number has no space, tab or other whitespace in it (a blank number keeps its own refusal below).
+    IF p_dispatch_data->>'disp_no' ~ '[[:space:]]|\u00a0'
+       AND NOT warehouse_security.is_blank_text(p_dispatch_data->>'disp_no') THEN
+        RETURN warehouse_security.refuse('DISPATCH_NUMBER_SPACES', 'A dispatch number can''t contain spaces.',
+            jsonb_build_object('number', p_dispatch_data->>'disp_no'));
+    END IF;
+
     -- Migration 127: the number follows this facility's numbering (warehouse_security.document_numbering).
     v_number_failure := warehouse_security.document_number_failure('dispatch', p_dispatch_data->>'disp_no', warehouse_security.business_date((p_dispatch_data->>'disp_date')::timestamptz));
     IF v_number_failure IS NOT NULL THEN
         RETURN v_number_failure;
+    END IF;
+
+    -- Migration 130 (D17): the vehicle number fits the column (20 characters, as on a GRN); beyond that a plain refusal.
+    -- Migration 130: surrounding white space (spaces, tabs, line breaks, non-breaking spaces) is not stored, a blank one is NULL; the length is checked on the trimmed value.
+    IF jsonb_typeof(p_dispatch_data->'registration') = 'string' THEN
+        p_dispatch_data := jsonb_set(p_dispatch_data, '{registration}', COALESCE(to_jsonb(NULLIF(regexp_replace(p_dispatch_data->>'registration', '^[\s ]+|[\s ]+$', '', 'g'), '')), 'null'::jsonb));
+    END IF;
+    IF p_dispatch_data->>'registration' IS NOT NULL AND char_length(p_dispatch_data->>'registration') > 20 THEN
+        RETURN warehouse_security.grn_rate_failure('registration_too_long',
+            'Registration can have at most 20 characters', jsonb_build_object('limit', 20));
     END IF;
 
     -- A number another dispatch holds is refused by name, under the lock and before anything is written
@@ -201,6 +222,10 @@ BEGIN
     ORDER BY oi.id
     FOR UPDATE OF oi;
 
+    -- Migration 128: the order lines of these lots as they are before anything is written, to tell afterwards what the dispatch changed.
+    v_order_lots := ARRAY(SELECT (item->>'gr_trl_id')::uuid FROM unnest(p_dispatch_items) AS item);
+    v_order_before := warehouse_security.order_lines_snapshot(v_order_lots);
+
     -- A dispatch carries only its own customer's lots. The receipts are
     -- key-share locked so update_grn cannot move one to another customer meanwhile.
     PERFORM gr.id
@@ -234,7 +259,8 @@ BEGIN
 
     -- D3 (migration 121, IST days): a dispatch is not dated in the future, and not before the GRN day of any of its lots.
     -- The day is the one the insert below stores (the same cast). The GRN named is the latest one among the lots.
-    v_disp_day := (p_dispatch_data->>'disp_date')::date;
+    -- Migration 130: a date with a time is the IST day of that moment (a plain 'YYYY-MM-DD' is that day), and that day is stored.
+    v_disp_day := warehouse_security.business_date((p_dispatch_data->>'disp_date')::timestamptz);
     IF v_disp_day IS NOT NULL THEN
         v_today := warehouse_security.business_date(now());
         IF v_disp_day > v_today THEN
@@ -285,7 +311,7 @@ BEGIN
         created_by, source_order_id, source_order_no
     ) VALUES (
         p_dispatch_data->>'disp_no',
-        (p_dispatch_data->>'disp_date')::date::timestamptz,
+        v_disp_day::timestamptz,
         p_dispatch_data->>'registration',
         (p_dispatch_data->>'customer_id')::uuid,
         v_customer_name,
@@ -536,6 +562,9 @@ BEGIN
         END IF;
     END IF;
 
+    -- Migration 128: what the dispatch did to the customer's order lines, in the answer.
+    v_order_effects := warehouse_security.order_effects(v_order_lots, v_order_before);
+
     -- Build result
     v_cached_response := jsonb_build_object(
         'success', true,
@@ -544,7 +573,8 @@ BEGIN
         'invoice_data', COALESCE(v_invoice_data, '{}'::jsonb),
         'message', 'Dispatch created successfully',
         'source_order_cleared', v_source_order_id IS NOT NULL,
-        'order_lines_left', v_order_lines_left
+        'order_lines_left', v_order_lines_left,
+        'order_effects', v_order_effects
     );
 
     -- Cache the response if idempotency key provided

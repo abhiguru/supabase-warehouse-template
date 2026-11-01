@@ -157,7 +157,7 @@ function doctorWithCompose(help, extraBin = {}, mode = '--host-preflight') {
     mkdirSync(bin);
     writeFileSync(join(bin, 'docker'), `#!/bin/sh
 case "$*" in
-  'compose version') echo 'Docker Compose version v2.40.3' ;;
+  'compose version') echo 'Docker Compose version v5.6.1' ;;
   'info --format {{.ServerVersion}}') echo 29.9.1 ;;
   'compose up --help') printf '%s\\n' ${JSON.stringify(help)} ;;
   *) exit 1 ;;
@@ -239,7 +239,7 @@ import { projectPublishesPort } from '../scripts/doctor.mjs';
 
 const FAKE_DOCKER = `#!/bin/sh
 case "$*" in
-  'compose version') echo 'Docker Compose version v2.40.3' ;;
+  'compose version') echo 'Docker Compose version v5.6.1' ;;
   'info --format {{.ServerVersion}}') echo 29.9.1 ;;
   'compose up --help') echo '      --wait-timeout int   Maximum duration in seconds to wait for the project to be running|healthy' ;;
   'ps -aq --filter label=com.docker.compose.project='*) ;;
@@ -661,6 +661,15 @@ test('waitForDocker: permission denied (not in the docker group) is refused at o
   const message = waitForDocker(() => { calls++; return { ok: false, output: '', error: 'permission denied while trying to connect to the Docker daemon socket' }; }, () => assert.fail('paused'), () => assert.fail('announced'));
   assert.equal(calls, 1);
   assert.match(message, /permission denied\).*docker ps.*without sudo \(docker group/);
+});
+
+test('stateOwner gives up on a slow lookup, and checkerWarnings asks for the owner only when a log path is not writable', () => {
+  const source = readFileSync(new URL('../scripts/doctor.mjs', import.meta.url), 'utf8');
+  const owner = source.slice(source.indexOf('export function stateOwner'), source.indexOf('export function checkerWarnings'));
+  assert.match(owner, /spawnSync\(cmd, args, \{[^}]*timeout: \d+/, 'both lookups have a timeout');
+  const warnings = source.slice(source.indexOf('export function checkerWarnings'));
+  assert.equal(warnings.split('stateOwner(state)').length - 1, 1, 'one call');
+  assert.ok(warnings.indexOf('stateOwner(state)') > warnings.indexOf('if (!canWrite(path))'), 'inside the unwritable branch, not before the loop');
 });
 
 test('waitForDocker: a daemon that answers at once is neither waited for nor announced', () => {

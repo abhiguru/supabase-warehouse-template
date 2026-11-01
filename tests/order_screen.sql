@@ -133,7 +133,9 @@ SELECT pg_temp.order_assert(
 SELECT pg_temp.order_assert(public.get_order_change_log(p_customer_id=>:'customer_b'::uuid)->>'success'='true','customer reads history by customer');
 SELECT pg_temp.order_denied($s$SELECT public.get_order_change_log()$s$,'unscoped customer history');
 SELECT pg_temp.order_denied($s$INSERT INTO public.order_revisions(order_id,changed_at,action,entry) VALUES ('$s$||:'cart_a'||$s$',now(),'UPDATE','{}') RETURNING NULL::jsonb$s$,'customer writes history');
-SELECT pg_temp.order_assert(jsonb_array_length(public.get_orders_list()#>'{data,orders}')=2,'two-customer account lists both carts');
+-- Cart A was emptied above: an order without a line is not listed (migration 128), so the account lists cart B only.
+SELECT pg_temp.order_assert(jsonb_array_length(public.get_orders_list()#>'{data,orders}')=1
+  AND (public.get_orders_list()#>>'{data,orders,0,id}')=:'cart_b','two-customer account lists the cart that has a line, not the emptied one');
 RESET ROLE;
 
 -- A customer assigned only to A cannot touch B's cart or history.
@@ -147,7 +149,7 @@ SELECT pg_temp.order_denied(format('SELECT public.search_customer_items_for_orde
 -- The history table is not readable by an app role at all (migration 123): the customer sees history only through the RPC.
 SELECT pg_temp.order_denied(format('SELECT to_jsonb(count(*)) FROM public.order_revisions WHERE order_id=%L::uuid',:'cart_b'),'direct read of foreign history');
 SELECT pg_temp.order_denied(format('SELECT to_jsonb(count(*)) FROM public.order_revisions WHERE order_id=%L::uuid',:'cart_a'),'direct read of own history');
-SELECT pg_temp.order_assert(jsonb_array_length(public.get_orders_list()#>'{data,orders}')=1,'single-customer account lists one cart');
+SELECT pg_temp.order_assert(jsonb_array_length(public.get_orders_list()#>'{data,orders}')=0,'single-customer account (customer A only): the emptied cart is not listed');
 RESET ROLE;
 
 -- Staff have full order access (decision 2026-10-09).

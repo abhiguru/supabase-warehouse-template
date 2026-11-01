@@ -7,6 +7,12 @@
 \getenv sms_flow_id MSG91_TEMPLATE_ID
 \getenv sms_pe_id MSG91_PE_ID
 \getenv sms_sender_id MSG91_SENDER_ID
+-- An installation that signs in through the association alone has no provider: all five lines are empty and nothing is stored.
+-- (The doctor refuses a half-filled set before setup gets here.)
+SELECT :'sms_provider'='' AND :'sms_production_mode'='true' AND :'sms_auth_key'='' AND :'sms_flow_id'='' AND :'sms_pe_id'='' AND :'sms_sender_id'='' AS no_sms \gset
+\if :no_sms
+  \quit
+\endif
 SELECT :'sms_provider'='msg91' AND :'sms_production_mode'='true'
   AND length(:'sms_auth_key')>0 AND :'sms_auth_key' NOT LIKE 'your-%'
   AND :'sms_flow_id' ~ '^[0-9a-f]{24}$'

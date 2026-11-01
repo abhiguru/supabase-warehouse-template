@@ -8,6 +8,50 @@ file used to carry for earlier installations are in git: `git show b45ae0b:CHANG
 
 ## Unreleased
 
+### Added
+
+- **Break-glass codes for every facility worker, with their own sign-in (migration 132).** `scripts/break-glass-admin.sh` now makes a one-time code
+  (10 minutes, once, five wrong tries) for an active, approved administrator, **supervisor or staff member** (never a customer) and prints the
+  role. The app signs in with it through `POST /functions/v1/operator-otp/break-glass` `{phone_number, code}` (service-role RPC
+  `operator_break_glass_sign_in`): the answer has the shape of `verify` (`{success, data:{action:'login', user, session}}`), or a refusal with
+  a `code`: `invalid_code` (wrong code, unknown number or a customer's number, all alike), `code_used`, `code_expired`, `code_locked` (400, only to someone who presents the issued code), `rate_limited` (429, the
+  per-source failure limit of the SMS verify path), `invalid_request`. The session ends **24 hours** after that sign-in
+  (`refresh_sessions.hard_expires_at`; `session.session_ends_at` in the answer; a refresh never moves it later), and the older code screen
+  (`operator_verify_otp`) takes a worker's code too with the same 24 hour session. One function, `warehouse_security.redeem_break_glass`,
+  checks and uses a code; the comparison is made on keyed hashes of both hashes. Works over the LAN fallback as before. Tests:
+  `tests/break_glass_workers.sql` (new), `tests/break_glass.sql`, `tests/break-glass-admin.test.mjs`, `tests/operator-otp-handler.test.mjs`.
+  Operator procedure: [CENTRAL_LOGIN.md](docs/CENTRAL_LOGIN.md), "When the association's SMS is down".
+
+### Changed
+
+- **A member that signs in through the association needs no MSG91 file.** `setup.sh --central-issuer ...` without `--provider-env` stores no SMS
+  provider (the five provider lines of `config/compose.env` stay empty; the compose file no longer requires them; `configure-sms.sql` stores
+  nothing), `node scripts/doctor.mjs` accepts that when `CENTRAL_ISSUER` is set, and `operator-otp/request` answers 503 with
+  `code: "sms_not_configured"`. Refused so nobody is left without a sign-in: `--central-local-code on` with no provider, `--central-issuer off`
+  on an installation with no provider, and a first install with neither a provider file nor `--central-issuer`.
+  [OPERATOR_INSTALL.md](docs/OPERATOR_INSTALL.md), "MSG91 provider file". Tests: `tests/configure.test.mjs`, `tests/operator-otp-handler.test.mjs`.
+
+- Migration 129: `replace_item_rates` and `set_standard_rate` take an optional `p_request_key` (a resend returns the first answer);
+  a rate change from an earlier date is refused (`LATER_RATES_EXIST`) when a later rate has already begun, unless `p_replace_later`;
+  an item's first default rate also covers earlier days (`find_storage_price`); `apply_grn_rates` refuses customer and everyone
+  entries for an invoiced GRN (`GRN_INVOICED`); `save_invoice` and `update_invoice` refuse an invoice dated in the future
+  (`INVOICE_DATE_FUTURE`) or before the latest dispatch of its lines (`INVOICE_BEFORE_DISPATCH`), a discount that takes a charged
+  invoice to zero (`DISCOUNT_TOTAL_ZERO`) and lines whose looked-up rate changed since the form opened (`RATES_CHANGED`). Details:
+  `docs/API_CONTRACT.md`.
+- Migration 131: `get_dispatch_list_with_items` (with items) and `get_recent_dispatched_orders` name the GRN of each dispatch line
+  (`grn_id`; the recent list also `grn_qty`).
+- Migration 131: rack presets, the Floor and Chamber buttons of the GRN item form kept in the database. `get_rack_presets()` (staff and above)
+  and `set_rack_presets(p_floor, p_chamber, p_version)` (administrators and supervisors; a save from an older version is refused with
+  `PRESETS_CHANGED`; labels of at most 12 characters, no `/`). The lists start as the buttons the app had built in. Details: `docs/API_CONTRACT.md`.
+- `scripts/backup.sh` keeps the gateways up in maintenance mode while it holds the services stopped, so the API answers 503 `upgrading` (with
+  `Retry-After`) instead of refusing connections; it turns maintenance mode off again afterwards, also after a failure, and leaves it alone when it
+  was on already. A gateway that was not running is still not started.
+- Docs: the operator guide installs the current `docker-compose-plugin` (5.6.0 and 5.6.1 listed as tested), says that deleting a state directory
+  needs `sudo` and that the installation user needs `sudo`; the README Quickstart checks out the newest release tag and installs the monitoring
+  timer, and the agent instructions read the guide from a local clone at the release tag; the release checklist covers a new image package and
+  runs the live contract check from the stack's own checkout; the seed is described as a drill fixture. A pulled release image is reported as
+  "not on this host".
+
 ## v0.7.0 (2026-10-30)
 
 **PostgreSQL 15 to 18, and one baseline migration.**

@@ -1,6 +1,6 @@
 -- public.operator_verify_otp: the definition setup applies after the numbered migrations whenever this file's checksum changes
 -- (scripts/migration-plan.mjs, table warehouse_migrations.definitions). Edit the function here, never in a new migration.
--- Starts as the function migrations 000 to 126 leave (the numbered files that patched it stay as they are, never edited).
+-- Starts as the function migrations 000 to 126 leave, with the break-glass change of migration 132 (the numbered files that patched it stay as they are, never edited).
 CREATE OR REPLACE FUNCTION public.operator_verify_otp(p_phone_number text, p_otp_code text, p_name text DEFAULT NULL::text, p_display_name text DEFAULT NULL::text, p_ip_address inet DEFAULT NULL::inet)
  RETURNS jsonb
  LANGUAGE plpgsql
@@ -10,7 +10,7 @@ AS $function$
 DECLARE phone text; challenge public.otp_verifications; profile public.user_profiles;
   secret text; token text; session_data jsonb; expires timestamptz;
   candidates uuid[]; clean_name text; clean_display text; created_now boolean := false;
-  glass_id uuid; glass_hash text; glass_used boolean := false;
+  glass jsonb; glass_id uuid; glass_used boolean := false;
 BEGIN
   IF COALESCE((SELECT value FROM warehouse_security.auth_config WHERE key='auth_mode'),'') <> 'operator' THEN
     RETURN jsonb_build_object('success',false,'code','unavailable');
@@ -40,24 +40,14 @@ BEGIN
         ORDER BY c.created_at DESC LIMIT 1;
     END IF;
   END IF;
-  -- Migration 126: a break-glass code (warehouse_security.break_glass_code) is looked for only when no SMS code matched. It belongs
-  -- to an active, approved administrator (a person: not a service account, not deleted) with this number, works once, expires after 10
-  -- minutes and ends after five wrong tries from any address. A wrong try is also a failed verification of the source, below.
+  -- Migration 126, widened in 132: a break-glass code (warehouse_security.break_glass_code) is looked for only when no SMS code matched. It
+  -- belongs to an active, approved administrator, supervisor or staff member (a person: not a service account, not deleted) with this
+  -- number, works once, expires after 10 minutes and ends after five wrong tries from any address. A wrong try is also a failed
+  -- verification of the source, below. warehouse_security.redeem_break_glass is the one place that checks and uses a code; the session
+  -- of such a sign-in ends 24 hours later (limit_break_glass_session). The app's own sign-in for a code is operator_break_glass_sign_in.
   IF challenge.id IS NULL AND p_otp_code ~ '^[0-9]{6}$' THEN
-    SELECT b.id, b.code_hash INTO glass_id, glass_hash FROM warehouse_security.break_glass_codes b
-      JOIN public.user_profiles a ON a.auth_user_id=b.user_id AND a.mobile=phone AND a.role='admin' AND a.active AND a.enrollment_status='approved'
-        AND NOT a.is_service_account AND a.deleted_at IS NULL
-      WHERE b.phone_number=phone AND b.used_at IS NULL AND b.expires_at>now() AND b.attempts<5
-      ORDER BY b.created_at DESC LIMIT 1 FOR UPDATE OF b;
-    IF glass_id IS NOT NULL THEN
-      SELECT value INTO secret FROM warehouse_security.auth_config WHERE key='jwt_secret';
-      IF glass_hash = encode(extensions.hmac(phone||':'||p_otp_code||':'||glass_id::text,secret,'sha256'),'hex') THEN
-        UPDATE warehouse_security.break_glass_codes SET used_at=now(), used_from=p_ip_address, code_hash=NULL WHERE id=glass_id;
-        glass_used := true;
-      ELSE
-        UPDATE warehouse_security.break_glass_codes SET attempts=attempts+1 WHERE id=glass_id;
-      END IF;
-    END IF;
+    glass := warehouse_security.redeem_break_glass(phone,p_otp_code,p_ip_address);
+    IF glass->>'result' = 'ok' THEN glass_id := (glass->>'id')::uuid; glass_used := true; END IF;
   END IF;
   IF challenge.id IS NULL AND NOT glass_used THEN
     IF p_ip_address IS NOT NULL THEN
@@ -117,6 +107,7 @@ BEGIN
       jsonb_build_object('mobile',phone,'name',profile.name,'code_id',glass_id),p_ip_address);
   END IF;
   session_data := warehouse_security.issue_session(profile.auth_user_id);
+  IF glass_used THEN session_data := warehouse_security.limit_break_glass_session(session_data); END IF;
   RETURN jsonb_build_object('success',true,'data',jsonb_build_object('action','login','user',to_jsonb(profile),'session',session_data));
 END $function$;
 

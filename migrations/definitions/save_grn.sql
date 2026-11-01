@@ -51,6 +51,8 @@ BEGIN
     END LOOP;
   END IF;
   -- Migration 121 (D13): the registration fits the column (20 characters), as the item name and packaging fit theirs.
+  -- Migration 130: surrounding white space (spaces, tabs, line breaks, non-breaking spaces) is not stored, a blank one is NULL; the length is checked on the trimmed value.
+  p_registration := NULLIF(regexp_replace(p_registration, '^[\s ]+|[\s ]+$', '', 'g'), '');
   IF p_registration IS NOT NULL AND char_length(p_registration) > 20 THEN
     RETURN warehouse_security.grn_rate_failure('registration_too_long',
       'Registration can have at most 20 characters', jsonb_build_object('limit', 20));
@@ -124,10 +126,25 @@ BEGIN
           );
       END IF;
 
+      -- Migration 130: a new GRN number has no space, tab or other whitespace in it. (update_grn cannot change a number, so
+      -- stored numbers that have a space are left as they are.)
+      IF p_gr_no ~ '[[:space:]]|\u00a0' THEN
+          RETURN warehouse_security.refuse('GRN_NUMBER_SPACES', 'A GRN number can''t contain spaces.',
+              jsonb_build_object('gr_no', p_gr_no));
+      END IF;
+
       -- Migration 127: the number follows this facility's numbering (warehouse_security.document_numbering).
       v_number_failure := warehouse_security.document_number_failure('grn', p_gr_no, warehouse_security.business_date(p_date));
       IF v_number_failure IS NOT NULL THEN
           RETURN v_number_failure;
+      END IF;
+
+      -- Migration 130 (D10): a GRN is not dated in the future (today in India, the same day rule as a dispatch).
+      IF warehouse_security.business_date(p_date) > warehouse_security.business_date(now()) THEN
+          RETURN warehouse_security.refuse('GRN_DATE_FUTURE',
+              format('A GRN can''t be dated in the future. Today is %s.', to_char(warehouse_security.business_date(now()), 'YYYY-MM-DD')),
+              jsonb_build_object('date', to_char(warehouse_security.business_date(p_date), 'YYYY-MM-DD'),
+                                 'today', to_char(warehouse_security.business_date(now()), 'YYYY-MM-DD')));
       END IF;
 
       IF EXISTS (SELECT 1 FROM goodsreceived WHERE gr_no = p_gr_no) THEN

@@ -242,7 +242,9 @@ SELECT pg_temp.dcm_assert(public.create_dispatch_with_stock_check(:'header'::jso
  ARRAY[jsonb_build_object('gr_trl_id',:'lot_h','disp_qty',6)],0,'dcm-h')->>'success'='true','dispatch DCMH');
 RESET ROLE;
 SELECT id AS disp_h FROM public.dispatch WHERE disp_no='DCMH' \gset
+SELECT set_config('warehouse.dispatch_delete_via_rpc', 'on', true) AS _ \gset
 SELECT pg_temp.dcm_error(format('DELETE FROM public.dispatch WHERE id=%L::uuid',:'disp_h')) AS owner_delete \gset
+SELECT set_config('warehouse.dispatch_delete_via_rpc', 'off', true) AS _ \gset
 SELECT pg_temp.dcm_assert(:'owner_delete'='no error','the owner''s delete succeeds: ' || :'owner_delete');
 SELECT pg_temp.dcm_assert((SELECT stock=6 FROM public.goodsreceived_trl WHERE id=:'lot_h'::uuid)
  AND NOT EXISTS (SELECT 1 FROM public.dispatch_trl WHERE disp_id=:'disp_h'::uuid),'the trigger restored H and removed the lines');
@@ -258,7 +260,9 @@ SELECT pg_temp.dcm_assert(public.create_dispatch_with_stock_check(:'header'::jso
  ARRAY[jsonb_build_object('gr_trl_id',:'lot_i','disp_qty',6)],0,'dcm-i')->>'success'='true','dispatch DCMI');
 RESET ROLE;
 UPDATE public.goodsreceived_trl SET stock=7 WHERE id=:'lot_i'::uuid;
+SELECT set_config('warehouse.dispatch_delete_via_rpc', 'on', true) AS _ \gset
 SELECT pg_temp.dcm_error(format('DELETE FROM public.dispatch WHERE disp_no=%L','DCMI')) AS capped_delete \gset
+SELECT set_config('warehouse.dispatch_delete_via_rpc', 'off', true) AS _ \gset
 SELECT pg_temp.dcm_assert(:'capped_delete'='no error','the owner''s delete of DCMI succeeds: ' || :'capped_delete');
 SELECT pg_temp.dcm_assert((SELECT stock=10 FROM public.goodsreceived_trl WHERE id=:'lot_i'::uuid),'I is capped at 10');
 SELECT pg_temp.dcm_assert(pg_temp.dcm_moves(:'lot_i'::uuid)='dispatch -6 10>4 (dispatch), return 3 7>10 (dispatch_delete)',

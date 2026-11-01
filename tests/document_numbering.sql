@@ -114,7 +114,9 @@ SELECT pg_temp.nd_assert(pg_temp.nd_call($$INSERT INTO public.goodsreceived(gr_n
   AND pg_temp.nd_call($$INSERT INTO public.dispatch(disp_no, customer_id) VALUES ('ABCDEFGHIJ01234567890', '$$ || :'customer_id' || $$') RETURNING 1$$)->>'state' = '22001',
   'a number column takes 20 characters and not 21');
 DELETE FROM public.goodsreceived WHERE gr_no = 'ABCDEFGHIJ0123456789';
+SELECT set_config('warehouse.dispatch_delete_via_rpc', 'on', true) AS _ \gset
 DELETE FROM public.dispatch WHERE disp_no = 'ABCDEFGHIJ0123456789';
+SELECT set_config('warehouse.dispatch_delete_via_rpc', 'off', true) AS _ \gset
 
 -- 3. Letters, from A (the default). Suggestions with data, as the owner reads them.
 SELECT pg_temp.nd_rule('grn', '{"scheme":"letters"}')->>'changed' AS _ \gset
@@ -272,14 +274,18 @@ SELECT pg_temp.nd_rule('dispatch', '{"scheme":"sequence","start":1001,"width":1}
 SELECT pg_temp.nd_assert(pg_temp.nd_next('dispatch') = '1001' AND warehouse_security.document_number_suggestion('dispatch', NULL)->>'hint' = '#', 'no prefix, from 1001, a paper book kept going');
 INSERT INTO public.dispatch(disp_no, customer_id) VALUES ('1001', :'customer_id');
 SELECT pg_temp.nd_assert(pg_temp.nd_next('dispatch') = '1002', 'and then 1002');
+SELECT set_config('warehouse.dispatch_delete_via_rpc', 'on', true) AS _ \gset
 DELETE FROM public.dispatch WHERE disp_no IN ('1001');
+SELECT set_config('warehouse.dispatch_delete_via_rpc', 'off', true) AS _ \gset
 SELECT pg_temp.nd_rule('dispatch', '{"scheme":"sequence","prefix":"I"}') AS _ \gset
 INSERT INTO public.dispatch(disp_no, customer_id) VALUES ('I9999', :'customer_id');
 SELECT pg_temp.nd_assert(pg_temp.nd_next('dispatch') = 'I10000', 'I9999 is followed by I10000, not cut to I1000');
 INSERT INTO public.dispatch(disp_no, customer_id) VALUES ('I9999999', :'customer_id');
 SELECT pg_temp.nd_assert(warehouse_security.document_number_suggestion('dispatch', NULL) = jsonb_build_object('number', NULL, 'hint', 'I####', 'scheme', 'sequence', 'reason', 'SERIES_FULL',
     'message', 'Dispatch number sequence exhausted at I9999999', 'sqlstate', '22003'), 'I9999999 ends the sequence');
+SELECT set_config('warehouse.dispatch_delete_via_rpc', 'on', true) AS _ \gset
 DELETE FROM public.dispatch WHERE disp_no IN ('I4817', 'I9', 'I4568   ', 'ZCUSTOM', 'I9999', 'I9999999');
+SELECT set_config('warehouse.dispatch_delete_via_rpc', 'off', true) AS _ \gset
 
 -- The longest sequence rule (a prefix of 10 characters and 7 digits, 17 characters) fits the column: there is no length check to reach.
 SELECT pg_temp.nd_rule('dispatch', '{"scheme":"sequence","prefix":"ABCDEFGHIJ","width":7}')->>'next_number' AS longest_sequence \gset
@@ -374,7 +380,9 @@ SELECT pg_temp.nd_assert((SELECT old_rule->>'scheme' = 'free' AND new_rule->>'pr
   'the row holds the old rule, the new rule, no person (the operator) and the two live dispatches');
 SELECT pg_temp.nd_assert((SELECT updated_by IS NULL FROM warehouse_security.document_numbering WHERE document_type = 'dispatch')
   AND pg_temp.nd_next('dispatch') = 'H004', 'the new rule suggests H004: H1 and H2 are live, the deleted H3 keeps its number');
+SELECT set_config('warehouse.dispatch_delete_via_rpc', 'on', true) AS _ \gset
 DELETE FROM public.dispatch WHERE disp_no IN ('H1', 'H2', 'H3');
+SELECT set_config('warehouse.dispatch_delete_via_rpc', 'off', true) AS _ \gset
 
 -- 11. Who may read and change a rule, and what the old calls and the new one answer.
 SELECT pg_temp.nd_rule('grn', '{"scheme":"letters"}') AS _ \gset
@@ -532,8 +540,8 @@ SELECT pg_temp.nd_assert(:'year_late'::jsonb->>'pattern' = 'D/27-28/####' AND :'
   'the create names the year of the Kolkata day: 20:00 UTC on 31 March is already 1 April there: '||:'year_late'||' '||:'year_early');
 SELECT pg_temp.nd_assert(:'edit_sent_day'::jsonb->>'pattern' = 'D/27-28/####' AND :'edit_stored_day'::jsonb->>'pattern' = 'D/26-27/####',
   'the edit names the year of the date sent, else of the stored date: '||:'edit_sent_day'||' '||:'edit_stored_day');
-SELECT pg_temp.nd_assert(:'edit_stamp'::jsonb->>'pattern' = 'D/26-27/####',
-  'the edit names the year of the date it stores: a full timestamp of 31 March is 31 March (26-27): '||:'edit_stamp');
+SELECT pg_temp.nd_assert(:'edit_stamp'::jsonb->>'pattern' = 'D/27-28/####',
+  'the edit names the year of the date it stores, and a full timestamp is the Kolkata day of that moment, as in the create: 20:00 UTC on 31 March is 1 April (27-28): '||:'edit_stamp');
 SELECT pg_temp.nd_rule('dispatch', '{"scheme":"sequence","prefix":"J","width":5}') AS _ \gset
 
 -- 14. Two suggestions, one save: both phones are offered the same number, the first save keeps it, the second is refused by name

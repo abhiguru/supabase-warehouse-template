@@ -1,6 +1,7 @@
 -- public.delete_grn_safe: the definition setup applies after the numbered migrations whenever this file's checksum changes
 -- (scripts/migration-plan.mjs, table warehouse_migrations.definitions). Edit the function here, never in a new migration.
 -- Starts as the function migrations 000 to 126 leave (the numbered files that patched it stay as they are, never edited).
+-- Migration 128 adds the order effect of the save (order_effects in the answer) to this file; see the section 3 note of migration 128.
 CREATE OR REPLACE FUNCTION public.delete_grn_safe(p_grn_id uuid)
  RETURNS jsonb
  LANGUAGE plpgsql
@@ -17,6 +18,9 @@ AS $function$
           v_images_deleted int := 0;
           v_order_items_deleted int := 0;
           v_removed_order_lines jsonb;
+          v_order_before jsonb;
+          v_order_lots uuid[];
+          v_order_effects jsonb;
 BEGIN
   PERFORM warehouse_security.authorize_rpc('delete_grn_safe',jsonb_build_object('p_grn_id',p_grn_id));
     -- The list-refresh lock comes before any row lock (migration 46).
@@ -113,6 +117,10 @@ BEGIN
 
           -- ✅ SAFE DELETION PROCESS - Handle dependencies in correct order
 
+          -- Migration 128: the order lines of this GRN's lots before they are deleted, to name them in the answer.
+          v_order_lots := ARRAY(SELECT id FROM goodsreceived_trl WHERE gr_id = p_grn_id);
+          v_order_before := warehouse_security.order_lines_snapshot(v_order_lots);
+
           -- 1. Delete order_items that reference this GRN (FIXES YOUR FK CONSTRAINT ERROR)
           SELECT jsonb_object_agg(removed.order_id::text, removed.lines)
           INTO v_removed_order_lines
@@ -144,6 +152,8 @@ BEGIN
               (SELECT id FROM user_profiles WHERE auth_user_id = v_user_id),
               'grn_deleted', '{}'::jsonb, removed.value)
           FROM jsonb_each(COALESCE(v_removed_order_lines, '{}'::jsonb)) AS removed;
+
+          v_order_effects := warehouse_security.order_effects(v_order_lots, v_order_before);
 
           -- 2. Delete stock movements
           DELETE FROM stock_movements
@@ -188,6 +198,7 @@ BEGIN
                   'auto_invoice_errors', 0
               ),
               'deletion_type', 'safe_with_order_cleanup',
+              'order_effects', v_order_effects,
               'note', CASE
                   WHEN v_order_items_deleted > 0 THEN
                       format('Removed %s order items that referenced this GRN', v_order_items_deleted)

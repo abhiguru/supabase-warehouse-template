@@ -572,19 +572,21 @@ main() {
        else
          webhook_stored || code=$?
          case "$code" in
-           3) WEBHOOK_OFF=yes
-              # setup would pass '--alert-webhook-file off', and configure refuses that while a sensor webhook is stored (after the checkout).
-              if [[ -e "$STATE/config/sensor-webhook-url" || -L "$STATE/config/sensor-webhook-url" ]]; then
-                local sensor_off=no i
-                for ((i = 0; i + 1 < ${#SETUP_EXTRA[@]}; i++)); do
-                  [[ "${SETUP_EXTRA[i]}" == --sensor-webhook-file && "${SETUP_EXTRA[i + 1]}" == off ]] && sensor_off=yes
-                done
-                [[ "$sensor_off" == yes ]] || refuse "no facility Slack webhook is stored, but a sensor webhook file is (config/sensor-webhook-url): setup would refuse '--alert-webhook-file off' while it is there, after the checkout. Add '-- --sensor-webhook-file off' to this command to drop the sensor webhook, or '-- --alert-webhook-file /absolute/path' (a file holding the facility webhook URL). Nothing was changed."
-              fi ;;
+           3) WEBHOOK_OFF=yes ;;
            5) refuse "the Slack webhook file in the state does not hold a Slack incoming-webhook URL (https://hooks.slack.com/services/...), so setup would ask for one and, without a terminal, stop after the checkout. Replace it ('docs/MONITORING.md', \"Alert delivery\"), or add '-- --alert-webhook-file PATH' (a file holding the URL) or '-- --alert-webhook-file off' to this command. Nothing was changed." ;;
          esac
        fi ;;
   esac
+  # No facility Slack webhook is stored (found now, or by the first run of an upgrade that is being finished): setup would pass
+  # '--alert-webhook-file off', and configure refuses that while a sensor webhook is stored, after the checkout. A rerun asks again, so that a
+  # stray sensor webhook is refused before the half-upgraded facility is touched again.
+  if [[ "$WEBHOOK_OFF" == yes && ( -e "$STATE/config/sensor-webhook-url" || -L "$STATE/config/sensor-webhook-url" ) ]]; then
+    local sensor_off=no i
+    for ((i = 0; i + 1 < ${#SETUP_EXTRA[@]}; i++)); do
+      [[ "${SETUP_EXTRA[i]}" == --sensor-webhook-file && "${SETUP_EXTRA[i + 1]}" == off ]] && sensor_off=yes
+    done
+    [[ "$sensor_off" == yes ]] || refuse "no facility Slack webhook is stored, but a sensor webhook file is (config/sensor-webhook-url): setup would refuse '--alert-webhook-file off' while it is there, after the checkout. Put the setup options after a '--' at the end of the command: either '--sensor-webhook-file off' to drop the sensor webhook (bash upgrade.sh vX.Y.Z -- --sensor-webhook-file off), or '--alert-webhook-file /absolute/path' (a file holding the facility webhook URL; bash upgrade.sh vX.Y.Z -- --alert-webhook-file /absolute/path). Nothing was changed by this command."
+  fi
 
   # The release's own preflight: after the checks above (cheap, local, this script's own), before the plan, so that --dry-run shows it.
   # A rerun of an interrupted upgrade made it the first time (the record says what it found); it is not asked again.

@@ -302,7 +302,7 @@ test('refusals change nothing: no backup, no checkout, no log line, no record', 
     rmSync(join(w.state, 'config/slack-webhook-url'));
     // No facility webhook but a sensor webhook file: setup would pass '--alert-webhook-file off' and configure would refuse it after the checkout.
     writeFileSync(join(w.state, 'config/sensor-webhook-url'), 'https://hooks.slack.com/services/T0000000/B0000000/fictionalsensor\n', { mode: 0o600 });
-    refused(['v0.2.0'], /sensor webhook file[^]*-- --sensor-webhook-file off[^]*-- --alert-webhook-file \/absolute\/path/);
+    refused(['v0.2.0'], /sensor webhook file[^]*upgrade.sh vX.Y.Z -- --sensor-webhook-file off[^]*upgrade.sh vX.Y.Z -- --alert-webhook-file \/absolute\/path/);
     rmSync(join(w.state, 'config/sensor-webhook-url'));
     // Another operator command holds the lock.
     const holder = spawn('flock', [join(w.state, 'config/operator.lock'), 'sleep', '30'], { stdio: 'ignore', detached: true });
@@ -516,6 +516,25 @@ test('a rerun after a failure reuses the verified backup and the old commit, eve
     assert.match(w.upgradesLog().trim().split('\n').at(-1), new RegExp(`v0\\.1\\.0 -> v0\\.2\\.0 \\(from ${from.slice(0, 12)}, backup ${dir}, resumed\\) ok$`));
     assert.match(third.stdout, /== v0\.2\.0 \(2026-03-01\)[^]*ACTION-TWO/, 'the changelog is printed from the recorded old release');
     assert.equal(readdirSync(join(w.state, 'backups')).length, 1, 'still the one backup');
+  } finally { w.cleanup(); }
+});
+
+test('a resumed upgrade refuses a stray sensor webhook file the same way the first run does, and goes on when the command drops it', () => {
+  const w = world();
+  try {
+    w.tag('v0.1.0');
+    const first = w.run(['v0.2.0'], { FAKE_FAIL: 'setup' });
+    assert.notEqual(first.status, 0);
+    assert.equal(w.record().webhookOff, true, 'no facility webhook: the record says setup passes --alert-webhook-file off');
+    // A sensor webhook file appears (or was left) while the upgrade is half done: setup would refuse it after the checkout.
+    writeFileSync(join(w.state, 'config/sensor-webhook-url'), 'https://hooks.slack.com/services/T0000000/B0000000/fictionalsensor\n', { mode: 0o600 });
+    const refused = w.run(['v0.2.0']);
+    assert.notEqual(refused.status, 0);
+    assert.match(refused.stderr, /sensor webhook file[^]*upgrade\.sh vX\.Y\.Z -- --sensor-webhook-file off/);
+    assert.deepEqual(refused.log, [], 'nothing ran');
+    const dropped = w.run(['v0.2.0', '--', '--sensor-webhook-file', 'off']);
+    assert.equal(dropped.status, 0, dropped.stdout + dropped.stderr);
+    assert.match(dropped.log.at(-1), /--alert-webhook-file off --sensor-webhook-file off/);
   } finally { w.cleanup(); }
 });
 

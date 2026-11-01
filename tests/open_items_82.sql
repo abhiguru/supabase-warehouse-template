@@ -19,6 +19,19 @@ BEGIN
   EXCEPTION WHEN OTHERS THEN RETURN jsonb_build_object('raised', SQLERRM, 'state', SQLSTATE); END;
   RETURN answer;
 END $$;
+-- An order without a line is not listed (migration 128). This puts one pending line on a cart, through a deleted GRN of qty 0, so that no
+-- stock figure of the readers below changes.
+CREATE FUNCTION pg_temp.oi_line(p_cart uuid) RETURNS void LANGUAGE plpgsql AS $$
+DECLARE v_customer uuid; v_name text; v_item uuid; v_grn uuid; v_lot uuid; v_no text := 'OL' || substr(p_cart::text, 1, 8);
+BEGIN
+  SELECT o.customer_id, c.name INTO v_customer, v_name FROM public.orders o JOIN public.customers c ON c.id = o.customer_id WHERE o.id = p_cart;
+  INSERT INTO public.items(name,packaging) VALUES ('Open Items Cart Line ' || substr(p_cart::text, 1, 8), 'Bag') RETURNING id INTO v_item;
+  INSERT INTO public.goodsreceived(gr_no,customer_id,customer_name,date,deleted_at) VALUES (v_no, v_customer, v_name, now(), now()) RETURNING id INTO v_grn;
+  INSERT INTO public.goodsreceived_trl(gr_id,item_id,item_name,packaging,qty,stock,weight,rack) VALUES (v_grn, v_item, 'Open Items Cart Line', 'Bag', 0, 0, 10, 'A1') RETURNING id INTO v_lot;
+  INSERT INTO public.order_items(order_id,requested_quantity,grn_items_id,grn_items_item_id,grn_items_item_name,grn_items_package_mark,
+    grn_items_packaging,grn_items_rack,grn_items_weight,grns_id,grns_gr_no,grns_date,grns_customer_id,grns_customer_name,item_status)
+  VALUES (p_cart, 1, v_lot, v_item, 'Open Items Cart Line', '-', 'Bag', 'A1', 10, v_grn, v_no, now(), v_customer, v_name, 'pending');
+END $$;
 CREATE FUNCTION pg_temp.oi_login(phone text) RETURNS jsonb LANGUAGE plpgsql AS $$
  DECLARE c jsonb; l jsonb; claims jsonb;
  BEGIN
@@ -57,6 +70,8 @@ SET LOCAL ROLE authenticated;
 SELECT public.get_or_create_cart(:'cust_a'::uuid) AS cart_a \gset
 SELECT public.get_or_create_cart(:'cust_b'::uuid) AS cart_b \gset
 RESET ROLE;
+SELECT pg_temp.oi_line(:'cart_a'::uuid);
+SELECT pg_temp.oi_line(:'cart_b'::uuid);
 
 -- both active: the flag is true on both rows
 SELECT set_config('request.jwt.claims',:'admin_claims',true);
@@ -139,6 +154,7 @@ SELECT public.get_or_create_cart(:'cust_e'::uuid) AS cart_e \gset
 SELECT public.get_or_create_cart(:'cust_g'::uuid) AS cart_g \gset
 SELECT public.get_or_create_cart(:'cust_h'::uuid) AS cart_h \gset
 RESET ROLE;
+SELECT pg_temp.oi_line(:'cart_g'::uuid);
 SELECT pg_temp.oi_assert((:'save_d'::jsonb->>'success')='true','GRN saved for D: '||:'save_d');
 SELECT g.id AS grn_d FROM public.goodsreceived g WHERE g.customer_id=:'cust_d'::uuid \gset
 UPDATE public.orders SET status='DISPATCHED' WHERE customer_id=:'cust_g'::uuid;
@@ -298,7 +314,8 @@ SELECT set_config('request.jwt.claims',:'admin_claims',true);
 SET LOCAL ROLE authenticated;
 SELECT public.get_orders_list()::text AS ol_a_restored \gset
 RESET ROLE;
-SELECT pg_temp.oi_assert(position(:'cust_e' IN :'ol_a_restored')>0,'get_orders_list: the order of the restored business E is listed again');
+-- E's cart never had a line, so it is not an order and is not listed, restored or not (migration 128).
+SELECT pg_temp.oi_assert(position(:'cust_e' IN :'ol_a_restored')=0,'get_orders_list: the empty cart of the restored business E is still not listed');
 SELECT pg_temp.oi_assert((:'rest_e'::jsonb->>'success')='true' AND (:'rest_d'::jsonb->>'success')='true'
  AND (SELECT active AND deleted_at IS NULL FROM public.customers WHERE id=:'cust_e'::uuid)
  AND (SELECT active AND deleted_at IS NULL FROM public.customers WHERE id=:'cust_d'::uuid)

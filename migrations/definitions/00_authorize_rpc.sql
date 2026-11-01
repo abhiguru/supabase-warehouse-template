@@ -32,6 +32,8 @@ BEGIN
     'get_all_grn_items','get_grn_list','get_grn_details',
     -- The next GRN, dispatch or invoice number under the facility's rule (migration 127); the rules are read by supervisors and above.
     'suggest_document_number',
+    -- The rack presets of the GRN item form (migration 131); changing them is for administrators and supervisors, which the lines above admit.
+    'get_rack_presets',
     -- The GRN edit form's version and locks (migration 121); customers stay refused by the final ELSE.
     'get_grn_edit_state','get_grn_item_dispatches',
     'get_grn_prefixes_with_stock','get_all_grn_activity',
@@ -43,6 +45,8 @@ BEGIN
     'register_dispatch_image_upload','confirm_dispatch_image_upload',
     'cancel_dispatch_image_upload',
     'create_dispatch_with_stock_check','update_dispatch_smart',
+    -- The order effect of a dispatch or GRN save, told before it is made (migration 128).
+    'preview_create_dispatch','preview_update_dispatch','preview_update_grn',
     'check_dispatch_exists','get_next_dispatch_number','get_dispatch_autocomplete',
     'get_dispatch_details','get_dispatch_list_with_items',
     'get_all_dispatch_items','get_all_dispatch_activity','get_customer_dispatch_list',
@@ -58,6 +62,8 @@ BEGIN
     'add_item_to_order','update_order_item_quantity','remove_item_from_order',
     'search_customer_items_for_order',
     'get_customer_items_for_order_selection','get_order_change_log',
+    -- The customer's order read without making one (migration 128).
+    'get_customer_order',
     -- Reports the app shows to staff (owner decision, 2026-10-11).
     'get_all_stock_summary','get_customer_stock_summary',
     'get_all_customer_activity_summary','get_customer_activity_detail',
@@ -118,6 +124,10 @@ BEGIN
       IF NOT FOUND THEN RETURN; END IF;
     END IF;
     SELECT customer_id INTO customer FROM public.orders WHERE id=document;
+    -- Migration 128: the first line makes the order, so add_item_to_order may name the customer instead of an order.
+    IF rpc = 'add_item_to_order' AND document IS NULL THEN
+      customer := (args->>'p_customer_id')::uuid;
+    END IF;
     -- History may be requested for one customer instead of one order.
     IF rpc = 'get_order_change_log' AND document IS NULL THEN
       customer := (args->>'p_customer_id')::uuid;

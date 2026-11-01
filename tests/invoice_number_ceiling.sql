@@ -50,30 +50,30 @@ SELECT pg_temp.inc_assert(NOT has_function_privilege(r,'warehouse_security.check
 FROM unnest(ARRAY['anon','authenticated','service_role']) AS r;
 SELECT pg_temp.inc_assert(warehouse_security.invoice_number_max()=99999999,'INVOICE_NUMBER_MAX is 99999999');
 
--- Fixture: receipt INCA of 10 bags, all 10 dispatched on 2026-06-01 (migration 121 D9: no invoice while a GRN has stock). Financial
--- years 2097 to 2099 are far from today, so no other invoice is in them. The invoice date sits in financial year 2097 (migration 120 refuses a year that is not the date's).
-SELECT pg_temp.inc_assert((SELECT count(*)=0 FROM public.invoice WHERE inv_fin_year BETWEEN 2097 AND 2099),'the fixture years are empty');
+-- Fixture: receipt INCA of 10 bags, all 10 dispatched on 2024-06-01 (migration 121 D9: no invoice while a GRN has stock). Financial
+-- year 2024 is long past and 2098 and 2099 are far ahead, so no other invoice is in them (migration 129 refuses an invoice dated in the future, so the saved invoice is dated in 2024). The invoice date sits in financial year 2024 (migration 120 refuses a year that is not the date's).
+SELECT pg_temp.inc_assert((SELECT count(*)=0 FROM public.invoice WHERE inv_fin_year IN (2024, 2098, 2099)),'the fixture years are empty');
 SELECT set_config('request.jwt.claims',:'admin_claims',true);
 SET LOCAL ROLE authenticated;
 SELECT pg_temp.inc_assert(public.create_customer('Ceiling Customer','9888888853')->>'success'='true','customer');
 SELECT pg_temp.inc_assert(public.create_item('Ceiling Onions','Bag')->>'success'='true','catalog item');
 SELECT id AS customer_id FROM public.customers WHERE name='Ceiling Customer' \gset
 SELECT id AS item_id FROM public.items WHERE name='Ceiling Onions' \gset
-SELECT pg_temp.inc_assert(public.save_grn(p_gr_no=>'INCA',p_date=>'2026-04-01T12:00:00Z',p_customer_id=>:'customer_id'::uuid,
+SELECT pg_temp.inc_assert(public.save_grn(p_gr_no=>'INCA',p_date=>'2024-04-01T12:00:00Z',p_customer_id=>:'customer_id'::uuid,
  p_customer_name=>'Ceiling Customer',p_pricing_mode=>'MONTHLY',
  p_items=>jsonb_build_array(jsonb_build_object('item_id',:'item_id','item_name','Ceiling Onions','packaging','Bag','qty',10,'weight',5)))->>'success'='true','receipt INCA');
 RESET ROLE;
 SELECT id AS grn_id FROM public.goodsreceived WHERE gr_no='INCA' \gset
 SELECT id AS grn_line FROM public.goodsreceived_trl WHERE gr_id=:'grn_id'::uuid \gset
 SET LOCAL ROLE authenticated;
-SELECT pg_temp.inc_assert(public.create_dispatch_with_stock_check(jsonb_build_object('disp_no','INCD1','disp_date','2026-06-01T12:00:00Z',
+SELECT pg_temp.inc_assert(public.create_dispatch_with_stock_check(jsonb_build_object('disp_no','INCD1','disp_date','2024-06-01T12:00:00Z',
  'customer_id',:'customer_id','customer_name','Ceiling Customer','supervisor_id',:'admin_profile','supervisor_name','Ceiling Administrator'),
  ARRAY[jsonb_build_object('gr_trl_id',:'grn_line','disp_qty',10)],0,'inc-dispatch')->>'success'='true','10 of 10 dispatched');
 RESET ROLE;
 SELECT id AS disp_line FROM public.dispatch_trl WHERE gr_trl_id=:'grn_line'::uuid \gset
 -- The header and lines as the app sends them (three-argument save, update_invoice).
-SELECT jsonb_build_object('inv_fin_year',2097,'customer_id',:'customer_id','customer_name','Ceiling Customer',
- 'inv_date','2097-06-01','total',0,'tax_amount',0,'labour',0,'discount',0,'duration_mode','legacy',
+SELECT jsonb_build_object('inv_fin_year',2024,'customer_id',:'customer_id','customer_name','Ceiling Customer',
+ 'inv_date','2024-06-01','total',0,'tax_amount',0,'labour',0,'discount',0,'duration_mode','legacy',
  'gr_id',:'grn_id','gr_no','INCA') AS header \gset
 SELECT jsonb_build_object('disp_trl_id',:'disp_line','grn_item_id',:'grn_line','duration',1,'charge',10,'tax',0,'labour_rate',2) AS line \gset
 
@@ -94,7 +94,7 @@ SELECT pg_temp.inc_assert(warehouse_security.active_role()='admin','actual admin
 SELECT pg_temp.inc_assert(pg_temp.inc_call(format('SELECT public.save_invoice(NULL::uuid,%L::jsonb,ARRAY[%L::jsonb])',
    :'header'::jsonb || '{"inv_no":100000000}',:'line'))->>'state'='WH422','the administrator is refused too');
 RESET ROLE;
-SELECT pg_temp.inc_assert((SELECT count(*)=0 FROM public.invoice WHERE gr_id=:'grn_id'::uuid OR inv_fin_year=2097)
+SELECT pg_temp.inc_assert((SELECT count(*)=0 FROM public.invoice WHERE gr_id=:'grn_id'::uuid OR inv_fin_year=2024)
  AND (SELECT NOT invoiced FROM public.goodsreceived WHERE id=:'grn_id'::uuid),'no refused save wrote an invoice or marked the receipt');
 
 -- 2. 99999999, the largest number, is saved.
@@ -104,7 +104,7 @@ SELECT public.save_invoice(NULL::uuid,:'header'::jsonb || '{"inv_no":99999999}',
 RESET ROLE;
 SELECT pg_temp.inc_assert(:'saved'::jsonb->>'success'='true','inv_no 99999999 is saved: '||:'saved');
 SELECT id AS invoice_id FROM public.invoice WHERE gr_id=:'grn_id'::uuid \gset
-SELECT pg_temp.inc_assert((SELECT inv_no=99999999 AND inv_fin_year=2097 FROM public.invoice WHERE id=:'invoice_id'::uuid),'stored as 99999999 in 2097');
+SELECT pg_temp.inc_assert((SELECT inv_no=99999999 AND inv_fin_year=2024 FROM public.invoice WHERE id=:'invoice_id'::uuid),'stored as 99999999 in 2024');
 
 -- 3. Editing: a new number outside the range is refused and nothing changes;
 -- the invoice's own number is kept; a number in the range is taken.
@@ -120,9 +120,9 @@ SELECT pg_temp.inc_assert((SELECT inv_no=99999999 AND notes='kept number' FROM p
 
 -- 4. A year holding 99999999 has no number left: WH409, as before for 2147483647.
 SET LOCAL ROLE authenticated;
-SELECT pg_temp.inc_assert(pg_temp.inc_call('SELECT public.get_next_invoice_number(2097)')
- =jsonb_build_object('raised','No invoice number is left in financial year 2097','state','WH409'),
- 'a year whose highest number is 99999999 is refused: '||pg_temp.inc_call('SELECT public.get_next_invoice_number(2097)')::text);
+SELECT pg_temp.inc_assert(pg_temp.inc_call('SELECT public.get_next_invoice_number(2024)')
+ =jsonb_build_object('raised','No invoice number is left in financial year 2024','state','WH409'),
+ 'a year whose highest number is 99999999 is refused: '||pg_temp.inc_call('SELECT public.get_next_invoice_number(2024)')::text);
 SELECT public.update_invoice(:'invoice_id'::uuid,:'header'::jsonb || '{"inv_no":20260929}',ARRAY[:'line'::jsonb]) AS edit_in_range \gset
 RESET ROLE;
 SELECT pg_temp.inc_assert(:'edit_in_range'::jsonb->>'success'='true' AND (SELECT inv_no=20260929 FROM public.invoice WHERE id=:'invoice_id'::uuid),
@@ -130,19 +130,19 @@ SELECT pg_temp.inc_assert(:'edit_in_range'::jsonb->>'success'='true' AND (SELECT
 
 -- 5. Rows above the ceiling, as the dev stack had one (written by the database
 -- owner, as earlier data or the service key could): they do not count.
---   2097  20260929 (the invoice above), 100000000 and 2147483647 live  -> 20260930
+--   2024  20260929 (the invoice above), 100000000 and 2147483647 live  -> 20260930
 --   2098  2147483647 only                                             -> 1
 --   2099  99999999 live, 2147483647 deleted                           -> refused (99999999 is the ceiling)
 INSERT INTO public.invoice(inv_fin_year,inv_no,gr_id,gr_no,customer_id,customer_name,inv_date,labour,tax_amount,total,discount,deleted_at)
 SELECT f.fin_year,f.number,gen_random_uuid(),'INCOLD',gen_random_uuid(),'Ceiling Legacy Customer',now(),0,0,0,0,
        CASE WHEN f.deleted THEN now() END
-FROM (VALUES (2097,100000000,false),(2097,2147483647,false),(2098,2147483647,false),
+FROM (VALUES (2024,100000000,false),(2024,2147483647,false),(2098,2147483647,false),
              (2099,99999999,false),(2099,2147483647,true)) AS f(fin_year,number,deleted);
 SELECT set_config('request.jwt.claims',:'staff_claims',true);
 SET LOCAL ROLE authenticated;
 SELECT pg_temp.inc_assert(pg_temp.inc_call(c.statement)=jsonb_build_object('answer',c.expected),
   c.statement||' -> '||pg_temp.inc_call(c.statement)::text||', expected '||c.expected)
-FROM (VALUES ('SELECT public.get_next_invoice_number(2097)','20260930'),
+FROM (VALUES ('SELECT public.get_next_invoice_number(2024)','20260930'),
              ('SELECT public.get_next_invoice_number(p_fin_year => 2098)','1')) AS c(statement,expected);
 SELECT pg_temp.inc_assert(pg_temp.inc_call('SELECT public.get_next_invoice_number(2099)')->>'state'='WH409','2099 is full at 99999999');
 RESET ROLE;
@@ -160,7 +160,7 @@ SELECT pg_temp.inc_assert(:'legacy_kept'::jsonb->>'success'='true'
 SELECT pg_temp.inc_assert(:'legacy_moved'::jsonb->>'error_code'='WH422'
  AND (SELECT inv_no=123456789 FROM public.invoice WHERE id=:'invoice_id'::uuid),'but not moved to another number above the ceiling: '||:'legacy_moved');
 SET LOCAL ROLE authenticated;
-SELECT public.get_next_invoice_number(2097) AS suggested \gset
+SELECT public.get_next_invoice_number(2024) AS suggested \gset
 SELECT public.update_invoice(:'invoice_id'::uuid,:'header'::jsonb || jsonb_build_object('inv_no',:'suggested'::integer),ARRAY[:'line'::jsonb]) AS renumbered \gset
 RESET ROLE;
 SELECT pg_temp.inc_assert(:'suggested'='1' AND :'renumbered'::jsonb->>'success'='true'
