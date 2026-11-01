@@ -26,11 +26,11 @@ file used to carry for earlier installations are in git: `git show b45ae0b:CHANG
 
 - **Off-host copy alert (`offhost_copy_missing`, replaces `usb_backup`).** An installation whose backups and backup key sit only on the host's one disk (USB backup never
   set up) now gets a weekly, never-muted alert, and `npm run doctor` says the same at once. **Installations without a USB copy start
-  getting this alert 7 days after the checker's first run** (the same for a stale or failed USB copy, which the old `usb_backup` alert raised at once). Fix it by setting up the drive
-  ([OPERATOR_INSTALL.md](docs/OPERATOR_INSTALL.md), "USB backup drive"), or record the decision in `config/offhost-copy-declined` (exact sentence, mode 0600,
-  see "Recovery point and recovery time"). `offhost_copy_missing` is in the never-muted list with `backup_missing`, `backup_failed`,
-  `daily_timer_legacy` and `upgrade_interrupted`. Also: `backup.sh`'s "shares a filesystem" warning now reaches the daily status
-  (`backup_warning`); on Mondays the daily status adds a note when only one USB drive wrote in the last 30 days
+  getting this alert 7 days after the checker's first run**; a failed or stale USB copy and an unconfirmed backup-key copy are raised at once, as `usb_backup` did.
+  Fix it by setting up the drive ([OPERATOR_INSTALL.md](docs/OPERATOR_INSTALL.md), "USB backup drive"), or record the decision in `config/offhost-copy-declined` (exact sentence, mode 0600,
+  see "Recovery point and recovery time"; the key-copy check stays on). `offhost_copy_missing` is in the never-muted list with `backup_missing`, `backup_failed`,
+  `daily_timer_legacy` and `upgrade_interrupted`; a stored `usb_backup` alert is carried over to the new name. `backup-usb.sh uninstall` renames
+  `config/usb-backup.last` to `usb-backup.last.uninstalled`. Also: on Mondays the daily status adds a note when only one USB drive wrote in the last 30 days
   (`config/usb-backup.history`, kept by `backup-usb.sh`); `restore.sh` and `restore-host.sh` append per-phase seconds to `<state>/restores.log`.
   Tests: `tests/declined-marker.test.mjs`, `tests/backup-usb.test.mjs`, `tests/backup-usb-drive.test.mjs`, `tests/watch.test.mjs`, `tests/restore.test.mjs`, `tests/restore-host.test.mjs`.
 - **Saving a GRN no longer deletes other people's photo uploads in progress (`update_grn`, no new migration).** When the photo list is sent, an

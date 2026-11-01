@@ -57,7 +57,8 @@ Sections: [host prerequisites](#host-prerequisites),
   Size the disk for the data with the rule in [Disk space](#disk-space).
 - Recommended for a real facility: a **USB drive formatted exFAT for backups** (an existing drive is fine; it is not
   reformatted) and `sudo` once to set up the automatic copy ([USB backup drive](#usb-backup-drive)). Setup does not need
-  it; without one, `doctor` warns at once, and the checker's weekly `offhost_copy_missing` alert starts 7 days after its first run, that
+  it; without one, `doctor` warns at once, and the checker's weekly `offhost_copy_missing` alert starts 7 days after its first run (a failed or stale
+  copy or an unconfirmed key copy is said at once), that
   the backups and the backup key sit only on this host: set up the drive, or record the decision not to keep a copy
   (see "Recovery point and recovery time" under [Backup and restore](#backup-and-restore)).
 - `cloudflared` for the tunnel ([Cloudflare Tunnel ingress](#cloudflare-tunnel-ingress)).
@@ -1391,12 +1392,12 @@ one filesystem, which is the normal case (`backups/` of the state).
 >   per phase to `<state>/restores.log` (`<utc> <script> phase=<name> seconds=<n>`, phases `verify`, `database`, `storage`, `start`
 >   and `total`), and `bash scripts/verify-restore.sh` prints its own seconds: the `total` of your last restore, or a drill, is your
 >   estimate. Add the time to bring a replacement host to the point of running `restore-host.sh`.
-> - **Alert:** `offhost_copy_missing` (weekly, never muted, starting 7 days after the checker's first run) tells an installation with
+> - **Alert:** `offhost_copy_missing` (weekly, never muted; "no copy yet" starts 7 days after the checker's first run, a failed or stale copy or an unconfirmed key copy is said at once) tells an installation with
 >   no copy outside the host. If your facility has decided to go without one, record it, as the user that runs the checker, in
 >   `config/offhost-copy-declined` (a regular file you own, mode 0600) with exactly this sentence:
 >   `We have decided not to keep a copy of the backups outside this host.`, for example
 >   `printf '%s\n' 'We have decided not to keep a copy of the backups outside this host.' > "$WAREHOUSE_STATE_DIR/config/offhost-copy-declined" && chmod 600 "$WAREHOUSE_STATE_DIR/config/offhost-copy-declined"`.
->   Any other text, a link, or looser permissions is ignored and the alert stays on. A drive that is plugged in all the time shares
+>   Any other text, a link, or looser permissions is ignored and the alert stays on. The decision does not excuse the copy of the backup key: that is still checked. `sudo bash scripts/backup-usb.sh uninstall` renames the record of the last copy (`config/usb-backup.last.uninstalled`), so a removed USB backup counts as no copy. A drive that is plugged in all the time shares
 >   the host's fire, flood and theft: the daily status says so once a week when only one drive has written in 30 days; enrol a
 >   second drive and swap them weekly.
 

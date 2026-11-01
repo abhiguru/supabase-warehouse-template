@@ -395,8 +395,15 @@ test('scan starts a backup for each attached enrolled drive; uninstall removes e
     assert.match(status.stdout, new RegExp(`Enrolled drive ${UUID}: not attached`));
     assert.match(status.stdout, /No copy has been made yet/);
 
+    writeFileSync(join(f.state, 'config/usb-backup.last'), 'result=ok\nfinished_utc=x\nlast_success_epoch=1\nmessage=m\n');
     const gone = f.asRoot(['uninstall']);
     assert.equal(gone.status, 0, gone.stderr);
+    assert.equal(existsSync(join(f.state, 'config/usb-backup.last')), false, 'the record of a copy does not outlive the automation');
+    assert.ok(existsSync(join(f.state, 'config/usb-backup.last.uninstalled')));
+    // Uninstalled and not declined: the missing-copy warning is back; uninstalled and declined: silent.
+    assert.equal(usbBackupWarning(f.state, { etc: f.etc }), NO_OFFHOST_COPY);
+    writeFileSync(join(f.state, 'config/offhost-copy-declined'), OFFHOST_DECLINED_SENTENCE + '\n', { mode: 0o600 });
+    assert.equal(usbBackupWarning(f.state, { etc: f.etc }), null);
     for (const path of ['warehouse-usb-backup.conf', 'warehouse-usb-backup.drives', 'udev/rules.d/90-warehouse-usb-backup.rules',
       'systemd/system/warehouse-usb-backup@.service', 'systemd/system/warehouse-usb-backup.timer']) assert.equal(existsSync(join(f.etc, path)), false, path);
     assert.equal(existsSync(join(f.libexec, 'warehouse-usb-backup')), false);
@@ -925,8 +932,25 @@ test('not set up: the warning names the backup key copy too when it is unconfirm
     assert.equal(usbBackupWarning(state, { etc }), NO_OFFHOST_COPY, 'wrong mode');
     chmodSync(marker, 0o600);
     assert.equal(usbBackupWarning(state, { etc }), null, 'recorded');
+    // The decision stands although an old record of a copy is left behind (the USB backup was uninstalled); it does not excuse the key copy.
+    rmSync(join(etc, 'warehouse-usb-backup.conf'), { force: true });
+    writeFileSync(join(state, 'config/usb-backup.last'), 'result=failed\nfinished_utc=x\nmessage=old\n');
+    assert.equal(usbBackupWarning(state, { etc }), null, 'declined, with a leftover usb-backup.last');
+    rmSync(join(state, 'config/backup-key.escrow'));
+    assert.match(usbBackupWarning(state, { etc }), /^The backup key copy is not confirmed \(there is no key escrow record\): run WAREHOUSE_STATE_DIR=.*backup-key-escrow\.sh show$/, 'declined: the key copy is still checked, and only it is said');
+    writeEscrow(state);
+    rmSync(join(state, 'config/usb-backup.last'));
+    // During the checker's first 7 days (graceOver false) the missing copy waits; a key fault does not.
+    chmodSync(marker, 0o644);
+    assert.equal(usbBackupWarning(state, { etc, graceOver: false }), null);
+    rmSync(join(state, 'config/backup-key.escrow'));
+    assert.match(usbBackupWarning(state, { etc, graceOver: false }), /^The backup key copy is not confirmed/);
+    writeEscrow(state); chmodSync(marker, 0o600);
     // A drive that is set up is not a decision to go without: the marker does not hide a stale USB copy.
     writeFileSync(join(etc, 'warehouse-usb-backup.conf'), `STATE=${state}\n`);
     assert.match(usbBackupWarning(state, { etc }), /no copy has been made yet/);
+    assert.equal(usbBackupWarning(state, { etc, graceOver: false }), null, '"no copy yet" waits in the first 7 days');
+    writeFileSync(join(state, 'config/usb-backup.last'), 'result=failed\nfinished_utc=x\nmessage=boom\n');
+    assert.match(usbBackupWarning(state, { etc, graceOver: false }), /failed at x: boom/, 'a failed copy is said at once');
   } finally { rmSync(scratch, { recursive: true, force: true }); }
 });

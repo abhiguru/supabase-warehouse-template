@@ -58,14 +58,20 @@ export function usbBackupWarning(state, {
   now = Date.now(),
   maxAgeDays = Number(process.env.WAREHOUSE_USB_BACKUP_MAX_AGE_DAYS || 7),
   etc = process.env.WAREHOUSE_USB_BACKUP_ETC || '/etc',
+  graceOver = true,   // false: the checker is in its first 7 days, so "no copy yet" is not said (a failed, stale or key-copy fault always is)
 } = {}) {
   const conf = read(resolve(etc, 'warehouse-usb-backup.conf'));
   const last = read(resolve(state, 'config/usb-backup.last'));
-  if (!last && (!conf || fields(conf).STATE !== resolve(state))) {
-    // Not set up. A recorded decision (config/offhost-copy-declined, exact sentence, mode 0600) is the operator's answer.
-    if (declinedMarker(state, OFFHOST_DECLINED_NAME, OFFHOST_DECLINED_SENTENCE)) return null;
+  const noConf = !conf || fields(conf).STATE !== resolve(state);
+  // Not set up here. A recorded decision (config/offhost-copy-declined, exact sentence, mode 0600) is the operator's answer, whatever an old
+  // usb-backup.last says; it does not excuse an unconfirmed copy of the backup key, which is said all the same.
+  const declined = noConf && declinedMarker(state, OFFHOST_DECLINED_NAME, OFFHOST_DECLINED_SENTENCE);
+  if (noConf && (!last || declined)) {
     const problem = escrowProblem(state);
-    return problem ? `${NO_OFFHOST_COPY} The backup key copy is not confirmed either (${problem}): run WAREHOUSE_STATE_DIR=${resolve(state)} bash scripts/backup-key-escrow.sh show` : NO_OFFHOST_COPY;
+    const show = `run WAREHOUSE_STATE_DIR=${resolve(state)} bash scripts/backup-key-escrow.sh show`;
+    const noCopy = !declined && graceOver;
+    if (noCopy) return problem ? `${NO_OFFHOST_COPY} The backup key copy is not confirmed either (${problem}): ${show}` : NO_OFFHOST_COPY;
+    return problem ? `The backup key copy is not confirmed (${problem}): ${show}` : null;
   }
   const setUp = conf && fields(conf).STATE === resolve(state) ? fields(conf) : null;
   if (setUp) {
@@ -84,7 +90,7 @@ export function usbBackupWarning(state, {
     const problem = escrowProblem(state);
     if (problem) return `USB archives are encrypted but the backup key copy is not confirmed (${problem}); runs are refused until it is: run WAREHOUSE_STATE_DIR=${resolve(state)} bash scripts/backup-key-escrow.sh show`;
   }
-  if (!last) return 'USB backup is set up but no copy has been made yet: attach the enrolled USB drive.';
+  if (!last) return graceOver ? 'USB backup is set up but no copy has been made yet: attach the enrolled USB drive.' : null;
   const run = fields(last);
   if (run.result !== 'ok') return `The last USB backup failed at ${run.finished_utc || 'an unknown time'}: ${run.message || 'no detail'}. Run bash scripts/backup-usb.sh status.`;
   const success = Number(run.last_success_epoch) * 1000;

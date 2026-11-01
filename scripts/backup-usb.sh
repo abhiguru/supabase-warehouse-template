@@ -398,6 +398,9 @@ cmd_enroll() {
 cmd_uninstall() {
   require_root uninstall
   systemctl disable --now "$UNIT.timer" >/dev/null 2>&1 || true
+  # The record of the last copy is history once the automation is gone: it must not stand in for a USB backup that no longer exists.
+  uninstalled_state="$(conf_get STATE 2>/dev/null || true)"
+  [[ -z "$uninstalled_state" || ! -f "$uninstalled_state/config/usb-backup.last" ]] || mv -f -- "$uninstalled_state/config/usb-backup.last" "$uninstalled_state/config/usb-backup.last.uninstalled" || true
   rm -f -- "$RULE" "$UNITS/$UNIT@.service" "$UNITS/$UNIT-scan.service" "$UNITS/$UNIT.timer" "$HELPER" "$CONF" "$DRIVES"
   systemctl daemon-reload
   udevadm control --reload-rules

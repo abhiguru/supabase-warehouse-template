@@ -69,8 +69,6 @@ if ((RC == 0)); then
     backup_ok=true
     warning="$(sed -n 's/^WARNING: \([0-9][0-9]* files\{0,1\} re-copied: backup warehouse-[0-9]\{8\}T[0-9]\{6\}Z has a damaged copy\)\..*$/\1/p' "$ERR" | tail -n 1)"
     space_warning="$(sed -n 's/^WARNING: \(df gave no free space for \/[^;]*, so stat -f was used for the free-space check\); .*$/\1/p' "$ERR" | tail -n 1)"
-    same_fs_warning="$(sed -n 's/^Warning: \(\/[^ ]* shares a filesystem with \/[^ ;]*\); a backup there does not survive loss of this disk\..*$/\1: it does not survive loss of this disk/p' "$ERR" | tail -n 1)"
-    [[ -z "$same_fs_warning" ]] || warning="${warning:+$warning; }$same_fs_warning"
     [[ -z "$space_warning" ]] || warning="${warning:+$warning; }$space_warning"
     [[ -z "$warning" ]] || put backup_warning "$warning"
   else

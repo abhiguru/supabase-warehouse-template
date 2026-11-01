@@ -223,6 +223,8 @@ export function normalizeState(raw, now, log = () => {}) {
     && (x.actions === undefined || (Array.isArray(x.actions) && x.actions.every(isNum)))));
   take('lastDailyRun', v => isObj(v) && Object.values(v).every(x => isObj(x) && typeof x.date === 'string' && typeof x.result === 'string'));
   if (isObj(raw.alerts)) for (const [id, a] of Object.entries(raw.alerts)) out.alerts[id] = normalizeAlert(id, a, log);
+  // The alert that was called usb_backup is offhost_copy_missing now: a firing one carries over, so an upgrade posts no false CLEARED.
+  if (out.alerts.usb_backup) { out.alerts.offhost_copy_missing ??= out.alerts.usb_backup; delete out.alerts.usb_backup; }
   else if ('alerts' in raw) log('state field "alerts" had the wrong type and was reset');
   if (isObj(raw.containers)) {
     for (const [service, c] of Object.entries(raw.containers)) { const fixed = normalizeContainer(service, c, log); if (fixed) out.containers[service] = fixed; }
@@ -926,10 +928,11 @@ export function checkBackups(ctx) {
     // The failed daily backup is reported only here (after two failing runs), with the job's own message.
     result('backups', 'backup_failed', !failed, `The last backup failed${last.message ? `: ${last.message}` : ''}`, last.message ?? ''),
   ];
-  // The only copy of the backups that survives the loss of this host is the USB drive. Weekly, never muted, and not before the checker
-  // has run for 7 days (the time to plug a drive in); the recorded decision not to keep one (usbBackupWarning) clears it.
-  const usb = now - ctx.data.firstRun > OFFHOST_GRACE_MS ? usbBackupWarning(ctx.state, { now, etc: ctx.usbEtc }) : null;
-  out.push(result('backups', OFFHOST_ALERT, usb === null, usb ?? 'An off-host copy of the backups exists or is declined', usb ?? '', { repeatHours: 168 }));
+  // The only copy of the backups that survives the loss of this host is the USB drive. Weekly, never muted. Only "no copy yet" (USB never set
+  // up, or set up and never run) waits for the checker's first 7 days, the time to plug a drive in; a failed or stale copy and an
+  // unconfirmed key copy are said at once. The recorded decision not to keep a copy (usbBackupWarning) clears the first.
+  const usb = usbBackupWarning(ctx.state, { now, etc: ctx.usbEtc, graceOver: now - ctx.data.firstRun > OFFHOST_GRACE_MS });
+  out.push(result('backups', OFFHOST_ALERT, usb === null, usb ?? 'An off-host copy of the backups exists or is declined, or the checker is in its first 7 days', usb ?? '', { repeatHours: 168 }));
   const ret = fieldsOf(ctx.readText(backupStatusPath(ctx.state, 'retention')));
   out.push(result('backups', 'retention_failed', ret.result !== 'failed', `The last retention clean-up failed${ret.message ? `: ${ret.message}` : ''}`, ret.message ?? ''));
   return out;

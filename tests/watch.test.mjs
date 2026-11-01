@@ -1175,6 +1175,7 @@ test('backups: missing after 26 h, grace for a new install, failed, newest direc
     assert.equal(find(r, 'backup_failed').ok, false); assert.equal(find(r, 'backup_failed').detail, 'disk full');
     status('retention', { result: 'failed', message: 'locked' });
     assert.equal(find(W.checkBackups(h.ctx()), 'retention_failed').ok, false);
+    // h.ctx() is a checker on its first day: inside the 7 days of grace nothing is said about a missing USB copy.
     assert.equal(find(r, 'offhost_copy_missing').ok, true);
   } finally { clean(h); }
 });
@@ -1249,7 +1250,33 @@ test('offhost_copy_missing: not before 7 days of checker life, weekly, never mut
     assert.equal(get(30).ok, true, 'recorded decision');
     chmodSync(marker, 0o644);
     assert.equal(get(30).ok, false, 'a marker with the wrong mode is not a decision');
+    // Inside the grace only "no copy yet" waits: a failed or stale USB copy and an unconfirmed key copy are said at once.
+    rmSync(marker);
+    const usbLast = (result, ageDays) => writeFileSync(join(h.state, 'config/usb-backup.last'), `result=${result}\nfinished_utc=x\nlast_success_epoch=${Math.floor(h.clock.t / 1000) - ageDays * 86400}\nmessage=disk full\n`);
+    usbLast('failed', 0);
+    assert.match(get(0).summary, /failed at x: disk full/, 'failed copy, checker on its first day');
+    assert.equal(get(0).ok, false);
+    usbLast('ok', 9);
+    assert.match(get(0).summary, /9 days old/, 'stale copy, checker on its first day');
+    rmSync(join(h.state, 'config/usb-backup.last'));
+    writeFileSync(join(h.state, 'config/backup.key'), `${'5a'.repeat(32)}\n`, { mode: 0o600 });
+    const key = get(0);
+    assert.equal(key.ok, false, 'unconfirmed key copy, checker on its first day');
+    assert.match(key.summary, /^The backup key copy is not confirmed \(there is no key escrow record\)/);
+    assert.doesNotMatch(key.summary, /No copy of the backups/, 'the missing-copy sentence still waits');
   } finally { clean(h); }
+});
+
+test('a stored usb_backup alert entry becomes offhost_copy_missing on load, keeping its history; an entry already under the new name wins', () => {
+  const entry = { failingRuns: 3, firingSince: 111, lastSent: 222, check: 'backups', summary: 's', detail: 'd' };
+  const moved = W.normalizeState({ alerts: { usb_backup: entry, other: entry } }, 0, () => {});
+  assert.equal('usb_backup' in moved.alerts, false);
+  assert.equal(moved.alerts.offhost_copy_missing.firingSince, 111);
+  assert.equal(moved.alerts.offhost_copy_missing.lastSent, 222);
+  assert.ok(moved.alerts.other);
+  const both = W.normalizeState({ alerts: { usb_backup: entry, offhost_copy_missing: { ...entry, lastSent: 999 } } }, 0, () => {});
+  assert.equal(both.alerts.offhost_copy_missing.lastSent, 999);
+  assert.equal('usb_backup' in both.alerts, false);
 });
 
 // ---------------------------------------------------------------- alerting
@@ -1401,7 +1428,7 @@ test('mute: all alerts or one alert id; the heartbeat still goes out; unmuted al
   } finally { clean(h); }
 });
 
-test('mute never covers backup_missing, backup_failed or daily_timer_legacy: they post while everything is muted, and the alive message says so', async () => {
+test('mute never covers backup_missing, backup_failed, offhost_copy_missing, daily_timer_legacy or upgrade_interrupted: they post while everything is muted, and the alive message says so', async () => {
   const h = harness();
   try {
     const out = [];
@@ -2526,16 +2553,13 @@ case "\${FAKE_BACKUP:-ok}" in
   ok) d="$WAREHOUSE_STATE_DIR/backups/warehouse-20261019T020000Z"; mkdir -p "$d"; echo x > "$d/metadata.txt"; cp "$WAREHOUSE_STATE_DIR/public/instance.json" "$d/"; echo "Backup created at $d" ;;
   unhealthy) echo 'Database service is not healthy.' >&2; exit 1 ;;
   fail) echo 'pg_dump: error: boom' >&2; exit 1 ;;
-  warn|warn1|other-warning|space-warn|both-warn|samefs|samefs-warn)
+  warn|warn1|other-warning|space-warn|both-warn)
     d="$WAREHOUSE_STATE_DIR/backups/warehouse-20261019T020000Z"; mkdir -p "$d"; echo x > "$d/metadata.txt"; cp "$WAREHOUSE_STATE_DIR/public/instance.json" "$d/"; echo "Backup created at $d"
     case "$FAKE_BACKUP" in
       warn) echo 'WARNING: 2 files re-copied: backup warehouse-20261018T020000Z has a damaged copy. This backup holds good copies.' >&2 ;;
       warn1) echo 'WARNING: 1 file re-copied: backup warehouse-20261018T020000Z has a damaged copy. This backup holds good copies.' >&2 ;;
       other-warning) echo 'WARNING: something else entirely' >&2; echo 'WARNING: 3 files re-copied: backup not-a-backup has a damaged copy.' >&2 ;;
       space-warn) echo 'WARNING: df gave no free space for /srv/state/backups, so stat -f was used for the free-space check; find out why df fails there (docs/TROUBLESHOOTING.md, "backup refused: not enough free space").' >&2 ;;
-      samefs) echo 'Warning: /srv/state/backups shares a filesystem with /srv/state/data; a backup there does not survive loss of this disk. Copy it to protected off-host storage.' >&2 ;;
-      samefs-warn) echo 'Warning: /srv/state/backups shares a filesystem with /srv/state/data; a backup there does not survive loss of this disk. Copy it to protected off-host storage.' >&2
-        echo 'WARNING: 2 files re-copied: backup warehouse-20261018T020000Z has a damaged copy. This backup holds good copies.' >&2 ;;
       both-warn) echo 'WARNING: df gave no free space for /srv/state/backups, so stat -f was used for the free-space check; find out why df fails there (docs/TROUBLESHOOTING.md, "backup refused: not enough free space").' >&2
         echo 'WARNING: 2 files re-copied: backup warehouse-20261018T020000Z has a damaged copy. This backup holds good copies.' >&2 ;;
     esac ;;
@@ -2613,13 +2637,6 @@ test('watch-daily.sh: the WARNING backup.sh prints when df gave no free space an
     assert.match(r.stderr, /WARNING: df gave no free space/, 'and still on standard error for the journal');
     r = f.run({ FAKE_BACKUP: 'both-warn' });
     assert.equal(r.fields.backup_warning, `2 files re-copied: backup warehouse-20261018T020000Z has a damaged copy; ${space}`);
-    // backup.sh's "shares a filesystem" warning (the backup sits on the disk it protects) reaches the daily status too.
-    const sameFs = '/srv/state/backups shares a filesystem with /srv/state/data: it does not survive loss of this disk';
-    r = f.run({ FAKE_BACKUP: 'samefs' });
-    assert.deepEqual([r.fields.backup, r.fields.verify, r.fields.done], ['ok', 'ok', '1']);
-    assert.equal(r.fields.backup_warning, sameFs);
-    r = f.run({ FAKE_BACKUP: 'samefs-warn' });
-    assert.equal(r.fields.backup_warning, `2 files re-copied: backup warehouse-20261018T020000Z has a damaged copy; ${sameFs}`);
   } finally { rmSync(f.scratch, { recursive: true, force: true }); }
 });
 
