@@ -986,6 +986,8 @@ app's before this migration and fas-sync's, works unchanged). Roles as before: a
 `{ success: false, error: 'Only administrators and supervisors can set rates on a GRN', error_code: 'RATES_MANAGER_ONLY', data: {} }`
 before anything is written; without `p_rates` a staff call works as before.
 
+`update_grn` with `p_images`: a photo not in the list is removed only if it is confirmed, or still pending and uploaded by the caller or older than 15 minutes; another person's recent pending upload stays.
+
 - `p_rates` NULL: exactly the old behaviour. No rate is checked or changed; a GRN with an unpriced line
   still saves.
 - `p_rates` a list (also `[]`): checked and applied inside the GRN's transaction, after the GRN and its

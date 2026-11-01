@@ -24,6 +24,12 @@ file used to carry for earlier installations are in git: `git show b45ae0b:CHANG
 
 ### Changed
 
+- **Saving a GRN no longer deletes other people's photo uploads in progress (`update_grn`, no new migration).** When the photo list is sent, an
+  unfinished (`pending`) photo that is not in the list used to be removed for an administrator or supervisor, whoever uploaded it. Now it is
+  removed only if the saver uploaded it or it is older than 15 minutes; another person's recent pending upload survives and can still be
+  confirmed. The daily 24 hour cleanup (migration 130) is unchanged. Dispatch saves never touched photos. Tests:
+  `tests/pending_photos_save.sql` (new), `tests/grn_image_visibility.sql`.
+
 - **A member that signs in through the association needs no MSG91 file.** `setup.sh --central-issuer ...` without `--provider-env` stores no SMS
   provider (the five provider lines of `config/compose.env` stay empty; the compose file no longer requires them; `configure-sms.sql` stores
   nothing), `node scripts/doctor.mjs` accepts that when `CENTRAL_ISSUER` is set, and `operator-otp/request` answers 503 with
