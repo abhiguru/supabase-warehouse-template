@@ -218,6 +218,18 @@ Additive only: every key that was there is unchanged. The value is `goodsreceive
 
 `get_invoice_data` (`items[].grn_item.packaging`, `items[].catalog.packaging`) and `get_customer_grn_activity` (`grns[].items[].packaging`) already answered it. `get_all_customer_activity_summary`, `get_all_dispatch_activity` and `get_all_grn_activity` list customers, not items, and have no line to carry it. Test: `tests/packaging_lines_141.sql`.
 
+### The packaging rule of stock and preview rows (migration 142)
+
+Additive only; `null` still means "the lots differ". One rule (`warehouse_security.shared_packaging`) decides the word of a set of lots: `NULL` or blank packaging is the default word `Bag`; words are compared after trim and case folding, with `Bag`/`Bags`, `Box`/`Boxes` and `Crate`/`Crates` counted as one word each; the answer is that one word (`Bag`, `Box`, `Crate`, or the trimmed text of any other word) when every lot agrees, and `null` when they differ (`Box` next to a `NULL` lot is mixed). Migration 141 answered `null` for an item whose lots all had `NULL` packaging and compared the raw text.
+
+| RPC | Where | Key |
+|---|---|---|
+| `get_customer_activity_detail` | `top_stock_items[]` | `packaging` (now by the rule) |
+| `get_customer_activity_detail` | `recent_grns[]` | `packaging` (new; the receipt's lots) |
+| `get_customer_activity_detail` | `recent_dispatches[]` | `packaging` (new; the receipt lots the dispatch took from) |
+
+Test: `tests/packaging_rule_142.sql`.
+
 ### Direct table reads and list page sizes (migrations 137 and 138)
 
 - **Direct table reads return at most 2,000 rows; page with `Range`.** The PostgREST setting `PGRST_DB_MAX_ROWS` is 2000 in

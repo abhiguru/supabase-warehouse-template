@@ -1,0 +1,110 @@
+-- Migration 142: the packaging word of an item's or receipt's lots is read the way the app reads it (review follow-up to migration 141). Additive only: no key
+-- is removed or renamed, and null still means "the lots differ".
+--   Migration 141 answered null for an item whose lots carry NULL packaging (the column is nullable) and compared the raw text, so an item with no
+--   packaging read "units" instead of bags, "Bag" next to "bags" read as different, and "Box" next to a NULL lot read as boxes.
+--   warehouse_security.shared_packaging(words) is the one rule: NULL or blank is the default word Bag; words are compared after trim and case
+--   folding, and Bag/Bags, Box/Boxes and Crate/Crates are one word each (the three words the app names); it answers that one word (Bag, Box, Crate,
+--   or the trimmed text of any other word) when every lot agrees, and null when they truly differ (Box and NULL differ: NULL is Bag).
+--   get_customer_activity_detail:  top_stock_items[].packaging uses the rule (was migration 141's COUNT(DISTINCT)).
+--   get_customer_activity_detail:  "packaging" on every row of recent_grns[] (the rule over the receipt's lots) and recent_dispatches[] (the rule over
+--                                  the receipt lots the dispatch took from), which the app's GRN and dispatch preview rows print.
+-- Marker-count patches: each before-text is found once and no after-text contains its before-text.
+
+CREATE FUNCTION warehouse_security.shared_packaging(p_words text[]) RETURNS text
+    LANGUAGE plpgsql IMMUTABLE
+    SET search_path TO 'pg_catalog'
+    AS $fn$
+DECLARE
+  v_word text;
+  v_key text;
+  v_first_key text;
+  v_first_word text;
+  v_seen boolean := false;
+BEGIN
+  FOREACH v_word IN ARRAY COALESCE(p_words, ARRAY[]::text[]) LOOP
+    v_key := lower(btrim(COALESCE(v_word, '')));
+    IF v_key = '' THEN
+      v_key := 'bag';
+    END IF;
+    IF v_key ~ '^bags?$' THEN
+      v_key := 'bag';
+    ELSIF v_key ~ '^box(es)?$' THEN
+      v_key := 'box';
+    ELSIF v_key ~ '^crates?$' THEN
+      v_key := 'crate';
+    END IF;
+    IF NOT v_seen THEN
+      v_seen := true;
+      v_first_key := v_key;
+      v_first_word := btrim(COALESCE(v_word, ''));
+    ELSIF v_key <> v_first_key THEN
+      RETURN NULL;
+    END IF;
+  END LOOP;
+  IF NOT v_seen THEN
+    RETURN NULL;
+  END IF;
+  RETURN CASE v_first_key WHEN 'bag' THEN 'Bag' WHEN 'box' THEN 'Box' WHEN 'crate' THEN 'Crate' ELSE v_first_word END;
+END
+$fn$;
+
+ALTER FUNCTION warehouse_security.shared_packaging(text[]) OWNER TO supabase_admin;
+REVOKE ALL ON FUNCTION warehouse_security.shared_packaging(text[]) FROM PUBLIC;
+
+-- Migration 141 leaves its pg_temp helper behind; the files of one run share a session.
+DROP FUNCTION IF EXISTS pg_temp.patch_function(regprocedure, text[], text[]);
+CREATE FUNCTION pg_temp.patch_function(p_function regprocedure, p_old text[], p_new text[]) RETURNS void
+    LANGUAGE plpgsql AS $$
+DECLARE
+  v_def text := pg_get_functiondef(p_function);
+  v_count integer;
+  i integer;
+BEGIN
+  IF array_length(p_old, 1) IS DISTINCT FROM array_length(p_new, 1) THEN
+    RAISE EXCEPTION '%: the marker list and the replacement list differ in length', p_function;
+  END IF;
+  FOR i IN 1 .. array_length(p_old, 1) LOOP
+    IF position(p_old[i] IN p_new[i]) > 0 THEN
+      RAISE EXCEPTION '%: the replacement of marker % contains the marker', p_function, i;
+    END IF;
+    v_count := (length(v_def) - length(replace(v_def, p_old[i], ''))) / length(p_old[i]);
+    IF v_count <> 1 THEN
+      RAISE EXCEPTION '%: expected marker % once, found % times', p_function, i, v_count;
+    END IF;
+    v_def := replace(v_def, p_old[i], p_new[i]);
+  END LOOP;
+  EXECUTE v_def;
+END $$;
+
+SELECT pg_temp.patch_function('public.get_customer_activity_detail(uuid, date, date)'::regprocedure, ARRAY[
+$m$CASE WHEN COUNT(DISTINCT grt.packaging) = 1 THEN MIN(grt.packaging::text) END AS packaging,$m$,
+$m$'is_invoiced', is_invoiced
+        ) ORDER BY grn_date DESC$m$,
+$m$as current_stock,
+            EXISTS$m$,
+$m$'supervisor_name', supervisor_name
+        ) ORDER BY dispatch_date DESC$m$,
+$m$d.supervisor_name
+        FROM dispatch d
+        LEFT JOIN dispatch_trl dt ON dt.disp_id = d.id$m$
+], ARRAY[
+$m$warehouse_security.shared_packaging(array_agg(grt.packaging)) AS packaging,$m$,
+$m$'is_invoiced', is_invoiced,
+            'packaging', packaging
+        ) ORDER BY grn_date DESC$m$,
+$m$as current_stock,
+            warehouse_security.shared_packaging(array_agg(grt.packaging)) as packaging,
+            EXISTS$m$,
+$m$'supervisor_name', supervisor_name,
+            'packaging', packaging
+        ) ORDER BY dispatch_date DESC$m$,
+$m$d.supervisor_name,
+            warehouse_security.shared_packaging(array_agg(gt.packaging)) as packaging
+        FROM dispatch d
+        LEFT JOIN dispatch_trl dt ON dt.disp_id = d.id
+        LEFT JOIN goodsreceived_trl gt ON gt.id = dt.gr_trl_id$m$
+]);
+
+DROP FUNCTION pg_temp.patch_function(regprocedure, text[], text[]);
+
+NOTIFY pgrst, 'reload schema';
