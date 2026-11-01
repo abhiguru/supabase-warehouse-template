@@ -50,6 +50,30 @@ layout uses the warehouse name installed in `system_settings.app_name`. It
 omits private addresses, organization-specific terms and preprinted-paper
 positioning. Review the document terms/layout for your organization.
 
+**Long documents.** A GRN, dispatch, invoice or customer stock PDF reads its lines in pages of 1,000
+(`functions/_shared/document-lines.ts`: PostgREST `Range` headers, ordered by the line's `id` so the pages join without a gap or a
+repeat; the line tables have no sequence column), so a document is no longer limited by the 2,000 rows one PostgREST read may return.
+The first page asks for the exact count. A document of more than `MAX_PDF_ROWS` = 3,500 lines is answered 400
+"Document exceeds the limit of 3,500 lines" after that first read; the system supports invoices of 3,055 lines. The table's header row is
+repeated on every page and a row is never split across two pages (the browser's table defaults plus `tr{break-inside:avoid}`;
+`tests/golden-pdf/golden/invoice-long`, a 3,055-line invoice of 99 pages, pins it). Lines are listed in `id` order, not in the order they
+were entered.
+
+Measured through the real renderer (the `pdf-renderer` image with the 1.5 GiB limit of `docker/docker-compose.yml`, one invoice, seven
+columns, mixed name lengths; HTML bytes are the `index.html` posted):
+
+| Lines | HTML | Pages | Render | Result |
+| --- | --- | --- | --- | --- |
+| 3,000 | 356 KB | 98 | about 1.1 s | 3 of 3 rendered |
+| 3,500 | 416 KB | 114 | 1.5 to 2.3 s | 15 of 15 rendered (also with a third of the names three times as long: 122 pages) |
+| 4,000 | 475 KB | about 130 | 2.9 to 4.4 s | 2 of 3 rendered |
+| 4,500 | 534 KB | about 146 | about 3 s | 1 of 3 rendered |
+| 5,000 | 594 KB | 162 | 2 to 3.5 s | 1 of 8 rendered |
+
+The time is not the limit; memory is. Past about 130 pages Chrome reaches the renderer's 1,100 MB watchdog (`KILL_MEMORY_MB`,
+[docker/pdf-renderer/README.md](../docker/pdf-renderer/README.md)) and the job fails with 503 "browser crashed", so `MAX_PDF_ROWS` is 3,500.
+A document whose rows wrap onto several lines has more pages for the same number of lines; raise the limit only with a new measurement.
+
 **Letterhead (optional).** The GRN, dispatch, invoice and customer stock PDFs print the facility's letterhead image at the top, full
 width, when the operator supplied one with `setup.sh --letterhead-file` (a JPEG or PNG of at most 2 MiB, copied to
 `public/letterhead.jpg` or `.png` and named by `LETTERHEAD_FILE`; [OPERATOR_INSTALL.md](OPERATOR_INSTALL.md#letterhead-image-optional)).

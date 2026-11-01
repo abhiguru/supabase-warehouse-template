@@ -36,6 +36,12 @@ file used to carry for earlier installations are in git: `git show b45ae0b:CHANG
 
 ### Changed
 
+- **Document PDFs page their lines instead of refusing over 1,000 (review finding M12).** The GRN, dispatch, invoice and customer stock PDFs read
+  their lines 1,000 at a time (`Range` headers, ordered by line `id`; new `range(from, to)` on the REST client) and print up to 3,500 lines; a longer
+  document is refused with 400 "Document exceeds the limit of 3,500 lines" (was "Document exceeds the starter limit of 1000 rows" above 1,000).
+  The limit is below the 5,000 first planned because the renderer's memory watchdog fails a job of about 160 pages (measurements:
+  [PDF_GENERATION.md](docs/PDF_GENERATION.md), "Long documents"). A document's lines are now listed in `id` order. New golden case `invoice-long`
+  (3,055 lines); the ten existing goldens are unchanged. Tests: `tests/document-lines.test.mjs` (new), `tests/supabase-rest.test.mjs`.
 - **Saving a GRN no longer deletes other people's photo uploads in progress (`update_grn`, no new migration).** When the photo list is sent, an
   unfinished (`pending`) photo that is not in the list used to be removed for an administrator or supervisor, whoever uploaded it. Now it is
   removed only if the saver uploaded it or it is older than 15 minutes; another person's recent pending upload survives and can still be

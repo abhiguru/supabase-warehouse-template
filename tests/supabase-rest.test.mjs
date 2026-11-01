@@ -81,6 +81,25 @@ test('an exact count is read from Content-Range; embedded filters and gt are pas
   } finally { mock.restore(); }
 });
 
+test('range sends Range-Unit and Range headers, keeps the URL free of limit and offset, and is refused beside limit', async () => {
+  const mock = mockFetch({ body: [{ id: 'a' }], headers: { 'content-range': '1000-1000/1001' } }, { body: [] });
+  try {
+    const client = restClient('http://gateway:8000', 'k');
+    const page = await client.from('t').select('id', { count: 'exact' }).eq('x', 1).order('id').range(1000, 1999);
+    assert.equal(page.count, 1001);
+    assert.equal(mock.calls[0].url, 'http://gateway:8000/rest/v1/t?select=id&x=eq.1&order=id.asc');
+    assert.equal(mock.calls[0].init.headers['Range-Unit'], 'items');
+    assert.equal(mock.calls[0].init.headers.Range, '1000-1999');
+    assert.equal(mock.calls[0].init.headers.Prefer, 'count=exact');
+    await client.from('t').select('id');
+    assert.equal(mock.calls[1].init.headers.Range, undefined, 'a read without range sends no Range header');
+    assert.equal(mock.calls[1].init.headers['Range-Unit'], undefined);
+    assert.throws(() => client.from('t').select('id').limit(5).range(0, 9), /range\(\) cannot be combined with limit\(\)/);
+    assert.throws(() => client.from('t').select('id').range(0, 9).limit(5), /limit\(\) cannot be combined with range\(\)/);
+    for (const [from, to] of [[-1, 5], [5, 4], [0.5, 3], [0, NaN]]) assert.throws(() => client.from('t').range(from, to), /range\(\) needs integers/);
+  } finally { mock.restore(); }
+});
+
 test('insert with select and single returns the new row; update filters by id', async () => {
   const mock = mockFetch({ status: 201, body: { id: 'job1' } }, { status: 204 });
   try {
