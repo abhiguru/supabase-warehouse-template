@@ -92,6 +92,7 @@ The current role table comes first; the sections after it record how each role's
 | A customer's order read without making one (`get_customer_order`, migration 128): the customer's own for a customer account | yes | yes | yes | own customer only |
 | Read the rack presets of the GRN item form (`get_rack_presets`, migration 131) | yes | yes | yes | **no** (`Staff access required`) |
 | Change the rack presets (`set_rack_presets`, migration 131) | yes | yes | **no** (`Staff access required`) | no |
+| Cancel an invoice (`cancel_invoice`, migration 134; `delete_invoice` only refuses) | yes | yes | **no** (`Staff access required`) | no |
 | Supervisor's mobile number on a receipt or dispatch | yes | yes | yes | **no** (name only) |
 | `printer_status` (direct read removed in 123: the edge function reads it with the service key) | yes | yes | yes | **no** (and no longer without sign-in) |
 

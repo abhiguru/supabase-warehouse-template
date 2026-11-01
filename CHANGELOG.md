@@ -10,6 +10,16 @@ file used to carry for earlier installations are in git: `git show b45ae0b:CHANG
 
 ### Added
 
+- **An invoice is cancelled, not deleted; the invoice records are audited and the audit trail is kept 8 years (migration 134, review finding H5).**
+  New `cancel_invoice(p_invoice_id, p_reason, p_expected_updated_at)` (administrators and supervisors): the invoice keeps its number and its lines,
+  gets `cancelled_at`, `cancelled_by` and `cancel_reason`, frees its GRN for a new invoice, and is refused with `INVOICE_HAS_PAYMENTS`,
+  `INVOICE_CANCELLED`, `STALE_RECORD` or `CANCEL_REASON_INVALID`. `delete_invoice` now refuses (`INVOICE_CANCEL_ONLY`) and deletes nothing;
+  `update_invoice` and `save_invoice` refuse a cancelled invoice (`INVOICE_CANCELLED`). A cancelled invoice is not live for the GRN and dispatch edit
+  rules, is listed marked cancelled (customers still see it), and is left out of every sum and count of the customer invoice summary, the customer
+  activity and the invoice-history report (`cancelled_count`; status Cancelled); its PDF has a CANCELLED line. `invoice`, `invoice_trl`, `payments`
+  and `dispatch_trl` write `audit_log`, and `audit_log` is kept 2920 days (was 730). **Operator note:** the app needs the matching app release to
+  show and call it; `delete_invoice` no longer works for any caller. Tests: `tests/invoice_cancel_134.sql` (new), `tests/invoice-cancel.test.mjs` (new),
+  and the suites that deleted invoices for set-up now cancel them. API: [API_CONTRACT.md](docs/API_CONTRACT.md), "Cancelling an invoice".
 - **Break-glass codes for every facility worker, with their own sign-in (migration 132).** `scripts/break-glass-admin.sh` now makes a one-time code
   (10 minutes, once, five wrong tries) for an active, approved administrator, **supervisor or staff member** (never a customer) and prints the
   role. The app signs in with it through `POST /functions/v1/operator-otp/break-glass` `{phone_number, code}` (service-role RPC

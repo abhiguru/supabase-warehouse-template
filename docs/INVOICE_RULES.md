@@ -183,9 +183,10 @@ and a line that is on another invoice (`A dispatch line is already on another
 invoice`); `update_invoice` refuses to move an invoice onto an invoiced receipt
 or to take a line from another invoice. Two saves for the same receipt run one
 after the other, so the second is refused even under a new invoice number.
-`delete_invoice` removes the invoice and its lines and frees the receipt, after
-which it can be invoiced again; it refuses an invoice that payments refer to
-(`Cannot delete an invoice that has payments`). Invoices saved before this rule
+`cancel_invoice` (migration 134; administrators and supervisors; it replaced the removal of an invoice) keeps the invoice, its number and its lines,
+marks it cancelled with who, when and why, and frees the receipt, after which it can be invoiced again under a new number; it refuses an invoice that
+payments refer to (`INVOICE_HAS_PAYMENTS`). `delete_invoice` only refuses (`INVOICE_CANCEL_ONLY`). A cancelled invoice can not be edited, is in no total
+or count, is listed marked cancelled, and prints with a CANCELLED line. Invoices saved before this rule
 are not checked; applying the migration prints a warning when dispatch lines
 are already on more than one invoice, and such an invoice can still be edited
 with the lines it has.
@@ -292,9 +293,8 @@ invoice is still reserved and cannot be saved again; a suggestion that ignored
 such a row would be refused at every save until someone typed a higher number.
 The owner's decision reads "highest number in that year + 1"; counting the
 reserved numbers is what makes the suggestion one that can be saved. No RPC an
-app role may call soft-deletes an invoice: `delete_invoice` removes the row,
-and the number of a removed invoice is free again, so deleting the year's
-last invoice makes its number the next suggestion. Soft-deleted rows come only
+app role may call soft-deletes or removes an invoice (since migration 134 `delete_invoice` refuses); a cancelled invoice keeps its row and its number, so the
+number is not offered again. Soft-deleted rows come only
 from the service key, an operator in the database or earlier data. If such a
 row holds 99999999, its year is refused as above.
 
@@ -306,8 +306,8 @@ line: removing or changing a dispatch line of a live invoice stays refused
 (`Cannot modify invoiced items`, and deleting a dispatch with a live invoice
 line), and the guards count only live invoices.
 
-**A deleted number is free again (owner decision D7, 2026-10-20).** The number of a dispatch or an invoice that was deleted
-(`delete_dispatch_with_order_cleanup`, `delete_invoice`: the row is removed) can be used again, and `get_next_dispatch_number` /
+**A deleted number is free again (owner decision D7, 2026-10-20).** The number of a dispatch that was deleted
+(`delete_dispatch_with_order_cleanup`: the row is removed) can be used again; an invoice is no longer deleted (migration 134: it is cancelled and keeps its number), and `get_next_dispatch_number` /
 `get_next_invoice_number` offer it again when it is the highest or the year's next. A saved create answer of a deleted document is
 not replayed (migration 120), so entering the same document again creates it. `I1` and `I0001` are different strings: an invoice
 or dispatch number is compared as it is stored. (A soft-deleted invoice row, which only the service key or an operator makes, still
