@@ -788,9 +788,8 @@ Errors use the shape `{success:false, data:null, message, error:{code, field?, d
   customer has the same mobile key; `details` is the OTHER customer, and nothing changes. A customer with no mobile is never refused,
   and an already active customer is not re-checked on a normal edit (`update_customer` with `p_active = true` on an active customer).
 - `search_customers(p_search_query text, p_limit integer DEFAULT 20, p_include_inactive boolean DEFAULT false)`: rows
-  now also carry `active` and `deleted` (booleans). `p_include_inactive = true` is honoured for administrators and
-  supervisors only and then also returns deactivated customers; for staff it is ignored (active customers they may access
-  only); customers are refused by the guard. Soft-deleted customers are never returned. A query made only of digits and number punctuation
+  now also carry `active` and `deleted` (booleans). `p_include_inactive = true` is honoured for administrators,
+  supervisors and staff (since migration 147) and then also returns deactivated customers; customers are refused by the guard. Soft-deleted customers are never returned. A query made only of digits and number punctuation
   also matches the mobile by its digits, by its key, and (when it starts `91` and is longer than 2 digits) by the digits
   after `91`, all as prefixes; any such match ranks first.
 - The Customers list and the Edit form read the `customers` table directly (no list RPC): the "Deactivated" filter is
