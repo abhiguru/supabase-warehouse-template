@@ -95,6 +95,36 @@ recorded separately before anyone is told the screen works.
   and one hour) and `sensor_hourly` (summary rows it would delete) next to `sensor_readings`, and writes nothing. The table has
   no app-role grant; staff read it with `get_sensor_hourly(p_device_id, p_from, p_to)` ([API_CONTRACT.md](API_CONTRACT.md)).
 
+### What the app shows for each period
+
+The sensor page ("Sensors", then a sensor) has period chips and an "Export CSV" button. Each reads from one source (app code:
+`src/features/sensors/sensorHourly.ts`, `src/services/sensor-history-service.ts`, `src/services/sensor-hourly-service.ts`):
+
+| Chip | Source | One chart point is | "Based on N readings" |
+|---|---|---|---|
+| "7 days" | `get_sensor_history`, raw readings | 1 hour | readings behind the period |
+| "14 days" | `get_sensor_history`, raw readings | 2 hours | readings behind the period |
+| "30 days" | `get_sensor_history`, raw readings | 4 hours | readings behind the period |
+| "90 days" | `get_sensor_history`, raw readings | 1 day | readings behind the period |
+| "6 months" | `get_sensor_hourly`, hourly rows | 1 day | sum of the hours' reading counts |
+| "1 year" | `get_sensor_hourly`; a server without migration 136 gives `get_sensor_history` (weekly, raw) | 1 week | same |
+| "2 years" | `get_sensor_hourly` (not offered by a server without migration 136) | 1 week | same |
+
+- The 6 months to 2 years charts and their summary figures (average weighted by each hour's reading count, lowest and highest
+  of all hours) come only from hourly rows; they have no raw readings, so a day older than 90 days is the lowest, highest and
+  average of its hourly rows, with no individual reading behind it. A range longer than 400 days is asked for in several calls.
+- **Export CSV** always reads the hourly rows (`get_sensor_hourly`) for the chosen chip, whatever its length: one line per UTC
+  hour with readings (`device,hour_utc,count,temp_min,temp_max,temp_avg,humidity_min,humidity_max,humidity_avg`), made on the
+  phone and shared. It is hidden when the server has no hourly summary, and answers "Nothing to export" when the range has no
+  hourly row. It is not a dump of raw readings, also for the last 90 days.
+- The hourly rows are written by the daily retention job and only for completed hours, so the newest hours (since the last run,
+  up to about a day) are not in the 6 months to 2 years charts or in the CSV yet, while the 7 to 90 day charts have them. On a
+  device with a long backlog the first runs roll at most 2,000 hours each, so older hours can appear over several days.
+- The app offers a chip only when the sensor's data covers it, measured from the sensor's first reading
+  (`first_reading_at`, `earliest_reading_at`). Both are the oldest row of `sensor_readings`, which keeps 90 days, so once a sensor
+  has been running longer than that the oldest reading is about 90 days old and the "6 months", "1 year" and "2 years" chips are
+  not offered, although the hourly summary holds them. (Read from the code, not yet seen on a facility.)
+
 ## The ingest contract
 
 `POST /functions/v1/ingest-sensor-readings` with
