@@ -14,7 +14,7 @@ Deno.serve(async (req: Request) => {
     const environment = Deno.env.get('APP_ENV') || 'development';
     const client = restClient(Deno.env.get('SUPABASE_URL')!, Deno.env.get('SUPABASE_SERVICE_ROLE_KEY')!);
     const [configResult, flagsResult, smsResult, settingsResult] = await Promise.all([
-      client.from('api_configurations').select('app_version,build_date,maintenance_mode').eq('environment', environment).eq('is_active', true).single(),
+      client.from('api_configurations').select('app_version,build_date').eq('environment', environment).eq('is_active', true).single(),
       client.from('feature_flags').select('name,enabled,user_roles').eq('enabled', true),
       client.from('sms_config').select('production_mode,provider').order('id', { ascending: false }).limit(1).single(),
       client.from('system_settings').select('key,value'),
@@ -29,7 +29,8 @@ Deno.serve(async (req: Request) => {
     return new Response(JSON.stringify({ success: true, data: {
       apiKeys: { supabase: { url: baseUrl, anonKey: Deno.env.get('SUPABASE_ANON_KEY') } },
       features: {
-        testMode: !smsResult.data!.production_mode, maintenanceMode: config.maintenance_mode, otpEnabled: true,
+        testMode: !smsResult.data!.production_mode, maintenanceMode: false, // fixed: apps before WH-28 reject a config without it; the "upgrading" 503 is the only signal
+        otpEnabled: true,
         smsProvider: smsResult.data!.provider, maxFileUploadSize: number('max_file_size', 52428800),
         allowedFileTypes: ['image/jpeg', 'image/png', 'image/webp', 'application/pdf'],
         enabledFeatures: (flagsResult.data || []).filter(flag => flag.user_roles === null || flag.user_roles.includes(profile.role)).map(flag => flag.name),

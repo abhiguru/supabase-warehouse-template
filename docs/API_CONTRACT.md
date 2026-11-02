@@ -88,6 +88,7 @@ caught only by the live comparison of the release checklist, which runs against 
 | `backendRelease` | `public/release.json`: the tag (or `git describe --tags --always`) of the checkout `setup.sh` ran from, `unknown` for a source archive without `.git`. `null` when the file is absent. |
 | `schemaHead` | `public/release.json`: the name of the newest applied migration. `null` when the file is absent. |
 | `version` | `api_configurations.app_version`, seeded `0.2.0` and not updated by releases. Do not use it as the backend's version. |
+| `maintenanceMode` | Always `false` (WH-28). The "upgrading" 503 from the gateway is the only upgrade signal; the key stays only because apps before WH-28 reject a configuration without it. `get-config` carries the same fixed `features.maintenanceMode`. The `api_configurations.maintenance_mode` column and the `maintenance_mode` key of `get_public_config` are no longer read by any function. |
 
 `get-config` (signed in) reports the same `backendRelease` as `data.environment.backendRelease`. `release.json` holds, besides those two,
 `backendCommit` and `writtenAt`; it is not part of a backup and a restore never brings it back (`setup.sh` and `restore.sh` write it

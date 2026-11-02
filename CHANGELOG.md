@@ -8,6 +8,10 @@ file used to carry for earlier installations are in git: `git show b45ae0b:CHANG
 
 ## Unreleased
 
+### Changed
+
+- **`maintenanceMode` is a fixed `false` (WH-28).** `get-config` (`features.maintenanceMode`) and `get-public-config` (`maintenanceMode`) no longer read `api_configurations.maintenance_mode`; the gateway's "upgrading" 503 is the only upgrade signal. The key still answers `false` because apps before this change reject a configuration without it. The upgrade freeze, `maintenance.sh` and `upgrade.sh` are unchanged. No migration.
+
 ### Added
 
 - **Staff list deactivated customers on the dispatch and order pickers (migration 147, WH-26).** `search_customers(..., p_include_inactive => true)` is now honoured for staff as well as administrators and supervisors (customers still get active customers of their own business only; soft-deleted customers are never listed). A deactivated customer's stock can still go out on orders and dispatches (W16); only a new GRN is refused (`save_grn`, unchanged). No other function changed: dispatch and order saves have no deactivated-customer check, and staff already pass the order functions through `is_admin_or_supervisor()`.
