@@ -989,6 +989,8 @@ One overload (the four-argument call works unchanged). Same checks and answer as
 (monthly and one-time, one-time labour 0, no customer rates) as new rows from today without an end;
 else `standard` when a standard rate is saved (its tiers from today); else `none` and no rate rows.
 
+Staff may call it since migration 145 (WH-42, the "Add item" sheet of the GRN items step): the item is created active with a name and a packaging word and no rate rows, even when a standard rate is saved (`rate_source` `none`). A staff call with `p_rate_from_item` or with `p_active` false is refused with `PERMISSION_DENIED`; the role is decided in the function. Customers are refused by the guard (SQLSTATE 42501). Nothing reads the standard rate for an item without rate rows, so such an item has no rate at the invoice until an administrator or supervisor sets one (`get_items_without_rate` lists it).
+
 #### `update_item` (signature unchanged)
 
 An item that turns from inactive to active and has no default rate row at all gets the standard tiers
@@ -1003,7 +1005,7 @@ Refusals of `create_item`, `update_item` and `get_item_usage` are `{ success: fa
 covers deactivated items; "Egg" + "Box" and "Egg" + "Trey" are two items, "Egg" with no word and "Egg" + "Bag" are one; saving an item under the name and word it already has is never refused, even if an older item differs from it only in case; the unique key `items_name_packaging_key` (name, packaging key) also maps to it when two saves race),
 `NOT_FOUND` (`update_item`, `get_item_usage`: the item does not exist, for example deleted by someone else),
 `INVALID_INPUT` (blank name; blank packaging (`Packaging is required`, migration 144; `update_item` accepts a blank word only for a call that changes nothing but `p_active` on an item that has none); name over 80 characters; packaging or description over 40),
-`PERMISSION_DENIED` (role check inside the body). Staff and customers never reach the body: the guard raises
+`PERMISSION_DENIED` (role check inside the body). Customers never reach the body, and staff reach only `create_item` (migration 145): the guard raises
 SQLSTATE 42501 first.
 
 - `create_item`: signature unchanged; the codes above (`DUPLICATE_NAME`, `INVALID_INPUT`, `PERMISSION_DENIED`).

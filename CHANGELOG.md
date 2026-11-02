@@ -10,6 +10,9 @@ file used to carry for earlier installations are in git: `git show b45ae0b:CHANG
 
 ### Added
 
+- **Staff add an item from the GRN "Items" step (migration 145, WH-42).** `create_item` is open to staff (`authorize_rpc`, `migrations/definitions/00_authorize_rpc.sql`) for a name and a packaging word only:
+  the item is active and has no rate even when a standard rate is saved, and a staff call with `p_rate_from_item` or `p_active` false is refused (`PERMISSION_DENIED`), decided by role in the function.
+  Administrators and supervisors are unchanged (standard rate if one is saved). Staff still cannot open the Items screens, edit or delete an item, or see rates.
 - **Each item's own packaging word, as entered (migration 144, WH-41 with WH-1, WH-24, WH-9).** The word comes from the item: Bag, Box and Crate keep their text, any other word
   (Katta, Trey, Unit ...) is shown as typed. `warehouse_security.shared_packaging` follows the app's rule, and outer spaces and the invisible characters U+00A0, U+2007, U+202F
   and U+FEFF no longer change a word (WH-9). Packaging is required in `create_item` and `update_item` (`INVALID_INPUT`, "Packaging is required"; an item with no word can still be
