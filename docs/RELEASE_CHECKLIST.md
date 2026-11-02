@@ -121,6 +121,13 @@ behind Stable is a warning on the run and never blocks the tag; the weekly issue
 generated operator state. Before the tests it checks that the tag is signed by a key the previous release lists ([above](#signing-the-tag)). Then its second job, `publish-images`, builds, scans and publishes the images ([below](#image-publication)).
 Wait for both to pass before the next sections.
 
+**Before pushing the tag, run the full CI on the commit with `workflow_dispatch`.** A push to `main` that only repeats a squash-merged pull
+request whose own run passed in full on the identical tree skips the long jobs (`migrations`, `contract`, `operator-install`,
+`operator-upgrade`, and the storage and renderer jobs); the run log says so in a notice naming the pull request, its run and the tree.
+A skipped job is not a success, so the release gate below refuses such a commit, naming the two missing checks. Open Actions > CI > Run
+workflow, choose the branch that holds the commit (a `workflow_dispatch` run tests the branch tip, so the tag's commit must be that tip),
+and wait for it to finish; the gate then passes. Pull requests, the weekly schedule, `workflow_dispatch` and pushes to `release/**` always run in full.
+
 **Before pushing the tag, wait for green `operator-install` and `operator-upgrade` on the commit.** Neither is a required check on `main`
 (they take up to an hour and run on one machine), so nothing else stops a tag on a commit whose installation or upgrade run failed. The
 first step of the `release` job after Node is set up, `scripts/check-release-ci.mjs`, asks the GitHub API for the check runs of the tagged

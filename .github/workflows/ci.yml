@@ -27,12 +27,47 @@ env:
 # variable, and always for a pull request from a fork, a job runs on a GitHub-hosted runner: code from a fork never
 # runs on the project's own machine.
 jobs:
+  # A push to main that only repeats a squash-merged pull request: the long jobs below are skipped when the pull request's own run passed in
+  # full on the identical tree (scripts/ci-skip-repeat.mjs). Any doubt, error or other event runs everything. The jobs that read its answer
+  # use !cancelled(), so a failed or skipped `repeat` job leaves them running. Nothing here changes what a pull_request, schedule,
+  # workflow_dispatch or release/** push runs. A skipped job is not a success for scripts/check-release-ci.mjs, so a commit whose main
+  # run was skipped cannot be tagged until CI has run in full on it (docs/RELEASE_CHECKLIST.md).
+  repeat:
+    name: Is this push a repeat of a tested pull request
+    if: github.event_name == 'push' && github.ref == 'refs/heads/main'
+    runs-on: ${{ github.event.pull_request.head.repo.fork && 'ubuntu-latest' || fromJSON(vars.CI_RUNNER || '"ubuntu-latest"') }}
+    timeout-minutes: 10
+    permissions:
+      contents: read
+      actions: read
+      checks: read
+      pull-requests: read
+    outputs:
+      skip: ${{ steps.decide.outputs.skip }}
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          sparse-checkout: scripts
+          persist-credentials: false
+      - uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0
+        with:
+          node-version: '22'
+      - id: decide
+        continue-on-error: true
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: node scripts/ci-skip-repeat.mjs
   validate:
     runs-on: ${{ github.event.pull_request.head.repo.fork && 'ubuntu-latest' || fromJSON(vars.CI_RUNNER || '"ubuntu-latest"') }}
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           persist-credentials: false
+      - name: Record the tested tree
+        # The tree of the commit this run checked out (a pull request: the merge of its head into the base). A later push to main reads it
+        # through the check-run annotations (scripts/ci-skip-repeat.mjs) to see whether it repeats this run.
+        if: github.event_name == 'pull_request'
+        run: echo "::notice title=Tested tree::tree $(git rev-parse 'HEAD^{tree}')"
       - name: A change to a release branch carries no migration
         # Release branches (a previous line, or a patch-only branch of the current line) never carry a migration (CONTRIBUTING.md, "Releases"): a security fix that needs a table, data or a signature change ships
         # as the next minor from main. A file name that exists only on the release branch would strand the line, because the next minor does
@@ -78,7 +113,8 @@ jobs:
           node scripts/audit-compare.mjs --base-ref "$BASE_SHA"
   migrations:
     runs-on: ${{ github.event.pull_request.head.repo.fork && 'ubuntu-latest' || fromJSON(vars.CI_RUNNER || '"ubuntu-latest"') }}
-    needs: validate
+    needs: [validate, repeat]
+    if: ${{ !cancelled() && needs.validate.result == 'success' && needs.repeat.outputs.skip != 'true' }}
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
@@ -177,8 +213,8 @@ jobs:
     # while no tag is chosen: it then rehearses the newest tag on Docker Hub. Once the repository variable STORAGE_NEXT_TAG names the tag
     # of the coming quarterly move (for example v1.84.28), that move must pass the drill. Not a required check; it runs weekly, on demand,
     # and when a change touches docker/storage, the compose file, the database image and bootstrap, the drill or this workflow.
-    needs: [validate, changes]
-    if: github.event_name == 'schedule' || github.event_name == 'workflow_dispatch' || needs.changes.outputs.storage == 'true'
+    needs: [validate, changes, repeat]
+    if: ${{ !cancelled() && needs.validate.result == 'success' && needs.changes.result == 'success' && needs.repeat.outputs.skip != 'true' && (github.event_name == 'schedule' || github.event_name == 'workflow_dispatch' || needs.changes.outputs.storage == 'true') }}
     runs-on: ${{ github.event.pull_request.head.repo.fork && 'ubuntu-latest' || fromJSON(vars.CI_RUNNER || '"ubuntu-latest"') }}
     timeout-minutes: 30
     steps:
@@ -204,8 +240,8 @@ jobs:
     # and compared page by page by decoded pixels (fuzz 0) with tests/golden-pdf/golden; what moved is uploaded as an artifact.
     # Regenerate with `run.sh --update` and review what moved. Skipped (not required, so never pending) when `changes` says
     # the change cannot move the renderer.
-    needs: [validate, changes]
-    if: github.event_name == 'schedule' || github.event_name == 'workflow_dispatch' || needs.changes.outputs.renderer == 'true'
+    needs: [validate, changes, repeat]
+    if: ${{ !cancelled() && needs.validate.result == 'success' && needs.changes.result == 'success' && needs.repeat.outputs.skip != 'true' && (github.event_name == 'schedule' || github.event_name == 'workflow_dispatch' || needs.changes.outputs.renderer == 'true') }}
     runs-on: ${{ github.event.pull_request.head.repo.fork && 'ubuntu-latest' || fromJSON(vars.CI_RUNNER || '"ubuntu-latest"') }}
     timeout-minutes: 45
     steps:
@@ -242,6 +278,8 @@ jobs:
         if: always()
         run: docker rm -f pdf-renderer-golden
   contract:
+    needs: repeat
+    if: ${{ !cancelled() && needs.repeat.outputs.skip != 'true' }}
     runs-on: ${{ github.event.pull_request.head.repo.fork && 'ubuntu-latest' || fromJSON(vars.CI_RUNNER || '"ubuntu-latest"') }}
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
@@ -296,7 +334,8 @@ jobs:
     # for operator-install". This job is not a required check.
     runs-on: ${{ github.event.pull_request.head.repo.fork && 'ubuntu-latest' || fromJSON(vars.OPERATOR_INSTALL_RUNNER || '"ubuntu-latest"') }}
     timeout-minutes: 45
-    needs: validate
+    needs: [validate, repeat]
+    if: ${{ !cancelled() && needs.validate.result == 'success' && needs.repeat.outputs.skip != 'true' }}
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
@@ -621,7 +660,8 @@ jobs:
     # project and checkout. The runner is chosen like operator-install's, and the job is not a required check.
     runs-on: ${{ github.event.pull_request.head.repo.fork && 'ubuntu-latest' || fromJSON(vars.OPERATOR_INSTALL_RUNNER || '"ubuntu-latest"') }}
     timeout-minutes: 90
-    needs: validate
+    needs: [validate, repeat]
+    if: ${{ !cancelled() && needs.validate.result == 'success' && needs.repeat.outputs.skip != 'true' }}
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
