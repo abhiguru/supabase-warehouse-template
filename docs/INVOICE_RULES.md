@@ -194,7 +194,8 @@ with the lines it has.
 `get_invoice_items_detailed` computes each line as the header does (one-time
 storage without duration or labour; storage and labour rounded separately; line
 tax rounded on that base), so its lines differ from the header only by the
-header's single tax ceiling.
+header's single tax ceiling. For a cancelled invoice (migration 143) it lists every line, reads the copy the line kept, and answers `details_available`;
+a line emptied before the migration has no quantity, so its `tax_amount` and `total_amount` are `null` and it adds nothing to the summary.
 
 A cancelled invoice keeps the details of its lines (migration 143): at cancel, each line copies item name, packaging, weight, rack, package mark,
 dispatched quantity, dispatch number and date, GRN number and date into its own `kept_*` columns (same transaction; a refused cancel copies

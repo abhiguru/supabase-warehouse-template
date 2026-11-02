@@ -78,3 +78,147 @@ $m$  RETURNING cancelled_at, updated_at
   WHERE it.invoice_id = p_invoice_id
     AND dt.id = it.disp_trl_id AND d.id = dt.disp_id AND gt.id = dt.gr_trl_id AND gr.id = gt.gr_id;$m$
 ]);
+
+-- WH-39: get_invoice_items_detailed (the text of migration 119 with these changes) lists every line of a cancelled invoice, reads the copy, and
+-- answers details_available. Live invoices, keys and amounts read as before.
+CREATE OR REPLACE FUNCTION public.get_invoice_items_detailed(p_invoice_id uuid) RETURNS jsonb
+    LANGUAGE plpgsql SECURITY DEFINER
+    SET search_path TO 'pg_catalog', 'public', 'extensions', 'utils', 'pg_temp'
+    AS $$
+DECLARE
+  v_items jsonb;
+  v_summary jsonb;
+BEGIN
+  PERFORM warehouse_security.authorize_rpc(
+    'get_invoice_items_detailed',
+    jsonb_build_object('p_invoice_id', p_invoice_id)
+  );
+
+  IF NOT EXISTS (
+    SELECT 1
+    FROM public.invoice i
+    WHERE i.id = p_invoice_id
+      AND i.deleted_at IS NULL
+  ) THEN
+    RETURN utils.not_found_response('Invoice', p_invoice_id::text);
+  END IF;
+
+  SELECT COALESCE(
+    jsonb_agg(
+      jsonb_build_object(
+        'id', line.id,
+        'item_id', line.catalog_item_id,
+        'duration', line.duration,
+        'no_of_days', line.no_of_days,
+        'charge', line.charge_rate,
+        'labour_rate', line.labour_rate,
+        'tax', line.tax_rate,
+        'tax_amount', line.tax_amount,
+        'total_amount', line.total_amount,
+        'dispatch_qty', line.dispatch_qty,
+        'grn_quantity', line.grn_quantity,
+        'item_name', line.item_name,
+        'gr_no', line.gr_no,
+        'dispatch_id', line.dispatch_id,
+        'dispatch_no', line.dispatch_no,
+        'dispatch_date', line.dispatch_date,
+        'package_mark', line.package_mark,
+        'rack', line.rack,
+        'weight', line.weight,
+        'packaging', line.catalog_packaging,
+        'catalog', jsonb_build_object(
+          'id', line.catalog_item_id,
+          'name', line.catalog_name,
+          'packaging', line.catalog_packaging
+        ),
+        'grn_item', jsonb_build_object(
+          'id', line.grn_item_id,
+          'name', line.item_name,
+          'original_quantity', line.grn_quantity,
+          'package_mark', line.package_mark,
+          'rack', line.rack,
+          'weight', line.weight,
+          'packaging', line.grn_packaging
+        ),
+        'details_available', line.details_available,
+        'dispatch', jsonb_build_object(
+          'id', line.dispatch_item_id,
+          'disp_id', line.dispatch_id,
+          'dispatch_no', line.dispatch_no,
+          'dispatch_date', line.dispatch_date,
+          'quantity', line.dispatch_qty
+        )
+      )
+      ORDER BY line.dispatch_no, uuid_extract_timestamp(line.id), line.id
+    ),
+    '[]'::jsonb
+  ),
+  jsonb_build_object(
+    'total_items', COUNT(*),
+    'total_quantity', COALESCE(SUM(line.dispatch_qty), 0),
+    'total_amount', COALESCE(ROUND(SUM(line.total_amount), 2), 0)
+  )
+  INTO v_items, v_summary
+  FROM (
+    SELECT
+      it.id,
+      it.duration,
+      it.no_of_days,
+      COALESCE(it.charge, 0)::numeric AS charge_rate,
+      COALESCE(it.labour_rate, 0)::numeric AS labour_rate,
+      COALESCE(it.tax, 0)::numeric AS tax_rate,
+      CASE WHEN avail.ok THEN COALESCE(avail.qty, 0)::numeric END AS dispatch_qty,
+      ROUND(amount.base * COALESCE(it.tax, 0)::numeric / 100, 2) AS tax_amount,
+      amount.base + ROUND(amount.base * COALESCE(it.tax, 0)::numeric / 100, 2) AS total_amount,
+      avail.ok AS details_available,
+      dt.id AS dispatch_item_id,
+      d.id AS dispatch_id,
+      CASE WHEN it.details_kept_at IS NOT NULL THEN it.kept_disp_no ELSE d.disp_no END AS dispatch_no,
+      CASE WHEN it.details_kept_at IS NOT NULL THEN it.kept_disp_date ELSE d.disp_date END AS dispatch_date,
+      gr.id AS grn_id,
+      CASE WHEN it.details_kept_at IS NOT NULL THEN it.kept_grn_no ELSE gr.gr_no END AS gr_no,
+      grt.id AS grn_item_id,
+      grt.item_id AS catalog_item_id,
+      CASE WHEN it.details_kept_at IS NOT NULL THEN it.kept_item_name ELSE grt.item_name END AS item_name,
+      grt.qty AS grn_quantity,
+      CASE WHEN it.details_kept_at IS NOT NULL THEN it.kept_package_mark ELSE grt.package_mark END AS package_mark,
+      CASE WHEN it.details_kept_at IS NOT NULL THEN it.kept_rack ELSE grt.rack END AS rack,
+      CASE WHEN it.details_kept_at IS NOT NULL THEN it.kept_weight ELSE grt.weight END AS weight,
+      CASE WHEN it.details_kept_at IS NOT NULL THEN it.kept_packaging ELSE grt.packaging END AS grn_packaging,
+      CASE WHEN it.details_kept_at IS NOT NULL THEN it.kept_item_name ELSE catalog.name END AS catalog_name,
+      CASE WHEN it.details_kept_at IS NOT NULL THEN it.kept_packaging ELSE catalog.packaging END AS catalog_packaging
+    FROM public.invoice_trl it
+    JOIN public.invoice inv ON inv.id = it.invoice_id
+    LEFT JOIN public.dispatch_trl dt ON dt.id = it.disp_trl_id
+    LEFT JOIN public.dispatch d ON d.id = dt.disp_id
+    LEFT JOIN public.goodsreceived gr ON gr.id = dt.gr_id
+    LEFT JOIN public.goodsreceived_trl grt ON grt.id = dt.gr_trl_id
+    LEFT JOIN public.items catalog ON catalog.id = grt.item_id
+    LEFT JOIN public.goodsreceived igr ON igr.id = inv.gr_id
+    -- Migration 143: a cancelled invoice's line that kept its details reads the copy (quantity from the copy, pricing mode of the invoice's GRN);
+    -- a line emptied before the copy existed has no quantity, so it has no server amount and the app falls back to the line's own rates.
+    CROSS JOIN LATERAL (
+      SELECT (it.details_kept_at IS NOT NULL OR dt.id IS NOT NULL) AS ok,
+             CASE WHEN it.details_kept_at IS NOT NULL THEN it.kept_disp_qty ELSE dt.disp_qty END AS qty,
+             CASE WHEN it.details_kept_at IS NOT NULL THEN igr.pricing_mode ELSE gr.pricing_mode END AS mode
+    ) AS avail
+    CROSS JOIN LATERAL (
+      SELECT CASE WHEN NOT avail.ok THEN NULL
+        WHEN avail.mode = 'ONE_TIME'
+        THEN ROUND(COALESCE(it.charge, 0)::numeric * COALESCE(avail.qty, 0)::numeric, 2)
+        ELSE ROUND(COALESCE(it.charge, 0)::numeric * COALESCE(avail.qty, 0)::numeric * COALESCE(it.duration, 1)::numeric, 2)
+             + ROUND(COALESCE(it.labour_rate, 0)::numeric * COALESCE(avail.qty, 0)::numeric, 2)
+        END AS base
+    ) AS amount
+    WHERE it.invoice_id = p_invoice_id
+      -- A live invoice lists a line only when every join matches, as the inner joins did.
+      AND (inv.cancelled_at IS NOT NULL
+           OR (dt.id IS NOT NULL AND d.id IS NOT NULL AND gr.id IS NOT NULL AND grt.id IS NOT NULL AND catalog.id IS NOT NULL))
+  ) AS line;
+
+  RETURN utils.success_response(
+    jsonb_build_object('items', v_items, 'summary', v_summary),
+    'Invoice items retrieved successfully'
+  );
+END;
+$$;

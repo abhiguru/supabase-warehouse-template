@@ -1313,7 +1313,7 @@ History: migrations 87 (the outside review fixes of 2026-10-15), 120 and 121.
   earlier whose dispatch line still exists. For a cancelled invoice `get_invoice_detail` and `get_invoice_data` read the copy, which wins over the
   current dispatch line, GRN and item, and `get_invoice_detail` no longer drops a line whose `disp_trl_id` is empty. New additive keys:
   `details_available` on each line of both answers (`false`: the dispatch went before the copy existed; the amounts stay, the details are empty),
-  `grn_no` on each `get_invoice_detail` line, `grn_item.gr_no` and `grn_item.gr_date` on each `get_invoice_data` line. Live invoices read as before.
+  `grn_no` on each `get_invoice_detail` line, `grn_item.gr_no` and `grn_item.gr_date` on each `get_invoice_data` line. `get_invoice_items_detailed` (WH-39) also lists every line of a cancelled invoice, reads the copy and answers `details_available` per line (`false`: `dispatch_qty`, `tax_amount` and `total_amount` are `null`). Live invoices read as before.
   The `kept_*` columns are readable like the rest of `invoice_trl` (own invoices for a customer); `cancelled_by` stays hidden from customers.
 
 ### Generate Dispatch (D5)

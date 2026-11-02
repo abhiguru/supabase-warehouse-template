@@ -15,7 +15,7 @@ file used to carry for earlier installations are in git: `git show b45ae0b:CHANG
   dispatched quantity, dispatch number and date, GRN number and date onto each line (`invoice_trl.kept_*`, `details_kept_at`); the migration fills the copy for invoices
   already cancelled whose dispatch line still exists. Cancelled invoices read the copy in `get_invoice_detail`, `get_invoice_data` and the invoice PDF; live invoices
   read as before. New additive keys: `details_available` (both reads), `grn_no` (`get_invoice_detail` lines), `grn_item.gr_no` and `grn_item.gr_date` (`get_invoice_data`).
-  A line emptied before the migration is listed with its amounts and no details (PDF: "Details not available"). Operator action: none beyond applying the migration.
+  `get_invoice_items_detailed` lists every line of a cancelled invoice and reads the copy too (WH-39). A line emptied before the migration is listed with its amounts and no details (PDF: "Details not available"). Operator action: none beyond applying the migration.
 - **The packaging word of stock and preview rows follows one rule (migration 142, review follow-up to migration 141).** `get_customer_activity_detail`:
   `top_stock_items[].packaging` was `null` ("lots differ") also when every lot had no packaging, and "Bag" next to "bags" counted as different, so such items read
   "units", and Box next to a lot with no packaging read boxes. Now the word is read as the app reads it: Box/Boxes is Box, Crate/Crates is Crate, everything else
