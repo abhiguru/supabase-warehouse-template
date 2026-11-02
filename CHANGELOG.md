@@ -10,6 +10,7 @@ file used to carry for earlier installations are in git: `git show b45ae0b:CHANG
 
 ### Changed
 
+- **`get-config` no longer returns the seeded `support@example.com` (WH-34).** `support.email` and `support.phone` read as an empty string when the stored value is an `example.com` address (the baseline seed); a real value is returned as it is. No PDF or document reads either key (they read `app_name` only), and the app has no screen that shows them. `scripts/configure-operator.sql` already blanks the seed at setup. No migration.
 - **`maintenanceMode` is a fixed `false` (WH-28).** `get-config` (`features.maintenanceMode`) and `get-public-config` (`maintenanceMode`) no longer read `api_configurations.maintenance_mode`; the gateway's "upgrading" 503 is the only upgrade signal. The key still answers `false` because apps before this change reject a configuration without it. The upgrade freeze, `maintenance.sh` and `upgrade.sh` are unchanged. No migration.
 
 ### Added
