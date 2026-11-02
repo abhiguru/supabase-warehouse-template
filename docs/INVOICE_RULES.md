@@ -196,6 +196,13 @@ storage without duration or labour; storage and labour rounded separately; line
 tax rounded on that base), so its lines differ from the header only by the
 header's single tax ceiling.
 
+A cancelled invoice keeps the details of its lines (migration 143): at cancel, each line copies item name, packaging, weight, rack, package mark,
+dispatched quantity, dispatch number and date, GRN number and date into its own `kept_*` columns (same transaction; a refused cancel copies
+nothing), and every read of a cancelled invoice (`get_invoice_detail`, `get_invoice_data`, the invoice PDF) shows the copy rather than the
+current dispatch line, GRN or item. Deleting the dispatch later still empties `disp_trl_id`, and amounts and totals do not change. A line
+emptied before the migration has nothing to copy: it is listed with its amounts and reads "Details not available" (`details_available` false).
+The `kept_*` columns are not among the internal columns below: they hold what a line already shows.
+
 ## Internal columns
 
 Six columns of `invoice` are internal to the warehouse: `discount_reason`,

@@ -64,11 +64,14 @@ export const documentPdf = (kind: Kind) => async (req: Request): Promise<Respons
           return [item?.item_name,item?.packaging,line.disp_qty,item?.package_mark];
         });
       } else {
-        details = await readDocumentLines(reader,kind,'invoice_trl','duration,no_of_days,labour_rate,charge,tax,dispatch_trl(disp_qty,goodsreceived_trl(item_name))',query => query.eq('invoice_id',header.id));
+        details = await readDocumentLines(reader,kind,'invoice_trl','duration,no_of_days,labour_rate,charge,tax,details_kept_at,kept_item_name,kept_disp_qty,dispatch_trl(disp_qty,goodsreceived_trl(item_name))',query => query.eq('invoice_id',header.id));
         columns = ['Item','Quantity','Duration','Days','Labour rate','Charge','Tax'];
         rows = details.data?.map(line => {
           const dispatch = Array.isArray(line.dispatch_trl) ? line.dispatch_trl[0] : line.dispatch_trl;
           const item = Array.isArray(dispatch?.goodsreceived_trl) ? dispatch.goodsreceived_trl[0] : dispatch?.goodsreceived_trl;
+          // Migration 143: a cancelled invoice's line prints the details it kept at cancel; a line emptied before that says so.
+          if (line.details_kept_at) return [line.kept_item_name,line.kept_disp_qty,line.duration,line.no_of_days,line.labour_rate,line.charge,line.tax];
+          if (!dispatch) return ['Details not available',null,line.duration,line.no_of_days,line.labour_rate,line.charge,line.tax];
           return [item?.item_name,dispatch?.disp_qty,line.duration,line.no_of_days,line.labour_rate,line.charge,line.tax];
         });
       }
