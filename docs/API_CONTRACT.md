@@ -1456,8 +1456,8 @@ History: migrations 100, 102, 109, 120 and 121.
 
 ### Cancelling an invoice (migration 134)
 
-An invoice is **cancelled, never deleted**: it keeps its number and its lines, stays visible (a customer account sees it, marked cancelled)
-and can not be edited. Owner decision, review finding H5.
+An invoice can be **cancelled** (it keeps its number and its lines, stays visible (a customer account sees it, marked cancelled)
+and can not be edited; migration 146 adds back **Delete invoice** beside it, see "Deleting an invoice" below). Owner decision, review finding H5.
 
 `cancel_invoice(p_invoice_id uuid, p_reason text, p_expected_updated_at timestamptz DEFAULT NULL)` (administrators and supervisors; staff and
 customers get `Staff access required`, a raised `42501`). The reason is trimmed and must be 3 to 500 characters. `p_expected_updated_at` is the
@@ -1485,9 +1485,7 @@ unless another live invoice (not deleted, not cancelled) holds the GRN. A cancel
 the GRN and dispatch edit rules, `get_grn_edit_state`, `get_grn_item_rates` and `get_dispatch_details` treat it as no invoice. Its number stays taken:
 `NUMBER_TAKEN` for a new invoice with that number, and `get_next_invoice_number` still counts it.
 
-`delete_invoice(p_invoice_id)` now **refuses** and deletes nothing: `{success:false, error_code:'WH409', reason:'INVOICE_CANCEL_ONLY', error:'An invoice is
-not deleted: cancel it instead. Its number stays in the books.', message, invoice_id}` (an unauthorised caller keeps the old answer
-`{success:false, error:'Staff access required'}` and the like).
+`delete_invoice` refused with `INVOICE_CANCEL_ONLY` from migration 134 to 145; migration 146 brings it back, see "Deleting an invoice" below.
 `update_invoice` and the three-argument `save_invoice` over the id of a cancelled invoice answer `{success:false, error_code:'WH409',
 reason:'INVOICE_CANCELLED', error:'This invoice is cancelled and can not be changed.', message, invoice_id}` (`save_invoice` adds `function_version`).
 
@@ -1639,9 +1637,19 @@ the service role only and nothing called them.
   `payments.supervisor_id` references `user_profiles(id)` (`ON DELETE SET NULL`), and `payments_amount_positive` requires
   `amount > 0` (NULL stays allowed). A direct write that breaks one fails with SQLSTATE `23503` (missing parent), `23001`
   (parent still referenced) or `23514` (amount).
-- `delete_grn_safe` answers `{success:false, error:'Cannot delete GRN <no>: it has an invoice (cancelled invoices included); an invoiced GRN is kept.'}`
-  for a GRN that any invoice refers to, also when no dispatch line was invoiced. `delete_invoice` refuses (`INVOICE_CANCEL_ONLY`, migration 134), so
-  an invoice is never deleted; a direct `DELETE` of an invoice that still has lines fails with `23001`.
+- `delete_grn_safe` answers `{success:false, error:'Cannot delete GRN <no>: it has an invoice. Delete the invoice first.'}`
+  for a GRN that any invoice refers to, also when no dispatch line was invoiced. the way out is `delete_invoice` (migration 146), which removes the invoice and its lines; a direct `DELETE` of an invoice that still has lines fails with `23001`.
+
+### Deleting an invoice (migration 146)
+
+`delete_invoice(p_invoice_id uuid, p_expected_updated_at timestamptz DEFAULT NULL)` (administrators and supervisors; staff and customers are refused by
+`authorize_rpc`) removes a live or a cancelled invoice and its lines for good: `{success:true, message:'Invoice deleted successfully', invoice_id,
+invoice_number, inv_fin_year, gr_id}`. The audit triggers of migration 134 keep the deleted rows (the lines with their kept copies of migration 143) for 8 years.
+- An unknown invoice: `{success:false, error:'Invoice not found'}`. An invoice that payments refer to: `{success:false, error:'Cannot delete an invoice that has payments'}`; nothing changes.
+- `p_expected_updated_at` (the `updated_at` of `get_invoice_data`): a changed invoice is refused with `STALE_RECORD` (as for `cancel_invoice`).
+- The GRN's `invoiced` flag is cleared unless another invoice that is neither deleted nor cancelled holds the GRN. With no invoice left on it, `delete_grn_safe` works under its existing rules.
+- The number is free again: `get_next_invoice_number` and the "already used" check read the remaining rows, so deleting the highest number offers it again. A cancelled invoice keeps
+  its number until it is deleted; `unique_inv_no_per_year` still refuses a second invoice with a number a live or cancelled invoice holds, and a row soft-deleted earlier keeps its number reserved.
 
 ### Order history counts (migration 133)
 

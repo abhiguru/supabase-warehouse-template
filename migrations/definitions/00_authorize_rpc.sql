@@ -25,8 +25,8 @@ BEGIN
     IF role_name <> 'admin' THEN RAISE EXCEPTION 'Administrator required' USING ERRCODE = '42501'; END IF;
     RETURN;
   END IF;
-  -- Administrators and supervisors: every other RPC, among them cancel_invoice (migration 134; the only way to take an invoice
-  -- out of use, and delete_invoice now refuses), set_rack_presets (migration 131) and the rest of the management RPCs. Staff and
+  -- Administrators and supervisors: every other RPC, among them cancel_invoice (migration 134; keeps the invoice on record) and
+  -- delete_invoice (migration 146; removes it, administrators and supervisors only), set_rack_presets (migration 131) and the rest of the management RPCs. Staff and
   -- customers are refused by the lists and the final ELSE below.
   IF role_name IN ('admin','supervisor') THEN RETURN; END IF;
   -- Approved document RPCs only; no shared ownership or table-policy change.

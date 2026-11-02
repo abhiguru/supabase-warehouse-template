@@ -10,6 +10,7 @@ file used to carry for earlier installations are in git: `git show b45ae0b:CHANG
 
 ### Added
 
+- **"Delete invoice" comes back beside "Cancel invoice" (migration 146, WH-43; owner decision of 2026-11-02, replacing cancel-only).** `delete_invoice(p_invoice_id, p_expected_updated_at)` works again for administrators and supervisors on a live or a cancelled invoice: the invoice and its lines are removed for good and the audit triggers of migration 134 keep the rows (8 years); it is refused with payments ("Cannot delete an invoice that has payments") and for an unknown invoice, and a changed invoice is refused with `STALE_RECORD`. It no longer answers `INVOICE_CANCEL_ONLY`. The GRN's `invoiced` flag is cleared unless another live (not deleted, not cancelled) invoice holds it. The number is free once the invoice is deleted (`get_next_invoice_number` and the "already used" check read the remaining rows; `unique_inv_no_per_year` still refuses a second invoice while a live or cancelled one holds it; a cancelled invoice keeps its number until deleted; rows soft-deleted earlier stay reserved). `delete_grn_safe` now says "it has an invoice. Delete the invoice first." (definition file). Tests: `tests/invoice_cancel_134.sql` and `tests/payments_integrity_139.sql` assert the old refusal and need changing. **Operator note:** the app release with the Delete button pairs with this migration; applying the migration needs no data action. Open for the accountant: reused invoice numbers and tax. API: [API_CONTRACT.md](docs/API_CONTRACT.md), "Deleting an invoice".
 - **Staff add an item from the GRN "Items" step (migration 145, WH-42).** `create_item` is open to staff (`authorize_rpc`, `migrations/definitions/00_authorize_rpc.sql`) for a name and a packaging word only:
   the item is active and has no rate even when a standard rate is saved, and a staff call with `p_rate_from_item` or `p_active` false is refused (`PERMISSION_DENIED`), decided by role in the function.
   Administrators and supervisors are unchanged (standard rate if one is saved). Staff still cannot open the Items screens, edit or delete an item, or see rates.
@@ -37,12 +38,12 @@ file used to carry for earlier installations are in git: `git show b45ae0b:CHANG
 - **An invoice is cancelled, not deleted; the invoice records are audited and the audit trail is kept 8 years (migration 134, review finding H5).**
   New `cancel_invoice(p_invoice_id, p_reason, p_expected_updated_at)` (administrators and supervisors): the invoice keeps its number and its lines,
   gets `cancelled_at`, `cancelled_by` and `cancel_reason`, frees its GRN for a new invoice, and is refused with `INVOICE_HAS_PAYMENTS`,
-  `INVOICE_CANCELLED`, `STALE_RECORD` or `CANCEL_REASON_INVALID`. `delete_invoice` now refuses (`INVOICE_CANCEL_ONLY`) and deletes nothing;
+  `INVOICE_CANCELLED`, `STALE_RECORD` or `CANCEL_REASON_INVALID`. `delete_invoice` refused (`INVOICE_CANCEL_ONLY`) and deleted nothing (replaced by migration 146);
   `update_invoice` and `save_invoice` refuse a cancelled invoice (`INVOICE_CANCELLED`). A cancelled invoice is not live for the GRN and dispatch edit
   rules, is listed marked cancelled (customers still see it), and is left out of every sum and count of the customer invoice summary, the customer
   activity and the invoice-history report (`cancelled_count`; status Cancelled); its PDF has a CANCELLED line. `invoice`, `invoice_trl`, `payments`
   and `dispatch_trl` write `audit_log`, and `audit_log` is kept 2920 days (was 730). **Operator note:** the app needs the matching app release to
-  show and call it; `delete_invoice` no longer works for any caller. No payment can be recorded for a cancelled invoice; the preprinted print range skips
+  show and call it; `delete_invoice` did not work for any caller until migration 146. No payment can be recorded for a cancelled invoice; the preprinted print range skips
   cancelled invoices and reports them as `skipped`; `get_invoice_data` and `get_grn_details` know the cancellation; customers read `cancelled_at` and
   `cancel_reason` but not `cancelled_by`. Tests: `tests/invoice_cancel_134.sql` (new), `tests/invoice-cancel.test.mjs` (new),
   and the suites that deleted invoices for set-up now cancel them. API: [API_CONTRACT.md](docs/API_CONTRACT.md), "Cancelling an invoice".
