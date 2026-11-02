@@ -10,6 +10,14 @@ file used to carry for earlier installations are in git: `git show b45ae0b:CHANG
 
 ### Added
 
+- **Each item's own packaging word, as entered (migration 144, WH-41 with WH-1, WH-24, WH-9).** The word comes from the item: Bag, Box and Crate keep their text, any other word
+  (Katta, Trey, Unit ...) is shown as typed. `warehouse_security.shared_packaging` follows the app's rule, and outer spaces and the invisible characters U+00A0, U+2007, U+202F
+  and U+FEFF no longer change a word (WH-9). Packaging is required in `create_item` and `update_item` (`INVALID_INPUT`, "Packaging is required"; an item with no word can still be
+  switched on and off, any other save asks for one). An item is its name and its word: `items_name_key UNIQUE (name)` is replaced by `items_name_packaging_key` on (name, word),
+  "Egg" + "Box" and "Egg" + "Trey" are two items, the same name and word (ignoring case and outer spaces; no word is Bag) is `DUPLICATE_NAME`. Matching and grouping by item name
+  alone moved to the item id: `get_customer_activity_detail.top_stock_items`, the missing-price list of `build_invoice_recalculation_rows`, the lookups of `get_order_change_log`
+  (`delete_dispatch_with_order_cleanup` now stores `grn_item_id` on each restored item; older history still matches by name). `get_item_wise_stock_list.packaging` is the lots' shared
+  word (`null` when they differ); `get_stock_aging_report` lines carry `item_id`. The all-customers report PDF header "Bags dispatched" reads "Units dispatched" (Gujarati unchanged). No blank word is rewritten. Operator action: none beyond applying the migration; an older app shows typed words as "bag".
 - **A cancelled invoice keeps its line details (migration 143, WH-13).** Deleting a dispatch after a cancel emptied the item, quantity and numbers of the cancelled
   invoice's lines (and `get_invoice_detail` dropped them). `cancel_invoice` now copies, in the same transaction, item name, packaging, weight, rack, package mark,
   dispatched quantity, dispatch number and date, GRN number and date onto each line (`invoice_trl.kept_*`, `details_kept_at`); the migration fills the copy for invoices

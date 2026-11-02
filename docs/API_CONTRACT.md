@@ -218,6 +218,10 @@ Additive only: every key that was there is unchanged. The value is `goodsreceive
 
 `get_invoice_data` (`items[].grn_item.packaging`, `items[].catalog.packaging`) and `get_customer_grn_activity` (`grns[].items[].packaging`) already answered it. `get_all_customer_activity_summary`, `get_all_dispatch_activity` and `get_all_grn_activity` list customers, not items, and have no line to carry it. Test: `tests/packaging_lines_141.sql`.
 
+### The packaging word as entered (migration 144)
+
+Replaces the rule of migration 142 below. Bag, Box and Crate keep their text (`bag`/`bags` and a blank word are `Bag`, `box`/`boxes` is `Box`, `crate`/`crates` is `Crate`); any other word (`Katta`, `Trey`, `Unit`, `Sack`, `Carton` ...) is the word as typed. Outer spaces and the invisible characters U+00A0, U+2007, U+202F and U+FEFF never change a word, and matching ignores case (`warehouse_security.clean_packaging`, `packaging_key`, `packaging_word`; `shared_packaging` uses them: the one word when every lot agrees, the lexicographically smallest spelling if they spell it differently, `null` when they differ). `create_item` / `update_item` store the word without outer spaces and invisible characters and require it. `get_item_wise_stock_list` rows carry the lots' shared word (`null` when they differ). `get_customer_activity_detail.top_stock_items` is one row per item id. No blank word is rewritten.
+
 ### The packaging rule of stock and preview rows (migration 142)
 
 Additive only; `null` still means "the lots differ". One rule (`warehouse_security.shared_packaging`) decides the word of a set of lots, as the app reads a packaging word: `Box`/`Boxes` is `Box`, `Crate`/`Crates` is `Crate`, and everything else (`Bag`, `Unit`, `Sack`, any other text, `NULL`, blank) is `Bag`, compared after trim (tabs, line breaks and no-break spaces included) and case folding. The answer is `Bag`, `Box` or `Crate` when every lot agrees, and `null` when they differ (`Box` next to a `NULL` lot is mixed). Migration 141 answered `null` for an item whose lots all had `NULL` packaging and compared the raw text.
@@ -995,10 +999,10 @@ from today (nothing when no standard rate is saved). The answer is unchanged.
 Refusals of `create_item`, `update_item` and `get_item_usage` are `{ success: false, error_code, error, message }`
 (`error_code` and `error` are new on these refusals; `message` is the English text they had before. The app reads
 `error_code`). Codes:
-`DUPLICATE_NAME` (another item has this name: the match ignores upper/lower case and spaces around the name (on both the sent and the stored name), and
-covers deactivated items; saving an item under the name it already has is never refused, even if an older item differs from it only in case; the unique constraint `items_name_key` also maps to it when two saves race),
+`DUPLICATE_NAME` (another item has this name and the same packaging word (migration 144): the match ignores upper/lower case and spaces around the name (on both the sent and the stored name), and
+covers deactivated items; "Egg" + "Box" and "Egg" + "Trey" are two items, "Egg" with no word and "Egg" + "Bag" are one; saving an item under the name and word it already has is never refused, even if an older item differs from it only in case; the unique key `items_name_packaging_key` (name, packaging key) also maps to it when two saves race),
 `NOT_FOUND` (`update_item`, `get_item_usage`: the item does not exist, for example deleted by someone else),
-`INVALID_INPUT` (blank name; name over 80 characters; packaging or description over 40),
+`INVALID_INPUT` (blank name; blank packaging (`Packaging is required`, migration 144; `update_item` accepts a blank word only for a call that changes nothing but `p_active` on an item that has none); name over 80 characters; packaging or description over 40),
 `PERMISSION_DENIED` (role check inside the body). Staff and customers never reach the body: the guard raises
 SQLSTATE 42501 first.
 
