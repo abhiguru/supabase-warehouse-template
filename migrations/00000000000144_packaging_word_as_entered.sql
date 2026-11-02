@@ -515,6 +515,32 @@ $m$                    'item_id', item_id,
                     'packaging', packaging,$m$
 ], ARRAY[1, 1]);
 
+-- get_item_storage_prices and get_item_price_history: each row also carries the item's packaging word (item_packaging, additive), so the rate screens
+-- can show "Egg \u00B7 Trey" beside the name. The word is '' for an item with no word (read as Bag) and, in the history, null once the item is deleted (the app then shows the name alone). The history keeps no copy of the word: it is the item's word now.
+SELECT pg_temp.patch_function('public.get_item_storage_prices(jsonb, text, text, integer, integer)'::regprocedure, ARRAY[
+$m$                 ''item_name'', i.name,$m$
+], ARRAY[
+$m$                 ''item_name'', i.name,
+                 ''item_packaging'', COALESCE(i.packaging, ''''),$m$
+], ARRAY[1]);
+
+SELECT pg_temp.patch_function('public.get_item_price_history(uuid, uuid, integer, integer)'::regprocedure, ARRAY[
+$m$            'item_name', h.item_name,$m$
+], ARRAY[
+$m$            'item_name', h.item_name,
+            'item_packaging', (SELECT COALESCE(i.packaging, '') FROM items i WHERE i.id = h.item_id),$m$
+], ARRAY[1]);
+
+-- get_customer_stock_analysis_v2: already one row per item id; its name search also finds the packaging word, and rows of two items with one name keep a fixed order.
+SELECT pg_temp.patch_function('public.get_customer_stock_analysis_v2(uuid, timestamp with time zone, jsonb, boolean)'::regprocedure, ARRAY[
+$m$OR i.name ILIKE '%' || (p_item_filter->>'item_name') || '%')$m$,
+$m$) ORDER BY sc.item_name$m$
+], ARRAY[
+$m$OR i.name ILIKE '%' || (p_item_filter->>'item_name') || '%'
+             OR i.packaging ILIKE '%' || (p_item_filter->>'item_name') || '%')$m$,
+$m$) ORDER BY sc.item_name, sc.item_id$m$
+], ARRAY[1, 1]);
+
 DROP FUNCTION pg_temp.patch_function(regprocedure, text[], text[], integer[]);
 
 NOTIFY pgrst, 'reload schema';
