@@ -57,6 +57,7 @@ Sections: [host prerequisites](#host-prerequisites),
   `doctor --host-preflight` (run by `setup.sh`) prints a warning and carries on: below 4 vCPU, 7.5 GiB of memory (an 8 GiB machine
   reports about 7.7) or 55 GiB of disk in total on the state's filesystem. A hard disk instead of an SSD is not detected; the
   database and the backups are slow on one.
+- **Users' phones: at least 4 GB of RAM and Android 12 or newer.**
 - **Full-disk encryption is recommended** (LUKS on Ubuntu, chosen in the installer's storage step; it cannot be added later without
   reinstalling). The database, the photos, the signing keys and the backup key are on that disk, and a host is stolen, repaired or
   discarded more often than it is attacked. `doctor` warns when no encrypted (`crypt`) device is under `/`, and says nothing when
