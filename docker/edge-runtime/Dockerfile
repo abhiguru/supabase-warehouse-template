@@ -6,7 +6,7 @@
 FROM supabase/edge-runtime:v1.77.8@sha256:178c041398a33ded8219344382d0672a90051d1babbf0af03425cafe20039a75 AS upstream
 
 # Same Debian release (bookworm) as the upstream image, so the binary's libc matches.
-FROM debian:bookworm-slim@sha256:7ff6ba31527b9e336162fa061746c366c4b2032f4d2cff2078bea43f78efe3f8
+FROM debian:bookworm-slim@sha256:99c0b25c46d0214d5a2091092e7908907dcaecd6a962cde0ac700acee222b6f3
 # Debian security updates for the whole image (perl-base among them), not
 # only PCRE2; the PCRE2 version check stays (docs/CONTAINER_SECURITY.md).
 # ca-certificates: outbound HTTPS (SMS provider, central JWKS); tzdata: time zones.
