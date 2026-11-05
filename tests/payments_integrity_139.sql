@@ -2,7 +2,7 @@
 --   A. each key exists with the right delete rule and is validated; the amount rule exists and is validated
 --   B. a row that points at nothing is refused; amounts of 0 and -1 are refused, a positive amount and NULL are accepted
 --   C. deleting a user profile that a payment names sets payments.supervisor_id to NULL (the payment stays)
---   D. delete_grn_safe refuses, with its own answer, a GRN that an invoice refers to (cancelled or not); delete_invoice refuses (INVOICE_CANCEL_ONLY)
+--   D. delete_grn_safe refuses, with its own answer, a GRN that an invoice refers to (cancelled or not); delete_invoice refuses an invoice with a payment (migration 146)
 --   E. a customer, a GRN or an invoice that is still referenced cannot be hard-deleted
 -- (The guard of the migration is run against a database with bad rows by tests/migrations.sh.)
 -- Fictional data; runs only in migrations.sh's disposable, network-disabled database.
@@ -92,7 +92,7 @@ SELECT set_config('request.jwt.claims',:'admin_claims',true);
 SET LOCAL ROLE authenticated;
 SELECT public.delete_grn_safe(:'grn'::uuid) AS r_blocked \gset
 RESET ROLE;
-SELECT pg_temp.p9_assert(:'r_blocked'::jsonb->>'success'='false' AND :'r_blocked'::jsonb->>'error' LIKE '%it has an invoice (cancelled invoices included); an invoiced GRN is kept.', 'delete_grn_safe names the invoice: '||:'r_blocked');
+SELECT pg_temp.p9_assert(:'r_blocked'::jsonb->>'success'='false' AND :'r_blocked'::jsonb->>'error' LIKE '%it has an invoice. Delete the invoice first.','delete_grn_safe names the invoice: '||:'r_blocked');
 SELECT pg_temp.p9_assert(EXISTS (SELECT 1 FROM public.goodsreceived WHERE id=:'grn'::uuid), 'the GRN is still there');
 -- A GRN without an invoice is still deleted.
 SELECT set_config('request.jwt.claims',:'admin_claims',true);
@@ -116,12 +116,12 @@ INSERT INTO public.dispatch(disp_no, customer_id) VALUES ('D139', :'cust'::uuid)
 INSERT INTO public.dispatch_trl(gr_id, disp_id) VALUES (:'grn'::uuid, :'disp'::uuid) RETURNING id AS dtrl \gset
 INSERT INTO public.invoice_trl(invoice_id, disp_trl_id) VALUES (:'inv'::uuid, :'dtrl'::uuid);
 SELECT pg_temp.p9_assert(pg_temp.p9_state(format('DELETE FROM public.invoice WHERE id = %L', :'inv')) = '23001', 'an invoice with a line cannot be hard-deleted');
--- delete_invoice refuses and deletes nothing; a cancelled invoice still blocks the GRN's deletion.
+-- delete_invoice (migration 146) refuses an invoice that a payment refers to (PY7) and deletes nothing; a cancelled invoice still blocks the GRN's deletion.
 SELECT set_config('request.jwt.claims',:'admin_claims',true);
 SET LOCAL ROLE authenticated;
 SELECT public.delete_invoice(:'inv'::uuid) AS r_del \gset
 RESET ROLE;
-SELECT pg_temp.p9_assert(:'r_del'::jsonb->>'success'='false' AND :'r_del'::jsonb->>'reason'='INVOICE_CANCEL_ONLY'
+SELECT pg_temp.p9_assert(:'r_del'::jsonb->>'success'='false' AND :'r_del'::jsonb->>'error'='Cannot delete an invoice that has payments'
   AND EXISTS (SELECT 1 FROM public.invoice WHERE id=:'inv'::uuid) AND EXISTS (SELECT 1 FROM public.invoice_trl WHERE invoice_id=:'inv'::uuid), 'delete_invoice refuses and deletes nothing: '||:'r_del');
 -- A GRN whose only invoice is cancelled is kept as well.
 INSERT INTO public.goodsreceived(gr_no, customer_id, date) VALUES ('P139C', :'cust'::uuid, now()) RETURNING id AS grn_c \gset
@@ -131,5 +131,5 @@ SELECT set_config('request.jwt.claims',:'admin_claims',true);
 SET LOCAL ROLE authenticated;
 SELECT public.delete_grn_safe(:'grn_c'::uuid) AS r_cancelled \gset
 RESET ROLE;
-SELECT pg_temp.p9_assert(:'r_cancelled'::jsonb->>'success'='false' AND :'r_cancelled'::jsonb->>'error' LIKE '%cancelled invoices included%' AND EXISTS (SELECT 1 FROM public.goodsreceived WHERE id=:'grn_c'::uuid), 'a GRN with a cancelled invoice is kept: '||:'r_cancelled');
+SELECT pg_temp.p9_assert(:'r_cancelled'::jsonb->>'success'='false' AND :'r_cancelled'::jsonb->>'error' LIKE '%it has an invoice. Delete the invoice first.' AND EXISTS (SELECT 1 FROM public.goodsreceived WHERE id=:'grn_c'::uuid), 'a GRN with a cancelled invoice is kept: '||:'r_cancelled');
 ROLLBACK;

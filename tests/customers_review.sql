@@ -109,10 +109,14 @@ SELECT pg_temp.cr_assert(:'r'::jsonb->>'success'='true' AND (SELECT mobile FROM 
 SELECT pg_temp.cr_assert(jsonb_array_length(public.search_customers('9198888889',20)->'data')>=1,'partial digits with 91 prefix find Alpha');
 SELECT pg_temp.cr_assert(jsonb_array_length(public.search_customers('919888888973',20)->'data')=1,'12-digit finds the 91...-stored customer');
 SELECT pg_temp.cr_assert(jsonb_array_length(public.search_customers('CR Gone',20,true)->'data')=0,'soft-deleted never listed');
--- staff: include_inactive gives no deactivated rows; active rows still found (positive control)
+-- staff: include_inactive lists deactivated rows (migration 147), never soft-deleted ones; active rows still found (positive control)
 SELECT set_config('request.jwt.claims',:'staff_claims',true);
 SELECT pg_temp.cr_assert(warehouse_security.active_role()='staff','actual staff role');
-SELECT pg_temp.cr_assert(jsonb_array_length(public.search_customers('CR Beta',20,true)->'data')=0,'staff include_inactive: no deactivated rows');
+-- Migration 147 (WH-26): staff may ask for deactivated customers too; without the flag they still see none.
+SELECT pg_temp.cr_assert(jsonb_array_length(public.search_customers('CR Beta',20)->'data')=0,'staff default search: no deactivated rows');
+SELECT pg_temp.cr_assert((SELECT bool_and(e->>'active'='false' AND e->>'deleted'='false' AND e->>'id'=:'beta_id') AND count(*)=1
+  FROM jsonb_array_elements(public.search_customers('CR Beta',20,true)->'data') e),'staff include_inactive: the deactivated customer is listed');
 SELECT pg_temp.cr_assert(jsonb_array_length(public.search_customers('CR Alpha',20,true)->'data')=1,'staff include_inactive still finds active Alpha');
+SELECT pg_temp.cr_assert(jsonb_array_length(public.search_customers('CR Gone',20,true)->'data')=0,'staff never see a soft-deleted customer');
 RESET ROLE;
 ROLLBACK;

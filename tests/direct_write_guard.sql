@@ -324,12 +324,13 @@ SELECT id AS dispatch_b1 FROM public.dispatch WHERE disp_no='WGB1' \gset
 -- 5. (An order's note went through update_order_metadata, which migration 123 dropped: no screen called it.)
 
 -- 6. The dependency-checked deletes still work for the supervisor: the invoice
--- is cancelled first (migration 134: delete_invoice refuses), then a dispatch (stock restored), then a receipt with its lines.
+-- is cancelled first (it could also be deleted since migration 146; this test keeps the row), then a dispatch (stock restored), then a receipt with its lines.
 SELECT set_config('request.jwt.claims',:'supervisor_claims',true);
 SET LOCAL ROLE authenticated;
 SELECT public.delete_dispatch_with_order_cleanup(:'dispatch_a1'::uuid,NULL) AS invoiced_dispatch \gset
 SELECT pg_temp.guard_assert(:'invoiced_dispatch'::jsonb->>'success'='false','an invoiced dispatch is not deleted: ' || :'invoiced_dispatch');
-SELECT pg_temp.guard_assert(public.delete_invoice(:'invoice_a'::uuid)->>'reason'='INVOICE_CANCEL_ONLY','supervisor''s delete of the invoice is refused (migration 134)');
+SELECT pg_temp.guard_assert(public.delete_invoice(:'invoice_a'::uuid,'2000-01-01T00:00:00Z'::timestamptz)->>'reason'='STALE_RECORD'
+  AND EXISTS (SELECT 1 FROM public.invoice WHERE id=:'invoice_a'::uuid),'supervisor''s delete of the invoice with a stale token is refused (migration 146)');
 SELECT pg_temp.guard_assert(public.cancel_invoice(:'invoice_a'::uuid,'Guard test cleanup',NULL)->>'success'='true','supervisor cancels the invoice');
 SELECT public.delete_dispatch_with_order_cleanup(:'dispatch_b1'::uuid,NULL) AS deleted_dispatch \gset
 SELECT pg_temp.guard_assert(:'deleted_dispatch'::jsonb->>'success'='true','supervisor deletes the dispatch: ' || :'deleted_dispatch');

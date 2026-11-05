@@ -202,7 +202,7 @@ const expectedColumns = {
   },
   'dispatch-activity': {
     customer: [['Dispatch number', 'Date', 'GRN', 'Items', 'Quantity'], ['જાવક નંબર', 'તારીખ', 'આવક પાવતી', 'આઇટમ', 'નંગ']],
-    all: [['Customer', 'Dispatches', 'Bags dispatched', 'Last dispatch'], ['વેપારી', 'જાવક', 'જાવકના નંગ', 'છેલ્લી જાવક']],
+    all: [['Customer', 'Dispatches', 'Units dispatched', 'Last dispatch'], ['વેપારી', 'જાવક', 'જાવકના નંગ', 'છેલ્લી જાવક']],
   },
   'invoice-history': {
     customer: [['Invoice number', 'Date', 'GRN', 'Amount', 'Tax', 'Status'],
@@ -224,7 +224,7 @@ const expectedColumns = {
     all: [['Item', 'Packaging', 'GRNs', 'Received quantity', 'Stock'], ['આઇટમ', 'પેકિંગ', 'આવક પાવતી', 'આવકના નંગ', 'સ્ટોક']],
   },
   'customer-activity': {
-    customer: [['Month', 'GRNs', 'Received quantity', 'Dispatches', 'Bags dispatched', 'Amount', 'Stock at month end'],
+    customer: [['Month', 'GRNs', 'Received quantity', 'Dispatches', 'Units dispatched', 'Amount', 'Stock at month end'],
       ['મહિનો', 'આવક પાવતી', 'આવકના નંગ', 'જાવક', 'જાવકના નંગ', 'રકમ', 'મહિનાના અંતે સ્ટોક']],
     all: [['Customer', 'City', 'Stock', 'GRNs', 'Dispatches', 'Amount', 'Last activity'], ['વેપારી', 'શહેર', 'સ્ટોક', 'આવક પાવતી', 'જાવક', 'રકમ', 'છેલ્લી કામગીરી']],
   },
@@ -680,9 +680,9 @@ const baselineHtml = {
   'grn-activity/customer/gu': '01235510bad7d19a3d666c793586ca9c6fc614acff99ba8f11daba4cbc07eea3',
   'grn-activity/all/en': '5d93410bb47bd6e10b7b2f5df264b66fdc9dba5665deb89d8aa70a79005c06ea',
   'grn-activity/all/gu': '16fa0e432b42bf19fa2c78c1260eab4560eff0398310ffc945fce950b21fa551',
-  'dispatch-activity/customer/en': '321fbe984613d72b53e3ea7731aa1d6559d82f0274213f71b9a984b3c85e6044',
+  'dispatch-activity/customer/en': '3c2348890c6b03e6d92860be4894b9e6adf2a596bfc55d1549cf754885868473',
   'dispatch-activity/customer/gu': '8252319ee00f608e7bde95a1d8b1fb8ef22a8e97ed47a5aba5ea8cac49083967',
-  'dispatch-activity/all/en': 'df7d9854fb96b15c148412ab7efb2639ae8cbc0d5a41623bf57a0f136f865800',
+  'dispatch-activity/all/en': '78cf72ca3695b64a824233e5b8813a66f5c99fdbffc2f71de160f8539d6005be',
   'dispatch-activity/all/gu': '36de38d6486aaec4bfb32daa1e44502a0f10c7e9a4a4573238f23bc62b93562b',
   'invoice-history/customer/en': '05a927f36f680eea340f109923458f770dc6e82d11fcc23bfb898b4321154404',
   'invoice-history/customer/gu': '28417f33d60a85a443ef87ebda2ad49044c5ae9bd98cff12723e448717261d3e',
@@ -700,7 +700,7 @@ const baselineHtml = {
   'item-stock-summary/customer/gu': '76819733a1321755fcb79e0e0bef962959ab286a02e093858f8006dc8819bab3',
   'item-stock-summary/all/en': 'ffd6998f6f935f034c5af591ab0b7351e63e25278ac37520e3732c7a7f8ee01e',
   'item-stock-summary/all/gu': 'a26b93772bea56d38b2e190972098ff38345280b1ed32dfd9f225d9ad0b3c782',
-  'customer-activity/customer/en': '0dc787531a5be144a62d4fc077d6939e7ee3bf5833e9754f7fa094ade808ddf4',
+  'customer-activity/customer/en': '8ce80664b5d057c6570e3540f88f933a74029cbf27f9393b48153d1f4566b646',
   'customer-activity/customer/gu': '4e6b45be7898879abcef458be1d9025670712c00f9dedaed67c6ec1c7816d075',
   'customer-activity/all/en': 'a4c0459d5547148b9b28769b1dfe93bb6a88c725a1da29ab243eff90a77f8324',
   'customer-activity/all/gu': '2fc67a899182ab8db08bddfae4cdb953d96b25c9406f7161010128c8607a635d',
@@ -770,7 +770,7 @@ test('a sort on weight is no longer known: the default order applies, and no sor
 });
 
 test('the dispatch activity summary of one customer has two figures, with no weight', () => {
-  assert.deepEqual(build('dispatch-activity', 'customer', 'en').summary, [['Dispatches', '1'], ['Bags dispatched', '12']]);
+  assert.deepEqual(build('dispatch-activity', 'customer', 'en').summary, [['Dispatches', '1'], ['Units dispatched', '12']]);
   assert.deepEqual(build('dispatch-activity', 'customer', 'gu').summary, [['જાવક', '1'], ['જાવકના નંગ', '12']]);
 });
 

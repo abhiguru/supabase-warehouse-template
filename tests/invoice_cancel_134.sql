@@ -126,7 +126,7 @@ SELECT pg_temp.ic_call(format('SELECT public.delete_invoice(%L)',:'inv1')) AS r_
 RESET ROLE;
 SELECT pg_temp.ic_assert(:'r_staff'::jsonb->>'state'='42501' AND :'r_staff'::jsonb->>'raised'='Staff access required','staff are refused cancel_invoice: '||:'r_staff');
 SELECT pg_temp.ic_assert(:'r_customer'::jsonb->>'state'='42501','a customer account is refused cancel_invoice: '||:'r_customer');
-SELECT pg_temp.ic_assert(:'r_customer_delete'::jsonb->>'success'='false' AND :'r_customer_delete'::jsonb->>'error' ~ '(Staff|Administrator|Customer)','a customer account is refused delete_invoice: '||:'r_customer_delete');
+SELECT pg_temp.ic_assert(:'r_customer_delete'::jsonb->>'state'='42501','a customer account is refused delete_invoice (migration 146 re-raises the guard''s refusal): '||:'r_customer_delete');
 SELECT pg_temp.ic_assert((SELECT cancelled_at IS NULL FROM public.invoice WHERE id=:'inv1'::uuid),'a refused call cancelled nothing');
 SELECT pg_temp.ic_assert(NOT has_function_privilege('anon','public.cancel_invoice(uuid,text,timestamptz)','EXECUTE')
  AND NOT has_function_privilege('public','public.cancel_invoice(uuid,text,timestamptz)','EXECUTE')
@@ -269,23 +269,25 @@ SELECT pg_temp.ic_assert((SELECT count(*)=1 FROM public.invoice WHERE inv_fin_ye
 -- unique_inv_no_per_year blocks it at the table too.
 SELECT pg_temp.ic_assert((SELECT state FROM (SELECT pg_temp.ic_call('INSERT INTO public.invoice(inv_fin_year,inv_no,gr_id,gr_no,customer_id,inv_date) SELECT 2026,5,gr_id,gr_no,customer_id,inv_date FROM public.invoice WHERE inv_no=7 RETURNING to_jsonb(invoice)')->>'state' AS state) s)='23505','unique_inv_no_per_year refuses number 5 again');
 
--- 10. delete_invoice refuses and deletes nothing, for a live and for a cancelled invoice.
+-- 10. delete_invoice (migration 146 brings it back; the deletes themselves are in tests/invoice_delete_146.sql, because the rows here are read
+-- by the sections below): a stale version token is refused for a live and for a cancelled invoice and deletes nothing; staff are refused.
 SELECT count(*) AS inv_rows_before FROM public.invoice \gset
 SELECT count(*) AS trl_rows_before FROM public.invoice_trl \gset
 SELECT set_config('request.jwt.claims',:'admin_claims',true);
 SET LOCAL ROLE authenticated;
-SELECT public.delete_invoice(:'inv_new'::uuid) AS r_del_live \gset
-SELECT public.delete_invoice(:'inv1'::uuid) AS r_del_cancelled \gset
+SELECT public.delete_invoice(:'inv_new'::uuid,'2000-01-01T00:00:00Z'::timestamptz) AS r_del_live \gset
+SELECT public.delete_invoice(:'inv1'::uuid,'2000-01-01T00:00:00Z'::timestamptz) AS r_del_cancelled \gset
 RESET ROLE;
-SELECT pg_temp.ic_assert(:'r_del_live'::jsonb->>'success'='false' AND :'r_del_live'::jsonb->>'reason'='INVOICE_CANCEL_ONLY' AND :'r_del_live'::jsonb->>'error_code'='WH409'
- AND :'r_del_live'::jsonb->>'invoice_id'=:'inv_new' AND :'r_del_cancelled'::jsonb->>'reason'='INVOICE_CANCEL_ONLY','delete_invoice refuses: '||:'r_del_live');
+SELECT pg_temp.ic_assert(:'r_del_live'::jsonb->>'success'='false' AND :'r_del_live'::jsonb->>'reason'='STALE_RECORD' AND :'r_del_live'::jsonb->>'error_code'='WH409'
+ AND :'r_del_live'::jsonb->>'id'=:'inv_new' AND :'r_del_cancelled'::jsonb->>'reason'='STALE_RECORD','delete_invoice refuses a stale token: '||:'r_del_live');
 SELECT pg_temp.ic_assert((SELECT count(*)=:inv_rows_before FROM public.invoice) AND (SELECT count(*)=:trl_rows_before FROM public.invoice_trl)
  AND (SELECT invoiced FROM public.goodsreceived WHERE id=:'grn1'::uuid),'delete_invoice deleted nothing and changed no flag');
 SELECT set_config('request.jwt.claims',:'staff_claims',true);
 SET LOCAL ROLE authenticated;
-SELECT public.delete_invoice(:'inv_new'::uuid) AS r_del_staff \gset
+SELECT pg_temp.ic_call(format('SELECT public.delete_invoice(%L)',:'inv_new')) AS r_del_staff \gset
 RESET ROLE;
-SELECT pg_temp.ic_assert(:'r_del_staff'::jsonb->>'success'='false' AND :'r_del_staff'::jsonb->>'error'='Staff access required','staff are refused delete_invoice as before: '||:'r_del_staff');
+SELECT pg_temp.ic_assert(:'r_del_staff'::jsonb->>'state'='42501' AND :'r_del_staff'::jsonb->>'raised'='Staff access required','staff are refused delete_invoice: '||:'r_del_staff');
+SELECT pg_temp.ic_assert((SELECT count(*)=:inv_rows_before FROM public.invoice) AND (SELECT count(*)=:trl_rows_before FROM public.invoice_trl),'the refused calls deleted nothing');
 
 -- 11. Reads. Detail: staff see who cancelled; a customer account sees the cancellation but not the name.
 SELECT set_config('request.jwt.claims',:'staff_claims',true);
