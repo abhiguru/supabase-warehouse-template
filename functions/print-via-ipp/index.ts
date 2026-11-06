@@ -1,70 +1,65 @@
 // Edge Function: print-via-ipp
-// Generic IPP print function — sends raw data to CUPS printer
+// Generic raw print function: sends the given bytes to the facility's printer (PRINT_TRANSPORT: CUPS or the Windows print bridge).
+// The printer is the facility's one configured printer (PRINTER_NAME); a request cannot choose another queue.
 
 import { securityHeaders } from '../_shared/security-headers.ts'
 import { validatePrintAccess, createAuthErrorResponse } from '../_shared/auth-helpers.ts'
-import { submittedJob } from '../_shared/ipp-validate.ts'
-import { Buffer } from 'node:buffer'
+import { submitRawJob, jobOutcome, printFailureBody, configuredPrinterName } from '../_shared/print-transport.ts'
+
+const json = { ...securityHeaders, 'Content-Type': 'application/json' };
+
+// The raw bytes: `content_base64` (any bytes), or `content` as text whose characters are all below U+0100 (sent one byte each, latin1).
+function requestBytes(body: { content?: unknown; content_base64?: unknown }): Uint8Array | null {
+  if (typeof body.content_base64 === 'string' && body.content_base64 !== '') {
+    try {
+      return Uint8Array.from(atob(body.content_base64), char => char.charCodeAt(0));
+    } catch {
+      return null;
+    }
+  }
+  if (typeof body.content === 'string' && body.content !== '') {
+    const bytes = new Uint8Array(body.content.length);
+    for (let i = 0; i < body.content.length; i++) {
+      const code = body.content.charCodeAt(i);
+      if (code > 0xff) return null;
+      bytes[i] = code;
+    }
+    return bytes;
+  }
+  return null;
+}
 
 Deno.serve(async (req) => {
   try {
-    const userProfile = await validatePrintAccess(req);
+    await validatePrintAccess(req);
 
-    const { content, printer_name = 'default', title = 'Print Job' } = await req.json();
-
-    if (!content) {
+    const body = await req.json().catch(() => ({}));
+    const bytes = requestBytes(body);
+    if (!bytes) {
       return new Response(
-        JSON.stringify({ success: false, error: 'Missing "content" field (raw print data)' }),
-        { headers: { ...securityHeaders, 'Content-Type': 'application/json' }, status: 400 }
+        JSON.stringify({ success: false, error: 'Missing or invalid "content" (text below U+0100) or "content_base64"' }),
+        { headers: json, status: 400 }
       );
     }
+    const title = typeof body.title === 'string' ? body.title : 'Print Job';
 
-    if (typeof printer_name !== 'string' || !/^[a-zA-Z0-9_-]{1,127}$/.test(printer_name)) {
-      throw { status: 400, message: 'Invalid printer name' };
-    }
-    const printerUrl = `http://cups:631/printers/${printer_name}`;
-    console.log(`print-via-ipp: Printing to ${printerUrl} for user ${userProfile.name}`);
-
-    const ipp = await import("npm:ipp@2.0.1");
-    const printer = ipp.Printer(printerUrl);
-
-    const buffer = new TextEncoder().encode(content);
-
-    const msg = {
-      "operation-attributes-tag": {
-        "requesting-user-name": userProfile.name || "print-user",
-        "job-name": title,
-        "document-format": "application/octet-stream"
-      },
-      data: Buffer.from(buffer)
-    };
-
-    const result: any = await new Promise((resolve, reject) => {
-      printer.execute("Print-Job", msg, (err: any, res: any) => {
-        if (err) reject(err);
-        else resolve(res);
-      });
-    });
-
-    // Success only with a reply that confirms the job and names its id.
-    const submitted = submittedJob(result);
-    if (!submitted.ok) {
-      console.error('print-via-ipp: the printer reply did not confirm the job');
-      return new Response(
-        JSON.stringify({ success: false, error: 'The printer did not confirm the job', unconfirmed: true }),
-        { headers: { ...securityHeaders, 'Content-Type': 'application/json' }, status: 502 }
-      );
+    const result = await submitRawJob({ bytes, docName: title, jobType: 'Raw' });
+    const outcome = jobOutcome(result);
+    if (outcome.kind === 'failed' || outcome.kind === 'unconfirmed') {
+      console.error('print-via-ipp: not printed, transport', result.transport);
+      return new Response(JSON.stringify(printFailureBody(outcome, null)), { headers: json, status: 502 });
     }
 
     return new Response(
       JSON.stringify({
         success: true,
         message: 'Print job submitted successfully',
-        job_id: submitted.jobId,
-        printer: printer_name,
+        job_id: result.jobId,
+        transport: result.transport,
+        printer: configuredPrinterName(),
         timestamp: new Date().toISOString()
       }),
-      { headers: { ...securityHeaders, 'Content-Type': 'application/json' }, status: 200 }
+      { headers: json, status: 200 }
     );
 
   } catch (error) {
@@ -76,7 +71,7 @@ Deno.serve(async (req) => {
 
     return new Response(
       JSON.stringify({ success: false, error: error.message }),
-      { headers: { ...securityHeaders, 'Content-Type': 'application/json' }, status: 500 }
+      { headers: json, status: 500 }
     );
   }
 });

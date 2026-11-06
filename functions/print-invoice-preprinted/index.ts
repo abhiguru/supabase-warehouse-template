@@ -1,7 +1,6 @@
 import { restClient } from '../_shared/supabase-rest.ts'
 import { monitorPrintJobStatus } from '../_shared/print-status-monitor.ts'
-import { SUBMIT_TIMEOUT_MS, submitWithTimeout } from '../_shared/print-monitor-rule.ts'
-import { submittedJob } from '../_shared/ipp-validate.ts'
+import { submitRawJob, jobOutcome, printFailureBody, configuredPrinterName } from '../_shared/print-transport.ts'
 import { groupInvoiceLines, paginateInvoiceRows } from '../_shared/invoice-print-layout.ts'
 import type { InvoicePrintPage } from '../_shared/invoice-print-layout.ts'
 import { lineStorageAmount, cumulativeStorageAmount, resolveInvoiceFinYear } from '../_shared/invoice-print-amounts.ts'
@@ -594,67 +593,38 @@ Deno.serve(async (req) => {
       );
     }
 
-    // Import IPP and send to printer in RAW mode
-    const ipp = await import("npm:ipp@2.0.1");
-    const printer = ipp.Printer("http://cups:631/printers/LQ1310_RAW");
-
-    const Buffer = (await import("node:buffer")).Buffer;
-    const contentBuffer = Buffer.from(printContent);
-
-    const msg = {
-      "operation-attributes-tag": {
-        "requesting-user-name": "invoice-preprint",
-        "job-name": `Invoice-${start_inv_no_str}-to-${end_inv_no_str}`,
-        "document-format": "application/vnd.cups-raw"  // CUPS RAW - bypasses filters
-      },
-      data: contentBuffer
-    };
+    // Hand the finished printer bytes to the transport (CUPS or the Windows print bridge, PRINT_TRANSPORT).
+    // The bytes are the encoded document and nothing else: the layout and the character encoding above this
+    // line are the document's own; the transport neither changes nor translates them.
+    const contentBuffer = new TextEncoder().encode(printContent);
 
     console.log('print-invoice-preprinted: Sending to printer...');
 
-    // Bounded by SUBMIT_TIMEOUT_MS so the submission and the status monitor
-    // fit the worker's lifetime (print-monitor-rule.ts). No answer in time is
-    // an unconfirmed job (submittedJob below), never resubmitted.
-    const result: any = await submitWithTimeout((signal) => new Promise((resolve, reject) => {
-      printer.execute("Print-Job", msg, (err: any, res: any) => {
-        if (signal.aborted) {
-          console.error('print-invoice-preprinted: IPP reply after the submission timeout, ignored:', err ?? 'reply');
-          return;
-        }
-        if (err) {
-          console.error('print-invoice-preprinted: IPP error:', err);
-          reject(err);
-        } else {
-          console.log('print-invoice-preprinted: IPP success');
-          resolve(res);
-        }
-      });
-    }));
-    if (result === null) {
-      console.error(`print-invoice-preprinted: no reply from the printer within ${SUBMIT_TIMEOUT_MS / 1000} s`);
+    const result = await submitRawJob({ bytes: contentBuffer, docName: `Invoice-${start_inv_no_str}-to-${end_inv_no_str}`, jobType: 'Invoice' });
+    const outcome = jobOutcome(result);
+    if (outcome.kind === 'failed') {
+      console.error('print-invoice-preprinted: print failed on the', result.transport, 'transport');
+      return new Response(
+        JSON.stringify(printFailureBody(outcome, null), null, 2),
+        { headers: { 'Content-Type': 'application/json' }, status: 502 }
+      );
     }
-
-    // Submitted only when the reply confirms the job with its id. Otherwise the
-    // paper may or may not come out: the job is recorded as 'unknown' (never
-    // resubmitted on a guess) and the caller is told the printer did not confirm it.
-    const submitted = submittedJob(result);
-    const jobId = submitted.ok ? submitted.jobId : null;
-    const jobUri = submitted.ok ? submitted.jobUri : '';
+    const jobId = result.jobId;
+    const jobUri = result.jobUri ?? '';
 
     // Log print job to database
     const { data: printJobRecord, error: logError } = await supabase
       .from('print_jobs')
       .insert({
-        cups_job_id: jobId,
         job_type: 'Invoice',
         document_range_start: start_inv_no_str,
         document_range_end: end_inv_no_str,
         document_count: results.length,
         user_id: userId,
         user_name: userName,
-        ...(submitted.ok ? { status: 'printing' } : { status: 'unknown', error_message: 'The printer did not confirm the job' }),
+        ...outcome.row,
         content_size: contentBuffer.length,
-        printer_name: 'LQ1310_RAW'
+        printer_name: configuredPrinterName()
       })
       .select()
       .single();
@@ -663,16 +633,9 @@ Deno.serve(async (req) => {
       console.error('print-invoice-preprinted: Failed to log print job:', logError);
     }
 
-    if (!submitted.ok) {
+    if (outcome.kind === 'unconfirmed') {
       return new Response(
-        JSON.stringify({
-          success: false,
-          error: 'The printer did not confirm the job',
-          // The job may be on paper: true even when it could not be logged (print_job_id null).
-          unconfirmed: true,
-          print_job_id: printJobRecord?.id || null,
-          timestamp: new Date().toISOString()
-        }, null, 2),
+        JSON.stringify(printFailureBody(outcome, printJobRecord?.id || null), null, 2),
         {
           headers: { 'Content-Type': 'application/json' },
           status: 502
@@ -681,11 +644,11 @@ Deno.serve(async (req) => {
     }
 
     // Start background status monitoring (non-blocking)
-    if (printJobRecord?.id && jobId !== null) {
+    if (outcome.kind === 'tracked' && printJobRecord?.id) {
       EdgeRuntime.waitUntil(
         monitorPrintJobStatus(
           printJobRecord.id,
-          jobId,
+          outcome.row.cups_job_id,
           Deno.env.get('SUPABASE_URL') ?? '',
           Deno.env.get('SUPABASE_SERVICE_ROLE_KEY') ?? ''
         )
@@ -708,6 +671,7 @@ Deno.serve(async (req) => {
           print_job_id: printJobRecord?.id || null,
           cups_job_id: jobId,
           job_uri: jobUri,
+          transport: result.transport,
           printer: 'LQ1310_RAW (12 CPI, 103 chars width)',
           content_size: contentBuffer.length
         },
