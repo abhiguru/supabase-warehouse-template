@@ -283,8 +283,11 @@ SELECT pg_temp.sr_assert(:'new_ended'::jsonb#>>'{data,rate_source}'='standard' A
  format('0-10@3.00/1.00/5 %1$s..open | 11-20@4.00/1.50/5 %1$s..open | 21-30@5.00/2.00/5.5 %1$s..open',:'today'),'copy from an item with no rate in force gives the standard tiers: '||:'new_ended');
 SELECT pg_temp.sr_as(:'admin_claims'::jsonb,format($q$SELECT public.create_item('SR Copy From Nobody','Bag',NULL,true,%L::uuid)$q$,gen_random_uuid())) AS new_nobody \gset
 SELECT pg_temp.sr_assert(:'new_nobody'::jsonb#>>'{data,rate_source}'='standard','copy from an unknown item gives the standard tiers: '||:'new_nobody');
--- Only managers create items (unchanged).
-SELECT pg_temp.sr_assert(pg_temp.sr_as(:'staff_claims'::jsonb,$q$SELECT public.create_item('SR Staff Item','Bag')$q$)->>'state'='42501','staff still cannot create items');
+-- Migration 145: staff may add an item, but it never gets the standard rate (nor a copied one); a manager sets the rate later.
+SELECT pg_temp.sr_as(:'staff_claims'::jsonb,$q$SELECT public.create_item('SR Staff Item','Bag')$q$) AS staff_item \gset
+SELECT pg_temp.sr_assert(:'staff_item'::jsonb->>'success'='true' AND :'staff_item'::jsonb#>>'{data,rate_source}'='none'
+ AND NOT EXISTS (SELECT 1 FROM public.item_storage_prices WHERE item_id=pg_temp.sr_item('SR Staff Item')),'a staff-added item gets no standard rate: '||:'staff_item');
+DELETE FROM public.items WHERE name='SR Staff Item'; -- an unpriced item would change the counts of the sections below
 
 -- ---------------------------------------------------------------------------
 -- 7. update_item: reactivation

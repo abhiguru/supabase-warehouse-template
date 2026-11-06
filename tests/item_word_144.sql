@@ -129,7 +129,7 @@ SELECT pg_temp.w_as(:'staff_claims'::jsonb,$q$SELECT public.create_item('Word St
 SELECT pg_temp.w_as(:'staff_claims'::jsonb,$q$SELECT public.create_item('Word Staff No Word')$q$) AS s5 \gset
 SELECT pg_temp.w_assert(:'s4'::jsonb->>'error_code'='DUPLICATE_NAME' AND :'s5'::jsonb->>'message'='Packaging is required','staff get the same duplicate and word rules: '||:'s4'||:'s5');
 SELECT pg_temp.w_as(:'staff_claims'::jsonb,format('SELECT public.update_item(%L,%L,%L)',:'old_id','Word Old','Sack')) AS s6 \gset
-SELECT pg_temp.w_assert(:'s6'::jsonb->>'error_code'='PERMISSION_DENIED','staff still cannot update an item: '||:'s6');
+SELECT pg_temp.w_assert(:'s6'::jsonb->>'state'='42501' AND :'s6'::jsonb->>'raised'='Staff access required','staff still cannot update an item: '||:'s6');
 SELECT pg_temp.w_as(:'customer_claims'::jsonb,$q$SELECT public.create_item('Word Customer Item','Bag')$q$) AS c1 \gset
 SELECT pg_temp.w_assert(:'c1'::jsonb->>'state'='42501' AND NOT EXISTS (SELECT 1 FROM public.items WHERE name='Word Customer Item'),'a customer account is refused: '||:'c1');
 ROLLBACK;

@@ -35,7 +35,7 @@ export const CASES = [
   { id: 'staff-required', who: 'customer', request: ['POST', '/rpc/get_next_grn_number', {}], status: 403, code: '42501', message: 'Staff access required', match: 'text' },
   { id: 'administrator-required', who: 'staff', request: ['POST', '/rpc/clear_user_central_identity', { p_user_id: randomUUID() }], status: 403, code: '42501', message: 'Administrator required', match: 'text' },
   { id: 'customer-denied', who: 'customer', request: ['POST', '/rpc/get_customer_stock_summary', { p_customer_uuid: randomUUID() }], status: 403, code: '42501', message: 'Customer access denied', match: 'text' },
-  { id: 'read-only-get', who: 'admin', request: ['GET', '/rpc/create_item?p_name=x'], status: 405, code: '25006', message: 'cannot execute INSERT in a read-only transaction', match: 'code' },
+  { id: 'read-only-get', who: 'admin', request: ['GET', '/rpc/create_item?p_name=x&p_packaging=Bag'], status: 405, code: '25006', message: 'cannot execute INSERT in a read-only transaction', match: 'code' },
 ];
 
 // Answers that are a 200 with an envelope the app reads (`success: false` and a code or message inside), not an HTTP error. `body` is the
