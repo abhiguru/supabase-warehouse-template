@@ -357,3 +357,34 @@ test('every query method the functions call exists in the helper', () => {
   }
   assert.ok(chains > 20, 'the guard found the caller chains');
 });
+
+// WH-109 part 4: in() and lt(), used by the status monitor, cancel-print-job and sweep-print-jobs.
+test('in() sends column=in.(a,b) and lt() sends column=lt.value, next to eq and in an update', async () => {
+  const mock = mockFetch({ status: 204 }, { body: [{ id: 'j1' }] });
+  try {
+    const client = restClient('http://gateway:8000', 'service-key');
+    await client.from('print_jobs').update({ status: 'cancelled' }).eq('id', 'j1').in('status', ['queued', 'printing']);
+    assert.equal(decodeURIComponent(mock.calls[0].url), 'http://gateway:8000/rest/v1/print_jobs?id=eq.j1&status=in.(queued,printing)');
+    assert.equal(mock.calls[0].url.includes('status=in.%28queued%2Cprinting%29'), true, 'the parentheses and comma travel percent-encoded, which PostgREST decodes');
+    assert.equal(mock.calls[0].init.method, 'PATCH');
+    assert.equal(mock.calls[0].init.body, JSON.stringify({ status: 'cancelled' }));
+    const swept = await client.from('print_jobs').update({ status: 'unknown' }).in('status', ['queued', 'printing']).lt('created_at', '2026-11-07T09:55:00.000Z').select('id');
+    assert.deepEqual(swept.data, [{ id: 'j1' }]);
+    assert.equal(decodeURIComponent(mock.calls[1].url), 'http://gateway:8000/rest/v1/print_jobs?status=in.(queued,printing)&created_at=lt.2026-11-07T09:55:00.000Z&select=id');
+    assert.equal(mock.calls[1].init.headers.Prefer, 'return=representation');
+  } finally { mock.restore(); }
+});
+
+test('in() takes one value, and accepts ids, dots, colons and dashes', () => {
+  const client = restClient('http://gateway:8000', 'k');
+  assert.doesNotThrow(() => client.from('t').in('status', ['queued']));
+  assert.doesNotThrow(() => client.from('t').in('id', ['11111111-1111-4111-8111-111111111111', 'a.b:c_d-e']));
+});
+
+test('in() refuses an empty list and any value that could change the filter (comma, quote, parenthesis, space, empty), by throwing', () => {
+  const client = restClient('http://gateway:8000', 'k');
+  assert.throws(() => client.from('t').in('status', []), /in\(\): values must be plain words/);
+  for (const bad of ['a,b', 'a)', '(a', '"a"', "a'", 'a b', '', 'a\nb', 'a;b', 'a*', 'a%2C']) {
+    assert.throws(() => client.from('t').in('status', ['ok', bad]), /in\(\): values must be plain words/, JSON.stringify(bad));
+  }
+});
