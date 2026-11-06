@@ -22,8 +22,7 @@ calls (the name is in a variable: `src/config/supabaseConfig.ts`, `src/utils/ser
 `src/services/imageDeletion.ts`) are not checked. An older pin than the current one may still call a function that this release drops
 (for example `get_dispatch_list`), so it must not be used.
 `get-config` still publishes `urls.realtime` for older app builds that require it; it will be removed only in a release whose app-compat minimum excludes them. The printing functions (`print-grn-preprinted`, `print-dispatch-preprinted`, `print-invoice-preprinted`,
-`print-via-ipp`, `get-printer-status`) exist and answer 503 "Printing is not configured" by design
-(`functions/main/index.ts`); the app names the three preprinted ones through a variable, so they are not in the literal
+`print-via-ipp`, `get-printer-status`) are served by the router (`functions/main/index.ts`) and answer 503 `PRINTING_OFF` only while the `printing` capability is off; the app names the three preprinted ones through a variable, so they are not in the literal
 count. There is no `manage-print-jobs` function. `cancel-print-job` stops a job for real (IPP Cancel-Job, then the row; admin, supervisor and staff may cancel any job; a job the print service cannot stop answers 409 `CANNOT_CANCEL`) and `sweep-print-jobs` (service-role key only, called by the checker) settles jobs stuck `queued` or `printing` after 5 minutes as `unknown`. `get_print_jobs` and `cancel_print_job` (the print "View jobs" sheet; `cancel_print_job` only marks the row) are open to admin, supervisor and staff since migration 123; customers and anon are refused.
 
 The checker exits 1 only for a missing name or, with `--live`, a mismatch. Name presence is not signature, security or
@@ -167,8 +166,18 @@ guarded RPC in a new migration instead.
 
 The five printing functions (`print-grn-preprinted`, `print-dispatch-preprinted`,
 `print-invoice-preprinted`, `print-via-ipp`, `get-printer-status`) answer 503
-from the router until printing is accepted ([PRINTING.md](PRINTING.md),
-"Activation acceptance").
+`{"code": "PRINTING_OFF"}` from the router while the `printing` capability is off, and work once it is on
+([PRINTING.md](PRINTING.md)). `cancel-print-job` is not behind that switch, so a job already on its way can still be stopped.
+
+**Print request ids and cancel.** The three preprinted functions take an optional `request_id` (uuid) in the body, one per user print
+action and reused for that action's retries (migration 151: `print_jobs.request_id`, unique with `user_id`). A request already handled
+is answered `200 {"success": true, "duplicate": true, "print_job": {...}}` and nothing is printed again; a repeat of a job the printer
+never confirmed answers the same `502 PRINT_UNCONFIRMED` plus `duplicate: true`; a repeat of a request whose send failed
+(status `failed`) prints. A malformed `request_id` is `400 INVALID_REQUEST_ID`. Without `request_id` (older apps), or before migration
+151, the row is written after the send. `POST cancel-print-job {"print_job_id": "<uuid>"}` (admin, supervisor, staff): `200` once CUPS
+cancelled the job and the row is `cancelled`; `409 INVALID_STATUS` for a finished or cancelled job; `409 CANNOT_CANCEL` for a job the
+print service cannot stop (a bridge job, an `unknown` job, a `queued` row without a CUPS id, or one CUPS no longer holds); `502
+CANCEL_FAILED` when CUPS could not be reached; `400 INVALID_REQUEST` for a missing id.
 
 ### Removed in migration 123 (2026-10-21) and the public configuration
 

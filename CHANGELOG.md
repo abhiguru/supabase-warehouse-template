@@ -8,6 +8,22 @@ file used to carry for earlier installations are in git: `git show b45ae0b:CHANG
 
 ## Unreleased
 
+**Printing works out of the box on an Epson LQ-1310 (Linux through CUPS, Windows through a print bridge). Migration 151.** Upgrade the app in the same window.
+
+### Added
+
+- **Windows print bridge (`scripts/windows/print-bridge.ps1`, `register-tasks.ps1 -PrintOnly -Printer ... -SetTokenFromWsl ...`).** A Windows host sends raw printer bytes to the Windows spooler with no CUPS: token-checked, one queue, 2 MB limit, daily log. `PRINT_TRANSPORT`, `PRINTER_NAME`, `PRINTBRIDGE_TOKEN` and the bridge address (default port 6632) are set up by `setup.sh`. Not run on a Windows host yet. [PRINTING.md](docs/PRINTING.md).
+- **`cancel-print-job` and `sweep-print-jobs`.** Cancel stops the CUPS job before the row says `cancelled`; a job that cannot be stopped answers 409 `CANNOT_CANCEL`. The 5-minute checker settles jobs stuck `queued` or `printing` as `unknown`.
+- **One print, one job (migration 151).** `print_jobs.request_id` with a unique index on `(user_id, request_id)`; the print functions take an optional `request_id` and answer a repeat with `duplicate: true` without printing. Older apps and a database without the column keep the old order.
+
+### Changed
+
+- **Staff may print** (owner decision, 2026-11-07), and print refusals carry a `code` (`PRINTING_OFF`, `PRINT_FORBIDDEN`, `PRINTER_FAILED`, `PRINT_UNCONFIRMED`). A printer failure now answers 502 `PRINTER_FAILED` (it was 500).
+- **The print routes are served** and answer 503 `PRINTING_OFF` only while the `printing` capability is off.
+- **CUPS container** creates the right raw queue or fails with a reason, and accepts jobs from the compose networks only.
+- **ESC/P2 output fixes** for the GRN, dispatch and invoice forms: bare DC4, page length, one form feed per slip, non-ASCII text printed as ASCII or `?`.
+- **Migration 151 also** reads the dispatch print range in natural order.
+
 ## v0.8.0 (2026-11-07)
 
 **Migrations 128 to 149: invoice cancel and delete, each item's own packaging word, items added by staff, signed-in devices, and a safer

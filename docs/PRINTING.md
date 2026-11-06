@@ -27,6 +27,9 @@ Each print answer that is not a success carries a `code`:
 | 503 | `PRINTING_OFF` | The capability is off. |
 | 403 | `PRINT_FORBIDDEN` | The role may not print. |
 | 502 | `PRINTER_FAILED` | Nothing was printed: CUPS or the bridge could not be reached, refused, or failed. |
+| 400 | `INVALID_REQUEST_ID` | `request_id` is not a uuid. |
+| 409 | `INVALID_STATUS`, `CANNOT_CANCEL` | `cancel-print-job` only: the job is finished, or cannot be stopped from here. |
+| 502 | `CANCEL_FAILED` | `cancel-print-job` only: CUPS could not be reached. |
 | 502 | `PRINT_UNCONFIRMED` | No confirmation arrived in time (`"unconfirmed": true`); the paper may or may not come out. Check the printer before printing again; the job is never resubmitted automatically. |
 
 ## Linux host: CUPS
@@ -125,11 +128,28 @@ Steps:
 
 The full parameter list and the log location are in the header of `scripts/windows/print-bridge.ps1` and `register-tasks.ps1`.
 
+## One print, one job: `request_id`
+
+The app sends a `request_id` (uuid) with each print action and reuses it only for that action's retries after a lost answer. With one,
+the function looks for a `print_jobs` row of the same user and id: found, it answers `200 {"duplicate": true}` and prints nothing;
+not found, it inserts a `queued` row before sending, so two requests at once cannot both print (the unique index on
+`(user_id, request_id)` stops the second). After the send the row becomes `printing`, `unknown` or `failed`. A request whose send
+failed (nothing reached the printer) can be sent again with the same id. Without a `request_id`, or before migration 151, the
+row is written after the send, as before.
+
+## Cancel and stuck jobs
+
+- `cancel-print-job` stops a job for real: IPP Cancel-Job on the CUPS queue first, and the row becomes `cancelled` only when CUPS
+  cancelled it. Only a `queued` or `printing` job that has a CUPS job id can be cancelled. A bridge job (it is synchronous and has no
+  id), an `unknown` job, or a `queued` row without an id answers `409 CANNOT_CANCEL`: the paper may already be printing.
+- `sweep-print-jobs` (service-role key only; the 5-minute checker `scripts/watch.mjs` calls it) records a job still `queued` or
+  `printing` more than 5 minutes after it was created as `unknown`, never `completed`, because nobody saw it finish.
+
 ## Operation notes
 
 - **Staff may print** (owner decision, 2026-11-07). The print functions read documents with the server's key, so a staff member can
   print any customer's documents, as staff can already see them in the app.
-- **Cancel.** "Cancel" in the app's print-jobs sheet marks the row; it does not stop a job that CUPS or the bridge already has.
+- **Cancel.** "Cancel" in the app's print-jobs sheet calls `cancel-print-job` (see above); a job on the Windows bridge cannot be cancelled.
 - A disappeared job is not proof of physical output; an uncertain job is never resubmitted automatically.
 - Keep CUPS administration and the bridge token private to the server.
 
