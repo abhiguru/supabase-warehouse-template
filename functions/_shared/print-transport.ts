@@ -55,7 +55,7 @@ const defaultDeps = (): TransportDeps => ({
   env: name => Deno.env.get(name),
   fetch: (input, init) => fetch(input, init),
   ippPrintJob: async (queueUrl, message) => {
-    const printer = await ippPrinter(queueUrl);
+    const printer = ippPrinter(queueUrl);
     return await new Promise((resolve, reject) => {
       printer.execute('Print-Job', message, (err, res) => (err ? reject(err) : resolve(res)));
     });

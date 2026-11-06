@@ -1,5 +1,11 @@
-Licences of the npm packages built into jose.mjs.
+Licences of the npm packages built into jose.mjs and ipp.mjs.
 Built by scripts/vendor-edge-modules.sh from scripts/edge-vendor/package-lock.json.
+
+========================================================================
+ipp 2.0.1 (MIT)
+========================================================================
+
+No licence file in the package; declared licence: MIT; author: William Kapke.
 
 ========================================================================
 jose 6.2.12 (MIT)

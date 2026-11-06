@@ -62,7 +62,7 @@ Deno.serve(async (req) => {
 
     const queueUrl = cupsQueueUrl(name => Deno.env.get(name));
     if (queueUrl === null) throw { status: 503, message: 'PRINTER_NAME is not a valid CUPS queue name' };
-    const printer = await ippPrinter(queueUrl);
+    const printer = ippPrinter(queueUrl);
 
     const msg = {
       "operation-attributes-tag": {

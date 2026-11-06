@@ -8,10 +8,11 @@ import type {
   IPPGetJobAttributesMessage,
 } from "./ipp-types.ts";
 import { cupsQueueUrl } from "./print-config.ts";
+// ipp 2.0.1, built into one file by scripts/vendor-edge-modules.sh: the worker downloads nothing.
+import ipp from "../vendor/ipp.mjs";
 
 // The one place the ipp library is loaded (the printing code, print-transport.ts included, goes through it).
-export async function ippPrinter(url: string): Promise<{ execute: (operation: string, message: unknown, callback: (err: Error | null, res: any) => void) => void }> {
-  const ipp = await import("npm:ipp@2.0.1");
+export function ippPrinter(url: string): { execute: (operation: string, message: unknown, callback: (err: Error | null, res: any) => void) => void } {
   return ipp.Printer(url);
 }
 
@@ -28,7 +29,7 @@ export async function ippPrinter(url: string): Promise<{ execute: (operation: st
 export async function getCUPSJobReply(cupsJobId: number): Promise<IPPResponse> {
   const url = cupsQueueUrl(name => Deno.env.get(name));
   if (url === null) throw new Error('PRINTER_NAME is not a valid CUPS queue name');
-  const printer = await ippPrinter(url);
+  const printer = ippPrinter(url);
 
   const msg: IPPGetJobAttributesMessage = {
     "operation-attributes-tag": {
