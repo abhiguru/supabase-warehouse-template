@@ -30,6 +30,17 @@ bash "$ROOT/scripts/lan.sh" start || echo 'Warning: the LAN fallback was not sta
 # Optional services (printing, sensors, pooler) are not part of that start; the LAN fallback was started by lan.sh above.
 # Replace the running ones whose image or configuration changed.
 bash "$ROOT/scripts/build-images.sh" --replace-optional || echo 'Warning: a running optional service was not replaced (message above). The core services are up.' >&2
+# The Windows print bridge (PRINT_TRANSPORT=bridge): scripts/compose.sh works out its address (the WSL2 default gateway) at every
+# start. Say what it is, or that it could not be worked out; printing is not needed for the start, so this never stops it.
+if grep -Eq '^PRINT_TRANSPORT=bridge[[:space:]]*$' "$STATE/config/compose.env"; then
+  if grep -Eq '^PRINTBRIDGE_URL=.' "$STATE/config/compose.env"; then
+    echo 'Print bridge: the address set in compose.env (PRINTBRIDGE_URL).'
+  else
+    bridge_url="$(bash "$ROOT/scripts/print-bridge-url.sh" "$(sed -n 's/^PRINTBRIDGE_PORT=//p' "$STATE/config/compose.env" | head -n 1)" || true)"
+    if [[ -n "$bridge_url" ]]; then echo "Print bridge: $bridge_url (the Windows host, worked out at this start)."
+    else echo 'Warning: the Windows host address for the print bridge could not be worked out (no default route); printing will fail until it can.' >&2; fi
+  fi
+fi
 node "$ROOT/scripts/doctor.mjs" --local
 # The monitoring checker runs from a systemd timer that start.sh cannot install (it needs sudo): print the command
 # when the timer is missing.

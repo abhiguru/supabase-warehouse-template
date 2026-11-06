@@ -7,6 +7,7 @@ import { isMain } from './is-main.mjs';
 import { generateSigningKeys, replaceEnvLines, updateRestSchemas } from './keys.mjs';
 import { KEY_SET_MAX_BYTES, holdsPrivateKey, usableKeys } from './central-key-set.mjs';
 import { addMissingDbValues, generatedDbValues } from './db-roles.mjs';
+import { addMissingPrintValues, printValues } from './print-settings.mjs';
 import { isFixtureAddress, isProviderPlaceholder } from './provider-placeholder.mjs';
 import { LETTERHEAD_NAMES, readLetterhead } from './letterhead.mjs';
 import { HEARTBEAT_FILE, LEGACY_WEBHOOK_FILE, SENSOR_WEBHOOK_FILE, WEBHOOK_FILE, assertSensorWebhookPlaceable, placeHeartbeatUrl, placeSensorWebhook, placeWebhook, readAlertWebhook, readHeartbeatUrl, readSensorWebhook } from './alert-webhook.mjs';
@@ -419,6 +420,9 @@ export function configure(root, { stateDir, apiUrl, appUrl, company, providerEnv
       // before the database starts, because an older backup carries none.
       const withDbValues = addMissingDbValues(readFileSync(envPath, 'utf8'));
       if (withDbValues.added.length) replaceFileAtomically(envPath, withDbValues.text);
+      // The print settings (docs/PRINTING.md): added when missing, a value that exists is never replaced.
+      const withPrintValues = addMissingPrintValues(readFileSync(envPath, 'utf8'));
+      if (withPrintValues.added.length) replaceFileAtomically(envPath, withPrintValues.text);
       // An installation made before this release lists the storage schema (and, before migration 103, the GraphQL
       // schema) for PostgREST; the old default becomes `public` (a list the operator changed is kept). setup.sh
       // then recreates rest with the new value.
@@ -478,6 +482,7 @@ export function configure(root, { stateDir, apiUrl, appUrl, company, providerEnv
     ...provider,
     ...(central?.values ?? {}), ...centralLocalCodeValues(centralLocalCode, central, null, Boolean(providerEnv)), ...(letterhead?.bytes ? { LETTERHEAD_FILE: letterhead.name } : {}) };
   values.CUPS_ADMIN_PASSWORD = randomBytes(32).toString('hex');
+  Object.assign(values, printValues());
   const template = replaceEnvLines(readFileSync(resolve(root, '.env.example'), 'utf8'), values);
   const stage = `${state}.installing-${randomBytes(8).toString('hex')}`;
   mkdirSync(stage, { mode: 0o700 });

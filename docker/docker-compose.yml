@@ -316,6 +316,13 @@ services:
       LETTERHEAD_FILE: ${LETTERHEAD_FILE:-}
       LETTERHEAD_DIR: /etc/warehouse/public
       INSTANCE_MANIFEST_PATH: /etc/warehouse/instance.json
+      # Where print jobs go (docs/PRINTING.md): cups = the printing profile's container, bridge = the Windows print bridge.
+      # PRINTBRIDGE_URL is worked out by scripts/compose.sh on a WSL2 host when compose.env leaves it empty. ":-" so a state
+      # from before these lines still renders.
+      PRINT_TRANSPORT: ${PRINT_TRANSPORT:-cups}
+      PRINTER_NAME: ${PRINTER_NAME:-LQ1310_RAW}
+      PRINTBRIDGE_URL: ${PRINTBRIDGE_URL:-}
+      PRINTBRIDGE_TOKEN: ${PRINTBRIDGE_TOKEN:-}
       # release.json and app-compat.json, which setup.sh writes there (get-public-config, get-config).
       PUBLIC_DIR: /etc/warehouse/public
     command:
