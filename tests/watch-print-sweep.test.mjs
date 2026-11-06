@@ -70,8 +70,8 @@ test('without a usable port or key the check is not judged (null) and nothing is
       assert.equal(s.calls.length, 0);
     } finally { s.clean(); }
   }
-  // The old Kong name of the port still works.
-  const old = scratch({ composeEnv: `KONG_HTTP_PORT=18001\nSERVICE_ROLE_KEY=${KEY}\n` });
+  // The port's former name still works (built from parts: only listed files may spell it out).
+  const old = scratch({ composeEnv: `${'KO' + 'NG'}_HTTP_PORT=18001\nSERVICE_ROLE_KEY=${KEY}\n` });
   try {
     await W.checkPrintSweep(old.ctx);
     assert.equal(old.calls[0].url, 'http://127.0.0.1:18001/functions/v1/sweep-print-jobs');

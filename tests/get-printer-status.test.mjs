@@ -52,7 +52,7 @@ test('bridge online: GET /health with the token and the printer; the caller\'s A
 });
 
 test('bridge: spooler states that mean trouble are status error with the state in the message; ordinary ones are online', async () => {
-  const problems = ['Offline', 'Paused', 'Error', 'Paper Jam', 'Paper Out', 'Toner Low', 'No Toner', 'Door Open', 'User Intervention Required', 'Not Available', 'Pending Deletion'];
+  const problems = ['Offline', 'Paused', 'Error', 'Paper Jam', 'Jammed', 'Paper Out', 'Toner Low', 'No Toner', 'Door Open', 'User Intervention Required', 'Not Available', 'Pending Deletion'];
   const fine = ['Normal', 'Idle', 'Printing', 'Warming Up', 'Busy', 'Initializing'];
   for (const [spooler, expected] of [...problems.map(s => [s, 'error']), ...fine.map(s => [s, 'online'])]) {
     const server = await bridge(reply(200, { success: true, printer_found: true, status: spooler }));
