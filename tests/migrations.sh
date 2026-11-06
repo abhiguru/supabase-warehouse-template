@@ -561,6 +561,7 @@ test_files=(
   "$ROOT/tests/packaging_rule_142.sql"
   "$ROOT/tests/invoice_kept_lines_143.sql"
   "$ROOT/tests/invoice_kept_long_numbers_149.sql"
+  "$ROOT/tests/print_range_request_id_151.sql"
   "$ROOT/tests/item_word_144.sql"
   "$ROOT/tests/invoice_delete_146.sql"
   "$ROOT/tests/staff_deactivated_customer_148.sql"
