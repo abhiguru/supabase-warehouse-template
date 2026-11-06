@@ -10,7 +10,7 @@ export interface UserProfile {
   role: 'admin' | 'supervisor' | 'staff' | 'customer' | 'user';
   active: boolean;
 }
-export interface AuthError { status: number; message: string }
+export interface AuthError { status: number; message: string; code?: string }
 
 export async function validateUserAccess(req: Request): Promise<UserProfile> {
   const payload = await verifyRequest(req);
@@ -47,8 +47,9 @@ export async function validateUserAccess(req: Request): Promise<UserProfile> {
 // The optional second argument preserves compatibility with existing callers.
 export async function validatePrintAccess(req: Request, _supabase?: unknown): Promise<UserProfile> {
   const profile = await validateUserAccess(req);
-  if (!['admin', 'supervisor'].includes(profile.role)) {
-    throw { status: 403, message: 'Admin or supervisor access required' };
+  // Admin, supervisor and staff print (owner decision of 2026-11-07); customers and other roles do not. The code lets the app tell this 403 apart.
+  if (!['admin', 'supervisor', 'staff'].includes(profile.role)) {
+    throw { status: 403, code: 'PRINT_FORBIDDEN', message: 'Admin, supervisor or staff access required to print' };
   }
   return profile;
 }
@@ -74,7 +75,9 @@ export function createAuthErrorResponse(error: unknown, extraHeaders: Record<str
   // A failure of ours (500 or 503) is the one a client cannot explain: log the status and the id, the class of the error and never its message, a token or a header.
   if (safeStatus >= 500) console.error(`auth error status=${safeStatus} error=${errorName(error)} request_id=${requestId(req)}`);
   const message = safeStatus < 500 && typeof error === 'object' && error !== null && 'message' in error ? String(error.message) : 'Server unavailable';
-  return new Response(JSON.stringify({ success: false, error: message }), {
+  // A machine-readable code, only for a refusal that names one (an upper-case word list such as PRINT_FORBIDDEN).
+  const code = safeStatus < 500 && typeof error === 'object' && error !== null && 'code' in error && /^[A-Z][A-Z_]{1,39}$/.test(String(error.code)) ? String(error.code) : undefined;
+  return new Response(JSON.stringify({ success: false, error: message, ...(code ? { code } : {}) }), {
     status: safeStatus, headers: { ...extraHeaders, 'Content-Type': 'application/json', 'Cache-Control': 'no-store' },
   });
 }
