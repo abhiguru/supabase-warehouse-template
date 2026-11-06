@@ -301,6 +301,14 @@ only the quick check.
 an `instance.json` written before it existed), then `bash scripts/compose.sh restart functions` so the app is told, and a new `db:backup`
 (`db:restore-host` installs the `instance.json` of the backup, so a host rebuilt from an older backup would switch payments back off; `db:restore` refuses a backup whose `instance.json` differs). `payments off` reverses it.
 
+**Printing is optional and off by default.** An Epson LQ-1310 prints GRN, dispatch and invoice forms; admin, supervisor and staff may print.
+Setup already wrote the settings (`PRINT_TRANSPORT`: `bridge` on a WSL2 host, else `cups`; `PRINTER_NAME`; `PRINTBRIDGE_TOKEN`). The steps:
+Linux host, plug in the printer and run `bash scripts/compose.sh --profile printing up -d --build --wait cups` (set `PRINTER_URI` in
+`compose.env` only to pin a device; the host's `usblp` module can block the printer); Windows host, install the Windows printer, register
+the print bridge and open its firewall port. Then, on both: `node scripts/set-capability.mjs printing on`, `bash scripts/compose.sh restart functions`
+and a new `db:backup`. While the capability is off, the print routes answer 503 `PRINTING_OFF`. The full steps, the checks and what is not
+verified are in [PRINTING.md](PRINTING.md).
+
 **Monitoring is not a Compose profile.** One small program, the checker (`scripts/watch.mjs`), runs from a systemd
 timer every 5 minutes, tells the facility's Slack channel when something is wrong, and once a day makes and verifies a
 backup and applies retention ([MONITORING.md](MONITORING.md)). Installing a unit needs root, which setup never uses, so
@@ -2675,7 +2683,7 @@ signed-in session, but that was **not tested** with auto logon off.
 What was **not** verified: `sudo` asking for a password, Windows 11, the Home edition, mirrored
 networking, that the `.wslconfig` memory limit takes effect, recovery after a WSL update with the task enabled, the version after
 `wsl --update`, a real Windows Update reboot, a graceful stop when Windows shuts down, a restart with the tasks registered by the script and no
-console session signed in at all, a physical re-plug of the drive, a USB run that also takes a fresh backup, printing, and the sensor bridge running for hours or days or through a restart ([Sensors (Windows)](#sensors-windows)).
+console session signed in at all, a physical re-plug of the drive, a USB run that also takes a fresh backup, printing (the print bridge, [PRINTING.md](PRINTING.md)), and the sensor bridge running for hours or days or through a restart ([Sensors (Windows)](#sensors-windows)).
 
 ### Prerequisites
 
