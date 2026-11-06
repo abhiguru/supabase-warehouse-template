@@ -56,7 +56,11 @@ case "$1 $2" in
     echo "$3" ;;
   "image inspect")
     case "$4" in
-      *RepoDigests*) if [ -n "$FAKE_DIGEST_OTHER" ]; then echo "$5@sha256:$(printf 'e%.0s' $(seq 64))"; else echo "$5"; fi ;;
+      # As Docker does: a pulled image is listed as repository@digest, and the tag of a tag-and-digest reference is not kept.
+      *RepoDigests*)
+        name="\${5%%@*}"; case "\${name##*/}" in *:*) name="\${name%:*}" ;; esac
+        other="$FAKE_DIGEST_OTHER"; case " $FAKE_DIGEST_OTHER_FOR " in *" $5 "*) other=1 ;; esac
+        if [ -n "$other" ]; then echo "$name@sha256:$(printf 'e%.0s' $(seq 64))"; else echo "$name@\${5##*@}"; fi ;;
       *Labels*) echo "\${FAKE_REVISION-${SHA}}" ;;
     esac ;;
   "image rm") ;;
@@ -85,6 +89,29 @@ test('every image of release-images.json and every digest-pinned image of the co
     assert.match(r.stdout, /Pre-pull of images: pulling 2 image\(s\) of v1\.2\.3 and 1 base image\(s\) while the facility still serves/);
     assert.match(r.stdout, /Pre-pull of images: done \(2 image\(s\) of v1\.2\.3, 1 base image\(s\)\)\./);
     assert.deepEqual(r.leftovers, [], 'the downloaded file is removed');
+  } finally { w.cleanup(); }
+});
+
+// Docker lists a pulled image under RepoDigests as repository@digest. The compose file names PostgREST by tag and digest
+// (postgrest/postgrest:v16.5@sha256:...), and the tag is not in that list, so the check must compare the repository and the digest (WH-95).
+test('a Docker Hub image named by tag and digest is accepted, although Docker lists its digest without the tag', () => {
+  const w = world();
+  try {
+    const r = w.run();
+    assert.doesNotMatch(r.stderr, /does not carry the digest/, 'the tag of the reference must not make the digest check fail');
+    assert.equal(r.status, 0, r.stdout + r.stderr);
+    assert.ok(pulls(r.calls).includes(HUB), 'the reference is pulled as the compose file writes it');
+  } finally { w.cleanup(); }
+});
+
+test('a Docker Hub image of another digest is still refused, naming the digest that was asked for', () => {
+  const w = world();
+  try {
+    const r = w.run({ FAKE_DIGEST_OTHER_FOR: HUB });
+    assert.equal(r.status, 1);
+    assert.match(r.stderr, /the pulled image does not carry the digest sha256:d{64} that was asked for/);
+    assert.match(r.stderr, /Nothing was changed\./);
+    assert.deepEqual(pulls(r.calls), [`${REGISTRY}/db@${digest('a')}`, `${REGISTRY}/functions@${digest('b')}`, HUB], 'the release images before it were pulled and accepted');
   } finally { w.cleanup(); }
 });
 
