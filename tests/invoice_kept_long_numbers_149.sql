@@ -32,12 +32,6 @@ SELECT warehouse_security.bootstrap_first_admin('9877777761','Long Number Test A
 SELECT id AS admin_profile FROM public.user_profiles WHERE auth_user_id=:'admin_user'::uuid \gset
 SELECT pg_temp.l_login('9877777761') AS admin_claims \gset
 
--- The widths under test: the sources and the kept copies are all 20 wide.
-SELECT pg_temp.l_assert((SELECT count(*)=4 AND bool_and(character_maximum_length=20) FROM information_schema.columns
-  WHERE table_schema='public' AND ((table_name='goodsreceived' AND column_name='gr_no') OR (table_name='dispatch' AND column_name='disp_no')
-    OR (table_name='invoice_trl' AND column_name IN ('kept_grn_no','kept_disp_no')))),
-  'gr_no, disp_no and both kept columns are 20 characters wide');
-
 -- Fixture: one customer and item; two receipts of 20 bags, each dispatched in full and invoiced. The first pair of numbers is
 -- 9 characters long (one past the old width), the second 20 (the most the numbering rule allows, in the form of the year scheme).
 \set grn9 'KLG000001'
@@ -103,4 +97,10 @@ SELECT pg_temp.l_assert(jsonb_array_length(:'d20'::jsonb->'items')=1 AND :'d20':
 SELECT pg_temp.l_assert(jsonb_array_length(:'dd20'::jsonb#>'{data,items}')=1 AND :'dd20'::jsonb#>>'{data,items,0,dispatch,disp_no}'=:'disp20'
   AND :'dd20'::jsonb#>>'{data,items,0,grn_item,gr_no}'=:'grn20',
   'get_invoice_data shows the 20-character numbers: '||:'dd20');
+
+-- The widths behind it: the numbers and their kept copies are all 20 wide, so a later change to one side shows here.
+SELECT pg_temp.l_assert((SELECT count(*)=4 AND bool_and(character_maximum_length=20) FROM information_schema.columns
+  WHERE table_schema='public' AND ((table_name='goodsreceived' AND column_name='gr_no') OR (table_name='dispatch' AND column_name='disp_no')
+    OR (table_name='invoice_trl' AND column_name IN ('kept_grn_no','kept_disp_no')))),
+  'gr_no, disp_no and both kept columns are 20 characters wide');
 ROLLBACK;
