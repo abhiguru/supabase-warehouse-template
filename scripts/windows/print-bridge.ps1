@@ -11,7 +11,8 @@ bypassed and every byte 0x00-0xFF reaches the printer unchanged.
   POST /print/raw   body = raw printer bytes (application/octet-stream, at most 2 MB)
                     headers: X-Printer (queue name, must equal -Printer, case-insensitive), X-Doc-Name, X-Print-Token
                     200 {"success":true} once the job is in the spooler; otherwise 4xx/5xx {"success":false,"error":"..."}
-  GET  /health      {"success":true,"printer":"<name>","status":"<spooler status>"}   (token required too)
+  GET  /health      {"success":true,"printer":"<name>","printer_found":true,"status":"<spooler status>"}
+                    (queue missing: 503 {"success":false,"printer":"<name>","printer_found":false,"error":"..."})   (token required too)
 
 Rules: the only queue it prints to is -Printer (any other X-Printer answers 403); the token is read from -TokenFile at start
 (the bridge refuses to start when the file is missing or empty) and compared in constant time; one job at a time; a request
@@ -22,7 +23,11 @@ days are deleted at start and at midnight): time, remote address, method, path, 
 
 Listen address: by default the IPv4 address of the "vEthernet (WSL...)" adapter, so only the WSL side can reach it. That adapter
 appears when WSL runs; the bridge waits up to 2 minutes for it, then stops with a clear message. -ListenAddress overrides this
-(use an explicit address you have firewalled yourself; 0.0.0.0 is accepted but is not recommended).
+(use an explicit IPv4 address of this PC, firewalled by you; wildcards such as 0.0.0.0, + or * are not accepted). http.sys
+matches the Host header: the client must use exactly the bound IP in its URL (PRINTBRIDGE_URL), not a name or another address of
+this PC. With the automatic address the bridge re-checks the adapter every 15 seconds and exits when the address changed
+(wsl --shutdown, reboot); the scheduled task starts it again within 2 minutes on the new address, and the instance
+re-resolves the Windows address at its next start.
 
 Normally started by the scheduled task "Warehouse Print" that register-tasks.ps1 -Printer creates (the task runs as the install
 account because a SYSTEM task does not see per-user printer queues). Binding a specific address needs an elevated account or a
@@ -93,15 +98,20 @@ $tokenHash = [Security.Cryptography.SHA256]::Create().ComputeHash([Text.Encoding
 $token = $null
 
 # ---- Listen address ----
-if (-not $ListenAddress) {
+function Get-WslAddress {
+    try {
+        $f = Get-NetIPAddress -AddressFamily IPv4 -ErrorAction Stop |
+            Where-Object { $_.InterfaceAlias -like 'vEthernet (WSL*' } | Select-Object -First 1
+        if ($f) { return $f.IPAddress }
+    } catch { }
+    return $null
+}
+$autoAddress = -not $ListenAddress
+if ($autoAddress) {
     $deadline = (Get-Date).AddSeconds(120)
     do {
-        $found = $null
-        try {
-            $found = Get-NetIPAddress -AddressFamily IPv4 -ErrorAction Stop |
-                Where-Object { $_.InterfaceAlias -like 'vEthernet (WSL*' } | Select-Object -First 1
-        } catch { }
-        if ($found) { $ListenAddress = $found.IPAddress; break }
+        $ListenAddress = Get-WslAddress
+        if ($ListenAddress) { break }
         Start-Sleep -Seconds 5
     } while ((Get-Date) -lt $deadline)
     if (-not $ListenAddress) {
@@ -112,6 +122,7 @@ $parsedAddress = $null
 if (-not [Net.IPAddress]::TryParse($ListenAddress, [ref]$parsedAddress) -or $parsedAddress.AddressFamily -ne 'InterNetwork') {
     Stop-Bridge "-ListenAddress '$ListenAddress' is not an IPv4 address."
 }
+if ($parsedAddress.Equals([Net.IPAddress]::Any)) { Stop-Bridge '-ListenAddress 0.0.0.0 is not accepted; give a specific IPv4 address.' }
 
 # ---- Spooler access (inline C#, winspool.drv) ----
 Add-Type -TypeDefinition @'
@@ -142,6 +153,8 @@ public static class WarehouseRawPrinter
     [DllImport("winspool.drv", SetLastError = true)]
     private static extern bool EndDocPrinter(IntPtr hPrinter);
     [DllImport("winspool.drv", SetLastError = true)]
+    private static extern bool AbortPrinter(IntPtr hPrinter);
+    [DllImport("winspool.drv", SetLastError = true)]
     private static extern bool ClosePrinter(IntPtr hPrinter);
 
     private static Exception Fail(string step)
@@ -157,6 +170,7 @@ public static class WarehouseRawPrinter
         if (!OpenPrinter(printer, out h, IntPtr.Zero)) throw Fail("OpenPrinter");
         bool docStarted = false, pageStarted = false;
         IntPtr buffer = IntPtr.Zero;
+        bool ok = false;
         try
         {
             DOC_INFO_1 di = new DOC_INFO_1();
@@ -177,16 +191,17 @@ public static class WarehouseRawPrinter
                 if (written <= 0) throw new Win32Exception(0, "WritePrinter wrote 0 bytes");
                 offset += written;
             }
-            pageStarted = false;
             if (!EndPagePrinter(h)) throw Fail("EndPagePrinter");
-            docStarted = false;
+            pageStarted = false;
             if (!EndDocPrinter(h)) throw Fail("EndDocPrinter");
+            docStarted = false;
+            ok = true;
         }
         finally
         {
             if (buffer != IntPtr.Zero) Marshal.FreeHGlobal(buffer);
-            if (pageStarted) EndPagePrinter(h);
-            if (docStarted) EndDocPrinter(h);
+            // On any failure the partial job is deleted, never closed normally (it would print).
+            if (!ok && docStarted) AbortPrinter(h);
             ClosePrinter(h);
         }
     }
@@ -229,6 +244,7 @@ function Send-Json($Context, [int]$Status, [hashtable]$Body) {
         $bytes = [Text.Encoding]::UTF8.GetBytes(($Body | ConvertTo-Json -Compress))
         $r = $Context.Response
         $r.StatusCode = $Status
+        if ($Status -ge 400) { $r.KeepAlive = $false }   # Connection: close; the body may not have been read
         $r.ContentType = 'application/json; charset=utf-8'
         $r.ContentLength64 = $bytes.Length
         $r.OutputStream.Write($bytes, 0, $bytes.Length)
@@ -240,9 +256,9 @@ function Send-Json($Context, [int]$Status, [hashtable]$Body) {
 function Get-SpoolerStatus {
     try {
         $p = Get-Printer -Name $Printer -ErrorAction Stop
-        return @{ ok = $true; status = [string]$p.PrinterStatus }
+        return @{ ok = $true; found = $true; status = [string]$p.PrinterStatus }
     } catch {
-        return @{ ok = $false; status = "queue '$Printer' not found" }
+        return @{ ok = $false; found = $false; status = "queue '$Printer' not found" }
     }
 }
 
@@ -264,7 +280,28 @@ Write-BridgeLog "start listen=${ListenAddress}:$Port printer='$Printer'"
 
 try {
     while ($listener.IsListening) {
-        $ctx = $listener.GetContext()   # one request at a time: jobs are serialized
+        # One request at a time: jobs are serialized. Wake every 15 s to notice a changed WSL address.
+        $pending = $listener.GetContextAsync()
+        while ($true) {
+            $done = $true
+            try { $done = $pending.Wait(15000) } catch { }
+            if ($done) { break }
+            if (-not $listener.IsListening) { break }
+            if ($autoAddress) {
+                $now = Get-WslAddress
+                if ($now -and $now -ne $ListenAddress) {
+                    Write-BridgeLog "address changed $ListenAddress -> $now, exiting so the task restarts the bridge"
+                    exit 1
+                }
+            }
+        }
+        if (-not $listener.IsListening) { break }
+        try { $ctx = $pending.Result } catch {
+            Write-BridgeLog ('accept failed: ' + (Clean-Text $_.Exception.Message 200))
+            if (-not $listener.IsListening) { break }
+            Start-Sleep -Milliseconds 200
+            continue
+        }
         $req = $ctx.Request
         $remote = "$($req.RemoteEndPoint.Address)"
         $path = $req.Url.AbsolutePath
@@ -284,8 +321,8 @@ try {
                 Send-Json $ctx $status @{ success = $false; error = 'Unauthorized' }
             } elseif ($path -eq '/health') {
                 $s = Get-SpoolerStatus
-                if ($s.ok) { $status = 200; Send-Json $ctx $status @{ success = $true; printer = $Printer; status = $s.status } }
-                else { $status = 503; $note = $s.status; Send-Json $ctx $status @{ success = $false; error = $s.status } }
+                if ($s.ok) { $status = 200; Send-Json $ctx $status @{ success = $true; printer = $Printer; printer_found = $true; status = $s.status } }
+                else { $status = 503; $note = $s.status; Send-Json $ctx $status @{ success = $false; printer = $Printer; printer_found = $false; error = $s.status } }
             } elseif (-not [string]::Equals($queue, $Printer, [StringComparison]::OrdinalIgnoreCase)) {
                 $status = 403; $note = 'queue not allowed'
                 Send-Json $ctx $status @{ success = $false; error = 'This bridge does not print to that queue' }
@@ -303,7 +340,10 @@ try {
                     if ($ms.Length -gt $MaxBody) { $tooBig = $true; break }
                 }
                 $bytesIn = $ms.Length
-                if ($tooBig) {
+                if (-not $tooBig -and $req.ContentLength64 -ge 0 -and $ms.Length -ne $req.ContentLength64) {
+                    $status = 400; $note = 'length mismatch'
+                    Send-Json $ctx $status @{ success = $false; error = 'Body length does not match Content-Length' }
+                } elseif ($tooBig) {
                     $status = 413; $note = 'too large'
                     Send-Json $ctx $status @{ success = $false; error = 'Body larger than 2 MB' }
                 } elseif ($ms.Length -eq 0) {

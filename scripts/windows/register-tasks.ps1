@@ -111,10 +111,12 @@ if (-not (New-Object Security.Principal.WindowsPrincipal($identity)).IsInRole([S
 if ($UsbOnly -and -not $BusId) { Stop-Script '-UsbOnly needs -BusId.' }
 if ($PrintOnly -and -not $Printer) { Stop-Script '-PrintOnly needs -Printer.' }
 if ($PrintOnly -and ($UsbOnly -or $Checkout)) { Stop-Script '-PrintOnly cannot be combined with -UsbOnly or -Checkout.' }
+if ($PrintOnly -and $BusId) { Stop-Script '-PrintOnly cannot be combined with -BusId.' }
 if ($UsbOnly -and $Printer) { Stop-Script '-UsbOnly cannot be combined with -Printer.' }
 if (($SetTokenFromWsl -or $ComposeEnv) -and -not $Printer) { Stop-Script '-SetTokenFromWsl and -ComposeEnv need -Printer.' }
 if ($Printer) {
-    if ($Printer -match '["`$\x00-\x1F]') { Stop-Script "-Printer '$Printer' contains a character this script does not accept (double quote, backtick, dollar sign or control character)." }
+    if ($Printer -notmatch '^[\x20-\x7E]+$') { Stop-Script "-Printer '$Printer' must be printable ASCII only." }
+    if ($Printer -match '["`$]') { Stop-Script "-Printer '$Printer' contains a character this script does not accept (double quote, backtick or dollar sign)." }
     if (-not (Test-Path -LiteralPath $BridgeScript -PathType Leaf)) { Stop-Script "print-bridge.ps1 was not found next to this script ($BridgeScript)." }
     if (-not (Get-Command Get-Printer -ErrorAction SilentlyContinue)) { Stop-Script 'Get-Printer is not available (the PrintManagement module).' }
     if (-not (Get-Printer -Name $Printer -ErrorAction SilentlyContinue)) {
@@ -257,7 +259,7 @@ function Register-WarehouseTask([string]$Name, $Action, $Settings, $Trigger = $n
     }
 }
 
-if (-not $UsbOnly) {
+if (-not $UsbOnly -and -not $PrintOnly) {
     $action = New-ScheduledTaskAction -Execute 'C:\Windows\System32\wsl.exe' -Argument "-d $Distro --exec /usr/bin/sleep infinity"
     $settings = New-ScheduledTaskSettingsSet -ExecutionTimeLimit ([TimeSpan]::Zero) -MultipleInstances IgnoreNew -StartWhenAvailable -AllowStartIfOnBatteries -DontStopIfGoingOnBatteries -RestartCount 999 -RestartInterval (New-TimeSpan -Minutes 1)
     Register-WarehouseTask $KeepAliveName $action $settings
@@ -280,53 +282,67 @@ if ($Checkout) {
 }
 
 if ($Printer) {
-    # Token file: created empty with a restricted ACL before any secret is written to it.
-    $tokenDir = Split-Path -Parent $TokenFile
-    if (-not (Test-Path -LiteralPath $tokenDir)) { $null = New-Item -ItemType Directory -Path $tokenDir -Force }
-    $tokenCreated = $false
-    if (-not (Test-Path -LiteralPath $TokenFile)) {
-        $null = New-Item -ItemType File -Path $TokenFile -Force
-        $tokenCreated = $true
-    }
-    $sid = New-Object Security.Principal.SecurityIdentifier($identity.User.Value)
-    $admins = New-Object Security.Principal.SecurityIdentifier([Security.Principal.WellKnownSidType]::BuiltinAdministratorsSid, $null)
-    $system = New-Object Security.Principal.SecurityIdentifier([Security.Principal.WellKnownSidType]::LocalSystemSid, $null)
-    $acl = New-Object Security.AccessControl.FileSecurity
-    $acl.SetAccessRuleProtection($true, $false)
-    foreach ($who in @($sid, $admins, $system)) {
-        $acl.AddAccessRule((New-Object Security.AccessControl.FileSystemAccessRule($who, 'FullControl', 'Allow')))
-    }
-    Set-Acl -LiteralPath $TokenFile -AclObject $acl
-    if ($newToken) {
-        [IO.File]::WriteAllText($TokenFile, $newToken + "`n")
-        Write-Host "Token file '$TokenFile' set from $ComposeEnv in distro '$SetTokenFromWsl'."
-        $newToken = $null
-    } elseif ($tokenCreated) {
-        $bytes = New-Object byte[] 32
-        $rng = [Security.Cryptography.RandomNumberGenerator]::Create()
-        $rng.GetBytes($bytes)
-        $rng.Dispose()
-        [IO.File]::WriteAllText($TokenFile, (($bytes | ForEach-Object { $_.ToString('x2') }) -join '') + "`n")
-        Write-Host "Token file '$TokenFile' created with a random token. Put the same value into the instance as PRINTBRIDGE_TOKEN (see -SetTokenFromWsl)."
-    } else {
-        Write-Host "Token file '$TokenFile' already exists and was left as it is (its ACL was reset to this account, Administrators and SYSTEM)."
-    }
-    if ((Get-Item -LiteralPath $TokenFile).Length -eq 0) { Stop-Script "Token file '$TokenFile' is empty." }
-
-    # Firewall: TCP <PrintPort> inbound from the WSL side only.
-    $existingRule = Get-NetFirewallRule -DisplayName $PrintName -ErrorAction SilentlyContinue
-    if ($existingRule) { $existingRule | Remove-NetFirewallRule }
-    $wslAdapter = Get-NetAdapter -ErrorAction SilentlyContinue | Where-Object { $_.Name -like 'vEthernet (WSL*' } | Select-Object -First 1
-    $rule = @{ DisplayName = $PrintName; Direction = 'Inbound'; Action = 'Allow'; Protocol = 'TCP'; LocalPort = $PrintPort; Profile = 'Any' }
-    if ($wslAdapter) { $rule.InterfaceAlias = $wslAdapter.Name } else { $rule.RemoteAddress = '172.16.0.0/12' }
-    $null = New-NetFirewallRule @rule
-    if ($wslAdapter) { Write-Host "Firewall rule '$PrintName': TCP $PrintPort inbound on interface '$($wslAdapter.Name)'." }
-    else { Write-Host "Firewall rule '$PrintName': TCP $PrintPort inbound from 172.16.0.0/12 (the WSL adapter does not exist yet; WSL was not running). Re-run with -Force once WSL runs to tie it to the interface." }
-
     $bridgeArguments = "-NoProfile -ExecutionPolicy Bypass -File `"$BridgeScript`" -Printer `"$Printer`" -Port $PrintPort -TokenFile `"$TokenFile`""
     $action = New-ScheduledTaskAction -Execute 'C:\Windows\System32\WindowsPowerShell\v1.0\powershell.exe' -Argument $bridgeArguments
     $settings = New-ScheduledTaskSettingsSet -ExecutionTimeLimit ([TimeSpan]::Zero) -MultipleInstances IgnoreNew -StartWhenAvailable -AllowStartIfOnBatteries -DontStopIfGoingOnBatteries -RestartCount 999 -RestartInterval (New-TimeSpan -Minutes 1)
-    Register-WarehouseTask $PrintName $action $settings
+    # Register first (not started), then token file and firewall rule; if those fail, undo what this run created.
+    Register-WarehouseTask $PrintName $action $settings -NoStart
+    $tokenCreated = $false
+    try {
+        # Token file: created empty with a restricted ACL before any secret is written to it.
+        $tokenDir = Split-Path -Parent $TokenFile
+        if (-not (Test-Path -LiteralPath $tokenDir)) { $null = New-Item -ItemType Directory -Path $tokenDir -Force }
+        if (-not (Test-Path -LiteralPath $TokenFile)) {
+            $null = New-Item -ItemType File -Path $TokenFile -Force
+            $tokenCreated = $true
+        }
+        $sid = New-Object Security.Principal.SecurityIdentifier($identity.User.Value)
+        $admins = New-Object Security.Principal.SecurityIdentifier([Security.Principal.WellKnownSidType]::BuiltinAdministratorsSid, $null)
+        $system = New-Object Security.Principal.SecurityIdentifier([Security.Principal.WellKnownSidType]::LocalSystemSid, $null)
+        $acl = New-Object Security.AccessControl.FileSecurity
+        $acl.SetAccessRuleProtection($true, $false)
+        foreach ($who in @($sid, $admins, $system)) {
+            $acl.AddAccessRule((New-Object Security.AccessControl.FileSystemAccessRule($who, 'FullControl', 'Allow')))
+        }
+        Set-Acl -LiteralPath $TokenFile -AclObject $acl
+        if ($newToken) {
+            [IO.File]::WriteAllText($TokenFile, $newToken + "`n")
+            Write-Host "Token file '$TokenFile' set from $ComposeEnv in distro '$SetTokenFromWsl'."
+            $newToken = $null
+        } elseif ($tokenCreated) {
+            $bytes = New-Object byte[] 32
+            $rng = [Security.Cryptography.RandomNumberGenerator]::Create()
+            $rng.GetBytes($bytes)
+            $rng.Dispose()
+            [IO.File]::WriteAllText($TokenFile, (($bytes | ForEach-Object { $_.ToString('x2') }) -join '') + "`n")
+            Write-Host "Token file '$TokenFile' created with a random token. Put the same value into the instance as PRINTBRIDGE_TOKEN (see -SetTokenFromWsl)."
+        } else {
+            Write-Host "Token file '$TokenFile' already exists and was left as it is (its ACL was reset to this account, Administrators and SYSTEM)."
+        }
+        if ((Get-Item -LiteralPath $TokenFile).Length -eq 0) { throw "Token file '$TokenFile' is empty." }
+
+        # Firewall: TCP <PrintPort> inbound from the WSL side only.
+        $existingRule = Get-NetFirewallRule -DisplayName $PrintName -ErrorAction SilentlyContinue
+        if ($existingRule) { $existingRule | Remove-NetFirewallRule }
+        $wslAdapter = Get-NetAdapter -ErrorAction SilentlyContinue | Where-Object { $_.Name -like 'vEthernet (WSL*' } | Select-Object -First 1
+        $rule = @{ DisplayName = $PrintName; Direction = 'Inbound'; Action = 'Allow'; Protocol = 'TCP'; LocalPort = $PrintPort; Profile = 'Any' }
+        if ($wslAdapter) { $rule.InterfaceAlias = $wslAdapter.Name } else { $rule.RemoteAddress = '172.16.0.0/12' }
+        $null = New-NetFirewallRule @rule
+        if ($wslAdapter) { Write-Host "Firewall rule '$PrintName': TCP $PrintPort inbound on interface '$($wslAdapter.Name)'." }
+        else { Write-Host "Firewall rule '$PrintName': TCP $PrintPort inbound from 172.16.0.0/12 (the WSL adapter does not exist yet; WSL was not running). Re-run with -Force once WSL runs to tie it to the interface." }
+
+    } catch {
+        $problem = $_.Exception.Message
+        Unregister-ScheduledTask -TaskName $PrintName -Confirm:$false -ErrorAction SilentlyContinue
+        Get-NetFirewallRule -DisplayName $PrintName -ErrorAction SilentlyContinue | Remove-NetFirewallRule -ErrorAction SilentlyContinue
+        if ($tokenCreated) { Remove-Item -LiteralPath $TokenFile -Force -ErrorAction SilentlyContinue }
+        Stop-Script "Setting up the print bridge failed, task and firewall rule removed: $problem"
+    }
+    try {
+        Start-ScheduledTask -TaskName $PrintName
+    } catch {
+        Stop-Script "Registered '$PrintName' but could not start it: $($_.Exception.Message)"
+    }
     Write-Host "Registered and started '$PrintName'."
 }
 
