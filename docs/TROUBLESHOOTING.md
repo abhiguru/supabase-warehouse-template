@@ -163,9 +163,8 @@ bash scripts/compose.sh restart gateway
 A 502 from the gateway usually means the service behind it (`rest`,
 `functions`, `storage`) is down or restarting. The printing routes
 (`print-grn-preprinted`, `print-dispatch-preprinted`, `print-invoice-preprinted`,
-`print-via-ipp`, `get-printer-status`) answer 503 "Printing is not configured
-for this operator instance" **by design** (`functions/main/index.ts`): that 503
-is not a fault ([PRINTING.md](PRINTING.md)).
+`print-via-ipp`, `get-printer-status`) answer 503 with `"code": "PRINTING_OFF"`
+while the `printing` capability is off: that 503 is not a fault, turn printing on as in [PRINTING.md](PRINTING.md).
 
 A 503 whose body is `{"code":"upgrading","message":"The facility's server is being updated. Try again in a few minutes."}` (with
 `Retry-After: 120`) is **maintenance mode**, not a fault: an upgrade is running, or stopped half way and left the API closed on purpose
