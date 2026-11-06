@@ -8,6 +8,12 @@ file used to carry for earlier installations are in git: `git show b45ae0b:CHANG
 
 ## Unreleased
 
+## v0.8.0 (2026-11-07)
+
+**Migrations 128 to 149: invoice cancel and delete, each item's own packaging word, items added by staff, signed-in devices, and a safer
+upgrade (signed release tags, images pulled before the downtime, a drilled way back).** Upgrade the app in the same window: the app that
+pairs with this release is 0.8.0.
+
 ### Changed
 
 - **`docs/SENSORS.md` says what each sensor period and "Export CSV" show (WH-35).** Documentation only: the source of every chip (7 days to 2 years), the size of a chart point, that older days come from hourly rows, what the CSV holds, the lag of the newest hours, and that the long chips depend on the oldest raw reading.
