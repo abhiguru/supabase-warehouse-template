@@ -7,7 +7,10 @@ import { letterheadReader } from './letterhead-reader.ts';
 // ingest-sensor-readings is called by the sensor bridge with its own ingest key, not a user token.
 const publicFunctions = new Set(['hello', 'get-public-config', 'operator-otp', 'central-exchange', 'ingest-sensor-readings']);
 const printFunctions = new Set(['get-printer-status', 'print-via-ipp', 'print-grn-preprinted', 'print-dispatch-preprinted', 'print-invoice-preprinted']);
-const allowed = new Set([...publicFunctions, 'get-config', ...printFunctions,
+// Not behind a user's sign-in: they check for the service-role key themselves (scripts/watch.mjs calls sweep-print-jobs).
+const serviceFunctions = new Set(['sweep-print-jobs']);
+// cancel-print-job is not in printFunctions: a job already on its way can still be stopped while printing is turned off.
+const allowed = new Set([...publicFunctions, ...serviceFunctions, 'get-config', ...printFunctions, 'cancel-print-job',
   'generate-grn-pdf', 'generate-dispatch-pdf', 'generate-invoice-pdf', 'generate-customer-stock-pdf', 'generate-report-pdf']);
 
 // The four document PDFs print the optional letterhead image (setup.sh --letterhead-file); the report PDFs do not.
@@ -38,7 +41,7 @@ Deno.serve(async (req: Request) => {
   try {
     // Each function still checks its caller itself; this keeps the anon key out
     // of any function added later without that check.
-    if (!publicFunctions.has(name)) await verifySignedInRequest(req);
+    if (!publicFunctions.has(name) && !serviceFunctions.has(name)) await verifySignedInRequest(req);
     // Printing is a capability of the installation (setup: scripts/set-capability.mjs printing on). While it is off the print
     // routes refuse, whatever the printer settings say. The manifest is read the way get-public-config reads it.
     if (printFunctions.has(name) && !(await printingEnabled())) {

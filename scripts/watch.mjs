@@ -1286,6 +1286,27 @@ export function checkSensors(ctx) {
     'See docs/SENSORS.md, Troubleshooting, and docs/TROUBLESHOOTING.md#sensors-show-no-data. node scripts/doctor.mjs --local names each fault with the command to read the bridge log.')];
 }
 
+// Settles print jobs nothing follows any more: the sweep-print-jobs function turns a job still queued or printing after 5 minutes into
+// 'unknown'. Runs only while printing is on and the API answers locally; the service-role key never leaves this host.
+export async function checkPrintSweep(ctx) {
+  let manifest = null;
+  try { manifest = JSON.parse(ctx.readText(join(ctx.state, 'public/instance.json')) ?? 'null'); } catch { /* no manifest: not on */ }
+  if (manifest?.capabilities?.printing !== true) return [];
+  const env = ctx.env_();
+  const port = gatewayPortText(env);
+  const key = env.SERVICE_ROLE_KEY;
+  if (!/^\d+$/.test(port ?? '') || !key) return null;   // not judged: checkApiLocal reports a missing port
+  try {
+    const response = await ctx.fetch(`http://127.0.0.1:${port}/functions/v1/sweep-print-jobs`, {
+      method: 'POST', headers: { apikey: key, Authorization: `Bearer ${key}` }, signal: AbortSignal.timeout(15000), redirect: 'error',
+    });
+    if (!response.ok) throw new Error(`HTTP ${response.status}`);
+    return [result('print_sweep', 'print_sweep_failed', true, 'Print jobs are swept')];
+  } catch (error) {
+    return [result('print_sweep', 'print_sweep_failed', false, 'Stuck print jobs could not be settled', `${error.message}. A print job that lost its status monitor stays "printing" until this works.`)];
+  }
+}
+
 export const CHECKS = [
   ['cpu', checkCpu], ['memory', checkMemory], ['disk', checkDisks], ['database', checkDatabase],
   ['services', checkServices], ['container_oom', checkContainerOom], ['container_restarts', checkContainerRestarts],
@@ -1294,6 +1315,7 @@ export const CHECKS = [
   ['api_logs', checkApiLogs], ['pdf_renderer', checkPdfRenderer], ['central_key', checkCentralKey], ['letterhead', checkLetterhead], ['backups', checkBackups],
   ['restore_space', checkRestoreSpace], ['upgrade', checkUpgrade], ['sms_delivery', checkSmsDelivery], ['break_glass', checkBreakGlass], ['clock', checkClock],
   ['cloudflared', checkCloudflared], ['host_node', checkHostNode], ['root_copies', checkRootCopies], ['sensors_stale', checkSensors],
+  ['print_sweep', checkPrintSweep],
 ];
 
 // Runs every check; a throwing check becomes one failing result carrying its (redacted) error text.
