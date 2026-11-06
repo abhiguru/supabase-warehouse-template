@@ -293,8 +293,13 @@ SELECT pg_temp.gi_assert((SELECT count(*) FROM jsonb_array_elements((:'staff_qui
   AND jsonb_array_length(pg_temp.gi_receipt(:'staff_quince'::jsonb, 'GIR1')->'items') = 1,
   'staff: GIR1 is listed once, with its one line of 1 bag, 10 kg: ' || :'staff_quince');
 -- The deleted invoice and another customer's are not in the answer: the numbers 7102 (older), 7103 and 7105 (deleted) and the Hazel ones.
-SELECT pg_temp.gi_assert(position('7102' in :'staff_quince') = 0 AND position('7103' in :'staff_quince') = 0 AND position('7105' in :'staff_quince') = 0
-  AND position('7201' in :'staff_quince') = 0 AND position('7202' in :'staff_quince') = 0 AND position('GIR4' in :'staff_quince') = 0,
+-- The random UUIDs are removed first: a number such as 7105 can occur inside one by chance (it did, 2026-11-06).
+SELECT pg_temp.gi_assert(position('7102' in regexp_replace(:'staff_quince', '[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}', '', 'g')) = 0
+  AND position('7103' in regexp_replace(:'staff_quince', '[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}', '', 'g')) = 0
+  AND position('7105' in regexp_replace(:'staff_quince', '[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}', '', 'g')) = 0
+  AND position('7201' in regexp_replace(:'staff_quince', '[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}', '', 'g')) = 0
+  AND position('7202' in regexp_replace(:'staff_quince', '[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}', '', 'g')) = 0
+  AND position('GIR4' in :'staff_quince') = 0,
   'staff: the answer names only the latest invoice of each receipt, and nothing of another customer: ' || :'staff_quince');
 -- An administrator is answered the same, for one customer and for all.
 SELECT pg_temp.gi_assert(:'admin_quince'::jsonb = :'staff_quince'::jsonb, 'administrator and staff are answered alike, one customer: ' || :'admin_quince');

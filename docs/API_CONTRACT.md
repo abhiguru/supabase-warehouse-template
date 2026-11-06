@@ -88,6 +88,7 @@ caught only by the live comparison of the release checklist, which runs against 
 | `backendRelease` | `public/release.json`: the tag (or `git describe --tags --always`) of the checkout `setup.sh` ran from, `unknown` for a source archive without `.git`. `null` when the file is absent. |
 | `schemaHead` | `public/release.json`: the name of the newest applied migration. `null` when the file is absent. |
 | `version` | `api_configurations.app_version`, seeded `0.2.0` and not updated by releases. Do not use it as the backend's version. |
+| `maintenanceMode` | Always `false` (WH-28). The "upgrading" 503 from the gateway is the only upgrade signal; the key stays only because apps before WH-28 reject a configuration without it. `get-config` carries the same fixed `features.maintenanceMode`. The `api_configurations.maintenance_mode` column and the `maintenance_mode` key of `get_public_config` are no longer read by any function. |
 
 `get-config` (signed in) reports the same `backendRelease` as `data.environment.backendRelease`. `release.json` holds, besides those two,
 `backendCommit` and `writtenAt`; it is not part of a backup and a restore never brings it back (`setup.sh` and `restore.sh` write it
@@ -217,6 +218,10 @@ Additive only: every key that was there is unchanged. The value is `goodsreceive
 | `get_customer_activity_detail` | `top_stock_items[]` | `packaging` (the lots' word; `null` when the lots of that item have different words) |
 
 `get_invoice_data` (`items[].grn_item.packaging`, `items[].catalog.packaging`) and `get_customer_grn_activity` (`grns[].items[].packaging`) already answered it. `get_all_customer_activity_summary`, `get_all_dispatch_activity` and `get_all_grn_activity` list customers, not items, and have no line to carry it. Test: `tests/packaging_lines_141.sql`.
+
+### The packaging word as entered (migration 144)
+
+Replaces the rule of migration 142 below. Bag, Box and Crate keep their text (`bag`/`bags` and a blank word are `Bag`, `box`/`boxes` is `Box`, `crate`/`crates` is `Crate`); any other word (`Katta`, `Trey`, `Unit`, `Sack`, `Carton` ...) is the word as typed. Outer spaces and the invisible characters U+00A0, U+2007, U+202F and U+FEFF never change a word, and matching ignores case (`warehouse_security.clean_packaging`, `packaging_key`, `packaging_word`; `shared_packaging` uses them: the one word when every lot agrees, the lexicographically smallest spelling if they spell it differently, `null` when they differ). `create_item` / `update_item` store the word without outer spaces and invisible characters and require it. `get_item_wise_stock_list` rows carry the lots' shared word (`null` when they differ). `get_customer_activity_detail.top_stock_items` is one row per item id. No blank word is rewritten.
 
 ### The packaging rule of stock and preview rows (migration 142)
 
@@ -784,9 +789,8 @@ Errors use the shape `{success:false, data:null, message, error:{code, field?, d
   customer has the same mobile key; `details` is the OTHER customer, and nothing changes. A customer with no mobile is never refused,
   and an already active customer is not re-checked on a normal edit (`update_customer` with `p_active = true` on an active customer).
 - `search_customers(p_search_query text, p_limit integer DEFAULT 20, p_include_inactive boolean DEFAULT false)`: rows
-  now also carry `active` and `deleted` (booleans). `p_include_inactive = true` is honoured for administrators and
-  supervisors only and then also returns deactivated customers; for staff it is ignored (active customers they may access
-  only); customers are refused by the guard. Soft-deleted customers are never returned. A query made only of digits and number punctuation
+  now also carry `active` and `deleted` (booleans). `p_include_inactive = true` is honoured for administrators,
+  supervisors and staff (since migration 147) and then also returns deactivated customers; customers are refused by the guard. Soft-deleted customers are never returned. A query made only of digits and number punctuation
   also matches the mobile by its digits, by its key, and (when it starts `91` and is longer than 2 digits) by the digits
   after `91`, all as prefixes; any such match ranks first.
 - The Customers list and the Edit form read the `customers` table directly (no list RPC): the "Deactivated" filter is
@@ -985,6 +989,8 @@ One overload (the four-argument call works unchanged). Same checks and answer as
 (monthly and one-time, one-time labour 0, no customer rates) as new rows from today without an end;
 else `standard` when a standard rate is saved (its tiers from today); else `none` and no rate rows.
 
+Staff may call it since migration 145 (WH-42, the "Add item" sheet of the GRN items step): the item is created active with a name and a packaging word and no rate rows, even when a standard rate is saved (`rate_source` `none`). A staff call with `p_rate_from_item` or with `p_active` false is refused with `PERMISSION_DENIED`; the role is decided in the function. Customers are refused by the guard (SQLSTATE 42501). Nothing reads the standard rate for an item without rate rows, so such an item has no rate at the invoice until an administrator or supervisor sets one (`get_items_without_rate` lists it).
+
 #### `update_item` (signature unchanged)
 
 An item that turns from inactive to active and has no default rate row at all gets the standard tiers
@@ -995,11 +1001,11 @@ from today (nothing when no standard rate is saved). The answer is unchanged.
 Refusals of `create_item`, `update_item` and `get_item_usage` are `{ success: false, error_code, error, message }`
 (`error_code` and `error` are new on these refusals; `message` is the English text they had before. The app reads
 `error_code`). Codes:
-`DUPLICATE_NAME` (another item has this name: the match ignores upper/lower case and spaces around the name (on both the sent and the stored name), and
-covers deactivated items; saving an item under the name it already has is never refused, even if an older item differs from it only in case; the unique constraint `items_name_key` also maps to it when two saves race),
+`DUPLICATE_NAME` (another item has this name and the same packaging word (migration 144): the match ignores upper/lower case and spaces around the name (on both the sent and the stored name), and
+covers deactivated items; "Egg" + "Box" and "Egg" + "Trey" are two items, "Egg" with no word and "Egg" + "Bag" are one; saving an item under the name and word it already has is never refused, even if an older item differs from it only in case; the unique key `items_name_packaging_key` (name, packaging key) also maps to it when two saves race),
 `NOT_FOUND` (`update_item`, `get_item_usage`: the item does not exist, for example deleted by someone else),
-`INVALID_INPUT` (blank name; name over 80 characters; packaging or description over 40),
-`PERMISSION_DENIED` (role check inside the body). Staff and customers never reach the body: the guard raises
+`INVALID_INPUT` (blank name; blank packaging (`Packaging is required`, migration 144; `update_item` accepts a blank word only for a call that changes nothing but `p_active` on an item that has none); name over 80 characters; packaging or description over 40),
+`PERMISSION_DENIED` (role check inside the body). Customers never reach the body, and staff reach only `create_item` (migration 145): the guard raises
 SQLSTATE 42501 first.
 
 - `create_item`: signature unchanged; the codes above (`DUPLICATE_NAME`, `INVALID_INPUT`, `PERMISSION_DENIED`).
@@ -1307,6 +1313,14 @@ History: migrations 87 (the outside review fixes of 2026-10-15), 120 and 121.
 - **Cancelled invoices keep their lines.** `invoice_trl.disp_trl_id` may be empty and its foreign key is `ON DELETE SET NULL`:
   removing a dispatch line, or the dispatch, keeps the lines and amounts of a soft-deleted invoice with an empty link. A live
   invoice's line still blocks the removal (`Cannot modify invoiced items` for an edit; `Cannot delete dispatch <no>: <n> invoice items exist` for a delete).
+  Since migration 143 a cancelled invoice also keeps the details of each line on the line itself: `cancel_invoice` copies, in its own
+  transaction, item name, packaging, weight, rack, package mark, dispatched quantity, dispatch number and date, GRN number and date into
+  `invoice_trl.kept_*` and sets `details_kept_at` (a refused cancel writes nothing); the migration fills the same for invoices cancelled
+  earlier whose dispatch line still exists. For a cancelled invoice `get_invoice_detail` and `get_invoice_data` read the copy, which wins over the
+  current dispatch line, GRN and item, and `get_invoice_detail` no longer drops a line whose `disp_trl_id` is empty. New additive keys:
+  `details_available` on each line of both answers (`false`: the dispatch went before the copy existed; the amounts stay, the details are empty),
+  `grn_no` on each `get_invoice_detail` line, `grn_item.gr_no` and `grn_item.gr_date` on each `get_invoice_data` line. `get_invoice_items_detailed` (WH-39) also lists every line of a cancelled invoice, reads the copy and answers `details_available` per line (`false`: `dispatch_qty`, `tax_amount` and `total_amount` are `null`). Live invoices read as before.
+  The `kept_*` columns are readable like the rest of `invoice_trl` (own invoices for a customer); `cancelled_by` stays hidden from customers.
 
 ### Generate Dispatch (D5)
 
@@ -1442,8 +1456,8 @@ History: migrations 100, 102, 109, 120 and 121.
 
 ### Cancelling an invoice (migration 134)
 
-An invoice is **cancelled, never deleted**: it keeps its number and its lines, stays visible (a customer account sees it, marked cancelled)
-and can not be edited. Owner decision, review finding H5.
+An invoice can be **cancelled** (it keeps its number and its lines, stays visible (a customer account sees it, marked cancelled)
+and can not be edited; migration 146 adds back **Delete invoice** beside it, see "Deleting an invoice" below). Owner decision, review finding H5.
 
 `cancel_invoice(p_invoice_id uuid, p_reason text, p_expected_updated_at timestamptz DEFAULT NULL)` (administrators and supervisors; staff and
 customers get `Staff access required`, a raised `42501`). The reason is trimmed and must be 3 to 500 characters. `p_expected_updated_at` is the
@@ -1471,9 +1485,7 @@ unless another live invoice (not deleted, not cancelled) holds the GRN. A cancel
 the GRN and dispatch edit rules, `get_grn_edit_state`, `get_grn_item_rates` and `get_dispatch_details` treat it as no invoice. Its number stays taken:
 `NUMBER_TAKEN` for a new invoice with that number, and `get_next_invoice_number` still counts it.
 
-`delete_invoice(p_invoice_id)` now **refuses** and deletes nothing: `{success:false, error_code:'WH409', reason:'INVOICE_CANCEL_ONLY', error:'An invoice is
-not deleted: cancel it instead. Its number stays in the books.', message, invoice_id}` (an unauthorised caller keeps the old answer
-`{success:false, error:'Staff access required'}` and the like).
+`delete_invoice` refused with `INVOICE_CANCEL_ONLY` from migration 134 to 145; migration 146 brings it back, see "Deleting an invoice" below.
 `update_invoice` and the three-argument `save_invoice` over the id of a cancelled invoice answer `{success:false, error_code:'WH409',
 reason:'INVOICE_CANCELLED', error:'This invoice is cancelled and can not be changed.', message, invoice_id}` (`save_invoice` adds `function_version`).
 
@@ -1625,9 +1637,19 @@ the service role only and nothing called them.
   `payments.supervisor_id` references `user_profiles(id)` (`ON DELETE SET NULL`), and `payments_amount_positive` requires
   `amount > 0` (NULL stays allowed). A direct write that breaks one fails with SQLSTATE `23503` (missing parent), `23001`
   (parent still referenced) or `23514` (amount).
-- `delete_grn_safe` answers `{success:false, error:'Cannot delete GRN <no>: it has an invoice (cancelled invoices included); an invoiced GRN is kept.'}`
-  for a GRN that any invoice refers to, also when no dispatch line was invoiced. `delete_invoice` refuses (`INVOICE_CANCEL_ONLY`, migration 134), so
-  an invoice is never deleted; a direct `DELETE` of an invoice that still has lines fails with `23001`.
+- `delete_grn_safe` answers `{success:false, error:'Cannot delete GRN <no>: it has an invoice. Delete the invoice first.'}`
+  for a GRN that any invoice refers to, also when no dispatch line was invoiced. the way out is `delete_invoice` (migration 146), which removes the invoice and its lines; a direct `DELETE` of an invoice that still has lines fails with `23001`.
+
+### Deleting an invoice (migration 146)
+
+`delete_invoice(p_invoice_id uuid, p_expected_updated_at timestamptz DEFAULT NULL)` (administrators and supervisors; staff and customers are refused by
+`authorize_rpc`) removes a live or a cancelled invoice and its lines for good: `{success:true, message:'Invoice deleted successfully', invoice_id,
+invoice_number, inv_fin_year, gr_id}`. The audit triggers of migration 134 keep the deleted rows (the lines with their kept copies of migration 143) for 8 years.
+- An unknown invoice: `{success:false, error:'Invoice not found'}`. An invoice that payments refer to: `{success:false, error:'Cannot delete an invoice that has payments'}`; nothing changes.
+- `p_expected_updated_at` (the `updated_at` of `get_invoice_data`): a changed invoice is refused with `STALE_RECORD` (as for `cancel_invoice`).
+- The GRN's `invoiced` flag is cleared unless another invoice that is neither deleted nor cancelled holds the GRN. With no invoice left on it, `delete_grn_safe` works under its existing rules.
+- The number is free again: `get_next_invoice_number` and the "already used" check read the remaining rows, so deleting the highest number offers it again. A cancelled invoice keeps
+  its number until it is deleted; `unique_inv_no_per_year` still refuses a second invoice with a number a live or cancelled invoice holds, and a row soft-deleted earlier keeps its number reserved.
 
 ### Order history counts (migration 133)
 

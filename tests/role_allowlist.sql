@@ -140,7 +140,7 @@ INSERT INTO ra_rpc(name,staff,customer) VALUES
  ('assign_customer_to_user',false,'no'),('remove_customer_assignment',false,'no'),
  ('get_users_list',false,'no'),('get_user_details',false,'no'),('get_operations_dashboard',false,'no'),
  ('create_customer',false,'no'),('update_customer',false,'no'),
- ('create_item',false,'no'),('update_item',false,'no'),('delete_item_safe',false,'no'),
+ ('create_item',true,'no'),('update_item',false,'no'),('delete_item_safe',false,'no'),
  ('delete_grn_safe',false,'no'),('delete_dispatch_with_order_cleanup',false,'no'),('delete_invoice',false,'no'),('cancel_invoice',false,'no'),
  -- the price history of migration 48: administrators and supervisors only
  ('get_item_price_history',false,'no'),('get_item_usage',false,'no'),
@@ -266,11 +266,11 @@ SELECT pg_temp.ra_assert((SELECT array_agg(DISTINCT p.proname::text ORDER BY p.p
     AND pg_get_functiondef(p.oid) LIKE '%is_admin_or_supervisor()%'),
  'a granted function newly relies on is_admin_or_supervisor(), which admits staff: classify it here');
 SELECT pg_temp.ra_assert((SELECT bool_and(c.staff = (c.name IN ('get_item_wise_stock_list','get_order_change_log',
-    'get_order_with_items','get_orders_list','search_customer_items_for_order')))
+    'get_order_with_items','get_orders_list','search_customer_items_for_order','create_item')))
   FROM ra_rpc c WHERE c.name IN ('assign_customer_to_user','create_customer','create_item',
     'delete_item_safe','get_item_wise_stock_list','get_order_change_log',
     'get_order_with_items','get_orders_list','remove_customer_assignment','search_customer_items_for_order',
-    'update_customer','update_item')),'only the five order and stock reads among them are open to staff');
+    'update_customer','update_item')),'only the five order and stock reads, and create_item (migration 145: its body limits staff), among them are open to staff');
 -- No report body takes the caller's role from the token any more.
 SELECT pg_temp.ra_assert((SELECT bool_and(pg_get_functiondef(p.oid) NOT LIKE '%request.jwt.claims%'
     AND pg_get_functiondef(p.oid) LIKE '%warehouse_security.active_role()%')

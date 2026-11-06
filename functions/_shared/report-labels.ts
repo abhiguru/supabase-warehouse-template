@@ -73,7 +73,7 @@ const table = {
   dispatchNumber: ['Dispatch number', 'જાવક નંબર'], // common.dispatchNumber
   dispatches: ['Dispatches', 'જાવક'], // reports.customerActivity.dispatches
   lastDispatch: ['Last dispatch', 'છેલ્લી જાવક'], // reports.stockAging.lastDispatch
-  bagsDispatched: ['Bags dispatched', 'જાવકના નંગ'], // reports.dispatchActivity.bagsDispatched
+  bagsDispatched: ['Units dispatched', 'જાવકના નંગ'], // reports.dispatchActivity.bagsDispatched
   customersWithDispatches: ['Customers with dispatches', 'જાવકવાળા વેપારી'], // (wording kept from an earlier app version)
   invoiceNumber: ['Invoice number', 'ઇન્વૉઇસ નંબર'], // common.invoiceNumber
   invoices: ['Invoices', 'ઇન્વૉઇસ'], // reports.invoiceHistory.invoices

@@ -474,8 +474,8 @@ SELECT set_config('request.jwt.claims',:'admin_claims',true);
 SET LOCAL ROLE authenticated;
 SELECT public.delete_invoice(:'invoice_a'::uuid) AS paid_delete \gset
 SELECT public.cancel_invoice(:'invoice_a'::uuid,'Line rule cleanup',NULL) AS paid_cancel \gset
-SELECT pg_temp.rule_assert(:'paid_delete'::jsonb->>'success'='false' AND :'paid_delete'::jsonb->>'reason'='INVOICE_CANCEL_ONLY',
- 'an invoice is not deleted (migration 134): ' || :'paid_delete');
+SELECT pg_temp.rule_assert(:'paid_delete'::jsonb->>'success'='false' AND :'paid_delete'::jsonb->>'error'='Cannot delete an invoice that has payments',
+ 'an invoice with a payment is not deleted (migration 146): ' || :'paid_delete');
 SELECT pg_temp.rule_assert(:'paid_cancel'::jsonb->>'success'='false' AND :'paid_cancel'::jsonb->>'reason'='INVOICE_HAS_PAYMENTS',
  'an invoice with a payment is not cancelled: ' || :'paid_cancel');
 RESET ROLE;

@@ -185,7 +185,7 @@ or to take a line from another invoice. Two saves for the same receipt run one
 after the other, so the second is refused even under a new invoice number.
 `cancel_invoice` (migration 134; administrators and supervisors; it replaced the removal of an invoice) keeps the invoice, its number and its lines,
 marks it cancelled with who, when and why, and frees the receipt, after which it can be invoiced again under a new number; it refuses an invoice that
-payments refer to (`INVOICE_HAS_PAYMENTS`). `delete_invoice` only refuses (`INVOICE_CANCEL_ONLY`). A cancelled invoice can not be edited, is in no total
+payments refer to (`INVOICE_HAS_PAYMENTS`). `delete_invoice` (migration 146; administrators and supervisors) removes a live or a cancelled invoice and its lines for good, after the screen's one confirmation: it refuses an invoice that payments refer to ("Cannot delete an invoice that has payments") and, when it is sent the version the screen read, an invoice someone else changed since (`STALE_RECORD`); the audit log keeps the deleted rows. A cancelled invoice can not be edited, is in no total
 or count, is listed marked cancelled, and prints with a CANCELLED line. Invoices saved before this rule
 are not checked; applying the migration prints a warning when dispatch lines
 are already on more than one invoice, and such an invoice can still be edited
@@ -194,7 +194,15 @@ with the lines it has.
 `get_invoice_items_detailed` computes each line as the header does (one-time
 storage without duration or labour; storage and labour rounded separately; line
 tax rounded on that base), so its lines differ from the header only by the
-header's single tax ceiling.
+header's single tax ceiling. For a cancelled invoice (migration 143) it lists every line, reads the copy the line kept, and answers `details_available`;
+a line emptied before the migration has no quantity, so its `tax_amount` and `total_amount` are `null` and it adds nothing to the summary.
+
+A cancelled invoice keeps the details of its lines (migration 143): at cancel, each line copies item name, packaging, weight, rack, package mark,
+dispatched quantity, dispatch number and date, GRN number and date into its own `kept_*` columns (same transaction; a refused cancel copies
+nothing), and every read of a cancelled invoice (`get_invoice_detail`, `get_invoice_data`, the invoice PDF) shows the copy rather than the
+current dispatch line, GRN or item. Deleting the dispatch later still empties `disp_trl_id`, and amounts and totals do not change. A line
+emptied before the migration has nothing to copy: it is listed with its amounts and reads "Details not available" (`details_available` false).
+The `kept_*` columns are not among the internal columns below: they hold what a line already shows.
 
 ## Internal columns
 
@@ -292,9 +300,9 @@ unique-constraint error (SQLSTATE `23505`, `unique_inv_no_per_year`).
 invoice is still reserved and cannot be saved again; a suggestion that ignored
 such a row would be refused at every save until someone typed a higher number.
 The owner's decision reads "highest number in that year + 1"; counting the
-reserved numbers is what makes the suggestion one that can be saved. No RPC an
-app role may call soft-deletes or removes an invoice (since migration 134 `delete_invoice` refuses); a cancelled invoice keeps its row and its number, so the
-number is not offered again. Soft-deleted rows come only
+reserved numbers is what makes the suggestion one that can be saved. `delete_invoice`
+(migration 146) removes the row, so the number is free again; a cancelled invoice keeps its row and its number until it is deleted, so the
+number is not offered again meanwhile. No RPC an app role may call soft-deletes an invoice. Soft-deleted rows come only
 from the service key, an operator in the database or earlier data. If such a
 row holds 99999999, its year is refused as above.
 
@@ -307,11 +315,11 @@ line: removing or changing a dispatch line of a live invoice stays refused
 line), and the guards count only live invoices.
 
 **A deleted number is free again (owner decision D7, 2026-10-20).** The number of a dispatch that was deleted
-(`delete_dispatch_with_order_cleanup`: the row is removed) can be used again; an invoice is no longer deleted (migration 134: it is cancelled and keeps its number), and `get_next_dispatch_number` /
+(`delete_dispatch_with_order_cleanup`: the row is removed) can be used again; an invoice's row is removed by `delete_invoice` (migration 146; a cancelled invoice keeps its number until then), and `get_next_dispatch_number` /
 `get_next_invoice_number` offer it again when it is the highest or the year's next. A saved create answer of a deleted document is
 not replayed (migration 120), so entering the same document again creates it. `I1` and `I0001` are different strings: an invoice
-or dispatch number is compared as it is stored. (A soft-deleted invoice row, which only the service key or an operator makes, still
-reserves its number, as above.)
+or dispatch number is compared as it is stored. (A soft-deleted invoice row (`deleted_at` set), which only the service key or an operator makes, still
+reserves its number, as above; a deleted invoice's row is gone and `unique_inv_no_per_year` still refuses a second invoice with a number a live or cancelled invoice holds.)
 
 ## Invoices only when the goods are out, and the total the user confirmed (migration 121, owner decisions D9, D18, D23)
 

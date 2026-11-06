@@ -145,10 +145,12 @@ test('the renderer job runs only for a change that can move it, builds the image
   for (const path of ['docker/pdf-renderer/', 'tests/golden-pdf/', 'functions/_shared/']) assert.ok(job('changes').includes(path), path);
   assert.match(job('changes'), /\.github\/workflows\/ci\\\.yml/);
   const renderer = job('pdf-renderer');
-  assert.match(renderer, /\n    needs: \[validate, changes\]\n    if: github\.event_name == 'schedule' \|\| github\.event_name == 'workflow_dispatch' \|\| needs\.changes\.outputs\.renderer == 'true'\n/);
+  assert.match(renderer, /\n    needs: \[validate, changes, repeat\]\n    if: \$\{\{ !cancelled\(\) && needs\.validate\.result == 'success' && needs\.changes\.result == 'success' && needs\.repeat\.outputs\.skip != 'true' && \(github\.event_name == 'schedule' \|\| github\.event_name == 'workflow_dispatch' \|\| needs\.changes\.outputs\.renderer == 'true'\) \}\}\n/);
   // Image drift (live Debian mirrors) is found weekly, not only by the next renderer change; the other jobs are unconditional.
   assert.match(ci.slice(0, ci.indexOf('\npermissions:')), /\n  schedule:\n    - cron: '[0-9*/, -]+ \* \* [0-7]'\n  workflow_dispatch:$/);
-  assert.doesNotMatch(job('validate') + job('migrations') + job('contract'), /\n    if:/);
+  // validate has no condition; migrations and contract have only the repeat-of-a-tested-PR skip (WH-22), never a path filter.
+  assert.doesNotMatch(job('validate'), /\n    if:/);
+  for (const name of ['migrations', 'contract']) assert.match(job(name), /\n    if: \$\{\{ !cancelled\(\) && (?:needs\.validate\.result == 'success' && )?needs\.repeat\.outputs\.skip != 'true' \}\}\n/, name);
   assert.equal((renderer.match(/docker build /g) || []).length, 1, 'the image is built once');
   assert.match(renderer, /IMAGE=pdf-renderer:ci bash docker\/pdf-renderer\/test\/integration\.sh/);
   assert.doesNotMatch(ci, /\n  pdf-golden:/, 'the golden job is part of pdf-renderer');
@@ -159,7 +161,7 @@ test('operator-upgrade installs the previous release, moves it to the commit wit
   const job = ci.slice(ci.indexOf('\n  operator-upgrade:\n') + 1).split(/\n  [a-z-]+:\n/)[0];
   assert.ok(job.length > 100, 'the job exists');
   assert.match(job, /\n    runs-on: \$\{\{ github\.event\.pull_request\.head\.repo\.fork && 'ubuntu-latest' \|\| fromJSON\(vars\.OPERATOR_INSTALL_RUNNER \|\| '"ubuntu-latest"'\) \}\}\n/, 'same runner rule as operator-install');
-  assert.match(job, /\n    needs: validate\n/);
+  assert.match(job, /\n    needs: \[validate, repeat\]\n    if: \$\{\{ !cancelled\(\) && needs\.validate\.result == 'success' && needs\.repeat\.outputs\.skip != 'true' \}\}\n/);
   assert.doesNotMatch(job, /runs after the install drills/, 'it runs beside them, not after');
   // Tags are needed to find the previous release.
   assert.match(job, /\n          fetch-depth: 0\n/);
@@ -402,7 +404,7 @@ test('validate (the required check) runs the tests and compares dependency advis
   const ci = readFileSync(new URL('../.github/workflows/ci.yml', import.meta.url), 'utf8');
   const validate = ci.slice(ci.indexOf('\n  validate:\n') + 1).split(/\n  [a-z-]+:\n/)[0];
   const steps = [...validate.matchAll(/^      - (?:name: ([^\n]+)|uses: ([^\n@]+)|run: ([^\n]+))/gm)].map(match => match[1] ?? match[2] ?? match[3]);
-  assert.deepEqual(steps, ['actions/checkout', 'A change to a release branch carries no migration', 'actions/setup-node', 'npm ci', 'npm test',
+  assert.deepEqual(steps, ['actions/checkout', 'Record the tested tree', 'A change to a release branch carries no migration', 'actions/setup-node', 'npm ci', 'npm test',
     'Dependency advisories this change adds (docker/storage, docker/pdf-renderer)']);
   assert.doesNotMatch(validate.split('\n').filter(line => !line.trim().startsWith('#')).join('\n'), /npm audit|check:container-dependencies/);
   // The weekly signals: scheduled, each with the one permission it needs to open its issue, none writing contents.

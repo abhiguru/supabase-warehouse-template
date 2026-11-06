@@ -59,6 +59,8 @@ while the document is read cannot leave a gap or print a line twice. The first p
 that many at the end, the answer is 503 "The document changed while printing. Try again." Lines are then put in the order the screens
 show them: a GRN by line id (`get_grn_details`), a dispatch and an invoice by the time in the line's id, then the id
 (`get_dispatch_details`, `get_invoice_data`), the stock list by id.
+A cancelled invoice's PDF prints each line's item and quantity from the details the line kept at cancel (migration 143); a line emptied before that
+prints "Details not available" in the Item column (English only).
 
 Two limits apply, both answered 400 before the render:
 

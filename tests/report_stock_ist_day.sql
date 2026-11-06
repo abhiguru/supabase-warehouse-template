@@ -206,7 +206,7 @@ BEGIN
   PERFORM pg_temp.sd_eq(pg_temp.sd_keys(r#>'{data,by_bucket}'), ARRAY['0-120', '121-240', '241-364', '364+'], who || ' aging bucket names');
   PERFORM pg_temp.sd_eq(pg_temp.sd_keys(r#>'{data,by_bucket,0-120}'), ARRAY['item_count', 'percentage', 'total_quantity', 'total_weight'], who || ' aging bucket keys');
   PERFORM pg_temp.sd_eq(pg_temp.sd_keys(r#>'{data,items,0}'),
-    ARRAY['aging_bucket', 'aging_days', 'current_stock', 'dispatch_info', 'gr_no', 'grn_date', 'grn_id', 'item_name', 'original_qty', 'package_mark',
+    ARRAY['aging_bucket', 'aging_days', 'current_stock', 'dispatch_info', 'gr_no', 'grn_date', 'grn_id', 'item_id', 'item_name', 'original_qty', 'package_mark',
           'packaging', 'rack', 'weight'], who || ' aging item keys');
   PERFORM pg_temp.sd_eq(pg_temp.sd_keys(r#>'{data,items,0,dispatch_info}'),
     ARRAY['avg_days_between_dispatches', 'days_since_last_dispatch', 'dispatch_count', 'last_dispatch_date', 'total_dispatched'], who || ' aging dispatch keys');

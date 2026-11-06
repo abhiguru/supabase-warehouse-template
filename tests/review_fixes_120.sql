@@ -490,7 +490,7 @@ SET LOCAL ROLE authenticated;
 SELECT public.delete_invoice(:'invoice_k'::uuid) AS del_paid \gset
 SELECT public.cancel_invoice(:'invoice_k'::uuid,'Fix test cleanup',NULL) AS cancel_paid \gset
 RESET ROLE;
-SELECT pg_temp.rf_assert(:'del_paid'::jsonb->>'reason'='INVOICE_CANCEL_ONLY','a paid invoice is not deleted: '||:'del_paid');
+SELECT pg_temp.rf_assert(:'del_paid'::jsonb->>'error'='Cannot delete an invoice that has payments','a paid invoice is not deleted (migration 146): '||:'del_paid');
 SELECT pg_temp.rf_assert(:'cancel_paid'::jsonb->>'success'='false' AND :'cancel_paid'::jsonb->>'reason'='INVOICE_HAS_PAYMENTS'
  AND EXISTS (SELECT 1 FROM public.invoice WHERE id=:'invoice_k'::uuid AND deleted_at IS NULL) AND (SELECT invoiced FROM public.goodsreceived WHERE id=:'grn_k'::uuid)
  AND (SELECT count(*)=1 FROM public.invoice_trl WHERE invoice_id=:'invoice_k'::uuid),'a paid invoice is not cancelled, keeps its line and the GRN stays invoiced: '||:'cancel_paid');

@@ -44,23 +44,31 @@ SELECT pg_temp.ir_login('9555560704') AS staff_claims \gset
 SELECT pg_temp.ir_as(:'admin_claims'::jsonb,$q$SELECT public.create_item('IR Mango','25 kg crate','red')$q$) AS c1 \gset
 SELECT pg_temp.ir_assert(:'c1'::jsonb->>'success'='true','first create: '||:'c1');
 SELECT (:'c1'::jsonb#>>'{data,id}')::uuid AS mango \gset
-SELECT pg_temp.ir_as(:'admin_claims'::jsonb,$q$SELECT public.create_item('  ir MANGO ')$q$) AS c2 \gset
+-- (migration 144: an item is its name and its packaging word, and the word is required)
+SELECT pg_temp.ir_as(:'admin_claims'::jsonb,$q$SELECT public.create_item('  ir MANGO ','25 KG Crate')$q$) AS c2 \gset
 SELECT pg_temp.ir_assert(:'c2'::jsonb->>'success'='false' AND :'c2'::jsonb->>'error_code'='DUPLICATE_NAME'
-  AND :'c2'::jsonb->>'message'='An item with this name already exists','duplicate create: '||:'c2');
+  AND :'c2'::jsonb->>'message'='An item with this name and packaging already exists','duplicate create: '||:'c2');
 UPDATE public.items SET active=false WHERE id=:'mango'::uuid;
-SELECT pg_temp.ir_as(:'admin_claims'::jsonb,$q$SELECT public.create_item('IR Mango')$q$) AS c3 \gset
+SELECT pg_temp.ir_as(:'admin_claims'::jsonb,$q$SELECT public.create_item('IR Mango','25 kg crate')$q$) AS c3 \gset
 SELECT pg_temp.ir_assert(:'c3'::jsonb->>'error_code'='DUPLICATE_NAME','duplicate of a deactivated item: '||:'c3');
-SELECT pg_temp.ir_as(:'admin_claims'::jsonb,$q$SELECT public.create_item('   ')$q$) AS c4 \gset
+SELECT pg_temp.ir_as(:'admin_claims'::jsonb,$q$SELECT public.create_item('   ','Bag')$q$) AS c4 \gset
 SELECT pg_temp.ir_assert(:'c4'::jsonb->>'error_code'='INVALID_INPUT','blank name: '||:'c4');
-SELECT pg_temp.ir_as(:'admin_claims'::jsonb,format('SELECT public.create_item(%L)',repeat('x',81))) AS c5 \gset
+SELECT pg_temp.ir_as(:'admin_claims'::jsonb,format('SELECT public.create_item(%L,%L)',repeat('x',81),'Bag')) AS c5 \gset
 SELECT pg_temp.ir_assert(:'c5'::jsonb->>'error_code'='INVALID_INPUT','name over 80: '||:'c5');
-SELECT pg_temp.ir_as(:'staff_claims'::jsonb,$q$SELECT public.create_item('IR Staff Made')$q$) AS c6 \gset
-SELECT pg_temp.ir_assert(:'c6'::jsonb->>'state'='42501','staff are refused by the guard: '||:'c6');
+SELECT pg_temp.ir_as(:'admin_claims'::jsonb,$q$SELECT public.create_item('IR Mango')$q$) AS c5b \gset
+SELECT pg_temp.ir_assert(:'c5b'::jsonb->>'error_code'='INVALID_INPUT' AND :'c5b'::jsonb->>'message'='Packaging is required','no packaging word: '||:'c5b');
+-- the same name with another word is another item
+SELECT pg_temp.ir_as(:'admin_claims'::jsonb,$q$SELECT public.create_item('IR Mango','Bag')$q$) AS c5c \gset
+SELECT pg_temp.ir_assert(:'c5c'::jsonb->>'success'='true','same name, other word is a new item: '||:'c5c');
+-- staff may now add an active item with a word and no rate (migration 145); the guard no longer refuses them
+SELECT pg_temp.ir_as(:'staff_claims'::jsonb,$q$SELECT public.create_item('IR Staff Made','Bag')$q$) AS c6 \gset
+SELECT pg_temp.ir_assert(:'c6'::jsonb->>'success'='true' AND :'c6'::jsonb#>>'{data,active}'='true' AND :'c6'::jsonb#>>'{data,rate_source}'='none'
+  AND NOT EXISTS (SELECT 1 FROM public.item_storage_prices WHERE item_id=(:'c6'::jsonb#>>'{data,id}')::uuid),'staff add an active item without a rate: '||:'c6');
 
 -- update: a second item cannot take the first one's name; NOT_FOUND for a missing item
 SELECT pg_temp.ir_as(:'admin_claims'::jsonb,$q$SELECT public.create_item('IR Papaya','Box')$q$) AS p1 \gset
 SELECT (:'p1'::jsonb#>>'{data,id}')::uuid AS papaya \gset
-SELECT pg_temp.ir_as(:'admin_claims'::jsonb,format('SELECT public.update_item(%L,%L)',:'papaya','ir mango')) AS u1 \gset
+SELECT pg_temp.ir_as(:'admin_claims'::jsonb,format('SELECT public.update_item(%L,%L,%L)',:'papaya','ir mango','25 kg crate')) AS u1 \gset
 SELECT pg_temp.ir_assert(:'u1'::jsonb->>'error_code'='DUPLICATE_NAME','duplicate update: '||:'u1');
 SELECT pg_temp.ir_as(:'admin_claims'::jsonb,format('SELECT public.update_item(%L,%L)',gen_random_uuid(),'IR Anything')) AS u2 \gset
 SELECT pg_temp.ir_assert(:'u2'::jsonb->>'error_code'='NOT_FOUND','missing item: '||:'u2');
@@ -130,7 +138,8 @@ INSERT INTO public.items(name,active) VALUES ('IR Twin',true),('ir twin',true);
 SELECT id AS twin FROM public.items WHERE name='IR Twin' \gset
 SELECT pg_temp.ir_as(:'admin_claims'::jsonb,format('SELECT public.update_item(%L,%L,%L)',:'twin','IR Twin','Box')) AS t1 \gset
 SELECT pg_temp.ir_assert(:'t1'::jsonb->>'success'='true','unchanged name of an older duplicate can be saved: '||:'t1');
-SELECT pg_temp.ir_as(:'admin_claims'::jsonb,format('SELECT public.update_item(%L,%L)',:'twin','IR TWIN')) AS t2 \gset
+SELECT id AS twin2 FROM public.items WHERE name='ir twin' \gset
+SELECT pg_temp.ir_as(:'admin_claims'::jsonb,format('SELECT public.update_item(%L,%L,%L)',:'twin2','IR TWIN','Box')) AS t2 \gset
 SELECT pg_temp.ir_assert(:'t2'::jsonb->>'error_code'='DUPLICATE_NAME','changing the case onto another item is refused: '||:'t2');
 SELECT pg_temp.ir_as(:'admin_claims'::jsonb,$q$SELECT public.create_item('IR Null Active','Bag',NULL,NULL)$q$) AS n1 \gset
 SELECT pg_temp.ir_assert(:'n1'::jsonb#>>'{data,active}'='true','p_active NULL on create means active: '||:'n1');

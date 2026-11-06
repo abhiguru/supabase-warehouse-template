@@ -201,7 +201,8 @@ SELECT pg_temp.ph_assert(:'everything'::jsonb->>'success'='true' AND jsonb_array
 -- One row in full: the supervisor's update.
 SELECT pg_temp.ph_assert(r ?& ARRAY['id','changed_at','action','price_id','item_id','item_name','customer_id','customer_name',
    'old_values','new_values','changed_by','changed_by_name','changed_by_role']
- AND (SELECT count(*)=13 FROM jsonb_object_keys(r))
+ AND r ? 'item_packaging' AND r->>'item_packaging'='Bag' -- migration 144: the item's word rides along (additive)
+ AND (SELECT count(*)=14 FROM jsonb_object_keys(r))
  AND r @> jsonb_build_object('action','update','price_id',:'north_price','item_id',:'chillies','item_name','Price History Chillies',
    'customer_id',:'north','customer_name','Price History North','changed_by',:'supervisor_profile',
    'changed_by_name','Price History Supervisor','changed_by_role','supervisor')

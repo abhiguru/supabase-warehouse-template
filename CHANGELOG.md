@@ -8,8 +8,33 @@ file used to carry for earlier installations are in git: `git show b45ae0b:CHANG
 
 ## Unreleased
 
+### Changed
+
+- **`docs/SENSORS.md` says what each sensor period and "Export CSV" show (WH-35).** Documentation only: the source of every chip (7 days to 2 years), the size of a chart point, that older days come from hourly rows, what the CSV holds, the lag of the newest hours, and that the long chips depend on the oldest raw reading.
+- **`get-config` no longer returns the seeded `support@example.com` (WH-34).** `support.email` and `support.phone` read as an empty string when the stored value is an `example.com` address (the baseline seed); a real value is returned as it is. No PDF or document reads either key (they read `app_name` only), and the app has no screen that shows them. `scripts/configure-operator.sql` already blanks the seed at setup. No migration.
+- **`maintenanceMode` is a fixed `false` (WH-28).** `get-config` (`features.maintenanceMode`) and `get-public-config` (`maintenanceMode`) no longer read `api_configurations.maintenance_mode`; the gateway's "upgrading" 503 is the only upgrade signal. The key still answers `false` because apps before this change reject a configuration without it. The upgrade freeze, `maintenance.sh` and `upgrade.sh` are unchanged. No migration.
+
 ### Added
 
+- **Staff list deactivated customers on the dispatch and order pickers (migration 147, WH-26).** `search_customers(..., p_include_inactive => true)` is now honoured for staff as well as administrators and supervisors (customers still get active customers of their own business only; soft-deleted customers are never listed). A deactivated customer's stock can still go out on orders and dispatches (W16); only a new GRN is refused (`save_grn`, unchanged). No other function changed: dispatch and order saves have no deactivated-customer check, and staff already pass the order functions through `is_admin_or_supervisor()`.
+- **"Delete invoice" comes back beside "Cancel invoice" (migration 146, WH-43; owner decision of 2026-11-02, replacing cancel-only).** `delete_invoice(p_invoice_id, p_expected_updated_at)` works again for administrators and supervisors on a live or a cancelled invoice: the invoice and its lines are removed for good and the audit triggers of migration 134 keep the rows (8 years); it is refused with payments ("Cannot delete an invoice that has payments") and for an unknown invoice, and a changed invoice is refused with `STALE_RECORD`. It no longer answers `INVOICE_CANCEL_ONLY`. The GRN's `invoiced` flag is cleared unless another live (not deleted, not cancelled) invoice holds it. The number is free once the invoice is deleted (`get_next_invoice_number` and the "already used" check read the remaining rows; `unique_inv_no_per_year` still refuses a second invoice while a live or cancelled one holds it; a cancelled invoice keeps its number until deleted; rows soft-deleted earlier stay reserved). `delete_grn_safe` now says "it has an invoice. Delete the invoice first." (definition file). Tests: `tests/invoice_delete_146.sql` covers the delete; `tests/invoice_cancel_134.sql` (`STALE_RECORD`) and `tests/payments_integrity_139.sql` (the payments refusal) were updated to the new refusals. **Operator note:** the app release with the Delete button pairs with this migration; applying the migration needs no data action. A 0.6.0 app build still has a Delete button and sends no `p_expected_updated_at`, so it deletes without the changed-invoice check; a 0.7.0 build released before this change has no Delete button. Open for the accountant: reused invoice numbers and tax. **Correction to the earlier entries of this section:** the migration 134 entry "`delete_invoice` refused (`INVOICE_CANCEL_ONLY`)" and the upgrade note "invoice delete fails" no longer hold once migration 146 is applied: `delete_invoice` deletes as described here and `INVOICE_CANCEL_ONLY` is no longer returned. Neither was ever in a release (v0.7.0 ends at migration 127). API: [API_CONTRACT.md](docs/API_CONTRACT.md), "Deleting an invoice".
+- **Staff add an item from the GRN "Items" step (migration 145, WH-42).** `create_item` is open to staff (`authorize_rpc`, `migrations/definitions/00_authorize_rpc.sql`) for a name and a packaging word only:
+  the item is active and has no rate even when a standard rate is saved, and a staff call with `p_rate_from_item` or `p_active` false is refused (`PERMISSION_DENIED`), decided by role in the function.
+  Administrators and supervisors are unchanged (standard rate if one is saved). Staff still cannot open the Items screens, edit or delete an item, or see rates.
+- **Each item's own packaging word, as entered (migration 144, WH-41 with WH-1, WH-24, WH-9).** The word comes from the item: Bag, Box and Crate keep their text, any other word
+  (Katta, Trey, Unit ...) is shown as typed. `warehouse_security.shared_packaging` follows the app's rule, and outer spaces and the invisible characters U+00A0, U+2007, U+202F
+  and U+FEFF no longer change a word (WH-9). Packaging is required in `create_item` and `update_item` (`INVALID_INPUT`, "Packaging is required"; an item with no word can still be
+  switched on and off, any other save asks for one). An item is its name and its word: `items_name_key UNIQUE (name)` is replaced by `items_name_packaging_key` on (name, word),
+  "Egg" + "Box" and "Egg" + "Trey" are two items, the same name and word (ignoring case and outer spaces; no word is Bag) is `DUPLICATE_NAME`. Matching and grouping by item name
+  alone moved to the item id: `get_customer_activity_detail.top_stock_items`, the missing-price list of `build_invoice_recalculation_rows`, the lookups of `get_order_change_log`
+  (`delete_dispatch_with_order_cleanup` now stores `grn_item_id` on each restored item; older history still matches by name). `get_item_wise_stock_list.packaging` is the lots' shared
+  word (`null` when they differ); `get_stock_aging_report` lines carry `item_id`. `get_item_storage_prices` and `get_item_price_history` rows carry `item_packaging` (`''` for an item with no word; null in the history once the item is deleted); `get_customer_stock_analysis_v2`'s name search also finds the packaging word. The all-customers report PDF header "Bags dispatched" reads "Units dispatched" (Gujarati unchanged). No blank word is rewritten. Operator action: none beyond applying the migration; an older app shows typed words as "bag".
+- **A cancelled invoice keeps its line details (migration 143, WH-13).** Deleting a dispatch after a cancel emptied the item, quantity and numbers of the cancelled
+  invoice's lines (and `get_invoice_detail` dropped them). `cancel_invoice` now copies, in the same transaction, item name, packaging, weight, rack, package mark,
+  dispatched quantity, dispatch number and date, GRN number and date onto each line (`invoice_trl.kept_*`, `details_kept_at`); the migration fills the copy for invoices
+  already cancelled whose dispatch line still exists. Cancelled invoices read the copy in `get_invoice_detail`, `get_invoice_data` and the invoice PDF; live invoices
+  read as before. New additive keys: `details_available` (both reads), `grn_no` (`get_invoice_detail` lines), `grn_item.gr_no` and `grn_item.gr_date` (`get_invoice_data`).
+  `get_invoice_items_detailed` lists every line of a cancelled invoice and reads the copy too (WH-39). A line emptied before the migration is listed with its amounts and no details (PDF: "Details not available"). Operator action: none beyond applying the migration.
 - **The packaging word of stock and preview rows follows one rule (migration 142, review follow-up to migration 141).** `get_customer_activity_detail`:
   `top_stock_items[].packaging` was `null` ("lots differ") also when every lot had no packaging, and "Bag" next to "bags" counted as different, so such items read
   "units", and Box next to a lot with no packaging read boxes. Now the word is read as the app reads it: Box/Boxes is Box, Crate/Crates is Crate, everything else
@@ -20,12 +45,12 @@ file used to carry for earlier installations are in git: `git show b45ae0b:CHANG
 - **An invoice is cancelled, not deleted; the invoice records are audited and the audit trail is kept 8 years (migration 134, review finding H5).**
   New `cancel_invoice(p_invoice_id, p_reason, p_expected_updated_at)` (administrators and supervisors): the invoice keeps its number and its lines,
   gets `cancelled_at`, `cancelled_by` and `cancel_reason`, frees its GRN for a new invoice, and is refused with `INVOICE_HAS_PAYMENTS`,
-  `INVOICE_CANCELLED`, `STALE_RECORD` or `CANCEL_REASON_INVALID`. `delete_invoice` now refuses (`INVOICE_CANCEL_ONLY`) and deletes nothing;
+  `INVOICE_CANCELLED`, `STALE_RECORD` or `CANCEL_REASON_INVALID`. `delete_invoice` refused (`INVOICE_CANCEL_ONLY`) and deleted nothing (replaced by migration 146);
   `update_invoice` and `save_invoice` refuse a cancelled invoice (`INVOICE_CANCELLED`). A cancelled invoice is not live for the GRN and dispatch edit
   rules, is listed marked cancelled (customers still see it), and is left out of every sum and count of the customer invoice summary, the customer
   activity and the invoice-history report (`cancelled_count`; status Cancelled); its PDF has a CANCELLED line. `invoice`, `invoice_trl`, `payments`
   and `dispatch_trl` write `audit_log`, and `audit_log` is kept 2920 days (was 730). **Operator note:** the app needs the matching app release to
-  show and call it; `delete_invoice` no longer works for any caller. No payment can be recorded for a cancelled invoice; the preprinted print range skips
+  show and call it; `delete_invoice` did not work for any caller until migration 146. No payment can be recorded for a cancelled invoice; the preprinted print range skips
   cancelled invoices and reports them as `skipped`; `get_invoice_data` and `get_grn_details` know the cancellation; customers read `cancelled_at` and
   `cancel_reason` but not `cancelled_by`. Tests: `tests/invoice_cancel_134.sql` (new), `tests/invoice-cancel.test.mjs` (new),
   and the suites that deleted invoices for set-up now cancel them. API: [API_CONTRACT.md](docs/API_CONTRACT.md), "Cancelling an invoice".
@@ -247,9 +272,10 @@ file used to carry for earlier installations are in git: `git show b45ae0b:CHANG
          (SELECT count(*) FROM public.payments t WHERE t.amount <= 0) AS payment_amount_not_positive;
   ```
 
-- **Upgrade the app to 0.7.0 in the same window as this release.** An older app build keeps working and is not told to update (`minimumClientVersion` stays 0.6.0), but on it
-  invoice delete fails (`delete_invoice` now always refuses, `INVOICE_CANCEL_ONLY`), and Cancel invoice, the `payments` capability switch and the devices list
-  (migration 140) are missing; they are in the 0.7.0 app only.
+- **Upgrade the app in the same window as this release.** An older app build keeps working and is not told to update (`minimumClientVersion` stays 0.6.0). On every
+  older build, adding an item with no packaging word, or editing an item that has none, is refused, because the word is now required (migration 144). On a 0.6.0 build,
+  invoice delete works without the changed-invoice check (migration 146), and Cancel invoice, the `payments` capability switch and the devices list (migration 140) are
+  missing. A 0.7.0 build from before this release has Cancel invoice but no Delete invoice; the app that pairs with this release has both.
 - **git 2.34 or newer and `ssh-keygen` are needed on the host from now on**: `upgrade.sh` verifies the SSH signature of every release tag against the key
   list this release ships.
 

@@ -10,6 +10,7 @@ AS $function$
 DECLARE
     v_invoice_header jsonb;
     v_invoice_items jsonb;
+    v_cancelled boolean;
 BEGIN
   PERFORM warehouse_security.authorize_rpc('get_invoice_detail',jsonb_build_object('p_invoice_id',p_invoice_id));
     SELECT jsonb_build_object(
@@ -50,37 +51,64 @@ BEGIN
         RETURN jsonb_build_object('success', false, 'error', 'Invoice not found');
     END IF;
 
+    v_cancelled := (v_invoice_header->>'cancelled_at') IS NOT NULL;
+
+    -- Migration 143: a cancelled invoice reads the details its lines kept at cancel (details_kept_at set); the copy wins over the current
+    -- dispatch line, GRN and item. A line whose dispatch went before the copy existed is listed with its amounts and details_available false.
+    -- A live invoice reads exactly as before: its lines still need every join to match, as the inner joins demanded.
     SELECT jsonb_agg(
         jsonb_build_object(
-            'id', it.id,
-            'invoice_id', it.invoice_id,
-            'disp_trl_id', it.disp_trl_id,
-            'duration', it.duration,
-            'no_of_days', it.no_of_days,
-            'charge', it.charge,
-            'tax', it.tax,
-            'labour_rate', it.labour_rate,
-            'item_name', gt.item_name,
-            'packaging', gt.packaging,
-            'grn_item_id', gt.id,
-            'grn_date', gr.date,
-            'qty', dt.disp_qty,
-            'dispatch_no', d.disp_no,
-            'dispatch_date', d.disp_date,
-            'weight', gt.weight,
-            'grn_original_qty', gt.qty,
-            'package_mark', gt.package_mark,
-            'item_id', gt.item_id,
-            'dispatch_id', d.id,
-            'rack', gt.rack
-        ) ORDER BY gt.item_name, d.disp_date, uuid_extract_timestamp(dt.id), dt.id
+            'id', x.id,
+            'invoice_id', x.invoice_id,
+            'disp_trl_id', x.disp_trl_id,
+            'duration', x.duration,
+            'no_of_days', x.no_of_days,
+            'charge', x.charge,
+            'tax', x.tax,
+            'labour_rate', x.labour_rate,
+            'item_name', x.item_name,
+            'packaging', x.packaging,
+            'grn_item_id', x.grn_item_id,
+            'grn_date', x.grn_date,
+            'grn_no', x.grn_no,
+            'qty', x.qty,
+            'dispatch_no', x.dispatch_no,
+            'dispatch_date', x.dispatch_date,
+            'weight', x.weight,
+            'grn_original_qty', x.grn_original_qty,
+            'package_mark', x.package_mark,
+            'item_id', x.item_id,
+            'dispatch_id', x.dispatch_id,
+            'rack', x.rack,
+            'details_available', x.details_available
+        ) ORDER BY x.item_name, x.dispatch_date, uuid_extract_timestamp(x.dt_id), x.dt_id, x.id
     ) INTO v_invoice_items
-    FROM invoice_trl it
-    JOIN dispatch_trl dt ON it.disp_trl_id = dt.id
-    JOIN dispatch d ON dt.disp_id = d.id
-    JOIN goodsreceived_trl gt ON dt.gr_trl_id = gt.id
-    JOIN goodsreceived gr ON gr.id = gt.gr_id
-    WHERE it.invoice_id = p_invoice_id;
+    FROM (
+        SELECT it.id, it.invoice_id, it.disp_trl_id, it.duration, it.no_of_days, it.charge, it.tax, it.labour_rate,
+               dt.id AS dt_id,
+               CASE WHEN it.details_kept_at IS NOT NULL THEN it.kept_item_name ELSE gt.item_name END AS item_name,
+               CASE WHEN it.details_kept_at IS NOT NULL THEN it.kept_packaging ELSE gt.packaging END AS packaging,
+               gt.id AS grn_item_id,
+               CASE WHEN it.details_kept_at IS NOT NULL THEN it.kept_grn_date ELSE gr.date END AS grn_date,
+               CASE WHEN it.details_kept_at IS NOT NULL THEN it.kept_grn_no ELSE gr.gr_no END AS grn_no,
+               CASE WHEN it.details_kept_at IS NOT NULL THEN it.kept_disp_qty ELSE dt.disp_qty END AS qty,
+               CASE WHEN it.details_kept_at IS NOT NULL THEN it.kept_disp_no ELSE d.disp_no END AS dispatch_no,
+               CASE WHEN it.details_kept_at IS NOT NULL THEN it.kept_disp_date ELSE d.disp_date END AS dispatch_date,
+               CASE WHEN it.details_kept_at IS NOT NULL THEN it.kept_weight ELSE gt.weight END AS weight,
+               gt.qty AS grn_original_qty,
+               CASE WHEN it.details_kept_at IS NOT NULL THEN it.kept_package_mark ELSE gt.package_mark END AS package_mark,
+               gt.item_id,
+               d.id AS dispatch_id,
+               CASE WHEN it.details_kept_at IS NOT NULL THEN it.kept_rack ELSE gt.rack END AS rack,
+               (it.details_kept_at IS NOT NULL OR dt.id IS NOT NULL) AS details_available
+        FROM invoice_trl it
+        LEFT JOIN dispatch_trl dt ON it.disp_trl_id = dt.id
+        LEFT JOIN dispatch d ON dt.disp_id = d.id
+        LEFT JOIN goodsreceived_trl gt ON dt.gr_trl_id = gt.id
+        LEFT JOIN goodsreceived gr ON gr.id = gt.gr_id
+        WHERE it.invoice_id = p_invoice_id
+          AND (v_cancelled OR (dt.id IS NOT NULL AND d.id IS NOT NULL AND gt.id IS NOT NULL AND gr.id IS NOT NULL))
+    ) x;
 
     RETURN jsonb_build_object('success', true, 'invoice', v_invoice_header, 'items', COALESCE(v_invoice_items, '[]'::jsonb));
 EXCEPTION WHEN OTHERS THEN

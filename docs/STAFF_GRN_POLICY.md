@@ -99,9 +99,11 @@ The current role table comes first; the sections after it record how each role's
 | The order effect of a GRN delete before it is made (`preview_delete_grn`, migration 128) | yes | yes | **no** (`Staff access required`) | no |
 | A customer's order read without making one (`get_customer_order`, migration 128): the customer's own for a customer account | yes | yes | yes | own customer only |
 | Which items have no rate yet (`get_items_without_rate`, migration 133) | yes | yes | yes | **no** (`Staff access required`) |
+| Add an item from the GRN items step (`create_item`, migration 145): name and packaging word only; the item is active and has no rate, even when a standard rate is saved (a rate source or `p_active` false is refused for staff, `PERMISSION_DENIED`) | yes (standard rate if one is saved) | yes (standard rate if one is saved) | yes (no rate) | **no** (`Staff access required`) |
 | Read the rack presets of the GRN item form (`get_rack_presets`, migration 131) | yes | yes | yes | **no** (`Staff access required`) |
 | Change the rack presets (`set_rack_presets`, migration 131) | yes | yes | **no** (`Staff access required`) | no |
-| Cancel an invoice (`cancel_invoice`, migration 134; `delete_invoice` only refuses) | yes | yes | **no** (`Staff access required`) | no |
+| Cancel an invoice (`cancel_invoice`, migration 134) | yes | yes | **no** (`Staff access required`) | no |
+| Delete an invoice (`delete_invoice`, migration 146; refused with payments) | yes | yes | **no** (`Staff access required`) | no |
 | Supervisor's mobile number on a receipt or dispatch | yes | yes | yes | **no** (name only) |
 | `printer_status` (direct read removed in 123: the edge function reads it with the service key) | yes | yes | yes | **no** (and no longer without sign-in) |
 

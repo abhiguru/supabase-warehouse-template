@@ -60,7 +60,7 @@ Deno.serve(async (req: Request) => {
       companyName: instance.companyName, canonicalOrigin: instance.canonicalOrigin,
       capabilities: instance.capabilities, supportedApiVersions: instance.supportedApiVersions,
       minimumClientVersion, backendRelease: release.backendRelease, schemaHead: release.schemaHead,
-      maintenanceMode: config.maintenance_mode,
+      maintenanceMode: false, // fixed: apps before WH-28 reject a config without it; the "upgrading" 503 is the only signal
       centralLogin,
       urls: { publicConfig: `${baseUrl}/functions/v1/get-public-config`, fullConfig: `${baseUrl}/functions/v1/get-config` },
       featureFlags: config.feature_flags ?? {},

@@ -25,8 +25,8 @@ BEGIN
     IF role_name <> 'admin' THEN RAISE EXCEPTION 'Administrator required' USING ERRCODE = '42501'; END IF;
     RETURN;
   END IF;
-  -- Administrators and supervisors: every other RPC, among them cancel_invoice (migration 134; the only way to take an invoice
-  -- out of use, and delete_invoice now refuses), set_rack_presets (migration 131) and the rest of the management RPCs. Staff and
+  -- Administrators and supervisors: every other RPC, among them cancel_invoice (migration 134; keeps the invoice on record) and
+  -- delete_invoice (migration 146; removes it, administrators and supervisors only), set_rack_presets (migration 131) and the rest of the management RPCs. Staff and
   -- customers are refused by the lists and the final ELSE below.
   IF role_name IN ('admin','supervisor') THEN RETURN; END IF;
   -- Approved document RPCs only; no shared ownership or table-policy change.
@@ -39,6 +39,8 @@ BEGIN
     'get_rack_presets',
     -- The items of a GRN being entered that have no default rate yet (migration 133); no figure is returned.
     'get_items_without_rate',
+    -- Adding an item from the GRN items step (migration 145): the body gives staff an active item with no rate and refuses a rate or p_active false.
+    'create_item',
     -- The GRN edit form's version and locks (migration 121); customers stay refused by the final ELSE.
     'get_grn_edit_state','get_grn_item_dispatches',
     'get_grn_prefixes_with_stock','get_all_grn_activity',
