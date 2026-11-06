@@ -52,7 +52,10 @@ async function updateDatabaseStatus(
   const { error } = await supabase
     .from("print_jobs")
     .update(updateData)
-    .eq("id", printJobId);
+    .eq("id", printJobId)
+    // Only a job still open is updated: a job the user cancelled (cancel-print-job) or the sweeper settled is never overwritten,
+    // least of all by 'completed'. A guarded update that matches no row is not an error.
+    .in("status", ["queued", "printing"]);
 
   if (error) {
     console.error(
@@ -89,7 +92,8 @@ export async function monitorPrintJobStatus(
     `[Status Monitor] Starting background monitoring for print job ${printJobId} (CUPS job ${cupsJobId})`
   );
 
-  await runMonitor({
+  try {
+    await runMonitor({
     now: () => Date.now(),
     sleep,
     observe: () => observeJob(async () => jobObservation(await getCUPSJobReply(cupsJobId)), sleep, MONITOR_LIMITS),
@@ -100,4 +104,14 @@ export async function monitorPrintJobStatus(
       await updateDatabaseStatus(printJobId, step, supabaseUrl, supabaseKey);
     },
   }, MONITOR_LIMITS);
+  } catch (error) {
+    // The row was written 'printing' before this ran. Whatever failed (CUPS unreachable, a bad reply, the first update), the row must
+    // not stay 'printing': record 'unknown' with a note. If that fails too, sweep-print-jobs settles it after 5 minutes.
+    console.error(`[Status Monitor] Job ${cupsJobId}: monitoring failed:`, error instanceof Error ? error.name : 'unknown');
+    try {
+      await updateDatabaseStatus(printJobId, { status: 'unknown', completedAt: false, note: 'The printer could not be followed. Check the printer.' }, supabaseUrl, supabaseKey);
+    } catch {
+      console.error(`[Status Monitor] Job ${cupsJobId}: could not record unknown`);
+    }
+  }
 }
