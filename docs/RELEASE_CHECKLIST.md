@@ -127,6 +127,8 @@ request whose own run passed in full on the identical tree skips the long jobs (
 A skipped job is not a success, so the release gate below refuses such a commit, naming the two missing checks. Open Actions > CI > Run
 workflow, choose the branch that holds the commit (a `workflow_dispatch` run tests the branch tip, so the tag's commit must be that tip),
 and wait for it to finish; the gate then passes. Pull requests, the weekly schedule, `workflow_dispatch` and pushes to `release/**` always run in full.
+Do not use "Re-run jobs" on the skipped push run, even where the gate's message suggests it: the re-run skips again, and its skipped checks become the newest on the
+commit, which also undoes a passing `workflow_dispatch` run. Start a new `workflow_dispatch` run instead.
 
 **Before pushing the tag, wait for green `operator-install` and `operator-upgrade` on the commit.** Neither is a required check on `main`
 (they take up to an hour and run on one machine), so nothing else stops a tag on a commit whose installation or upgrade run failed. The
