@@ -68,8 +68,8 @@ they go in the operator's secret store. Nothing here authorizes production deplo
 
 ## Needs hardware or a device
 
-- **Printing.** Authorized, durable jobs on the Epson LQ-1310 continuous forms (alignment, faults, Linux USB and the
-  Windows shared-queue path). Until then the print routes answer 503 by design ([PRINTING.md](PRINTING.md)).
+- **Printing.** Paper output on the Epson LQ-1310 continuous forms (alignment, faults, Linux USB through CUPS, the Windows
+  print bridge). The routes answer 503 `PRINTING_OFF` until the `printing` capability is turned on ([PRINTING.md](PRINTING.md)).
 - **Sensors.** Both hubs and every T310 seen by `--once --dump`, an hour of change and heartbeat rows, a staff phone
   showing a new reading within 60 seconds, then `set-capability sensors on` ([SENSORS.md](SENSORS.md)).
 - **Business flow.** On an operator installation: editable identity, branding, customer and pricing configuration, then
@@ -92,8 +92,6 @@ they go in the operator's secret store. Nothing here authorizes production deplo
   renewal in the owner's calendar for early January 2027.
 - **Secrets without a procedure.** `SECRET_KEY_BASE` and `VAULT_ENC_KEY` (generated only by `pooler.sh on`) have no rotation procedure
   ([OPERATOR_INSTALL.md](OPERATOR_INSTALL.md#secrets-that-rotate-keys-does-not-change)).
-- **Printing functions.** `npm:ipp@2.0.1` is imported on demand; vendor it before printing is enabled
-  ([CONTAINER_SECURITY.md](CONTAINER_SECURITY.md#edge-function-modules-and-image)).
 - **Scheduled image scan.** No workflow runs the scan between releases.
 - **Telling facilities about releases (built; the owner lifted the deferral on 2026-11-01).** `node scripts/doctor.mjs --local` and the daily
   "Monitoring is alive" message say "vX.Y.Z is available (this facility runs vA.B.C)", marked "Security release" and with the date the running
