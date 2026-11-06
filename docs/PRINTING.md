@@ -76,32 +76,54 @@ How it works:
   `X-Printer`, a document name in `X-Doc-Name` and the shared secret in `X-Print-Token`. The body is the raw printer bytes
   (binary-clean: page-length parameters contain the bytes 0A and 0C). The user's own session token is never forwarded. The bridge
   answers JSON; `{"success": true}` with a 2xx status is a success.
-- `GET ${PRINTBRIDGE_URL}/health` with `X-Print-Token` answers `{"success": true}` (optionally `"printer_found": false` when the
-  named Windows printer is not installed). `get-printer-status` uses it and reports `transport: "bridge"`; it can say whether the
-  bridge is reachable, not the printer's paper or queue state.
+- `GET ${PRINTBRIDGE_URL}/health` with `X-Print-Token` and `X-Printer` answers 200
+  `{"success": true, "printer": "<name>", "printer_found": true, "status": "<Windows spooler status>"}`, or 503
+  `{"success": false, "printer_found": false, ...}` when the named Windows queue is not installed, or 401 for a wrong token.
+  `get-printer-status` uses it and reports `transport: "bridge"`; it can say whether the bridge is reachable, whether the queue
+  exists and the spooler's status text, not the printer's paper or ribbon state.
+- `X-Printer` is always `PRINTER_NAME`; the bridge prints only to the one queue it was started with (`-Printer`) and answers 403
+  for any other name. `PRINTER_NAME` in `compose.env` and `-Printer` must therefore be the same text (case does not matter).
 - The bridge does not report when the job ends. A job sent to it is recorded as `unknown` ("sent to the print bridge"), never as
   `completed`.
-- **Address.** The Windows host is the distro's default gateway in WSL2's NAT mode. That address can change at a Windows restart,
-  so `scripts/compose.sh` works out `http://<gateway>:9631` (`scripts/print-bridge-url.sh`, port `PRINTBRIDGE_PORT`) for every
-  command, and `start.sh` says what it found. A `PRINTBRIDGE_URL` written in `compose.env` overrides it. **Mirrored networking is not
-  verified**; use NAT mode or set `PRINTBRIDGE_URL`.
-- **Token.** `PRINTBRIDGE_TOKEN` is in `config/compose.env`. The functions refuse to send without one. Give the Windows side the same
-  value through a file, never on a command line.
-- **Windows firewall.** An inbound rule for the bridge port, scoped to the WSL subnet (and, on Windows 11 22H2 and later, the Hyper-V
-  firewall for the WSL network), is needed. Not verified on a host.
+- **Address.** The bridge binds the IPv4 address of Windows' `vEthernet (WSL...)` adapter and answers only requests whose `Host`
+  is exactly that address. In WSL2's NAT mode that adapter's address is the distro's default gateway, so
+  `scripts/print-bridge-url.sh` (the default gateway from `ip route`) yields the same address the bridge binds, with the port
+  `PRINTBRIDGE_PORT` (default 6632). `scripts/compose.sh` works it out for every command and `start.sh` says what it found; the
+  address can change at a Windows restart or `wsl --shutdown`, so it is never stored. The bridge notices a changed address (it
+  checks every 15 s), exits, and the scheduled task starts it again on the new one. A `PRINTBRIDGE_URL` in `compose.env`
+  overrides the resolver; use the exact IP the bridge bound (the `start listen=` line in `%ProgramData%\Warehouse\logs`), never a
+  name. That the two ends agree follows from how NAT mode is built and from the code; it has not been run on a Windows host.
+  **Mirrored networking is not verified** (there is no `vEthernet (WSL)` adapter; the bridge stops with a message): use NAT mode.
+- **Token.** `PRINTBRIDGE_TOKEN` is in `config/compose.env` (mode 0600). The functions refuse to send without one. The Windows side
+  copies it with `register-tasks.ps1 -SetTokenFromWsl`, so it never appears on a command line, and the two cannot drift.
+- **Windows firewall.** `register-tasks.ps1` adds an inbound rule "Warehouse Print" for the bridge port, limited to the WSL
+  interface. On Windows 11 22H2 and later the Hyper-V firewall for the WSL network may also need a rule. Not verified on a host.
 
 Steps:
 
-1. Install the printer in Windows with the Epson driver and print a Windows test page. Note its exact name; use it as
-   `PRINTER_NAME` in `compose.env` (default `LQ1310_RAW`: you can name the Windows printer that).
-2. On Windows, register the bridge: `scripts/windows/register-tasks.ps1 -Printer` (it runs `scripts/windows/print-bridge.ps1` as a
-   scheduled task of the install user, who sees the user's printers, with the token read from a file). (These two scripts are added with the
-   bridge itself; until they are in `scripts/windows/`, there is no bridge to register.)
-3. Open the port in the Windows firewall for the WSL subnet.
-4. In Ubuntu: `bash start.sh` (it reports the bridge address), then
+1. Install the printer in Windows as a local queue (any Epson driver: the bridge sends RAW and bypasses it) and print a Windows
+   test page. Note the exact queue name (`Get-Printer | Format-Table Name`); put it as `PRINTER_NAME` in `config/compose.env`
+   (default `LQ1310_RAW`: you may name the Windows printer that) and restart the functions later in step 4.
+2. In an elevated PowerShell, in `scripts/windows` of the checkout (reach it through `\\wsl$`, or copy the folder to Windows), register
+   the bridge. It asks once for the Windows password and registers the task "Warehouse Print" (at boot and every 2 minutes; a second
+   copy is ignored), creates the token file, adds the firewall rule and reads them back:
+
+       powershell -NoProfile -ExecutionPolicy Bypass -File .\register-tasks.ps1 -PrintOnly -Printer "<queue>" `
+         -SetTokenFromWsl <distro> -ComposeEnv <state>/config/compose.env
+
+   `<distro>` is the WSL distro name (`wsl -l`), `<state>` the installation's state directory inside it. The task runs as the
+   install account (a SYSTEM task would not see its printer queues). Port: `-PrintPort` (default 6632); if you change it, set
+   `PRINTBRIDGE_PORT` in `compose.env` too.
+3. In Ubuntu: `bash start.sh` (it reports the bridge address), then
    `WAREHOUSE_STATE_DIR=<state> node scripts/set-capability.mjs printing on`, `bash scripts/compose.sh restart functions` and a new
    `db:backup`.
-5. Check it as in step 6 of the Linux host.
+4. Test without paper: pause the queue in Windows
+   (`(Get-CimInstance Win32_Printer -Filter "Name='<queue>'") | Invoke-CimMethod -MethodName Pause`), tap Print on a GRN in the
+   app, see the job with `Get-PrintJob -PrinterName "<queue>"`, remove it (`Get-PrintJob -PrinterName "<queue>" | Remove-PrintJob`) and
+   resume the queue. Never test on a resumed printer with paper loaded unless you want it printed. The app then shows the job as
+   `unknown` ("sent to the print bridge").
+
+The full parameter list and the log location are in the header of `scripts/windows/print-bridge.ps1` and `register-tasks.ps1`.
 
 ## Operation notes
 

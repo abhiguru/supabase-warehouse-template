@@ -113,7 +113,7 @@ if [[ -e "$STATE/config/maintenance" || -L "$STATE/config/maintenance" ]]; then 
 print_override=()
 if grep -Eq '^PRINT_TRANSPORT=bridge[[:space:]]*$' "$ENV_FILE" && ! grep -Eq '^PRINTBRIDGE_URL=.' "$ENV_FILE"; then
   print_port="$(sed -n 's/^PRINTBRIDGE_PORT=//p' "$ENV_FILE" | head -n 1)"
-  print_url="$(bash "$ROOT/scripts/print-bridge-url.sh" "${print_port:-9631}" 2>/dev/null || true)"
+  print_url="$(bash "$ROOT/scripts/print-bridge-url.sh" "${print_port:-6632}" 2>/dev/null || true)"
   if [[ -n "$print_url" ]]; then print_override=("PRINTBRIDGE_URL=$print_url"); fi
 fi
 exec env "${unset_args[@]}" "${lan_override[@]}" "${maintenance_override[@]}" "${print_override[@]}" WAREHOUSE_PUBLIC_PATH="$STATE/public" docker compose --project-directory "$ROOT/docker" --project-name "$PROJECT" \

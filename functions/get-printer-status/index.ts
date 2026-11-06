@@ -8,9 +8,12 @@ import { bridgeBaseUrl, cupsQueueUrl, printTransportName } from '../_shared/prin
 const json = { 'Content-Type': 'application/json' };
 
 // Bridge mode: the bridge is a Windows service that reports no queue state of the CUPS kind. What can be asked is
-// GET ${PRINTBRIDGE_URL}/health with X-Print-Token. The bridge answers JSON {success: true, printer_found?: boolean}
-// (printer_found false = the Windows printer named in PRINTER_NAME is not installed). Only reachability and that
-// flag are reported; there is no queue length or paper state.
+// GET ${PRINTBRIDGE_URL}/health with X-Print-Token and X-Printer (scripts/windows/print-bridge.ps1). It answers
+// 200 {success: true, printer, printer_found: true, status: <Windows spooler PrinterStatus>} or, when the queue is missing,
+// 503 {success: false, printer, printer_found: false, error}. 401/403 = token refused. Only reachability, the queue being
+// found and the spooler status text are reported; there is no queue length or paper state.
+const BRIDGE_PROBLEM_STATUS = /offline|paused|error|jam|paper|toner|door|intervention|not available|no ?toner|pending deletion/i;
+
 async function bridgeStatus(printer_name: string): Promise<Response> {
   const timestamp = new Date().toISOString();
   const base = bridgeBaseUrl(name => Deno.env.get(name));
@@ -18,29 +21,38 @@ async function bridgeStatus(printer_name: string): Promise<Response> {
   if (base === null || token === '') {
     return new Response(JSON.stringify({ success: false, status: 'error', transport: 'bridge', error: 'The print bridge is not configured', printer_name, timestamp }, null, 2), { headers: json, status: 503 });
   }
-  let body: { success?: unknown; printer_found?: unknown } | null = null;
-  let reachable = false;
+  let body: { success?: unknown; printer_found?: unknown; status?: unknown } | null = null;
+  let httpStatus = 0;
   try {
     const response = await fetch(`${base}/health`, {
       headers: { 'X-Print-Token': token, 'X-Printer': printer_name },
       signal: AbortSignal.timeout(5000),
       redirect: 'error',
     });
-    reachable = response.ok;
+    httpStatus = response.status;
     body = await response.json().catch(() => null);
   } catch {
-    reachable = false;
+    httpStatus = 0;
   }
-  if (!reachable || body?.success !== true) {
+  if (httpStatus === 401 || httpStatus === 403) {
+    return new Response(JSON.stringify({ success: false, status: 'error', transport: 'bridge', error: 'The print bridge refused the token', printer_name, timestamp }, null, 2), { headers: json, status: 502 });
+  }
+  // A missing Windows queue: the bridge is reachable and says so with printer_found false (503).
+  if (body !== null && body.printer_found === false) {
+    return new Response(JSON.stringify({ success: true, status: 'error', transport: 'bridge', message: 'Print bridge reachable, but the Windows printer is not installed', printer_name, timestamp }, null, 2), { headers: json, status: 200 });
+  }
+  if (httpStatus !== 200 || body?.success !== true || body.printer_found !== true) {
     return new Response(JSON.stringify({ success: false, status: 'offline', transport: 'bridge', error: 'The print bridge did not answer', printer_name, timestamp }, null, 2), { headers: json, status: 503 });
   }
-  const found = body.printer_found !== false;
+  const spooler = typeof body.status === 'string' ? body.status.slice(0, 60) : '';
+  const problem = spooler !== '' && BRIDGE_PROBLEM_STATUS.test(spooler);
   return new Response(JSON.stringify({
     success: true,
-    status: found ? 'online' : 'error',
+    status: problem ? 'error' : 'online',
     transport: 'bridge',
-    message: found ? 'Print bridge reachable' : 'Print bridge reachable, but the Windows printer is not installed',
+    message: problem ? `Print bridge reachable, the printer reports: ${spooler}` : 'Print bridge reachable',
     printer_name,
+    printer_status: spooler || undefined,
     timestamp,
   }, null, 2), { headers: json, status: 200 });
 }

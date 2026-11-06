@@ -304,8 +304,8 @@ an `instance.json` written before it existed), then `bash scripts/compose.sh res
 **Printing is optional and off by default.** An Epson LQ-1310 prints GRN, dispatch and invoice forms; admin, supervisor and staff may print.
 Setup already wrote the settings (`PRINT_TRANSPORT`: `bridge` on a WSL2 host, else `cups`; `PRINTER_NAME`; `PRINTBRIDGE_TOKEN`). The steps:
 Linux host, plug in the printer and run `bash scripts/compose.sh --profile printing up -d --build --wait cups` (set `PRINTER_URI` in
-`compose.env` only to pin a device; the host's `usblp` module can block the printer); Windows host, install the Windows printer, register
-the print bridge and open its firewall port. Then, on both: `node scripts/set-capability.mjs printing on`, `bash scripts/compose.sh restart functions`
+`compose.env` only to pin a device; the host's `usblp` module can block the printer); Windows host, install the Windows printer as a local queue, then in an elevated PowerShell in `scripts/windows`
+run `register-tasks.ps1 -PrintOnly -Printer "<queue>" -SetTokenFromWsl <distro> -ComposeEnv <state>/config/compose.env` (it registers the "Warehouse Print" task, copies the token and opens the firewall port for the WSL side; `PRINTER_NAME` in `compose.env` must be the same queue name), and test with the queue paused. Then, on both: `node scripts/set-capability.mjs printing on`, `bash scripts/compose.sh restart functions`
 and a new `db:backup`. While the capability is off, the print routes answer 503 `PRINTING_OFF`. The full steps, the checks and what is not
 verified are in [PRINTING.md](PRINTING.md).
 
