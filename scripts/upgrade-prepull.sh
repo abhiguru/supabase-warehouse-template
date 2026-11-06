@@ -77,7 +77,12 @@ pull() {
   else out="$(docker pull --quiet "$ref" 2>&1)" || rc=$?; fi
   if ((rc == 124 || rc == 137)); then refuse "pulling $ref took longer than $limit seconds and was stopped. Run this command again, or raise WAREHOUSE_IMAGE_PULL_TIMEOUT."; fi
   ((rc == 0)) || refuse "could not pull $ref: ${out##*$'\n'}. Run this command again when the registry answers."
-  if ! grep -qxF -- "$ref" <<< "$(docker image inspect --format '{{range .RepoDigests}}{{println .}}{{end}}' "$ref" 2>/dev/null || true)"; then
+  # Docker records RepoDigests as repository@sha256:..., without the tag, so a tag-and-digest reference (repo:tag@sha256:...) is compared in that form.
+  # Only a tag after the last "/" is removed, so a registry port (host:5000/y:tag@sha256:...) stays.
+  local name="${ref%@*}" last prefix want
+  last="${name##*/}"; prefix="${name%"$last"}"
+  want="$prefix${last%%:*}@${ref##*@}"
+  if ! grep -qxF -- "$want" <<< "$(docker image inspect --format '{{range .RepoDigests}}{{println .}}{{end}}' "$ref" 2>/dev/null || true)"; then
     refuse "the pulled image does not carry the digest ${ref##*@} that was asked for ($ref)."
   fi
 }

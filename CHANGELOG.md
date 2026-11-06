@@ -8,6 +8,12 @@ file used to carry for earlier installations are in git: `git show b45ae0b:CHANG
 
 ## Unreleased
 
+## v0.8.0 (2026-11-07)
+
+**Migrations 128 to 149: invoice cancel and delete, each item's own packaging word, items added by staff, signed-in devices, and a safer
+upgrade (signed release tags, images pulled before the downtime, a drilled way back).** Upgrade the app in the same window: the app that
+pairs with this release is 0.8.0.
+
 ### Changed
 
 - **`docs/SENSORS.md` says what each sensor period and "Export CSV" show (WH-35).** Documentation only: the source of every chip (7 days to 2 years), the size of a chart point, that older days come from hourly rows, what the CSV holds, the lag of the newest hours, and that the long chips depend on the oldest raw reading.
@@ -35,6 +41,8 @@ file used to carry for earlier installations are in git: `git show b45ae0b:CHANG
   already cancelled whose dispatch line still exists. Cancelled invoices read the copy in `get_invoice_detail`, `get_invoice_data` and the invoice PDF; live invoices
   read as before. New additive keys: `details_available` (both reads), `grn_no` (`get_invoice_detail` lines), `grn_item.gr_no` and `grn_item.gr_date` (`get_invoice_data`).
   `get_invoice_items_detailed` lists every line of a cancelled invoice and reads the copy too (WH-39). A line emptied before the migration is listed with its amounts and no details (PDF: "Details not available"). Operator action: none beyond applying the migration.
+  Migration 149 (WH-96) makes the kept dispatch and GRN numbers 20 characters wide, like the numbers they copy, so an invoice whose GRN or dispatch number is longer
+  than 8 characters (the year numbering scheme gives `26-27/0001`) can be cancelled. Test: `tests/invoice_kept_long_numbers_149.sql`.
 - **The packaging word of stock and preview rows follows one rule (migration 142, review follow-up to migration 141).** `get_customer_activity_detail`:
   `top_stock_items[].packaging` was `null` ("lots differ") also when every lot had no packaging, and "Bag" next to "bags" counted as different, so such items read
   "units", and Box next to a lot with no packaging read boxes. Now the word is read as the app reads it: Box/Boxes is Box, Crate/Crates is Crate, everything else
@@ -123,6 +131,8 @@ file used to carry for earlier installations are in git: `git show b45ae0b:CHANG
   rows. (2) A successful `upgrade.sh` keeps its record as `config/upgrade-last`; `node scripts/upgrade-record.mjs rollback --last` prints the way
   back from a finished upgrade, headed with what it loses (everything recorded since the backup) and that the next patch release is preferred, and
   starting with `bash scripts/maintenance.sh on`. It only prints. `doctor`, `start.sh` and the checker do not report `upgrade-last`.
+  The upgrade to this release is run by the `upgrade.sh` of the release the installation has now, which keeps no such record: after it,
+  `rollback --last` answers "No finished upgrade is recorded", and it works from the next upgrade on (`docs/OPERATOR_INSTALL.md`, "Rerun and upgrade").
   (3) The release's preflight (`scripts/upgrade-prepull.sh`) pulls the release's images by digest, and the Docker Hub images its compose file
   names, before the API is closed; `scripts/build-images.sh` does not pull an image of the released digest that is already on the host. A
   download (other than a 404: a release with no `release-images.json` is skipped with a warning) or pull that fails refuses the upgrade with "Nothing was changed". `rollback --last` first copies `upgrade-last` back to `upgrade-in-progress`, so that doctor and the checker report an interrupted upgrade until the list has been run, and leaves out the image lines when the saved images are gone; the setup summary now reads "Taken from the release: N (M already on this host)". Operator actions: none. Tests: `tests/upgrade-prepull.test.mjs`
@@ -278,6 +288,9 @@ file used to carry for earlier installations are in git: `git show b45ae0b:CHANG
   missing. A 0.7.0 build from before this release has Cancel invoice but no Delete invoice; the app that pairs with this release has both.
 - **git 2.34 or newer and `ssh-keygen` are needed on the host from now on**: `upgrade.sh` verifies the SSH signature of every release tag against the key
   list this release ships.
+- **If a USB backup drive is set up: run `sudo bash scripts/backup-usb.sh setup --state <state>` once after the upgrade.** `scripts/backup-usb.sh` changed, and
+  the copy that root runs is the one installed by `setup`. Until it is installed again, a drive records nothing in `config/usb-backup.history`, and the
+  checker reminds weekly (`root_copy_stale`).
 
 - **Before upgrading to the release with migrations 137 and 138: count the deleted documents.** From this release a customer account no
   longer sees a soft-deleted receipt, dispatch or invoice (nor its lines, photos or photo files), and the customer-callable RPCs
