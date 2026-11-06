@@ -157,12 +157,15 @@ export type JobOutcome =
   | { kind: 'unconfirmed'; row: { cups_job_id: null; status: 'unknown'; error_message: string } }
   | { kind: 'failed'; error: string };
 
+/** The note on a row whose send the printer side never confirmed (print-request.ts recognizes a repeated request by it). */
+export const UNCONFIRMED_NOTE = 'The printer did not confirm the job';
+
 export function jobOutcome(result: RawJobResult): JobOutcome {
   if (result.ok && result.confirmed && result.jobId !== null) return { kind: 'tracked', row: { cups_job_id: result.jobId, status: 'printing' } };
   if (result.ok) {
     return { kind: 'sent', row: { cups_job_id: null, status: 'unknown', error_message: 'Sent to the print bridge, which does not report when the job ends. Check the printer.' } };
   }
-  if (result.unconfirmed) return { kind: 'unconfirmed', row: { cups_job_id: null, status: 'unknown', error_message: 'The printer did not confirm the job' } };
+  if (result.unconfirmed) return { kind: 'unconfirmed', row: { cups_job_id: null, status: 'unknown', error_message: UNCONFIRMED_NOTE } };
   return { kind: 'failed', error: result.error ?? 'The printer could not print the job' };
 }
 

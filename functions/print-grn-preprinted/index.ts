@@ -1,6 +1,7 @@
 import { restClient } from '../_shared/supabase-rest.ts'
 import { monitorPrintJobStatus } from '../_shared/print-status-monitor.ts'
 import { submitRawJob, jobOutcome, printFailureBody, configuredPrinterName } from '../_shared/print-transport.ts'
+import { readRequestId, startPrintJob, finishPrintJob, duplicateResponse } from '../_shared/print-request.ts'
 import { validatePrintAccess, createAuthErrorResponse } from '../_shared/auth-helpers.ts'
 import { sanitizeForPrinter, encodeLatin1 } from '../_shared/printer-text.ts'
 
@@ -430,7 +431,11 @@ Deno.serve(async (req) => {
     const userName = userProfile.name;
     const userId = userProfile.auth_user_id;
 
-    const { start_gr_no, end_gr_no, debug } = await req.json();
+    const { start_gr_no, end_gr_no, debug, request_id } = await req.json();
+    // Optional: one uuid per user print action, reused for its retries; a repeat is answered without printing (print-request.ts).
+    const requestIdRead = readRequestId(request_id);
+    if (!requestIdRead.ok) return requestIdRead.response;
+    const requestId = requestIdRead.requestId;
 
     if (!start_gr_no || !end_gr_no) {
       throw new Error('Missing required parameters: start_gr_no and end_gr_no');
@@ -512,10 +517,28 @@ Deno.serve(async (req) => {
 
     console.log('print-grn-preprinted: Sending to printer...');
 
+    // Duplicate guard: a request already handled is answered, a new one gets its queued row before anything is sent.
+    const jobMeta = {
+      job_type: 'GRN' as const,
+      document_range_start: start_gr_no,
+      document_range_end: end_gr_no,
+      document_count: results.length,
+      user_id: userId,
+      user_name: userName,
+      content_size: contentBuffer.length,
+      printer_name: configuredPrinterName()
+    };
+    const started = await startPrintJob(supabase, jobMeta, requestId);
+    if (started.kind === 'duplicate') {
+      console.log('print-grn-preprinted: repeated request_id, nothing printed');
+      return duplicateResponse(started.row, { start: String(start_gr_no), end: String(end_gr_no) });
+    }
+
     const result = await submitRawJob({ bytes: contentBuffer, docName: `GRN-${start_gr_no}-to-${end_gr_no}`, jobType: 'GRN' });
     const outcome = jobOutcome(result);
     if (outcome.kind === 'failed') {
       console.error('print-grn-preprinted: print failed on the', result.transport, 'transport');
+      await finishPrintJob(supabase, started, jobMeta, outcome);
       return new Response(
         JSON.stringify(printFailureBody(outcome, null), null, 2),
         { headers: { 'Content-Type': 'application/json' }, status: 502 }
@@ -524,26 +547,8 @@ Deno.serve(async (req) => {
     const jobId = result.jobId;
     const jobUri = result.jobUri ?? '';
 
-    // Log print job to database
-    const { data: printJobRecord, error: logError } = await supabase
-      .from('print_jobs')
-      .insert({
-        job_type: 'GRN',
-        document_range_start: start_gr_no,
-        document_range_end: end_gr_no,
-        document_count: results.length,
-        user_id: userId,
-        user_name: userName,
-        ...outcome.row,
-        content_size: contentBuffer.length,
-        printer_name: configuredPrinterName()
-      })
-      .select()
-      .single();
-
-    if (logError) {
-      console.error('print-grn-preprinted: Failed to log print job:', logError);
-    }
+    // Record the outcome on the queued row (or insert the row now when there is none: no request_id, or no column yet)
+    const printJobRecord = { id: await finishPrintJob(supabase, started, jobMeta, outcome) };
 
     if (outcome.kind === 'unconfirmed') {
       return new Response(

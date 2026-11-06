@@ -1,6 +1,7 @@
 import { restClient } from '../_shared/supabase-rest.ts'
 import { monitorPrintJobStatus } from '../_shared/print-status-monitor.ts'
 import { submitRawJob, jobOutcome, printFailureBody, configuredPrinterName } from '../_shared/print-transport.ts'
+import { readRequestId, startPrintJob, finishPrintJob, duplicateResponse } from '../_shared/print-request.ts'
 import { groupInvoiceLines, paginateInvoiceRows } from '../_shared/invoice-print-layout.ts'
 import type { InvoicePrintPage } from '../_shared/invoice-print-layout.ts'
 import { lineStorageAmount, cumulativeStorageAmount, resolveInvoiceFinYear } from '../_shared/invoice-print-amounts.ts'
@@ -511,7 +512,11 @@ Deno.serve(async (req) => {
     const userName = userProfile.name;
     const userId = userProfile.auth_user_id;
 
-    const { start_inv_no_str, end_inv_no_str, inv_fin_year, limit_count, debug } = await req.json();
+    const { start_inv_no_str, end_inv_no_str, inv_fin_year, limit_count, debug, request_id } = await req.json();
+    // Optional: one uuid per user print action, reused for its retries; a repeat is answered without printing (print-request.ts).
+    const requestIdRead = readRequestId(request_id);
+    if (!requestIdRead.ok) return requestIdRead.response;
+    const requestId = requestIdRead.requestId;
 
     if (!start_inv_no_str || !end_inv_no_str) {
       throw new Error('Missing required parameters: start_inv_no_str and end_inv_no_str');
@@ -608,10 +613,28 @@ Deno.serve(async (req) => {
 
     console.log('print-invoice-preprinted: Sending to printer...');
 
+    // Duplicate guard: a request already handled is answered, a new one gets its queued row before anything is sent.
+    const jobMeta = {
+      job_type: 'Invoice' as const,
+      document_range_start: start_inv_no_str,
+      document_range_end: end_inv_no_str,
+      document_count: results.length,
+      user_id: userId,
+      user_name: userName,
+      content_size: contentBuffer.length,
+      printer_name: configuredPrinterName()
+    };
+    const started = await startPrintJob(supabase, jobMeta, requestId);
+    if (started.kind === 'duplicate') {
+      console.log('print-invoice-preprinted: repeated request_id, nothing printed');
+      return duplicateResponse(started.row, { start: String(start_inv_no_str), end: String(end_inv_no_str) });
+    }
+
     const result = await submitRawJob({ bytes: contentBuffer, docName: `Invoice-${start_inv_no_str}-to-${end_inv_no_str}`, jobType: 'Invoice' });
     const outcome = jobOutcome(result);
     if (outcome.kind === 'failed') {
       console.error('print-invoice-preprinted: print failed on the', result.transport, 'transport');
+      await finishPrintJob(supabase, started, jobMeta, outcome);
       return new Response(
         JSON.stringify(printFailureBody(outcome, null), null, 2),
         { headers: { 'Content-Type': 'application/json' }, status: 502 }
@@ -620,26 +643,8 @@ Deno.serve(async (req) => {
     const jobId = result.jobId;
     const jobUri = result.jobUri ?? '';
 
-    // Log print job to database
-    const { data: printJobRecord, error: logError } = await supabase
-      .from('print_jobs')
-      .insert({
-        job_type: 'Invoice',
-        document_range_start: start_inv_no_str,
-        document_range_end: end_inv_no_str,
-        document_count: results.length,
-        user_id: userId,
-        user_name: userName,
-        ...outcome.row,
-        content_size: contentBuffer.length,
-        printer_name: configuredPrinterName()
-      })
-      .select()
-      .single();
-
-    if (logError) {
-      console.error('print-invoice-preprinted: Failed to log print job:', logError);
-    }
+    // Record the outcome on the queued row (or insert the row now when there is none: no request_id, or no column yet)
+    const printJobRecord = { id: await finishPrintJob(supabase, started, jobMeta, outcome) };
 
     if (outcome.kind === 'unconfirmed') {
       return new Response(
