@@ -98,16 +98,21 @@ test('all six places that read an IPP reply validate it', () => {
   assert.match(status, /printerStatusFromReply\(result\)/);
   assert.ok(!status.includes("?.[\"printer-attributes-tag\"] || {}") && !status.includes('?? true'), 'no default for a missing block or flag');
   assert.ok(!status.includes('PRINTER_STATE_MESSAGES'), 'the state names live in the shared module');
+  // Since WH-109 the Print-Job reply is read in one place, the transport; the four print functions go through it.
+  const transport = read('_shared/print-transport.ts');
+  assert.match(transport, /submittedJob\(reply\)/);
+  assert.match(transport, /The printer did not confirm the job/);
+  assert.ok(!transport.includes("|| 'unknown'"), 'no stand-in job id');
+  assert.match(transport, /status: 'unknown'/, 'an unconfirmed job is recorded as unknown');
   const viaIpp = read('print-via-ipp/index.ts');
-  assert.match(viaIpp, /submittedJob\(result\)/);
-  assert.match(viaIpp, /The printer did not confirm the job/);
+  assert.match(viaIpp, /submitRawJob\(/);
+  assert.match(viaIpp, /printFailureBody\(outcome, null\)/);
   assert.match(viaIpp, /status: 502/);
   for (const path of ['print-grn-preprinted/index.ts', 'print-dispatch-preprinted/index.ts', 'print-invoice-preprinted/index.ts']) {
     const source = read(path);
-    assert.match(source, /submittedJob\(result\)/, path);
+    assert.match(source, /submitRawJob\(/, path);
+    assert.match(source, /jobOutcome\(result\)/, path);
     assert.ok(!source.includes("|| 'unknown'"), `${path}: no stand-in job id`);
-    assert.match(source, /status: 'unknown'/, `${path}: an unconfirmed job is recorded as unknown`);
-    assert.match(source, /The printer did not confirm the job/, path);
     assert.match(source, /status: 502/, path);
   }
   const monitor = read('_shared/print-status-monitor.ts');
@@ -120,10 +125,10 @@ test('all six places that read an IPP reply validate it', () => {
 test('every "printer did not confirm" 502 says unconfirmed: true, also when the job could not be logged (print_job_id null)', () => {
   for (const path of ['print-grn-preprinted/index.ts', 'print-dispatch-preprinted/index.ts', 'print-invoice-preprinted/index.ts']) {
     const source = read(path);
-    const bodies = [...source.matchAll(/error: 'The printer did not confirm the job',([\s\S]*?)status: 502/g)];
-    assert.equal(bodies.length, 1, path);
-    assert.match(bodies[0][1], /unconfirmed: true,/, path);
-    assert.match(bodies[0][1], /print_job_id: printJobRecord\?\.id \|\| null/, `${path}: existing field kept`);
+    // The unconfirmed answer is built in one place (printFailureBody) and carries the row id, null when it could not be logged.
+    const unconfirmed = /if \(outcome\.kind === 'unconfirmed'\) \{\s*return new Response\(\s*JSON\.stringify\(printFailureBody\(outcome, printJobRecord\?\.id \|\| null\), null, 2\),\s*\{\s*headers: \{ 'Content-Type': 'application\/json' \},\s*status: 502/;
+    assert.match(source, unconfirmed, path);
   }
-  assert.match(read('print-via-ipp/index.ts'), /error: 'The printer did not confirm the job', unconfirmed: true \}/);
+  assert.match(read('_shared/print-transport.ts'), /error: 'The printer did not confirm the job', code: 'PRINT_UNCONFIRMED', unconfirmed: true, print_job_id: printJobId/);
+  assert.match(read('print-via-ipp/index.ts'), /printFailureBody\(outcome, null\)/);
 });

@@ -3,6 +3,7 @@ import assert from 'node:assert/strict';
 import { existsSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
+import { spawnSync } from 'node:child_process';
 import { composeAvailable, renderCompose, renderedCompose, renderedComposeEnv } from './compose-render.mjs';
 
 const read = path => readFileSync(new URL(`../${path}`, import.meta.url), 'utf8');
@@ -59,7 +60,7 @@ test('every service still shares a network with each host it is configured to ca
   for (const match of read('docker/nginx/api-http.conf').matchAll(/^\s+server ([a-z0-9-]+):\d+ resolve;$/gm)) wanted.gateway.add(match[1]);
   assert.match(read('docker/volumes/pooler/pooler.exs'), /"db_host" => "db"/);
   wanted.supavisor.add('db');
-  wanted.functions.add('cups'); // functions/_shared/ipp-client.ts default printer address
+  wanted.functions.add('cups'); // the CUPS queue address (functions/_shared/print-config.ts CUPS_SERVER_URL)
 
   assert.deepEqual([...wanted.gateway].sort(), ['functions', 'rest', 'storage']);
   // Storage does not use PostgREST (no depends_on rest); the function runtime calls PostgREST and Storage
@@ -280,4 +281,54 @@ test('WAREHOUSE_COMPOSE_EXTRA merges one more Compose file (CI pins the default 
     if (previous === undefined) delete process.env.WAREHOUSE_COMPOSE_EXTRA; else process.env.WAREHOUSE_COMPOSE_EXTRA = previous;
     rmSync(scratch, { recursive: true, force: true });
   }
+});
+
+// WH-109: printing out of the box (docs/PRINTING.md).
+test('the print settings reach the functions container, and a state from before them still renders', { skip }, () => {
+  const { services } = renderedCompose();
+  const env = renderedComposeEnv();
+  assert.equal(env.PRINTER_NAME, 'LQ1310_RAW');
+  assert.match(env.PRINTBRIDGE_TOKEN, /^[0-9a-f]{64}$/, 'a fresh state holds a generated bridge token');
+  const printing = Object.fromEntries(['PRINT_TRANSPORT', 'PRINTER_NAME', 'PRINTBRIDGE_URL', 'PRINTBRIDGE_TOKEN'].map(name => [name, services.functions.environment[name]]));
+  assert.equal(printing.PRINT_TRANSPORT, env.PRINT_TRANSPORT);
+  assert.equal(printing.PRINTER_NAME, 'LQ1310_RAW');
+  assert.equal(printing.PRINTBRIDGE_TOKEN, env.PRINTBRIDGE_TOKEN);
+  // The token reaches the functions container and no other service.
+  const holders = Object.entries(services).filter(([, definition]) => JSON.stringify(definition).includes(env.PRINTBRIDGE_TOKEN)).map(([service]) => service);
+  assert.deepEqual(holders, ['functions']);
+  // A compose.env written before WH-109 has none of the print lines: it still renders, with cups and the default queue.
+  const old = renderCompose(text => text.replace(/^(?:PRINT_TRANSPORT|PRINTER_NAME|PRINTER_URI|PRINTBRIDGE_[A-Z]+)=.*\n/gm, ''));
+  assert.equal(old.status, 0, old.stderr);
+  const functions = JSON.parse(old.stdout).services.functions.environment;
+  assert.deepEqual([functions.PRINT_TRANSPORT, functions.PRINTER_NAME, functions.PRINTBRIDGE_URL, functions.PRINTBRIDGE_TOKEN], ['cups', 'LQ1310_RAW', '', '']);
+});
+
+test('the bridge address: a value in compose.env wins, otherwise compose.sh works it out at each command (never for cups)', { skip }, () => {
+  const render = edit => {
+    const result = renderCompose(edit);
+    assert.equal(result.status, 0, result.stderr);
+    return JSON.parse(result.stdout).services.functions.environment.PRINTBRIDGE_URL;
+  };
+  const set = (text, values) => Object.entries(values).reduce((acc, [name, value]) => acc.replace(new RegExp(`^${name}=.*$`, 'm'), `${name}=${value}`), text);
+  assert.equal(render(text => set(text, { PRINT_TRANSPORT: 'bridge', PRINTBRIDGE_URL: 'http://192.0.2.7:6632' })), 'http://192.0.2.7:6632');
+  assert.equal(render(text => set(text, { PRINT_TRANSPORT: 'cups' })), '', 'cups needs no bridge address');
+  const worked = spawnSync('bash', [new URL('../scripts/print-bridge-url.sh', import.meta.url).pathname, '6632'], { encoding: 'utf8' }).stdout.trim();
+  assert.equal(render(text => set(text, { PRINT_TRANSPORT: 'bridge', PRINTBRIDGE_URL: '' })), worked);
+  if (worked) assert.match(worked, /^http:\/\/\d+\.\d+\.\d+\.\d+:6632$/);
+});
+
+test('the CUPS container: no published port, one USB bind, a healthcheck that needs the queue, the queue settings from compose.env', { skip }, () => {
+  const { services } = renderedCompose();
+  const cups = services.cups;
+  assert.deepEqual(cups.profiles, ['printing']);
+  assert.equal(cups.ports, undefined, 'the print server is not reachable from outside the compose networks');
+  assert.equal(cups.devices, undefined, 'no devices: entry (Compose fails on a host without /dev/bus/usb)');
+  const binds = cups.volumes.filter(volume => volume.type === 'bind').map(volume => volume.source).sort();
+  assert.ok(binds.includes('/dev/bus/usb') && !binds.includes('/dev/usb'), JSON.stringify(binds));
+  assert.equal(cups.environment.PRINTER_NAME, 'LQ1310_RAW');
+  assert.equal(cups.environment.PRINTER_DRIVER, 'raw');
+  assert.ok('PRINTER_URI' in cups.environment);
+  assert.match(cups.healthcheck.test.join(' '), /lpstat -p/);
+  assert.doesNotMatch(cups.healthcheck.test.join(' '), /curl/);
+  assert.equal(cups.environment.PRINTBRIDGE_TOKEN, undefined);
 });

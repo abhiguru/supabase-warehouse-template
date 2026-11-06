@@ -330,9 +330,21 @@ test('every query method the functions call exists in the helper', () => {
     if (!source.includes('supabase-rest.ts')) continue;
     for (const match of source.matchAll(/(?:\b(?:supabase|client|reader|writer)\s*|\n\s*)\.from\(/g)) {
       const statement = source.slice(match.index, source.indexOf(';', match.index));
-      for (const [, name] of statement.slice(match[0].length).matchAll(/\)\s*\.(\w+)\(/g)) {
-        chains++;
-        assert.ok(builder.has(name), `${file}: .${name}() is not implemented by the helper's Builder`);
+      // Only calls on the chain itself (paren depth 0): `new Date().toISOString()` inside an argument is not a builder call.
+      let depth = 1;
+      const rest = statement.slice(match[0].length);
+      for (let i = 0; i < rest.length; i++) {
+        const char = rest[i];
+        if (char === '(' || char === '{' || char === '[') depth++;
+        else if (char === ')' || char === '}' || char === ']') depth--;
+        else if (depth < 0 || (char === ',' && depth === 0)) break; // the chain ended (next array element or argument)
+        else if (char === '.' && depth === 0) {
+          const name = /^\w+(?=\()/.exec(rest.slice(i + 1))?.[0];
+          if (name) {
+            chains++;
+            assert.ok(builder.has(name), `${file}: .${name}() is not implemented by the helper's Builder`);
+          }
+        }
       }
     }
     for (const match of source.matchAll(/\.storage\.from\([^)]*\)\s*\.(\w+)\(/g)) {

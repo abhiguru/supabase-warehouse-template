@@ -22,40 +22,43 @@ function specifiers() {
 }
 
 test('the functions load no module from the network when a worker starts', () => {
-  // Everything is a file in this repository: relative imports, with the one
-  // library (jose) built into functions/vendor. The one exception is the printing
-  // code, which the router refuses with 503 and which imports ipp on demand.
+  // Everything is a file in this repository: relative imports, with the two
+  // libraries (jose, ipp) built into functions/vendor. No function imports an npm:, jsr: or https: module.
   const all = specifiers();
   assert.ok(all.length > 40, 'function imports were read');
   const vendored = new Set();
   for (const { file, specifier } of all) {
     if (specifier.startsWith('node:')) continue;
-    if (specifier.startsWith('npm:')) {
-      assert.equal(specifier, 'npm:ipp@2.0.1', `${file}: ${specifier}`);
-      assert.match(file, /^_shared\/ipp-client\.ts$|^print-|^get-printer-status\//, `${file} is not printing code`);
-      continue;
-    }
+    assert.doesNotMatch(specifier, /^(?:npm|jsr|https?):/, `${file}: ${specifier} is loaded from the network`);
     assert.match(specifier, /^\.{1,2}\//, `${file}: ${specifier} is not a file in this repository`);
     const vendor = /^\.\.\/vendor\/(.+)$/.exec(specifier)?.[1];
     if (vendor) vendored.add(vendor);
   }
-  assert.deepEqual([...vendored].sort(), ['jose.mjs']);
+  assert.deepEqual([...vendored].sort(), ['ipp.mjs', 'jose.mjs']);
+  // ipp is loaded in one place; every other printing module goes through it.
+  assert.deepEqual(all.filter(({ specifier }) => specifier.endsWith('vendor/ipp.mjs')).map(({ file }) => file), ['_shared/ipp-client.ts']);
   assert.doesNotMatch(read('functions/main/index.ts'), /importMapPath/);
 });
 
 test('functions/vendor holds exactly the files its checksum list names', () => {
   const sums = read('functions/vendor/SHA256SUMS').trim().split('\n').map(line => line.split(/\s+/));
-  assert.deepEqual(sums.map(([, name]) => name), ['LICENSES.txt', 'jose.mjs']);
+  assert.deepEqual(sums.map(([, name]) => name), ['LICENSES.txt', 'ipp.mjs', 'jose.mjs']);
   for (const [sum, name] of sums) {
     const actual = createHash('sha256').update(readFileSync(join(functions, 'vendor', name))).digest('hex');
     assert.equal(actual, sum, `${name} was changed without scripts/vendor-edge-modules.sh`);
   }
-  assert.deepEqual(readdirSync(join(functions, 'vendor')).sort(), ['LICENSES.txt', 'SHA256SUMS', 'jose.mjs']);
+  assert.deepEqual(readdirSync(join(functions, 'vendor')).sort(), ['LICENSES.txt', 'SHA256SUMS', 'ipp.mjs', 'jose.mjs']);
   // A vendored file must not reach out again.
   for (const [, name] of sums.filter(([, file]) => file.endsWith('.mjs'))) {
     const source = readFileSync(join(functions, 'vendor', name), 'utf8');
-    assert.doesNotMatch(source, /^\s*(?:import|export)\b[^\n]*\bfrom\s*["'][^"']+["']/m, `${name} imports another module`);
+    // Only Node built-ins (ipp.mjs, an esbuild bundle of a CommonJS library, imports node:module for createRequire).
+    for (const match of source.matchAll(/^\s*(?:import|export)\b[^\n]*?\bfrom\s*["']([^"']+)["']/gm)) {
+      assert.match(match[1], /^node:[a-z_/]+$/, `${name} imports another module: ${match[1]}`);
+    }
     assert.doesNotMatch(source, /\bimport\s*\(\s*["']/, `${name} imports another module on demand`);
+    for (const match of source.matchAll(/\b(?:__)?require\d*\(\s*["']([^"']+)["']\s*\)/g)) {
+      assert.match(match[1], /^(?:node:)?(?:http|https|url)$/, `${name} requires another module: ${match[1]}`);
+    }
   }
 });
 
@@ -67,7 +70,8 @@ test('the vendored library is built from exact, locked versions', () => {
   for (const [path, entry] of Object.entries(vendorLock.packages)) {
     if (path) assert.match(entry.integrity ?? '', /^sha512-/, `${path} has no integrity hash`);
   }
-  assert.deepEqual(Object.keys(vendorManifest.dependencies).sort(), ['jose']);
+  assert.deepEqual(Object.keys(vendorManifest.dependencies).sort(), ['ipp', 'jose']);
+  assert.equal(vendorManifest.dependencies.ipp, '2.0.1');
 });
 
 test('the unit tests sign tokens with the jose release the functions verify with', async () => {
