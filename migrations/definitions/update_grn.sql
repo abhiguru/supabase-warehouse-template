@@ -206,7 +206,9 @@ BEGIN
         -- is not saved over; nothing is written. This is after the saved-answer lookup above, so a retry of this user's own
         -- committed save is answered from it and never refused for what its first try changed. No token (an older app,
         -- fas-sync): no check.
-        SELECT g.updated_at, g.gr_no, g.date, COALESCE(g.invoiced, false), g.customer_name
+        SELECT g.updated_at, g.gr_no, g.date,
+               -- WH-112: one rule for "invoiced": a live invoice (neither deleted nor cancelled); the flag is only a cache.
+               EXISTS (SELECT 1 FROM invoice li WHERE li.gr_id = g.id AND li.deleted_at IS NULL AND li.cancelled_at IS NULL), g.customer_name
         INTO v_stored_updated_at, v_stored_gr_no, v_stored_date, v_stored_invoiced, v_stored_customer_name
         FROM goodsreceived g
         WHERE g.id = p_grn_id
@@ -714,7 +716,7 @@ BEGIN
         -- (Migration 121: the rates that go are collected, to refuse the edit below when it would drop a rate it may not.)
         WITH gone AS (
             DELETE FROM public.grn_rates gr WHERE gr.gr_id = p_grn_id
-              AND NOT EXISTS (SELECT 1 FROM public.goodsreceived g WHERE g.id = p_grn_id AND g.invoiced IS TRUE)
+              AND NOT EXISTS (SELECT 1 FROM public.invoice li WHERE li.gr_id = p_grn_id AND li.deleted_at IS NULL AND li.cancelled_at IS NULL) -- WH-112: live-invoice rule
               AND (gr.price_type <> (SELECT CASE WHEN upper(COALESCE(g.pricing_mode, '')) = 'ONE_TIME' THEN 'one_time' ELSE 'monthly' END
                                        FROM public.goodsreceived g WHERE g.id = p_grn_id)
                    OR NOT EXISTS (SELECT 1 FROM public.goodsreceived_trl t WHERE t.gr_id = p_grn_id AND t.item_id = gr.item_id
