@@ -6,6 +6,7 @@
 --  2. add_item_to_order: called with p_order_id it did not check the business; called with p_customer_id it refuses a deleted business
 --     ('Business is not active', BUSINESS_NOT_ACTIVE). The p_order_id path now refuses the same way. A deactivated (not deleted) business
 --     still orders (DEC W16).
+--  3. add_item_to_order with p_customer_id reuses a soft-deleted order row the same way (it answered 'Order not found').
 -- Each patch counts its marker (it must occur exactly once), replaces it and re-creates the function; a second run fails on the count.
 
 CREATE FUNCTION pg_temp.patch_function(p_function regprocedure, p_old text, p_new text) RETURNS void
@@ -54,5 +55,19 @@ $m$  IF v_order.customer_deleted_at IS NOT NULL THEN
     RETURN jsonb_build_object('success', false, 'message', 'Business is not active', 'error', jsonb_build_object('code', 'BUSINESS_NOT_ACTIVE'));
   END IF;
   IF v_order.status IS DISTINCT FROM 'OPEN' THEN$m$);
+
+-- 3. add_item_to_order (p_customer_id path) reuses the soft-deleted row instead of answering "Order not found".
+SELECT pg_temp.patch_function('public.add_item_to_order(uuid, uuid, integer, uuid)'::regprocedure,
+$m$      IF EXISTS (SELECT 1 FROM public.orders o WHERE o.customer_id = p_customer_id) THEN
+        -- A soft-deleted order of this customer holds the one row; it is not reopened here.
+        RETURN jsonb_build_object('success', false, 'message', 'Order not found');
+      END IF;
+$m$,
+$m$      -- Migration 161: a soft-deleted order of this customer holds the one row; it is reused (as get_or_create_cart does), not refused.
+      UPDATE public.orders o
+      SET deleted_at = NULL, deleted_by = NULL, status = 'OPEN', updated_at = now(), updated_by = v_user_id
+      WHERE o.customer_id = p_customer_id AND o.deleted_at IS NOT NULL
+      RETURNING o.id INTO v_order_id;
+$m$);
 
 DROP FUNCTION pg_temp.patch_function(regprocedure, text, text);
