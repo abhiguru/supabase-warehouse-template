@@ -115,7 +115,8 @@ The sweep uses no broadcast, so it works in Docker's bridge network and under WS
 | 5xx, 408, 429, network error, timeout (20 s) | keeps everything, retries after 15 s, doubling up to 10 min |
 
 Redirects are not followed (the key goes to the configured URL only). Readings older
-than 29 days are dropped from the queue, and it never holds more than 200,000.
+than 29 days are dropped from the queue, and it never holds more than 200,000. Every drop is logged as
+`event=readings_dropped reason=<refused_three_times|older_than_29_days|queue_over_200000_rows> hub=<id> dropped=<n>`.
 
 ## Settings (environment)
 

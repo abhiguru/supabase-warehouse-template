@@ -59,6 +59,7 @@ import { redactServiceLog } from './service-diagnostics.mjs';
 import { MIN_VHDX_DRIVE_FREE_BYTES, MIN_VHDX_DRIVE_FREE_PERCENT, driveSpace, isWsl, statfsWithTimeout, vhdxDrive } from './wsl-host.mjs';
 import { usbBackupWarning, usbRotationNote } from './usb-backup-status.mjs';
 import { ageText, sensorCheck, sensorLimitSeconds } from './sensors-check.mjs';
+import { SENSOR_ALERTS_SQL, droppedFromLog, droppedSummary, sensorAlertMinutes, sensorAlerts } from './sensor-alerts.mjs';
 import { HEARTBEAT_URL_PATTERN, firstUrlLine, postSlackMessage, sensorTestMessage, testMessage } from './alert-webhook.mjs';
 import { fetchGithubJson, releaseLine } from './release-check.mjs';
 import { ADAPTERS, AUDIENCES, TARGET_IDS, audienceOf, ALERT_LOG, createAlertLog, deliver, historyLine, loadTargets, pickAudience, readAlertLog, secretsOf, targetsOf } from './notify.mjs';
@@ -397,6 +398,7 @@ export function defaultDeps(env = process.env) {
 
 // The alerts that go to the sensors audience: the sensor readings and the sensor-bridge container's own faults.
 export const isSensorAlert = id => id === 'sensors_stale' || id === 'check_error:sensors_stale'
+  || /^(sensor_range|sensor_silent):/.test(id) || id === 'sensor_dropped' || id === 'check_error:sensor_alerts' || id === 'check_error:sensor_dropped'
   || /^(service_down|container_restarts|container_oom|container_memory):sensor-bridge$/.test(id);
 
 // ---------------------------------------------------------------- context
@@ -1337,6 +1339,40 @@ export function checkSensors(ctx) {
     'See docs/SENSORS.md, Troubleshooting, and docs/TROUBLESHOOTING.md#sensors-show-no-data. node scripts/doctor.mjs --local names each fault with the command to read the bridge log.')];
 }
 
+// Per sensor (scripts/sensor-alerts.mjs): outside its temperature limits for 15 minutes, or silent for 30 minutes while its hub is up
+// (facility settings WAREHOUSE_SENSOR_OUT_OF_RANGE_MINUTES and WAREHOUSE_SENSOR_SILENT_MINUTES), one alert id per sensor and kind.
+// The minutes are counted from the readings, so the alerts are immediate; a sensor missing from the list clears its alert.
+export function checkSensorAlerts(ctx) {
+  let manifest = null;
+  try { manifest = JSON.parse(ctx.readText(join(ctx.state, 'public/instance.json')) ?? 'null'); } catch { /* no manifest: not on */ }
+  if (manifest?.capabilities?.sensors !== true) return [];
+  if (!databaseReady(ctx)) return null;
+  const env = ctx.env_();
+  const r = ctx.compose(['exec', '-T', '-e', 'PGOPTIONS=-c statement_timeout=10000', 'db', 'psql', '-X', '-qAt', '-v', 'ON_ERROR_STOP=1', '-U', 'supabase_admin', '-d', 'postgres', '-c', SENSOR_ALERTS_SQL]);
+  if (r.status !== 0) return null;   // sensors_stale already says the sensor tables could not be read
+  let devices;
+  try { devices = JSON.parse(String(r.stdout ?? '').trim()); } catch { return null; }
+  if (!Array.isArray(devices)) return null;
+  const { outMinutes, silentMinutes } = sensorAlertMinutes(env);
+  return sensorAlerts({ devices, nowMs: ctx.now(), outMinutes, silentMinutes, limitSeconds: sensorLimitSeconds(env) })
+    .map(a => result('sensor_alerts', a.id, false, a.summary, a.detail, { immediate: true, repeatHours: a.repeatHours }));
+}
+
+// Readings the sensor bridge dropped in the last 24 hours (it logs each drop with its reason): one alert, repeated daily while
+// the log still shows a drop. Only while this Compose project runs the bridge; a bridge run on its own is read with its own log.
+export function checkSensorDrops(ctx) {
+  let manifest = null;
+  try { manifest = JSON.parse(ctx.readText(join(ctx.state, 'public/instance.json')) ?? 'null'); } catch { /* no manifest: not on */ }
+  if (manifest?.capabilities?.sensors !== true) return [];
+  if (String(ctx.env_().SENSOR_BRIDGE_HUBS ?? '').trim() === '') return [];
+  const logs = ctx.compose(['--profile', 'sensors', 'logs', '--since', '24h', '--no-color', '--no-log-prefix', 'sensor-bridge'], { timeoutMs: 30000 });
+  if (logs.status !== 0) return null;
+  const found = droppedFromLog(String(logs.stdout ?? ''));
+  if (!found.total) return [result('sensor_dropped', 'sensor_dropped', true, 'The sensor bridge dropped no readings')];
+  return [result('sensor_dropped', 'sensor_dropped', false, droppedSummary(found),
+    'Dropped readings are gone for good: see docs/SENSORS.md, Delivery, for the three reasons. The bridge log lines are event=readings_dropped.', { immediate: true, repeatHours: 24 })];
+}
+
 // Settles print jobs nothing follows any more: the sweep-print-jobs function turns a job still queued or printing after 5 minutes into
 // 'unknown'. Runs only while printing is on and the API answers locally; the service-role key never leaves this host.
 export async function checkPrintSweep(ctx) {
@@ -1366,6 +1402,7 @@ export const CHECKS = [
   ['api_logs', checkApiLogs], ['pdf_renderer', checkPdfRenderer], ['central_key', checkCentralKey], ['letterhead', checkLetterhead], ['backups', checkBackups],
   ['restore_space', checkRestoreSpace], ['upgrade', checkUpgrade], ['sms_delivery', checkSmsDelivery], ['sms_ceiling', checkSmsCeiling], ['break_glass', checkBreakGlass], ['audit_writes', checkAuditWrites], ['clock', checkClock],
   ['cloudflared', checkCloudflared], ['host_node', checkHostNode], ['root_copies', checkRootCopies], ['sensors_stale', checkSensors],
+  ['sensor_alerts', checkSensorAlerts], ['sensor_dropped', checkSensorDrops],
   ['print_sweep', checkPrintSweep],
 ];
 

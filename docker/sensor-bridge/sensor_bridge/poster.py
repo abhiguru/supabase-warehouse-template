@@ -130,6 +130,9 @@ class Delivery:
             self._back_off(now)
             log.error("event=post_refused status=%d hub=%s readings=%d dropped=%d retry_in=%d",
                       status, hub.get("id"), len(ids), dropped, self.next_at - now)
+            if dropped:
+                log.error("event=readings_dropped reason=refused_three_times hub=%s dropped=%d status=%d",
+                          hub.get("id"), dropped, status)
             return False
         self.last_status = f"failed_{status}" if status else "unreachable"
         self._back_off(now)
