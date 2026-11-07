@@ -1614,6 +1614,8 @@ export function evaluate(data, results, ran, now) {
       a.failingRuns = (a.failingRuns || 0) + 1; a.check = r.check; a.summary = r.summary; a.detail = r.detail;
       if (r.repeatHours !== undefined) a.repeatHours = r.repeatHours;   // an alert that repeats less often than the 4 hours of every other one
       if (!a.firingSince && (a.failingRuns >= LIMITS.failingRuns || r.immediate)) a.firingSince = now;
+      // Failing again while its clear post was still unsent: a new episode, so its start is posted at once (not held by the old repeat time).
+      if (a.clearPending) { a.lastSent = null; a.firingSince = (r.immediate ? now : null); a.failingRuns = 1; }
       a.clearPending = false;
     } else if (a) recover(data, r.id, a);
   }
