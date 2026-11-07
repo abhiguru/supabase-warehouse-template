@@ -227,8 +227,9 @@ sign-in):
 
 1. The app calls `central-exchange` with the identity token. The answer is
    409 `link_required` (the wire code is the one earlier app builds already
-   handle). No session is issued; a profile found by phone has been linked by
-   step 6.
+   handle). No session is issued, and a profile found by phone number is not
+   linked yet (migration 154): the central identity is written to it only once a
+   correct code is checked in step 2.
 2. The app asks this facility for a code for that phone number
    (`POST /functions/v1/operator-otp/request`), the person reads it from the
    SMS, and the app calls `central-exchange` again with a **fresh** identity
@@ -243,8 +244,12 @@ the session of that SMS sign-in; the facility sets `central_issuer` and
 first link; 81 does so for every code sign-in), so `data.user` is the stored
 profile. A wrong code is `invalid_otp` and uses one attempt of the code.
 
-New people (a pending request, no code), pending profiles, rejected, disabled
-and service-account profiles never get `link_required`. The next sign-in of the
+New people (a pending request, no code), profiles already linked and pending,
+rejected, disabled and service-account profiles never get `link_required`. An
+unlinked pending profile found by phone number does (migration 154): its pending
+answer is given with the correct code, which also links it. A correct code is
+marked used only when a session or a pending answer is given (migration 154); a
+refused profile leaves it usable until it expires or its attempts run out. The next sign-in of the
 same person asks again.
 
 **When the association's SMS is down.** A facility that signs in through the association needs no SMS provider of its own (no MSG91
