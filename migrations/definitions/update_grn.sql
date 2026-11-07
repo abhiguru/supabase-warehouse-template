@@ -83,6 +83,18 @@ BEGIN
   IF p_rates IS NOT NULL AND warehouse_security.active_role() = 'staff' THEN
     RETURN warehouse_security.rate_failure('RATES_MANAGER_ONLY', 'Only administrators and supervisors can set rates on a GRN');
   END IF;
+  -- WH-111: an edit sends the GRN's whole line list (lines not sent are removed under the rules below), so a missing, NULL or empty list
+  -- would delete every line that has no dispatch, stock movement or order line. It is refused by name and nothing is written; a GRN with
+  -- no lines left is deleted with delete_grn_safe, not emptied by an edit.
+  IF p_items IS NULL OR jsonb_typeof(p_items) <> 'array' OR jsonb_array_length(p_items) = 0 THEN
+    RETURN jsonb_build_object(
+      'success', false,
+      'error_code', 'WH409',
+      'reason', 'GRN_LINES_REQUIRED',
+      'error', 'A GRN needs at least one line. Delete the GRN instead.',
+      'message', 'A GRN needs at least one line. Delete the GRN instead.'
+    );
+  END IF;
   -- Migration 95: a line's name and packaging fit the receipt columns (80 and 40 characters, as the catalog).
   IF jsonb_typeof(p_items) = 'array' THEN
     v_item_index := 0;

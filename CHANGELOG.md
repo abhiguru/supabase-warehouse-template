@@ -18,6 +18,10 @@ file used to carry for earlier installations are in git: `git show b45ae0b:CHANG
 - **Print review fixes (second round).** CUPS cancel is sent under the job's own user name (it was always refused); `ipp.mjs` imports `Buffer` itself (the edge runtime has no global one, so every CUPS print, status check and cancel failed); the bridge address is corrected after a reboot by the boot unit and the self-heal restart as well as `start.sh` (`scripts/print-bridge-sync.sh`); `PRINTER_NAME` accepts `, & + :` and `get-printer-status` reports an invalid name instead of using the default queue, with its message; the CUPS healthcheck fails on a disabled queue; a failed print re-queued by a retry restarts its age for the sweep, and a retry that finds the job still `queued` is answered `PRINT_UNCONFIRMED`, not "already handled"; `cancel-print-job` and `sweep-print-jobs` reach the database directly; `configure.mjs` and `set-capability.mjs` messages corrected.
 - **One print, one job (migration 151).** `print_jobs.request_id` with a unique index on `(user_id, request_id)`; the print functions take an optional `request_id` and answer a repeat with `duplicate: true` without printing. Older apps and a database without the column keep the old order.
 
+### Fixed
+
+- **A GRN edit without lines no longer deletes the lines (WH-111).** `update_grn` refuses a missing, NULL or empty `p_items` with `{success:false, error_code:'WH409', reason:'GRN_LINES_REQUIRED'}` and the message "A GRN needs at least one line. Delete the GRN instead."; nothing is written. An edit that sends at least one line behaves as before. The app already sends its lines. Definition file `update_grn.sql`, no migration (the number reserved for it is not used).
+
 ### Changed
 
 - **Staff may print** (owner decision, 2026-11-07), and print refusals carry a `code` (`PRINTING_OFF`, `PRINT_FORBIDDEN`, `PRINTER_FAILED`, `PRINT_UNCONFIRMED`). A printer failure now answers 502 `PRINTER_FAILED` (it was 500).
