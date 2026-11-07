@@ -4,7 +4,11 @@
 --     "Record payments" setting on the Charging screen. set_record_payments(p_enabled) changes it (administrators only; a change is one
 --     audit_log row through the charging rule's audit trigger, the same value again writes nothing). get_public_config answers it as
 --     record_payments, and get-public-config serves it as capabilities.payments: from this migration the database, not instance.json, says
---     whether payments are on (scripts/set-capability.mjs still writes the file's flag, which the app no longer reads for payments).
+--     whether payments are on (scripts/set-capability.mjs refuses payments and points to the app setting).
+--     Carried over once: an installation that had capabilities.payments on in instance.json keeps payments on. A migration can not read
+--     the state's files, so scripts/migrate.sh, after the plan, reads that flag and calls warehouse_security.carry_payments_capability:
+--     the first call turns record_payments on if the file said on (one audit_log row, through the trigger) and marks the carry-over done
+--     (payments_carried_over); every later call changes nothing, so an administrator's later choice is never overridden.
 --     Turning it off hides payments in the app and keeps every row; the invoice refusals of item 5 hold whether it is on or off.
 --  2. payments. Rows entered in the app carry paid_on (the payment day, an India day); rows that came from the old accounting link keep
 --     paid_on NULL, stay readable and count as before, and can not be edited or deleted through the app. New columns: paid_on, updated_at,
@@ -54,6 +58,8 @@
 
 -- Section 1: the switch
 ALTER TABLE warehouse_security.charging_rule ADD COLUMN record_payments boolean DEFAULT false NOT NULL;
+ALTER TABLE warehouse_security.charging_rule ADD COLUMN payments_carried_over boolean DEFAULT false NOT NULL;
+COMMENT ON COLUMN warehouse_security.charging_rule.payments_carried_over IS 'Migration 172: true once scripts/migrate.sh carried the instance.json payments flag over to record_payments.';
 COMMENT ON COLUMN warehouse_security.charging_rule.record_payments IS 'Migration 172: "Record payments": administrators and supervisors record payments against invoices, and the app shows what is paid and due. Served as capabilities.payments.';
 
 DROP TRIGGER audit_charging_rule_update ON warehouse_security.charging_rule;
@@ -70,6 +76,29 @@ CREATE FUNCTION warehouse_security.payments_enabled() RETURNS boolean
 $$;
 ALTER FUNCTION warehouse_security.payments_enabled() OWNER TO supabase_admin;
 REVOKE ALL ON FUNCTION warehouse_security.payments_enabled() FROM PUBLIC;
+
+-- Called by scripts/migrate.sh (the database owner, no app role has a grant) with the payments flag of instance.json. Once only:
+-- 'carried_on' (switched on), 'kept_off' (the file said off), 'already' (done before; nothing changes).
+CREATE FUNCTION warehouse_security.carry_payments_capability(p_file_on boolean) RETURNS text
+    LANGUAGE plpgsql
+    SET search_path TO 'pg_catalog'
+    AS $$
+DECLARE
+  v_done boolean;
+BEGIN
+  SELECT r.payments_carried_over INTO v_done FROM warehouse_security.charging_rule r WHERE r.id FOR UPDATE;
+  IF v_done THEN
+    RETURN 'already';
+  END IF;
+  -- Two statements: the first is the audited change (record_payments), the second only marks the carry-over (not audited).
+  IF COALESCE(p_file_on, false) THEN
+    UPDATE warehouse_security.charging_rule r SET record_payments = true, updated_at = now() WHERE r.id AND NOT r.record_payments;
+  END IF;
+  UPDATE warehouse_security.charging_rule r SET payments_carried_over = true WHERE r.id;
+  RETURN CASE WHEN COALESCE(p_file_on, false) THEN 'carried_on' ELSE 'kept_off' END;
+END $$;
+ALTER FUNCTION warehouse_security.carry_payments_capability(boolean) OWNER TO supabase_admin;
+REVOKE ALL ON FUNCTION warehouse_security.carry_payments_capability(boolean) FROM PUBLIC, anon, authenticated, service_role;
 
 CREATE FUNCTION public.set_record_payments(p_enabled boolean) RETURNS jsonb
     LANGUAGE plpgsql SECURITY DEFINER

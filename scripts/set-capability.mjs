@@ -1,10 +1,10 @@
 // Turns one capability of this installation on or off in the public manifest
 // (<state>/public/instance.json, `capabilities`), which get-public-config
 // serves to the app. The app shows a feature only where its capability is on.
-// Since migration 172 get-public-config serves `payments` from the database (the "Record payments" setting on the
-// app's Charging screen, set_record_payments); the file's payments flag is no longer read.
+// `payments` is refused: since migration 172 it is the "Record payments" setting in the app (Charging screen, administrators,
+// set_record_payments), kept in the database and served from there; the file's flag was carried over once by scripts/migrate.sh.
 //
-//   WAREHOUSE_STATE_DIR=/abs/state node scripts/set-capability.mjs <sensors|printing|payments> <on|off>
+//   WAREHOUSE_STATE_DIR=/abs/state node scripts/set-capability.mjs <sensors|printing> <on|off>
 //
 // Only the one boolean changes; every other byte of the file stays as it is.
 // The new file is written next to the old one and renamed over it, keeping its
@@ -23,7 +23,8 @@ export const CAPABILITIES = ['sensors', 'printing', 'payments'];
 // turning one on adds it to the end of the capabilities object.
 const ADDED_LATER = ['payments'];
 const VALUES = { on: true, off: false };
-const USAGE = 'Usage: WAREHOUSE_STATE_DIR=/absolute/state node scripts/set-capability.mjs <sensors|printing|payments> <on|off>';
+const USAGE = 'Usage: WAREHOUSE_STATE_DIR=/absolute/state node scripts/set-capability.mjs <sensors|printing> <on|off>';
+export const PAYMENTS_IN_APP = 'payments is no longer set here: an administrator turns it on or off in the app, Charging screen, "Record payments" (it is kept in the database since migration 172). Nothing was changed.';
 
 function privateDirectory(path, what) {
   const st = lstatSync(path, { throwIfNoEntry: false });
@@ -44,6 +45,7 @@ export function manifestPath(stateDir) {
 }
 
 export function setCapability(stateDir, name, value) {
+  if (name === 'payments') throw new Error(PAYMENTS_IN_APP);
   if (!CAPABILITIES.includes(name) || !(value in VALUES)) throw new Error(USAGE);
   const path = manifestPath(stateDir);
   const text = readFileSync(path, 'utf8');
@@ -112,7 +114,6 @@ if (isMain(import.meta.url)) {
         try { notice = sensorWebhookNotice(process.env.WAREHOUSE_STATE_DIR); } catch { /* the notice is a courtesy */ }
         if (notice) console.log(notice);
       }
-      if (result.name === 'payments' && result.enabled) console.log('The app now shows Paid and Pending on invoices. Payments are not entered in the app; only enter them in the database if you have a process for it.');
       if (result.name === 'printing' && result.enabled) console.log('The print routes now answer once the function runtime has restarted (above). Check the print settings and the printer first: docs/PRINTING.md.');
     }
   } catch (error) { console.error(`set-capability: ${error.message}`); process.exitCode = 1; }
