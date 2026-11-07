@@ -176,7 +176,11 @@ export const reportDefinitions: Record<ReportName, Definition> = {
         stock: (grn.dispatch_summary as Row | undefined)?.current_stock,
         invoice: (grn.invoice_status as Row | undefined)?.invoice_number ?? '',
         invoiced: Boolean((grn.invoice_status as Row | undefined)?.is_invoiced),
-      })).filter(row => !request.invoicing || row.invoiced === (request.invoicing === 'invoiced')),
+        // WH-138 (migration 165): the GRN's state; a backend without it, and every GRN with no live invoice, falls back to
+        // is_invoiced (with the setting off the two agree).
+        state: String((grn.invoice_status as Row | undefined)?.invoice_state
+          ?? ((grn.invoice_status as Row | undefined)?.is_invoiced ? 'invoiced' : 'not_invoiced')),
+      })).filter(row => !request.invoicing || row.state === request.invoicing),
       columns: [
         { key: 'gr_no', label: 'grnNumber', kind: 'text' },
         { key: 'date', label: 'date', kind: 'date' },
@@ -790,7 +794,7 @@ export function reportFilters(request: ReportRequest, customerName: string | nul
     filters.push([label(lang, 'period'), label(lang, 'dateRange', { from: formatCell('date', request.from, lang), to: formatCell('date', request.to, lang) })]);
   }
   if (request.status) filters.push([label(lang, 'payment'), label(lang, request.status)]);
-  if (request.invoicing) filters.push([label(lang, 'invoicing'), label(lang, request.invoicing === 'invoiced' ? 'invoiced' : 'notInvoiced')]);
+  if (request.invoicing) filters.push([label(lang, 'invoicing'), label(lang, request.invoicing === 'invoiced' ? 'invoiced' : request.invoicing === 'partly_invoiced' ? 'partlyInvoiced' : 'notInvoiced')]);
   if (request.bucket) filters.push([label(lang, 'stockAge'), label(lang, bucketLabels[request.bucket])]);
   // The search as typed, in quotes; the HTML escapes it as every other value.
   if (request.search) filters.push([label(lang, 'search'), `“${request.search}”`]);

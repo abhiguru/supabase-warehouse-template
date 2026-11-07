@@ -30,7 +30,7 @@ export interface ReportRequest {
   search: string | null;
 }
 
-export const invoicingChoices = ['invoiced', 'not_invoiced'] as const;
+export const invoicingChoices = ['invoiced', 'not_invoiced', 'partly_invoiced'] as const;
 export type InvoicingChoice = typeof invoicingChoices[number];
 /** The app's AgingBucketId (src/components/reports/AgingBucketBar.tsx), not the RPC's bucket keys ('364+'). */
 export const agingBuckets = ['0-120', '121-240', '241-364', 'over-364'] as const;
@@ -117,7 +117,7 @@ export function parseReportRequest(body: unknown): ReportRequest {
   let invoicing: ReportRequest['invoicing'] = null;
   if (input.invoicing !== undefined && input.invoicing !== null) {
     if (report !== 'grn-activity' || customerId === null) throw bad('invoicing is only for the GRN activity of one customer');
-    if (!(invoicingChoices as readonly unknown[]).includes(input.invoicing)) throw bad("invoicing must be 'invoiced' or 'not_invoiced'");
+    if (!(invoicingChoices as readonly unknown[]).includes(input.invoicing)) throw bad("invoicing must be 'invoiced', 'not_invoiced' or 'partly_invoiced'");
     invoicing = input.invoicing as InvoicingChoice;
   }
 

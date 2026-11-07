@@ -21,7 +21,9 @@
 --      - update_grn refuses a new lot (GRN_INVOICED) only for an invoiced GRN, not a partly invoiced one; the GRN date stays locked
 --        once any live invoice exists; the per-lot locks are unchanged. apply_grn_rates treats a GRN as invoiced (GRN_INVOICED,
 --        GRN-only rates archived) only when its state is invoiced. (Both in their definition files.)
---  * Readers: get_grn_list answers invoice_state on each GRN and takes the filter invoiced = 'partly_invoiced' (true and false keep
+--  * claim_invoice_lines: a dispatch line on another live invoice is refused, setting on or off, with the same words and WH409 and now
+--    reason DISPATCH_LINE_INVOICED (raised as 'rate_fail', answered by save_invoice_internal and update_invoice from the detail).
+--  * Readers: get_all_grn_items (the GRN item list; it has no invoiced filter) answers invoice_state on each row; get_grn_list answers invoice_state on each GRN and takes the filter invoiced = 'partly_invoiced' (true and false keep
 --    their meaning; with the setting on they mean the states invoiced and not_invoiced); get_grn_details answers invoice_state and
 --    invoices [{id, inv_no, inv_fin_year, inv_date, total}] (live ones) in its invoice summary; get_customer_grn_activity answers
 --    invoiced_amount (the sum of the GRN's live invoices) and invoice_state. Reports that list invoices already add every live invoice.
@@ -303,10 +305,15 @@ END $$;
 
 -- 4.1 The second invoice on a GRN.
 SELECT pg_temp.patch_function('warehouse_security.claim_invoice_lines(uuid, uuid, uuid[])'::regprocedure, ARRAY[
-$m$IF receipt_invoiced IS TRUE AND own_receipt IS DISTINCT FROM p_gr_id THEN$m$
+$m$IF receipt_invoiced IS TRUE AND own_receipt IS DISTINCT FROM p_gr_id THEN$m$,
+$m$RAISE EXCEPTION 'A dispatch line is already on another invoice' USING ERRCODE = 'WH409';$m$
 ], ARRAY[
 $m$IF receipt_invoiced IS TRUE AND own_receipt IS DISTINCT FROM p_gr_id
-     AND NOT warehouse_security.invoice_as_goods_leave() THEN  -- Migration 165: with the setting on, only the line rule below holds.$m$
+     AND NOT warehouse_security.invoice_as_goods_leave() THEN  -- Migration 165: with the setting on, only the line rule below holds.$m$,
+$m$-- Migration 165: the same words and WH409, now with a reason. Raised as 'rate_fail', which both callers (save_invoice_internal,
+    -- update_invoice) answer with the detail: {success:false, error_code:'WH409', reason:'DISPATCH_LINE_INVOICED', error, message}.
+    RAISE EXCEPTION 'rate_fail' USING ERRCODE = 'WH409', DETAIL = warehouse_security.refuse('DISPATCH_LINE_INVOICED',
+      'A dispatch line is already on another invoice')::text;$m$
 ]);
 
 -- 4.2 The D9 stock check, on save and edit.
@@ -411,6 +418,15 @@ $m$'invoice_count', COUNT(*) OVER (PARTITION BY i.gr_id),
                     'invoiced_amount', SUM(i.total) OVER (PARTITION BY i.gr_id),
                     'invoice_state', warehouse_security.grn_invoice_state(i.gr_id)
                 ) as status$m$
+]);
+
+SELECT pg_temp.patch_function('public.get_all_grn_items(timestamp with time zone, timestamp with time zone, jsonb, text, text, integer, integer)'::regprocedure, ARRAY[
+$m$''invoiced'', invoiced,
+                        ''note'', note,$m$
+], ARRAY[
+$m$''invoiced'', invoiced,
+                        ''invoice_state'', warehouse_security.grn_invoice_state(id),
+                        ''note'', note,$m$
 ]);
 
 DROP FUNCTION pg_temp.patch_function(regprocedure, text[], text[]);

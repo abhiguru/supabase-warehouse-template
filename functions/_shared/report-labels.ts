@@ -120,6 +120,7 @@ const table = {
   // The choices of the report screens a PDF can be made with, printed as a line under the title ('Invoicing: Not invoiced').
   invoicing: ['Invoicing', 'ઇન્વૉઇસ'], // reports.filters.invoicing
   notInvoiced: ['Not invoiced', 'ઇન્વૉઇસ બાકી'], // reports.grnActivity.notInvoiced
+  partlyInvoiced: ['Partly invoiced', 'અંશતઃ ઇન્વોઇસ થયેલ'], // reports.grnActivity.partlyInvoiced (WH-138)
   bucket0to120: ['0–120 days', '૦–૧૨૦ દિવસ'], // reports.stockAging.bucket0to120
   bucket121to240: ['121–240 days', '૧૨૧–૨૪૦ દિવસ'], // reports.stockAging.bucket121to240
   bucket241to364: ['241–364 days', '૨૪૧–૩૬૪ દિવસ'], // reports.stockAging.bucket241to364
