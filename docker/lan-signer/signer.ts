@@ -39,6 +39,8 @@ export const MAX_ANSWER_BYTES = 52 * 1024 * 1024;
 export const MAX_HELD_BYTES = 192 * 1024 * 1024;
 /** How long the inner server may take to answer (a PDF takes up to 60 s in the functions). */
 export const UPSTREAM_TIMEOUT_MS = 180_000;
+/** How long a streamed answer (the app package) may take in all. */
+export const STREAM_TIMEOUT_MS = 15 * 60 * 1000;
 /** How long a key lookup may take. */
 export const LOOKUP_TIMEOUT_MS = 5000;
 
@@ -54,7 +56,9 @@ const NIL_UUID = '00000000-0000-0000-0000-000000000000';
 // address. Matched on the method and the raw request target exactly (no query, no other spelling). `forward` lists the only headers
 // passed on; `body` is the largest body accepted. The answers are not signed (there is no key to sign with), except the proof of
 // get-public-config when the phone sends a challenge.
-type Exempt = { forward: string[]; body: number; proof: boolean };
+// `stream`: the answer is passed on as it comes, not held (the app package is larger than MAX_ANSWER_BYTES); `answer` names more answer
+// headers passed on (never signed).
+type Exempt = { forward: string[]; body: number; proof: boolean; stream?: boolean; answer?: string[] };
 const EXEMPT = new Map<string, Exempt>([
   // The phone's liveness probe, and the check of doctor and watch that the listener reaches the functions.
   ['GET /functions/v1/hello', { forward: ['accept'], body: 0, proof: false }],
@@ -66,6 +70,14 @@ const EXEMPT = new Map<string, Exempt>([
   // Break-glass sign-in during an outage: the phone has no session and so no key yet. Its answer (and so that session's key) crosses
   // the Wi-Fi in plain text; that session lasts 24 hours at most (migration 132). docs/CONTAINER_SECURITY.md says so.
   ['POST /functions/v1/operator-otp/break-glass', { forward: ['accept', 'content-type', 'user-agent'], body: 4096, proof: false }],
+  // Pairing a phone with a local-only facility (WH-146): the phone has no session and so no key yet. Its answer is protected by the
+  // function's own proof and encryption (docs/API_CONTRACT.md, "Pairing"), and the function limits tries per address (the inner server
+  // passes the phone's address on).
+  ['POST /functions/v1/pairing-redeem', { forward: ['accept', 'content-type'], body: 1024, proof: false }],
+  // The app download page of a local-only facility (WH-146): public by nature, no credential forwarded. The package is checked by the
+  // app against X-Apk-Sha256.
+  ['GET /app', { forward: ['accept'], body: 0, proof: false, stream: true, answer: ['cache-control'] }],
+  ['GET /app/warehouse.apk', { forward: [], body: 0, proof: false, stream: true, answer: ['cache-control', 'content-length', 'x-apk-sha256'] }],
 ]);
 
 export type SignerDeps = {
@@ -306,11 +318,29 @@ export function createSigner(deps: SignerDeps): (req: Request) => Promise<Respon
         const value = req.headers.get(name);
         if (value !== null) headers.set(name, value);
       }
+      if (rule.stream) {
+        let response: Response;
+        try {
+          response = await deps.fetch(`${upstream}${target}`, { method: req.method, headers, redirect: 'manual', signal: AbortSignal.timeout(STREAM_TIMEOUT_MS) });
+        } catch (error) {
+          return upstreamFailure(error, req.method, client, null);
+        }
+        const out = passedHeaders(response.headers);
+        for (const name of rule.answer ?? []) {
+          const value = response.headers.get(name);
+          if (value !== null && VISIBLE.test(value)) out.set(name, signedValue(value));
+        }
+        return new Response(emptyBodyStatus(response.status) ? null : response.body, { status: response.status, headers: out });
+      }
       let answer;
       try { answer = await forward(req.method, target, headers, rule.body ? body : null, hold); } catch (error) {
         return upstreamFailure(error, req.method, client, null);
       }
       const out = passedHeaders(answer.headers);
+      for (const name of rule.answer ?? []) {
+        const value = answer.headers.get(name);
+        if (value !== null && VISIBLE.test(value)) out.set(name, signedValue(value));
+      }
       const bytes = emptyBodyStatus(answer.status) ? new Uint8Array(0) : answer.body;
       if (key) {
         const serverTime = String(Math.floor(deps.now() / 1000));

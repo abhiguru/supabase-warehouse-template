@@ -279,10 +279,12 @@ the LAN path". Three parts:
   server, so before PostgREST, Storage and the functions; it never reaches the session code and never ends a session. Only the
   signed request headers are passed on. It reads the answer whole, signs it and passes on only the signed answer headers. A refusal made
   after the signature checked out (time, replay, the inner server's own 401/403/404/413/429/502/503/504) is signed; a refusal made before
-  (no signature, unknown key, wrong signature) cannot be and is not. Four requests carry no credential and need no signature: `GET
+  (no signature, unknown key, wrong signature) cannot be and is not. These requests carry no credential and need no signature: `GET
   /functions/v1/hello`, `GET /functions/v1/get-public-config` (with a challenge it is the phone's identity check, answered with a proof
-  keyed with that session's key), `GET /rest/v1/` with the anon key (the key check of `doctor` and the checker) and `POST
-  /functions/v1/operator-otp/break-glass`. Request ids are kept in memory: after a restart of the signer a request stamped before the
+  keyed with that session's key), `GET /rest/v1/` with the anon key (the key check of `doctor` and the checker), `POST
+  /functions/v1/operator-otp/break-glass`, and for a local-only facility (WH-146) `POST /functions/v1/pairing-redeem` (its answer has
+  its own proof and encryption; the function limits tries per address) and the download page `GET /app` and `GET /app/warehouse.apk`
+  (no credential passed on). Request ids are kept in memory: after a restart of the signer a request stamped before the
   restart is refused. Bodies are held in memory to be hashed (192 MB at most at once, then 503), so the container has 512 MB.
   Its health check (`/__health`, from inside the container only) fails when it cannot read keys, for example with the old service key
   after a rotation; `rotate-keys.sh` and `lan.sh` recreate it with `gateway-lan`. Nothing it logs holds a key, a signature, a token, a

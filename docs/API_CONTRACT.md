@@ -475,7 +475,9 @@ unchanged. It replaces rule 2 of the hand-off below (the `instanceId` probe) wit
    not the server's own: discard it and leave the LAN path. A request is never resent on the LAN path (a write ends as a lost answer).
 7. **Requests without a signature.** Exactly these (method and target as written, no query): `GET /functions/v1/hello`,
    `GET /functions/v1/get-public-config` (the proof of item 3, or a plain answer without one), `GET /rest/v1/` (the operator's key check)
-   and `POST /functions/v1/operator-otp/break-glass` (at most 4 KB; no key exists yet). Their answers are not signed, except the proof.
+   `POST /functions/v1/operator-otp/break-glass` (at most 4 KB; no key exists yet), `POST /functions/v1/pairing-redeem` (at most 1 KB;
+   local-only facilities, WH-146: its answer has its own proof and encryption), and `GET /app` and `GET /app/warehouse.apk` (the download
+   page; no credential is passed on; the package is checked against `X-Apk-Sha256`). Their answers are not signed, except the proof.
    The break-glass answer carries the new session's key in clear over the Wi-Fi (accepted; that session lasts 24 hours at most).
 
 ## Writes: refusals, version tokens, request codes and locks
