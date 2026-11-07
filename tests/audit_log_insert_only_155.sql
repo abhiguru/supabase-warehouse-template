@@ -104,10 +104,11 @@ SELECT pg_temp.al_assert((SELECT count(*) = 3 AND count(*) FILTER (WHERE action 
   'one failure row per failed audit write: table, row id, action, state 23514 and the message: '
   || (SELECT string_agg(action || ' ' || COALESCE(row_id, '-') || ' ' || COALESCE(error_state, '-'), '; ') FROM warehouse_security.audit_write_failures WHERE table_name = 'al_probe_table'));
 -- If even the failure row cannot be written, the save still goes through.
+DELETE FROM warehouse_security.audit_write_failures WHERE table_name = 'al_probe_table';
 ALTER TABLE warehouse_security.audit_write_failures ADD CONSTRAINT al_force_failure_2 CHECK (table_name <> 'al_probe_table');
 INSERT INTO public.al_probe_table(id, name) VALUES ('00000000-0000-4000-8000-0000000155b3', 'third');
 SELECT pg_temp.al_assert((SELECT count(*) = 1 FROM public.al_probe_table WHERE id = '00000000-0000-4000-8000-0000000155b3')
-  AND (SELECT count(*) = 3 FROM warehouse_security.audit_write_failures WHERE table_name = 'al_probe_table'),
+  AND (SELECT count(*) = 0 FROM warehouse_security.audit_write_failures WHERE table_name = 'al_probe_table'),
   'the save goes through when the failure cannot be recorded either, and nothing more is recorded');
 -- The trigger function is the one in migration 155 (a definer function with a fixed search_path).
 SELECT pg_temp.al_assert((SELECT prosecdef AND proconfig::text LIKE '%search_path=public%' FROM pg_proc WHERE oid = 'public.audit_trigger_func()'::regprocedure),
