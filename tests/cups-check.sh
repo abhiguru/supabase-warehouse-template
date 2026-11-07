@@ -70,11 +70,11 @@ run -e CUPS_ADMIN_PASSWORD="$password" -e PRINTER_NAME="$queue" -e PRINTER_URI="
     lpstat -p "$PRINTER_NAME" | grep -q "enabled"
     lpstat -a "$PRINTER_NAME" | grep -q "accepting requests"
     # The image health check (docker/cups/Dockerfile, docker-compose.yml) passes for it and fails for a queue that is not there.
-    lpstat -p "$PRINTER_NAME" 2>/dev/null | grep -qv disabled
-    if lpstat -p NoSuchQueue 2>/dev/null | grep -qv disabled; then echo "the health check passed for a missing queue" >&2; exit 1; fi
+    lpstat -p "$PRINTER_NAME" 2>/dev/null | head -n 1 | grep -q " enabled since"
+    if lpstat -p NoSuchQueue 2>/dev/null | head -n 1 | grep -q " enabled since"; then echo "the health check passed for a missing queue" >&2; exit 1; fi
     # A disabled queue is not healthy.
     cupsdisable "$PRINTER_NAME"
-    if lpstat -p "$PRINTER_NAME" 2>/dev/null | grep -qv disabled; then echo "the health check passed for a disabled queue" >&2; exit 1; fi
+    if lpstat -p "$PRINTER_NAME" 2>/dev/null | head -n 1 | grep -q " enabled since"; then echo "the health check passed for a disabled queue" >&2; exit 1; fi
   '\''
 '
 echo 'CUPS credential rejection, device and queue-name refusal, queue creation on the null device, health check, spool preservation and local HTTP service passed; physical printing remains unverified.'
