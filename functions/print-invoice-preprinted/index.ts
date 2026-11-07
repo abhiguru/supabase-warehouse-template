@@ -7,6 +7,7 @@ import type { InvoicePrintPage } from '../_shared/invoice-print-layout.ts'
 import { lineStorageAmount, cumulativeStorageAmount, resolveInvoiceFinYear, printedMonths } from '../_shared/invoice-print-amounts.ts'
 import { validatePrintAccess, createAuthErrorResponse } from '../_shared/auth-helpers.ts'
 import { sanitizeForPrinter, encodeLatin1 } from '../_shared/printer-text.ts'
+import { fitted, headerFit, preprintedRefusal, preprintedTaxFields, PrintFitError, IGST_PLAIN_PAPER } from '../_shared/invoice-print-fit.ts'
 
 // ESC/P Control Codes for Epson LQ 1310
 const ESC = '\x1B';
@@ -252,7 +253,8 @@ function generateInvoicePage(
     invoice.city,
     invoice.mobile
   ].filter(part => part).join(', ');
-  const fullAddress = truncateString(addressParts, LAYOUT.PAGE_WIDTH - LAYOUT.ADDRESS_OFFSET - 5);
+  // WH-151: an address longer than its field refuses the invoice (it was cut).
+  const fullAddress = fitted(addressParts, LAYOUT.PAGE_WIDTH - LAYOUT.ADDRESS_OFFSET - 5, 'address');
   // End the name line with CR + only the rest of a line, giving back HEADER_DROP_180
   output += ' '.repeat(LAYOUT.ADDRESS_OFFSET) + fullAddress + CR;
   output += ESC + 'J' + String.fromCharCode(30 - LAYOUT.HEADER_DROP_180);
@@ -280,7 +282,7 @@ function generateInvoicePage(
       headerLine += padCenter(truncateString(packingDetails, w.PACKAGING), w.PACKAGING);
       headerLine += ' '.repeat(w.SPACE2);
 
-      headerLine += padLeft(String(item.grn_items_quantity || 0), w.INW_QTY);
+      headerLine += padLeft(fitted(String(item.grn_items_quantity || 0), w.INW_QTY, 'inward quantity'), w.INW_QTY);
       headerLine += ' '.repeat(w.SPACE3);
 
       // Date of deposit, 1 char right. Only header rows print it, and their Out Qty cell is
@@ -325,7 +327,7 @@ function generateInvoicePage(
     detailLine += ' '.repeat(w.SPACE4);
 
     // Dispatch details
-    detailLine += padLeft(String(item.dispatches_items_disp_qty || 0), w.OUT_QTY);
+    detailLine += padLeft(fitted(String(item.dispatches_items_disp_qty || 0), w.OUT_QTY, 'outward quantity'), w.OUT_QTY);
     detailLine += ' '.repeat(w.SPACE5);
 
     detailLine += padCenter(formatDate(item.dispatches_date), w.DELIVERY_DATE);
@@ -334,19 +336,19 @@ function generateInvoicePage(
     // Months charged in the 4-character column: 1 decimal for whole and half months (1.0, 2.5, 12.0, as always),
     // 2 for steps of a day when they fit (1.33; 10.33 prints 10.3)
     const months = parseFloat(item.duration);
-    detailLine += padLeft(printedMonths(months, w.DURATION), w.DURATION);
+    detailLine += padLeft(fitted(printedMonths(months, w.DURATION), w.DURATION, 'months'), w.DURATION);
     detailLine += ' '.repeat(w.SPACE7);
 
     // Weight - show on every dispatch row
     const weight = item.grn_items_weight ? parseFloat(item.grn_items_weight).toFixed(2) : '';
-    detailLine += padLeft(truncateString(weight, w.WEIGHT), w.WEIGHT);
+    detailLine += padLeft(fitted(weight, w.WEIGHT, 'weight'), w.WEIGHT);
     detailLine += ' '.repeat(w.SPACE8);
 
-    detailLine += padLeft(formatCurrency(item.charge || 0), w.RATE);
+    detailLine += padLeft(fitted(formatCurrency(item.charge || 0), w.RATE, 'rate'), w.RATE);
     detailLine += ' '.repeat(w.SPACE9);
 
     // The storage amount the database computed (migration 72): a ONE_TIME line is charged once.
-    detailLine += padLeft(formatCurrency(lineStorageAmount(item)), w.AMOUNT);
+    detailLine += padLeft(fitted(formatCurrency(lineStorageAmount(item)), w.AMOUNT, 'amount'), w.AMOUNT);
     detailLine += ' '.repeat(w.SPACE10);
 
     // Empty GRN No column
@@ -387,11 +389,11 @@ function generateInvoicePage(
   // A totals row: label, inward qty, outward qty, amount (right aligned in the amount column)
   const totalsRow = (label: string, sums: { inw: number; out: number; amt: number }) => {
     let row = padRight(label, inwQtyColStart);
-    row += padLeft(String(sums.inw), W.INW_QTY);
+    row += padLeft(fitted(String(sums.inw), W.INW_QTY, 'inward total'), W.INW_QTY);
     row += ' '.repeat(Math.max(0, outQtyColStart - row.length));
-    row += padLeft(String(sums.out), W.OUT_QTY);
+    row += padLeft(fitted(String(sums.out), W.OUT_QTY, 'outward total'), W.OUT_QTY);
     row += ' '.repeat(Math.max(0, amountColEnd - W.AMOUNT - row.length));
-    row += padLeft(formatCurrency(sums.amt), W.AMOUNT);
+    row += padLeft(fitted(formatCurrency(sums.amt), W.AMOUNT, 'amount total'), W.AMOUNT);
     return row;
   };
 
@@ -412,9 +414,9 @@ function generateInvoicePage(
     // Spacing before tax section - 2 lines (1 if the Invoice total row used one)
     output += printInvoiceTotal ? '\n' : '\n\n';
 
-    // Tax breakdown (SGST and CGST)
-    const sgst = (invoice.tax_amount || 0) / 2;
-    const cgst = (invoice.tax_amount || 0) / 2;
+    // Tax breakdown (SGST and CGST). WH-151: half the tax each for an invoice saved before the GST details (as always), the stored
+    // CGST and SGST for a tax invoice, blank for a bill or bill of supply (invoice-print-fit.ts). An IGST invoice never gets here.
+    const tax = preprintedTaxFields(invoice, formatCurrency, 10);
     const taxLeftOffset = 12; // 3cm from left @ 10 CPI
 
     // SGST/CGST amounts (left, at 3cm) sit TAX_DROP_180/180" below their lines; Labour and
@@ -425,18 +427,18 @@ function generateInvoicePage(
     //   Y+60   : Grand total (unchanged)
     const labourPos = amountColEnd - 10; // Right align in amount column
     const drop = LAYOUT.TAX_DROP_180;
-    output += ' '.repeat(labourPos) + padLeft(formatCurrency(invoice.labour || 0), 10) + CR;
+    output += ' '.repeat(labourPos) + padLeft(fitted(formatCurrency(invoice.labour || 0), 10, 'labour'), 10) + CR;
     output += ESC + 'J' + String.fromCharCode(drop);
-    output += ' '.repeat(taxLeftOffset) + padLeft(formatCurrency(sgst), 10) + CR;
+    output += ' '.repeat(taxLeftOffset) + padLeft(tax.sgst, 10) + CR;
     output += ESC + 'J' + String.fromCharCode(30 - drop);
-    output += ' '.repeat(labourPos) + padLeft(formatCurrency(invoice.tax_amount || 0), 10) + CR;
+    output += ' '.repeat(labourPos) + padLeft(tax.taxTotal, 10) + CR;
     output += ESC + 'J' + String.fromCharCode(drop);
-    output += ' '.repeat(taxLeftOffset) + padLeft(formatCurrency(cgst), 10) + CR;
+    output += ' '.repeat(taxLeftOffset) + padLeft(tax.cgst, 10) + CR;
     output += ESC + 'J' + String.fromCharCode(30 - drop);
 
     // Grand total line - just value, no label or "Rs.", aligned under amount column
     let grandTotalLine = ' '.repeat(labourPos);
-    grandTotalLine += padLeft(formatCurrency(invoice.total || 0), 10);
+    grandTotalLine += padLeft(fitted(formatCurrency(invoice.total || 0), 10, 'grand total'), 10);
     output += grandTotalLine + '\n';
 
     // Total in words, one line below the grand total - 12 chars from left margin
@@ -447,7 +449,8 @@ function generateInvoicePage(
     if (!amountInWords.toLowerCase().endsWith('only')) {
       amountInWords = amountInWords + ' only';
     }
-    const truncatedWords = truncateString(amountInWords, LAYOUT.PAGE_WIDTH - totalWordsOffset - 5);
+    // WH-151: words longer than the line refuse the invoice (they were cut).
+    const truncatedWords = fitted(amountInWords, LAYOUT.PAGE_WIDTH - totalWordsOffset - 5, 'amount in words');
     output += '\n';
     output += createLine(truncatedWords, totalWordsOffset);
   }
@@ -462,6 +465,8 @@ function generateInvoicePage(
 function generatePrePrintedInvoice(invoiceData: any): string {
   const invoice = invoiceData;
   const rawItems = invoice.trl || []; // trl array contains denormalized items
+  // WH-151: the customer's GSTIN must fit between the number and the state (truncateString(gstin, 25) below never cuts then).
+  headerFit(invoice, LAYOUT, 25);
 
   // Lines of the same GRN item together (the groups in the order first seen)
   const items: any[] = groupInvoiceLines(rawItems);
@@ -550,22 +555,39 @@ Deno.serve(async (req) => {
     // Cancelled invoices (migration 134) are not printed: the RPC leaves them out and names them here as skipped with the reason 'cancelled'.
     const skipped = Array.isArray(rpcResponse.skipped) ? rpcResponse.skipped : [];
 
+    // WH-151: an IGST invoice (no field on the form) and an invoice with a value longer than its field are not printed; each is named
+    // in skipped with the reason, as a cancelled one is. The others print.
+    const printed: any[] = [];
+    let printContent = '';
+    results.forEach((invoice: any) => {
+      const label = invoice.invoice_label ?? invoice.inv_no;
+      const base = { inv_no: invoice.inv_no, inv_fin_year: invoice.inv_fin_year, invoice_id: invoice.id };
+      if (preprintedRefusal(invoice) === 'igst') {
+        skipped.push({ ...base, reason: 'igst', message: `Invoice ${label}: ${IGST_PLAIN_PAPER}` });
+        return;
+      }
+      try {
+        // Simply concatenate each invoice's output - continuous form handles positioning
+        printContent += generatePrePrintedInvoice(sanitizeForPrinter(invoice));
+        printed.push(invoice);
+      } catch (error) {
+        if (!(error instanceof PrintFitError)) throw error;
+        skipped.push({ ...base, reason: 'does_not_fit', field: error.field, width: error.width,
+          message: `Invoice ${label}: ${error.message}. Print it on plain paper.` });
+      }
+    });
+
     if (results.length === 0) {
       throw new Error(skipped.length > 0
         ? `All ${skipped.length} Invoices in the range are cancelled and were skipped (${skipped.map((item: any) => item.inv_no).join(', ')})`
         : 'No Invoices found in specified range');
     }
 
+    if (printed.length === 0) {
+      throw new Error(`No invoice in the range can be printed on the form: ${skipped.filter((item: any) => item.message).map((item: any) => item.message).join(' ')}`);
+    }
+
     console.log('print-invoice-preprinted: Retrieved', results.length, 'Invoices');
-
-    // Generate print content for all Invoices - simple continuous printing
-    let printContent = '';
-
-    results.forEach((invoice: any, index: number) => {
-      // Simply concatenate each invoice's output - continuous form handles positioning
-      const invoiceContent = generatePrePrintedInvoice(sanitizeForPrinter(invoice));
-      printContent += invoiceContent;
-    });
 
     console.log('print-invoice-preprinted: Generated content, length:', printContent.length, 'bytes');
 
@@ -595,7 +617,7 @@ Deno.serve(async (req) => {
             start: start_inv_no_str,
             end: end_inv_no_str,
             fin_year: finYear,
-            count: results.length
+            count: printed.length
           },
           skipped,
           timestamp: new Date().toISOString()
@@ -619,7 +641,7 @@ Deno.serve(async (req) => {
       job_type: 'Invoice' as const,
       document_range_start: start_inv_no_str,
       document_range_end: end_inv_no_str,
-      document_count: results.length,
+      document_count: printed.length,
       user_id: userId,
       user_name: userName,
       content_size: contentBuffer.length,
@@ -678,7 +700,7 @@ Deno.serve(async (req) => {
           start: start_inv_no_str,
           end: end_inv_no_str,
           fin_year: finYear,
-          count: results.length
+          count: printed.length
         },
         skipped,
         print_job: {

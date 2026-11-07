@@ -4,7 +4,9 @@ import { validateUserAccess, createAuthErrorResponse, requestId } from './auth-h
 import { securityHeaders } from './security-headers.ts';
 import { renderDocumentPdf } from './pdf-renderer-client.ts';
 import { cancelledNotice, documentDate, documentHtml, kgEach, withNotice } from './document-html.ts';
-import { headerColumns, invoiceCancelColumns } from './document-columns.ts';
+import { headerColumns, invoiceCancelColumns, invoiceDocTypeColumns, invoiceGstLineColumns } from './document-columns.ts';
+import { gstColumns, gstDocumentHtml, gstRows, isGstDocType } from './gst-document-html.ts';
+import type { GstInvoice } from './gst-document-html.ts';
 import { publicBaseUrl } from './public-url.ts';
 import { readDocumentLines } from './document-lines.ts';
 import { estimatePages, MAX_PDF_PAGES, SOLO_PDF_PAGES } from './document-pages.ts';
@@ -23,6 +25,7 @@ export const documentPdf = (kind: Kind) => async (req: Request): Promise<Respons
     // Every business-data read uses the caller's token and row-level security.
     const reader = restClient(internal, Deno.env.get('SUPABASE_ANON_KEY')!, { authorization: req.headers.get('Authorization')! });
     let header; let details; let number; let date; let columns; let rows; let notice: string | undefined;
+    let gstInvoice: GstInvoice | undefined;
     if (kind === 'stock') {
       if (typeof body.customer_id !== 'string' || !uuid.test(body.customer_id)) throw { status: 400, message: 'customer_id must be a UUID' };
       const customer = await reader.from('customers').select('id,name').eq('id',body.customer_id).single();
@@ -51,6 +54,14 @@ export const documentPdf = (kind: Kind) => async (req: Request): Promise<Respons
         const cancel = await reader.from('invoice').select(invoiceCancelColumns).eq('id',header.id).single();
         if (cancel.error) throw { status: 503, message: 'Document status unavailable' };
         if (cancel.data?.cancelled_at) notice = cancelledNotice(cancel.data.cancelled_at, cancel.data.cancel_reason);
+        // Migration 173: a GST document (any type but 'invoice') prints the GST layout from what the save stored; an 'invoice' prints as before.
+        const type = await reader.from('invoice').select(invoiceDocTypeColumns).eq('id',header.id).single();
+        if (type.error) throw { status: 503, message: 'Document status unavailable' };
+        if (isGstDocType(type.data?.doc_type)) {
+          const detail = await reader.rpc('get_invoice_detail',{ p_invoice_id: header.id });
+          if (detail.error || detail.data?.success !== true || !detail.data?.invoice?.gst) throw { status: 503, message: 'Document details unavailable' };
+          gstInvoice = detail.data.invoice as GstInvoice;
+        }
       }
       if (kind === 'grn') {
         details = await readDocumentLines(reader,kind,'goodsreceived_trl','item_name,packaging,qty,stock,weight,rack,package_mark',query => query.eq('gr_id',header.id));
@@ -63,6 +74,11 @@ export const documentPdf = (kind: Kind) => async (req: Request): Promise<Respons
           const item = Array.isArray(line.goodsreceived_trl) ? line.goodsreceived_trl[0] : line.goodsreceived_trl;
           return [item?.item_name,item?.packaging,line.disp_qty,item?.package_mark];
         });
+      } else if (gstInvoice) {
+        const invoice = gstInvoice;
+        details = await readDocumentLines(reader,kind,'invoice_trl',invoiceGstLineColumns,query => query.eq('invoice_id',header.id));
+        columns = gstColumns(invoice);
+        rows = details.data ? gstRows(invoice, details.data) : undefined;
       } else {
         details = await readDocumentLines(reader,kind,'invoice_trl','duration,no_of_days,labour_rate,charge,tax,details_kept_at,kept_item_name,kept_disp_qty,dispatch_trl(disp_qty,goodsreceived_trl(item_name))',query => query.eq('invoice_id',header.id));
         columns = ['Item','Quantity','Duration','Days','Labour rate','Charge','Tax'];
@@ -91,7 +107,10 @@ export const documentPdf = (kind: Kind) => async (req: Request): Promise<Respons
     }
     // The optional letterhead: the router read the file and passed the data URI. Nothing here can fail a PDF; documentHtml
     // ignores a value that is not exactly a JPEG or PNG data URI.
-    let html = documentHtml(kind.toUpperCase(),company.data.value,metadata,columns,rows,Deno.env.get('LETTERHEAD_DATA_URI') || undefined);
+    let html = gstInvoice
+      ? gstDocumentHtml({ invoice: gstInvoice, lines: details.data, number, date: documentDate(date), financialYear: header.inv_fin_year,
+                          company: company.data.value, letterhead: Deno.env.get('LETTERHEAD_DATA_URI') || undefined })
+      : documentHtml(kind.toUpperCase(),company.data.value,metadata,columns,rows,Deno.env.get('LETTERHEAD_DATA_URI') || undefined);
     if (notice) html = withNotice(html,notice);
     const pdf = await renderDocumentPdf(html,{ solo: pages > SOLO_PDF_PAGES, requestId: requestId(req) });
     // Upload uses server authority only after document reads were authorized.
