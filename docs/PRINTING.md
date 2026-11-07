@@ -43,7 +43,7 @@ Each print answer that is not a success carries a `code`:
    `docker logs`) when no USB Epson is found or the queue cannot be created; it is healthy only while the queue `LQ1310_RAW`
    exists (`lpstat -p`). Changing `PRINTER_URI` later and recreating the container changes the queue's device.
 5. Turn printing on and tell the app: `WAREHOUSE_STATE_DIR=<state> node scripts/set-capability.mjs printing on`, then
-   `bash scripts/compose.sh restart functions`, then a new `db:backup` (see the payments capability in
+   `bash scripts/compose.sh up -d functions` (it recreates the container when `compose.env` changed; `restart` would keep the old environment), then a new `db:backup` (see the payments capability in
    [OPERATOR_INSTALL.md](OPERATOR_INSTALL.md) for why).
 6. Check it: sign in to the app as an administrator, open a GRN, tap Print, and confirm one form with the paper in place.
    Every print needs a person at the printer.
@@ -91,16 +91,27 @@ How it works:
 - **Address.** The bridge binds the IPv4 address of Windows' `vEthernet (WSL...)` adapter and answers only requests whose `Host`
   is exactly that address. In WSL2's NAT mode that adapter's address is the distro's default gateway, so
   `scripts/print-bridge-url.sh` (the default gateway from `ip route`) yields the same address the bridge binds, with the port
-  `PRINTBRIDGE_PORT` (default 6632). `scripts/compose.sh` works it out for every command and `start.sh` says what it found; the
-  address can change at a Windows restart or `wsl --shutdown`, so it is never stored. The bridge notices a changed address (it
+  `PRINTBRIDGE_PORT` (default 6632). `scripts/compose.sh` works it out for every command and `start.sh` says what it found. The
+  address can change at a Windows restart or `wsl --shutdown`, so it is not written to `compose.env`; but a container keeps the
+  address it was created with, so `start.sh` compares it with the one just worked out and recreates the `functions` container when they
+  differ. After a Windows restart, run `bash start.sh` (or `bash scripts/compose.sh up -d functions`). The bridge notices a changed address (it
   checks every 15 s), exits, and the scheduled task starts it again on the new one. A `PRINTBRIDGE_URL` in `compose.env`
   overrides the resolver; use the exact IP the bridge bound (the `start listen=` line in `%ProgramData%\Warehouse\logs`), never a
   name. That the two ends agree follows from how NAT mode is built and from the code; it has not been run on a Windows host.
   **Mirrored networking is not verified** (there is no `vEthernet (WSL)` adapter; the bridge stops with a message): use NAT mode.
+  `start.sh` prints a warning when `wslinfo --networking-mode` says `mirrored`.
+- **Printer name.** `PRINTER_NAME` may hold letters, digits, spaces and `_ . ( ) # / -`, so the Windows name can be used as it is,
+  for example `EPSON LQ-1310 ESC/P2`.
+- **The queue must spool.** In the printer's Properties > Advanced, leave "Spool print documents so program finishes printing faster"
+  selected. With "Print directly to the printer" the bridge waits for the printer itself, and an off or paperless printer then blocks it.
+- **What the bridge runs.** `register-tasks.ps1` copies `print-bridge.ps1` to `%ProgramData%\Warehouse\bin` (Administrators and SYSTEM
+  may change it, the task account may only read and run it) and the task runs that copy, so the task does not depend on `\\wsl$` at boot.
+  After an upgrade of the checkout, run `register-tasks.ps1` again (with `-Force`) to refresh the copy; it also stops the running bridge
+  so a new token, queue or script takes effect at once.
 - **Token.** `PRINTBRIDGE_TOKEN` is in `config/compose.env` (mode 0600). The functions refuse to send without one. The Windows side
   copies it with `register-tasks.ps1 -SetTokenFromWsl`, so it never appears on a command line, and the two cannot drift.
 - **Windows firewall.** `register-tasks.ps1` adds an inbound rule "Warehouse Print" for the bridge port, limited to the WSL
-  interface. On Windows 11 22H2 and later the Hyper-V firewall for the WSL network may also need a rule. Not verified on a host.
+  interface. Register after WSL has started once: with no WSL adapter yet the rule falls back to the address range 172.16.0.0/12. On Windows 11 22H2 and later the Hyper-V firewall for the WSL network may also need a rule. Not verified on a host.
 
 Steps:
 
@@ -118,8 +129,8 @@ Steps:
    install account (a SYSTEM task would not see its printer queues). Port: `-PrintPort` (default 6632); if you change it, set
    `PRINTBRIDGE_PORT` in `compose.env` too.
 3. In Ubuntu: `bash start.sh` (it reports the bridge address), then
-   `WAREHOUSE_STATE_DIR=<state> node scripts/set-capability.mjs printing on`, `bash scripts/compose.sh restart functions` and a new
-   `db:backup`.
+   `WAREHOUSE_STATE_DIR=<state> node scripts/set-capability.mjs printing on`, `bash scripts/compose.sh up -d functions` (not `restart`: only
+   `up` re-reads `compose.env`) and a new `db:backup`.
 4. Test without paper: pause the queue in Windows
    (`(Get-CimInstance Win32_Printer -Filter "Name='<queue>'") | Invoke-CimMethod -MethodName Pause`), tap Print on a GRN in the
    app, see the job with `Get-PrintJob -PrinterName "<queue>"`, remove it (`Get-PrintJob -PrinterName "<queue>" | Remove-PrintJob`) and

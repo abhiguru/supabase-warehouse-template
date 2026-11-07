@@ -208,7 +208,7 @@ workers) against the configured ceiling of 100 ([MONITORING.md](MONITORING.md)).
 ```bash
 bash scripts/compose.sh logs --tail 50 functions
 bash scripts/compose.sh exec -T functions ls /home/deno/functions/
-bash scripts/compose.sh restart functions
+bash scripts/compose.sh restart functions   # restart keeps the old environment; after a change in compose.env use: bash scripts/compose.sh up -d functions
 ```
 
 The functions are mounted read-only from the checkout's `functions/`
