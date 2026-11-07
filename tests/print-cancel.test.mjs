@@ -45,19 +45,19 @@ test('cancelDecision: bridge, unknown, id-less and malformed-id jobs are 409 CAN
 test('cancelCupsJob: IPP Cancel-Job on the configured queue; success is cancelled, any other CUPS answer is refused', async () => {
   const sent = [];
   const answer = reply => async (queueUrl, message) => { sent.push({ queueUrl, message }); return reply; };
-  assert.equal(await cancelCupsJob(41, cupsEnv(), answer({ statusCode: 'successful-ok' })), 'cancelled');
+  assert.equal(await cancelCupsJob(41, 'Invoice', cupsEnv(), answer({ statusCode: 'successful-ok' })), 'cancelled');
   assert.equal(sent[0].queueUrl, 'http://cups:631/printers/LQ1310_RAW');
-  assert.deepEqual(sent[0].message, { 'operation-attributes-tag': { 'requesting-user-name': 'warehouse-cancel', 'job-id': 41 } });
+  assert.deepEqual(sent[0].message, { 'operation-attributes-tag': { 'requesting-user-name': 'warehouse-invoice', 'job-id': 41 } });
   for (const reply of [{ statusCode: 'client-error-not-found' }, { statusCode: 'client-error-not-possible' }, { statusCode: 'server-error-busy' }, {}, 'ok']) {
-    assert.equal(await cancelCupsJob(41, cupsEnv(), answer(reply)), 'refused', JSON.stringify(reply));
+    assert.equal(await cancelCupsJob(41, 'Invoice', cupsEnv(), answer(reply)), 'refused', JSON.stringify(reply));
   }
 });
 
 test('cancelCupsJob: an error, silence or an invalid queue name is unreachable (the job may still print)', async () => {
-  assert.equal(await cancelCupsJob(41, cupsEnv(), async () => { throw new Error('ECONNREFUSED'); }), 'unreachable');
-  assert.equal(await cancelCupsJob(41, cupsEnv(), () => new Promise(() => {}), 80), 'unreachable');
+  assert.equal(await cancelCupsJob(41, 'GRN', cupsEnv(), async () => { throw new Error('ECONNREFUSED'); }), 'unreachable');
+  assert.equal(await cancelCupsJob(41, 'GRN', cupsEnv(), () => new Promise(() => {}), 80), 'unreachable');
   let called = false;
-  assert.equal(await cancelCupsJob(41, cupsEnv({ PRINTER_NAME: 'a/b' }), async () => { called = true; return { statusCode: 'successful-ok' }; }), 'unreachable');
+  assert.equal(await cancelCupsJob(41, 'GRN', cupsEnv({ PRINTER_NAME: 'a/b' }), async () => { called = true; return { statusCode: 'successful-ok' }; }), 'unreachable');
   assert.equal(called, false, 'no call for an invalid queue name');
   assert.equal(CANCEL_TIMEOUT_MS, 10000);
   assert.equal(STUCK_AFTER_MS, 300000);
@@ -66,12 +66,12 @@ test('cancelCupsJob: an error, silence or an invalid queue name is unreachable (
 test('cancelCupsJob through the real IPP library: the operation, job id and requesting user reach CUPS', async () => {
   const cups = await fakeCups(() => ({ statusCode: 'successful-ok' }));
   try {
-    assert.equal(await cancelCupsJob(52, cupsEnv()), 'cancelled');
+    assert.equal(await cancelCupsJob(52, 'Dispatch', cupsEnv()), 'cancelled');
     assert.equal(cups.requests.length, 1);
     assert.equal(cups.requests[0].operation, 'Cancel-Job');
     assert.equal(cups.requests[0].path, '/printers/LQ1310_RAW');
     assert.equal(cups.requests[0].attributes['job-id'], 52);
-    assert.equal(cups.requests[0].attributes['requesting-user-name'], 'warehouse-cancel');
+    assert.equal(cups.requests[0].attributes['requesting-user-name'], 'warehouse-dispatch');
   } finally { await cups.close(); }
 });
 
@@ -201,5 +201,26 @@ test('cancel-print-job: the id of the profile lookup is the signed-in user; noth
     assert.equal(cups.requests[0].path, '/printers/LQ1310_RAW');
     assert.equal(cups.requests[0].attributes['job-id'], 41, 'the job id is the stored one');
     assert.ok(calls.length >= 1 && USER_ID);
+  } finally { await cups.close(); }
+});
+
+// WH-109 review: CUPS lets only the job's owner cancel it (cupsd.conf, Cancel-Job: Require user @OWNER @SYSTEM), so the cancel is sent
+// under the user name the job was submitted under: warehouse-<job_type>.
+test('cancel-print-job sends the cancel under the job\'s own user name; a CUPS that applies the owner rule accepts it, and refuses any other name', async () => {
+  for (const [jobType, user] of [['GRN', 'warehouse-grn'], ['Dispatch', 'warehouse-dispatch'], ['Invoice', 'warehouse-invoice']]) {
+    const cups = await fakeCups(message => (message['operation-attributes-tag']['requesting-user-name'] === user
+      ? { statusCode: 'successful-ok' } : { statusCode: 'client-error-forbidden' }));
+    try {
+      const { response, answer } = await call(env(), { row: { ...printing, job_type: jobType } });
+      assert.equal(response.status, 200, `${jobType}: ${JSON.stringify(answer)}`);
+      assert.equal(cups.requests[0].attributes['requesting-user-name'], user);
+    } finally { await cups.close(); }
+  }
+  // The owner rule refuses a name that is not the job's: what the old fixed name did.
+  const cups = await fakeCups(message => (message['operation-attributes-tag']['requesting-user-name'] === 'warehouse-grn'
+    ? { statusCode: 'successful-ok' } : { statusCode: 'client-error-forbidden' }));
+  try {
+    assert.equal(await cancelCupsJob(41, 'Invoice', cupsEnv()), 'refused');
+    assert.equal(await cancelCupsJob(41, 'GRN', cupsEnv()), 'cancelled');
   } finally { await cups.close(); }
 });

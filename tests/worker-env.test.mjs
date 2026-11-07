@@ -21,12 +21,15 @@ function namesRead(entry) {
     // The print modules take the environment as a function (print-config.ts: `get('PRINT_TRANSPORT')`). The adapter
     // `name => Deno.env.get(name)` is allowed only as the argument of those functions, and the names they read are the ones
     // print-config.ts spells out, counted below as read by every file that imports it.
-    const adapter = /\b(?:printTransportName|bridgeBaseUrl|cupsQueueUrl|cancelCupsJob)\(([^()]*?,\s*)?name => Deno\.env\.get\(name\)\)/g;
+    const adapter = /\b(?:printTransportName|bridgeBaseUrl|cupsQueueUrl|cancelCupsJob|printerName)\(((?:[^()]|\([^()]*\))*?,\s*)?name => Deno\.env\.get\(name\)(?:,\s*\w+)?\)/g;
     source = source.replace(adapter, '').replace('const get: EnvGet = name => Deno.env.get(name);', '');
     assert.doesNotMatch(source, /Deno\.env\.(?:toObject|get\((?!['"][A-Z0-9_]+['"]\)))/, `${file} reads the environment by a computed name`);
     for (const match of source.matchAll(/(?:Deno\.env\.get|deps\.env)\(\s*['"]([A-Z0-9_]+)['"]\s*\)/g)) names.add(match[1]);
-    if (file.endsWith('/_shared/print-config.ts')) {
-      for (const match of source.matchAll(/\bget\(\s*['"]([A-Z0-9_]+)['"]\s*\)/g)) names.add(match[1]);
+    // print-config.ts functions read the environment through the function they are given; the names each one asks for:
+    if (!file.endsWith('/_shared/print-config.ts') && /from\s+['"]\.\/print-config\.ts['"]|from\s+['"]\.\.\/_shared\/print-config\.ts['"]/.test(source)) {
+      if (/\b(?:printTransportName|printerName)\b/.test(source)) names.add('PRINT_TRANSPORT');
+      if (/\b(?:printerName|cupsQueueUrl|configuredPrinterName)\b/.test(source)) names.add('PRINTER_NAME');
+      if (/\bbridgeBaseUrl\b/.test(source)) names.add('PRINTBRIDGE_URL');
     }
     for (const match of source.matchAll(/(?:from\s+|import\s*\(\s*|import\s+)['"](\.{1,2}\/[^'"]+)['"]/g)) visit(resolve(dirname(file), match[1]));
   };
@@ -42,22 +45,19 @@ const container = {
   SUPABASE_DB_URL: 'postgresql://postgres:unit-db-password@db:5432/postgres', PATH: '/usr/bin', HOME: '/root', HOSTNAME: 'abc',
 };
 
-// Two lists differ from what the code reads (reported to Development, WH-109); each is asserted in its own todo test below.
-const LIST_DIFFERS = new Set(['cancel-print-job', 'sweep-print-jobs']);
-
 test('each worker list is exactly what the function and its shared modules read', () => {
   for (const [name, listed] of Object.entries(workerEnvNames)) {
-    if (LIST_DIFFERS.has(name)) continue;
-    assert.deepEqual([...listed].sort(), namesRead(join(functions, name, 'index.ts')), name);
+    // sweep-print-jobs imports only the STUCK_AFTER_MS constant of print-cancel.ts and never calls its CUPS code, so the queue name it
+    // reaches by import (not by call) is not read.
+    const reads = namesRead(join(functions, name, 'index.ts')).filter(variable => name !== 'sweep-print-jobs' || !/^PRINT/.test(variable));
+    assert.deepEqual([...listed].sort(), reads, name);
   }
 });
 
-for (const name of LIST_DIFFERS) {
-  test(`product: the worker list of ${name} is exactly what it reads (SUPABASE_STORAGE_URL is read by the REST client but not listed; cancel also gets PRINTBRIDGE_TOKEN it never reads)`,
-    { todo: 'worker-env.ts lists differ from the code' }, () => {
-      assert.deepEqual([...workerEnvNames[name]].sort(), namesRead(join(functions, name, 'index.ts')), name);
-    });
-}
+test('cancel-print-job reaches CUPS only (no bridge address or token) and both REST-client functions go direct (SUPABASE_STORAGE_URL)', () => {
+  assert.deepEqual([...workerEnvNames['cancel-print-job']].filter(name => name.startsWith('PRINT')).sort(), ['PRINTER_NAME', 'PRINT_TRANSPORT']);
+  for (const name of ['cancel-print-job', 'sweep-print-jobs']) assert.ok(workerEnvNames[name].includes('SUPABASE_STORAGE_URL'), name);
+});
 
 test('every function the router can start has a list, and the router passes only that list', () => {
   const allowed = [...router.matchAll(/'([a-z][a-z-]+)'/g)].map(match => match[1]).filter(name => existsSync(join(functions, name, 'index.ts')));
@@ -85,7 +85,7 @@ test('every function the router can start has a list, and the router passes only
   }
   // PRINTBRIDGE_TOKEN reaches the workers that send to the bridge, and no other.
   const withToken = Object.keys(workerEnvNames).filter(name => workerEnvNames[name].includes('PRINTBRIDGE_TOKEN')).sort();
-  assert.deepEqual(withToken, ['cancel-print-job', 'get-printer-status', 'print-dispatch-preprinted', 'print-grn-preprinted', 'print-invoice-preprinted', 'print-via-ipp']);
+  assert.deepEqual(withToken, ['get-printer-status', 'print-dispatch-preprinted', 'print-grn-preprinted', 'print-invoice-preprinted', 'print-via-ipp']);
   assert.deepEqual(Object.fromEntries(workerEnv('print-via-ipp', { ...container, PRINT_TRANSPORT: 'bridge', PRINTER_NAME: 'LQ1310_RAW', PRINTBRIDGE_URL: 'http://192.0.2.1:6632', PRINTBRIDGE_TOKEN: 'unit-token' }))
     .PRINTBRIDGE_TOKEN, 'unit-token');
   assert.ok(!workerEnv('get-config', { ...container, PRINTBRIDGE_TOKEN: 'unit-token' }).some(([key]) => key === 'PRINTBRIDGE_TOKEN'));

@@ -27,7 +27,7 @@ function world() {
   const state = join(scratch, 'state');
   const bin = join(scratch, 'bin');
   for (const dir of [join(tree, 'scripts'), join(tree, 'docker'), join(state, 'config'), bin]) mkdirSync(dir, { recursive: true });
-  for (const file of ['scripts/upgrade-prepull.sh', 'scripts/image-recipes.mjs']) copyFileSync(join(root, file), join(tree, file));
+  for (const file of ['scripts/upgrade-prepull.sh', 'scripts/image-recipes.mjs', 'scripts/verify-image-signature.sh']) copyFileSync(join(root, file), join(tree, file));
   writeFileSync(join(tree, 'docker/docker-compose.yml'), `services:
   gateway:
     image: \${WAREHOUSE_PROJECT_NAME:?Run setup.sh to write the project name}-gateway
@@ -38,6 +38,8 @@ function world() {
     image: busybox:latest
 `);
   const shim = (name, body) => { writeFileSync(join(bin, name), `#!/bin/bash\n${body}\n`); chmodSync(join(bin, name), 0o755); };
+  // cosign: FAKE_COSIGN=ok verifies, bad refuses; the shim logs the identity it was asked to accept.
+  shim('cosign', 'echo "cosign $*" >> "$FAKE_LOG"; [ "$FAKE_COSIGN" = ok ] && exit 0; echo "no signatures found" >&2; exit 1');
   shim('uname', 'if [ "$1" = -m ]; then echo "${FAKE_ARCH:-x86_64}"; else exec /usr/bin/uname "$@"; fi');
   shim('curl', `echo "curl $*" >> "$FAKE_LOG"
 case "$FAKE_CURL_FAIL" in
@@ -74,7 +76,7 @@ esac`);
       env: { ...process.env, PATH: `${bin}:${process.env.PATH}`, STATE: state, TO_SHA: SHA, TO_LABEL: 'v1.2.3', DRY: 'no', FAKE_LOG: log, FAKE_JSON: manifest(), ...extra } });
     return { ...r, calls: readFileSync(log, 'utf8').split('\n').filter(Boolean), leftovers: readdirSync(join(state, 'config')) };
   };
-  return { run, cleanup: () => rmSync(scratch, { recursive: true, force: true }) };
+  return { tree, bin, state, run, cleanup: () => rmSync(scratch, { recursive: true, force: true }) };
 }
 const pulls = calls => calls.filter(line => line.startsWith('docker pull ')).map(line => line.replace('docker pull --quiet ', ''));
 
@@ -227,5 +229,77 @@ test('a release with no release-images.json (the download answers 404) is skippe
     // Only the 404 is let through: a dry run behaves the same, and a file that does not fit still refuses.
     assert.equal(w.run({ FAKE_CURL_FAIL: '404', DRY: 'yes' }).status, 0);
     assert.equal(w.run({ FAKE_JSON: manifest({ commit: 'f'.repeat(40) }) }).status, 1);
+  } finally { w.cleanup(); }
+});
+
+// WH-116: the release images are signed (keyless cosign). The pre-pull checks the signatures first, before anything is pulled.
+const SIGNED = tree => { mkdirSync(join(tree, 'docker'), { recursive: true }); writeFileSync(join(tree, 'docker/images-signed'), ''); };
+const NO_COSIGN_PATH = bin => `${bin}:/usr/bin:/bin`;
+
+test('a tree without docker/images-signed (an older release) is not checked: the cosign shim is never asked and the pull goes on', () => {
+  const w = world();
+  try {
+    const r = w.run({ FAKE_COSIGN: 'bad' });
+    assert.equal(r.status, 0, r.stderr);
+    assert.ok(!r.calls.some(line => line.startsWith('cosign ')));
+    assert.equal(pulls(r.calls).length, 3);
+  } finally { w.cleanup(); }
+});
+
+test('a signed release whose signatures check: every image is verified against the release workflow identity, then pulled', () => {
+  const w = world();
+  try {
+    SIGNED(w.tree);
+    const r = w.run({ FAKE_COSIGN: 'ok' });
+    assert.equal(r.status, 0, r.stdout + r.stderr);
+    const verified = r.calls.filter(line => line.startsWith('cosign '));
+    assert.equal(verified.length, 2, 'the two release images (the Docker Hub base image is not signed by this project)');
+    assert.match(verified[0], /^cosign verify --certificate-identity-regexp \^https:\/\/github\\\.com\/abhiguru\/supabase-warehouse-template\/\\\.github\/workflows\/release\\\.yml@refs\/tags\/v\[0-9\]\.\*\$ --certificate-oidc-issuer https:\/\/token\.actions\.githubusercontent\.com ghcr\.io\/abhiguru\/supabase-warehouse-template\/db@sha256:a{64}$/);
+    assert.ok(r.calls.findIndex(line => line.startsWith('cosign ')) < r.calls.findIndex(line => line.startsWith('docker pull ')), 'signatures first');
+  } finally { w.cleanup(); }
+});
+
+test('a signature that does not check refuses the upgrade before anything is pulled, also with --unsigned (that is only for a missing cosign)', () => {
+  for (const unsigned of ['', 'yes']) {
+    const w = world();
+    try {
+      SIGNED(w.tree);
+      const r = w.run({ FAKE_COSIGN: 'bad', WAREHOUSE_UNSIGNED: unsigned });
+      assert.equal(r.status, 1);
+      assert.match(r.stderr, /the signature of the image ghcr\.io\/abhiguru\/supabase-warehouse-template\/db@sha256:a{64} of v1\.2\.3 did not check/);
+      assert.match(r.stderr, /Nothing was changed\./);
+      assert.deepEqual(pulls(r.calls), []);
+    } finally { w.cleanup(); }
+  }
+});
+
+test('a signed release on a host without cosign is refused, naming how to install it; --unsigned goes on with a warning and a line in upgrades.log', () => {
+  const w = world();
+  try {
+    SIGNED(w.tree);
+    rmSync(join(w.bin, 'cosign'));
+    const refused = w.run({ PATH: NO_COSIGN_PATH(w.bin), WAREHOUSE_STATE_DIR: '' });
+    assert.equal(refused.status, 1, refused.stdout + refused.stderr);
+    assert.match(refused.stderr, /cosign is not installed, so the signatures of the images of v1\.2\.3 cannot be checked/);
+    assert.match(refused.stderr, /install-cosign\.sh/);
+    assert.deepEqual(pulls(refused.calls), []);
+    const unsigned = w.run({ PATH: NO_COSIGN_PATH(w.bin), WAREHOUSE_UNSIGNED: 'yes', FROM_LABEL: 'v1.2.2' });
+    assert.equal(unsigned.status, 0, unsigned.stdout + unsigned.stderr);
+    assert.match(unsigned.stderr, /Warning: cosign is not installed and --unsigned was given: the images of v1\.2\.3 are used WITHOUT checking their signatures/);
+    assert.match(readFileSync(join(w.state, 'config/upgrades.log'), 'utf8'), /v1\.2\.2 unsigned: images of v1\.2\.3 used without a signature check \(cosign missing, --unsigned\)/);
+    assert.equal(pulls(unsigned.calls).length, 3);
+  } finally { w.cleanup(); }
+});
+
+test('a dry run checks the signatures too, and writes no log line', () => {
+  const w = world();
+  try {
+    SIGNED(w.tree);
+    const bad = w.run({ DRY: 'yes', FAKE_COSIGN: 'bad' });
+    assert.equal(bad.status, 1);
+    rmSync(join(w.bin, 'cosign'));
+    const unsigned = w.run({ DRY: 'yes', PATH: NO_COSIGN_PATH(w.bin), WAREHOUSE_UNSIGNED: 'yes' });
+    assert.equal(unsigned.status, 0, unsigned.stderr);
+    assert.equal(existsSync(join(w.state, 'config/upgrades.log')), false);
   } finally { w.cleanup(); }
 });

@@ -1,6 +1,7 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import { createServer } from 'node:http';
+import { connect } from 'node:net';
 import { Buffer } from 'node:buffer';
 import './print-harness.mjs'; // registers the TypeScript hook (ipp-client.ts needs a transform, not only a strip)
 const { submitRawJob, jobOutcome, printFailureBody, configuredPrinterName, UNCONFIRMED_NOTE } = await import('../functions/_shared/print-transport.ts');
@@ -44,7 +45,13 @@ const environment = (url, extra = {}) => {
   return name => values[name];
 };
 const unusedIpp = async () => { throw new Error('IPP must not be used on the bridge path'); };
-const deps = (env, extra = {}) => ({ env, fetch: globalThis.fetch, ippPrintJob: unusedIpp, timeoutMs: 2000, ...extra });
+// The connection probe the transport makes before sending (the edge runtime uses Deno.connect): here a plain TCP connect.
+const probe = (hostname, port, timeoutMs) => new Promise((resolve, reject) => {
+  const socket = connect({ host: hostname, port, timeout: timeoutMs }, () => { socket.destroy(); resolve(); });
+  socket.on('error', reject);
+  socket.on('timeout', () => { socket.destroy(); reject(new Error('connect timeout')); });
+});
+const deps = (env, extra = {}) => ({ env, fetch: globalThis.fetch, ippPrintJob: unusedIpp, timeoutMs: 2000, probe, ...extra });
 const job = (bytes = TRICKY, docName = 'Invoice-1-to-2') => ({ bytes, docName, jobType: 'Invoice' });
 
 test('bridge: one POST to /print/raw with the contract headers, the bytes unchanged, and no Authorization header', async () => {
@@ -154,25 +161,66 @@ test('bridge: the document name is printable ASCII, at most 100 characters, with
   } finally { await server.close(); }
 });
 
-test('bridge: 401 and 403 say the token was refused (not unconfirmed); the job did not print', async () => {
-  for (const status of [401, 403]) {
-    const server = await bridge(reply(status, { success: false, error: 'bad token' }));
+const plainFailure = error => ({ ok: false, transport: 'bridge', jobId: null, confirmed: false, error });
+
+test('bridge: 401 says the token was refused, 403 that the bridge does not serve this queue, 413 that the job is too large (none unconfirmed)', async () => {
+  for (const [status, error] of [
+    [401, 'The print bridge refused the token'],
+    [403, 'The print bridge does not serve this printer queue (PRINTER_NAME must equal the bridge\'s -Printer)'],
+    [413, 'The print job is larger than the 2 MB the print bridge accepts'],
+  ]) {
+    const server = await bridge(reply(status, { success: false, error: 'detail' }));
     try {
       const result = await submitRawJob(job(), deps(environment(server.url)));
-      assert.deepEqual(result, { ok: false, transport: 'bridge', jobId: null, confirmed: false, error: 'The print bridge refused the token' });
+      assert.deepEqual(result, plainFailure(error), String(status));
       assert.equal(jobOutcome(result).kind, 'failed');
     } finally { await server.close(); }
   }
 });
 
-test('bridge: a 4xx/5xx answer is a failure that is not unconfirmed ("could not print")', async () => {
-  for (const [status, body] of [[400, { success: false }], [404, { success: false }], [500, { success: false, error: 'spooler' }], [503, 'not json'], [500, { success: true }]]) {
+test('bridge: other 4xx answers are "could not print", 5xx answers are "the Windows spooler refused the job" (neither unconfirmed)', async () => {
+  for (const [status, body, error] of [[400, { success: false }, 'The print bridge could not print the job'], [404, { success: false }, 'The print bridge could not print the job'],
+    [500, { success: false, error: 'spooler' }, 'The Windows spooler refused the job'], [503, 'not json', 'The Windows spooler refused the job'], [500, { success: true }, 'The Windows spooler refused the job']]) {
     const server = await bridge(reply(status, body));
     try {
       const result = await submitRawJob(job(), deps(environment(server.url)));
-      assert.deepEqual(result, { ok: false, transport: 'bridge', jobId: null, confirmed: false, error: 'The print bridge could not print the job' }, `${status} ${JSON.stringify(body)}`);
+      assert.deepEqual(result, plainFailure(error), `${status} ${JSON.stringify(body)}`);
     } finally { await server.close(); }
   }
+});
+
+test('bridge: a connection is probed first; if it cannot be made nothing is sent and the job plainly failed', async () => {
+  const server = await bridge(reply(200, { success: true }));
+  const calls = [];
+  try {
+    const refusing = async (hostname, port, timeoutMs) => { calls.push([hostname, port, timeoutMs]); throw new Error('connection refused'); };
+    const result = await submitRawJob(job(), deps(environment(server.url), { probe: refusing }));
+    assert.deepEqual(result, plainFailure('The print bridge could not be reached'));
+    assert.deepEqual(calls, [['127.0.0.1', server.port, 2000]], 'host, port and a timeout of at most 3 s');
+    assert.equal(server.seen.length, 0, 'no byte was sent');
+    // The probe time is capped at 3 s whatever the send timeout.
+    await submitRawJob(job(), deps(environment(server.url), { probe: refusing, timeoutMs: 20000 }));
+    assert.equal(calls[1][2], 3000);
+  } finally { await server.close(); }
+});
+
+test('bridge: once connected, an error that is not clearly "before any byte" (reset, unknown) may have printed: unconfirmed', async () => {
+  const server = await bridge(reply(200, { success: true }));
+  try {
+    const cases = [
+      [new TypeError('fetch failed', { cause: new Error('read ECONNRESET') }), true],
+      [Object.assign(new Error('boom'), { name: 'WeirdError' }), true],
+      [new TypeError('fetch failed', { cause: new Error('connect ECONNREFUSED 127.0.0.1:1') }), false],
+      [new TypeError('error sending request: dns error: failed to lookup address information'), false],
+      [new TypeError('fetch failed', { cause: new Error('connect EHOSTUNREACH 192.0.2.1:6632') }), false],
+    ];
+    for (const [error, unconfirmed] of cases) {
+      const result = await submitRawJob(job(), deps(environment(server.url), { fetch: async () => { throw error; } }));
+      assert.deepEqual(result, unconfirmed
+        ? { ...plainFailure('The print bridge did not confirm the job'), unconfirmed: true }
+        : plainFailure('The print bridge could not be reached'), String(error.cause ?? error));
+    }
+  } finally { await server.close(); }
 });
 
 test('bridge: a 2xx that does not say success, or is not JSON, may have printed: unconfirmed, recorded unknown', async () => {

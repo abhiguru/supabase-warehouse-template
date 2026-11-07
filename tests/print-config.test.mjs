@@ -22,9 +22,15 @@ test('PRINTER_NAME: default LQ1310_RAW; CUPS takes letters, digits, _ and - only
   assert.equal(printerName(env({ PRINTER_NAME: 'EPSON LQ-1310 (Copy 1)' })), null);
   assert.equal(printerName(env({ PRINTER_NAME: 'EPSON LQ-1310 (Copy 1)', PRINT_TRANSPORT: 'bridge' })), 'EPSON LQ-1310 (Copy 1)');
   assert.equal(printerName(env({ PRINTER_NAME: 'EPSON LQ-1310', PRINT_TRANSPORT: 'nonsense' })), null);
-  for (const bad of ['a/b', '../x', 'q?x', 'x'.repeat(128), 'café', 'a\nb']) {
+  for (const bad of ['a/b', 'q?x', 'x'.repeat(128), 'café', 'a\nb', '../x']) {
     assert.equal(printerName(env({ PRINTER_NAME: bad }), 'cups'), null, JSON.stringify(bad));
+  }
+  for (const bad of ['../x', 'q?x', 'x'.repeat(128), 'café', 'a\nb', 'a\r\nX: 1', '.hidden']) {
     assert.equal(printerName(env({ PRINTER_NAME: bad }), 'bridge'), null, JSON.stringify(bad));
+  }
+  // The Windows name accepts the marks register-tasks.ps1 accepts: a slash, comma, ampersand, plus and colon.
+  for (const good of ['EPSON LQ-1310 ESC/P2', 'a,b', 'a&b', 'a+b', 'a:b', 'x'.repeat(127)]) {
+    assert.equal(printerName(env({ PRINTER_NAME: good }), 'bridge'), good, good);
   }
   assert.equal(printerName(env({ PRINTER_NAME: 'x'.repeat(127) }), 'cups'), 'x'.repeat(127));
   assert.equal(printerName(env({ PRINTER_NAME: '-x' }), 'bridge'), null, 'a Windows name starts with a letter or digit');

@@ -261,3 +261,23 @@ test('duplicateResponse: a handled request answers 200 with duplicate true and t
   const sent = duplicateResponse({ ...row, status: 'unknown', cups_job_id: null, error_message: 'Sent to the print bridge' }, { start: '1', end: '2' });
   assert.equal(sent.status, 200);
 });
+
+// Review fixes (WH-109): a retry finding the row still queued is not told it printed; a re-queued row is as young as the retry.
+test('a repeat that finds the row still queued answers 502 PRINT_UNCONFIRMED with duplicate true, never a success', async () => {
+  const response = duplicateResponse({ id: 'row-1', status: 'queued', cups_job_id: null, error_message: null, document_count: 3 }, { start: '101', end: '103' });
+  assert.equal(response.status, 502);
+  const body = await response.json();
+  assert.deepEqual([body.success, body.code, body.unconfirmed, body.duplicate, body.print_job_id], [false, 'PRINT_UNCONFIRMED', true, true, 'row-1']);
+});
+
+test('re-queuing a failed row resets created_at, so the sweeper (which ages by it) does not settle the retry while it prints', async () => {
+  const old = '2026-01-01T00:00:00.000Z';
+  const table = fakePrintJobs([{ id: 'row-1', user_id: USER, request_id: REQUEST, status: 'failed', cups_job_id: null, error_message: 'x', document_count: 3, created_at: old }]);
+  await scenario(table, async (rest) => {
+    const before = Date.now();
+    assert.deepEqual(await startPrintJob(rest, meta(), REQUEST), { kind: 'row', id: 'row-1' });
+    assert.ok(Date.parse(table.rows[0].created_at) >= before - 1000, table.rows[0].created_at);
+    assert.notEqual(table.rows[0].created_at, old);
+    assert.equal(table.rows[0].updated_at, table.rows[0].created_at);
+  });
+});

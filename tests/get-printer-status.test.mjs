@@ -160,3 +160,20 @@ test('cups: a reply without the printer attributes is 502 status error, never "r
     assert.deepEqual([answer.success, answer.status], [false, 'error']);
   } finally { await cups.close(); }
 });
+
+test('a configuration error is answered with its own text and code PRINT_CONFIG (503), and an invalid name never falls back to the default queue', async () => {
+  const cups = await fakeCups(() => ({ statusCode: 'successful-ok' }));
+  try {
+    const cases = [
+      [{ PRINT_TRANSPORT: 'usb' }, 'PRINT_TRANSPORT must be cups or bridge', undefined],
+      [{ PRINT_TRANSPORT: 'cups', PRINTER_NAME: 'a/b' }, 'PRINTER_NAME is not a valid CUPS queue name', undefined],
+      [{ PRINT_TRANSPORT: 'bridge', PRINTER_NAME: 'x\ty', PRINTBRIDGE_URL: 'http://127.0.0.1:1', PRINTBRIDGE_TOKEN: TOKEN }, 'PRINTER_NAME is not a valid printer name', undefined],
+    ];
+    for (const [extra, message] of cases) {
+      const { response, answer } = await status({ environment: baseEnvironment(extra) });
+      assert.equal(response.status, 503, JSON.stringify(extra));
+      assert.deepEqual([answer.success, answer.status, answer.code, answer.error], [false, 'error', 'PRINT_CONFIG', message]);
+    }
+    assert.equal(cups.requests.length, 0, 'no queue was asked, in particular not LQ1310_RAW');
+  } finally { await cups.close(); }
+});
