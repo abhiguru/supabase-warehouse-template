@@ -4,6 +4,8 @@ import { validateUserAccess, createAuthErrorResponse } from '../_shared/auth-hel
 import { publicBaseUrl } from '../_shared/public-url.ts';
 import { lanOrigin } from '../_shared/lan-url.ts';
 import { parseRelease } from '../_shared/release-info.ts';
+import { verifyRequest } from '../_shared/jwt.ts';
+import { lanKeyFor } from '../_shared/lan-key.ts';
 
 Deno.serve(async (req: Request) => {
   if (req.method !== 'GET') return new Response('Method not allowed', { status: 405, headers: securityHeaders });
@@ -20,6 +22,9 @@ Deno.serve(async (req: Request) => {
       client.from('system_settings').select('key,value'),
     ]);
     if ([configResult, flagsResult, smsResult, settingsResult].some(result => result.error)) throw new Error('Configuration unavailable');
+    // The warehouse network key of this session (WH-133, migration 163), only on an answer that leaves over https through the public
+    // gateway: never over the LAN path, where it would cross the Wi-Fi in plain text (functions/_shared/lan-key.ts).
+    const lanKey = await lanKeyFor(req, baseUrl, (await verifyRequest(req)).session_id, client);
     const settings = Object.fromEntries((settingsResult.data || []).map(row => [row.key, row.value]));
     const number = (key: string, fallback: number) => Number(settings[key]) || fallback;
     // The seeded support@example.com is a placeholder, not a contact: it is answered as not set (a real value is returned as it is).
@@ -45,6 +50,7 @@ Deno.serve(async (req: Request) => {
         apiRateLimitPerMinute: number('api_rate_limit_per_minute', 100), apiRateLimitPerHour: number('api_rate_limit_per_hour', 1000),
       },
       support: { email: contact(settings.support_email), phone: contact(settings.support_phone), appName: settings.app_name || 'Warehouse Manager' },
+      ...(lanKey ? { lanKey } : {}),
     }, timestamp: new Date().toISOString() }), {
       headers: { ...securityHeaders, 'Content-Type': 'application/json', 'Cache-Control': 'no-store' },
     });
