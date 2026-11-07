@@ -159,8 +159,9 @@ Printing and sensors still require hardware acceptance; monitoring is one small 
 for contract parity, but physical printing hardware remains unverified. See [docs/API_CONTRACT.md](docs/API_CONTRACT.md) for
 the exported surface and [docs/PRODUCTION_DEPENDENCIES.md](docs/PRODUCTION_DEPENDENCIES.md) for what has been accepted.
 
-There is no accounting integration. Recorded payments drive the Paid and Pending
-figures of the invoice reports; the app does not write them. The ungranted
+There is no accounting integration. The app does not record payments unless the facility turns on Record payments
+(the Charging screen; off by default). With it on, administrators and supervisors record what a customer pays against
+each invoice (`record_payment`, migration 172), and payments drive the Paid and Due figures. The ungranted
 baseline functions are not API
 ([docs/API_CONTRACT.md](docs/API_CONTRACT.md), "Legacy and dormant functions").
 

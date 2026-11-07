@@ -58,7 +58,8 @@ Deno.serve(async (req: Request) => {
       supabaseUrl: baseUrl, anonKey, environment, version: config.app_version,
       instanceId: instance.instanceId, displayName: instance.displayName,
       companyName: instance.companyName, canonicalOrigin: instance.canonicalOrigin,
-      capabilities: instance.capabilities, supportedApiVersions: instance.supportedApiVersions,
+      // Migration 172: payments follow the facility's "Record payments" setting in the database (Charging screen), not instance.json.
+      capabilities: { ...instance.capabilities, payments: config.record_payments === true }, supportedApiVersions: instance.supportedApiVersions,
       minimumClientVersion, backendRelease: release.backendRelease, schemaHead: release.schemaHead,
       maintenanceMode: false, // fixed: apps before WH-28 reject a config without it; the "upgrading" 503 is the only signal
       centralLogin,

@@ -1,6 +1,8 @@
 // Turns one capability of this installation on or off in the public manifest
 // (<state>/public/instance.json, `capabilities`), which get-public-config
 // serves to the app. The app shows a feature only where its capability is on.
+// Since migration 172 get-public-config serves `payments` from the database (the "Record payments" setting on the
+// app's Charging screen, set_record_payments); the file's payments flag is no longer read.
 //
 //   WAREHOUSE_STATE_DIR=/abs/state node scripts/set-capability.mjs <sensors|printing|payments> <on|off>
 //

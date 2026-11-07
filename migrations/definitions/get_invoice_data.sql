@@ -318,7 +318,9 @@ BEGIN
                         'display_name', v_invoice_header.created_by_display_name,
                         'role', v_invoice_header.created_by_role
                     )
-                ),
+                -- Migration 172: paid_amount, due_amount and payment_status for administrators, supervisors and the invoice's customer.
+                ) || CASE WHEN auth.jwt()->>'role' = 'service_role' OR COALESCE(v_user_role, '') <> 'staff'
+                          THEN warehouse_security.invoice_payment_state(v_invoice_header.invoice_id) ELSE '{}'::jsonb END,
                 'items', v_invoice_items
             )
         );

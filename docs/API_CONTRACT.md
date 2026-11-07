@@ -157,8 +157,22 @@ See [PRODUCTION_DEPENDENCIES.md](PRODUCTION_DEPENDENCIES.md) for the remaining b
 
 There is no accounting integration (migration 71 removed the unused Tally one, with the dead baseline functions that
 nothing called). Recorded payments remain: the `payments` table and its policies drive Paid and Pending in
-`get_customer_invoice_summary` and `get_customer_activity_detail`. The app does not write payments; only the service role
-or the database owner does. A future accounting integration starts from a new design.
+`get_customer_invoice_summary` and `get_customer_activity_detail`. A future accounting integration starts from a new design.
+
+### Payments (migration 172)
+
+With the facility's Record payments setting on (`set_record_payments(p_enabled)`, administrators; served as
+`capabilities.payments` by get-public-config), administrators and supervisors call
+`record_payment(p_invoice_id, p_paid_on, p_amount, p_mode, p_note, p_request_id)`,
+`update_payment(p_id, p_paid_on, p_amount, p_mode, p_expected_updated_at, p_note, p_request_id)` and
+`delete_payment(p_id, p_expected_updated_at, p_request_id)`. Modes: `cash`, `upi`, `bank_transfer`, `cheque`, `other`; note up to
+200 characters. Refusals (`reason`): `PAYMENTS_OFF`, `PAYMENT_DATE_FUTURE` and `PAYMENT_BEFORE_INVOICE` (error_code WH422),
+`PAYMENT_OVER_DUE` {due}, `INVOICE_CANCELLED`, `INVOICE_NOT_FOUND`, `PAYMENT_NOT_FOUND`, `PAYMENT_NOT_EDITABLE` (rows from the old
+accounting link), `STALE_RECORD`; an amount of 0 or less, a bad mode or a long note raise 22023. `cancel_invoice` and `delete_invoice`
+refuse an invoice with payments (`INVOICE_HAS_PAYMENTS` {inv_no}); `update_invoice` refuses a total below the paid sum
+(`TOTAL_BELOW_PAID` {paid, total}). `get_invoices_list` (filter `p_payment_status`), `get_invoice_detail` (with `payments[]`) and
+`get_invoice_data` answer `paid_amount`, `due_amount` and `payment_status` (`due`, `part_paid`, `paid`) to administrators,
+supervisors and the invoice's customer. The service role and the database owner can still write the table directly.
 
 The baseline still holds other functions that are not granted to `anon` or
 `authenticated`. They are not API: do not grant one to make a call work; add a

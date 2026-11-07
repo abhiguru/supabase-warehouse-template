@@ -20,14 +20,16 @@ BEGIN
     RETURN;
   END IF;
   -- Central identity (migration 49), sensor settings (migration 74), service accounts
-  -- (migration 78), the numbering rules (migration 127) and the charging rule (migration 164): administrators only.
+  -- (migration 78), the numbering rules (migration 127), the charging rule (migration 164) and the Record payments switch
+  -- (migration 172): administrators only.
   IF rpc IN ('clear_user_central_identity','update_sensor_device','set_service_account','set_document_numbering',
-             'get_charging_rule','set_charging_rule') THEN
+             'get_charging_rule','set_charging_rule','set_record_payments') THEN
     IF role_name <> 'admin' THEN RAISE EXCEPTION 'Administrator required' USING ERRCODE = '42501'; END IF;
     RETURN;
   END IF;
   -- Administrators and supervisors: every other RPC, among them cancel_invoice (migration 134; keeps the invoice on record) and
-  -- delete_invoice (migration 146; removes it, administrators and supervisors only), set_rack_presets (migration 131) and the rest of the management RPCs. Staff and
+  -- delete_invoice (migration 146; removes it, administrators and supervisors only), record_payment, update_payment and
+  -- delete_payment (migration 172), set_rack_presets (migration 131) and the rest of the management RPCs. Staff and
   -- customers are refused by the lists and the final ELSE below.
   IF role_name IN ('admin','supervisor') THEN RETURN; END IF;
   -- Approved document RPCs only; no shared ownership or table-policy change.

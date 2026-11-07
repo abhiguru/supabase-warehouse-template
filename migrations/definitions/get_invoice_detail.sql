@@ -56,6 +56,16 @@ BEGIN
 
     v_cancelled := (v_invoice_header->>'cancelled_at') IS NOT NULL;
 
+    -- Migration 172: what is paid and due, and the payments, for administrators, supervisors and the invoice's customer (authorize_rpc
+    -- let the customer through for this invoice only); staff see nothing new.
+    IF auth.jwt()->>'role' = 'service_role' OR COALESCE(warehouse_security.active_role(), '') <> 'staff' THEN
+        v_invoice_header := v_invoice_header || warehouse_security.invoice_payment_state(p_invoice_id)
+            || jsonb_build_object('payments', COALESCE((
+                SELECT jsonb_agg(warehouse_security.payment_json(p)
+                                 ORDER BY COALESCE(p.paid_on, warehouse_security.business_date(p.payment_date)), p.payment_date, p.payment_no)
+                FROM payments p WHERE p.invoice_id = p_invoice_id), '[]'::jsonb));
+    END IF;
+
     -- Migration 143: a cancelled invoice reads the details its lines kept at cancel (details_kept_at set); the copy wins over the current
     -- dispatch line, GRN and item. A line whose dispatch went before the copy existed is listed with its amounts and details_available false.
     -- A live invoice reads exactly as before: its lines still need every join to match, as the inner joins demanded.
