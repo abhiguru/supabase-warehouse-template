@@ -37,8 +37,24 @@ if grep -Eq '^PRINT_TRANSPORT=bridge[[:space:]]*$' "$STATE/config/compose.env"; 
     echo 'Print bridge: the address set in compose.env (PRINTBRIDGE_URL).'
   else
     bridge_url="$(bash "$ROOT/scripts/print-bridge-url.sh" "$(sed -n 's/^PRINTBRIDGE_PORT=//p' "$STATE/config/compose.env" | head -n 1)" || true)"
-    if [[ -n "$bridge_url" ]]; then echo "Print bridge: $bridge_url (the Windows host, worked out at this start)."
+    if [[ -n "$bridge_url" ]]; then
+      echo "Print bridge: $bridge_url (the Windows host, worked out at this start)."
+      # PRINTBRIDGE_URL is fixed when the functions container is created, and the gateway can change at a Windows restart: the running
+      # container must carry the address worked out now. `up -d functions` recreates it only when its configuration differs.
+      functions_id="$(bash "$ROOT/scripts/compose.sh" ps -q functions 2>/dev/null | head -n 1 || true)"
+      if [[ -n "$functions_id" ]]; then
+        running_url="$(docker inspect --format '{{range .Config.Env}}{{println .}}{{end}}' "$functions_id" 2>/dev/null | sed -n 's/^PRINTBRIDGE_URL=//p' | head -n 1 || true)"
+        if [[ "$running_url" != "$bridge_url" ]]; then
+          echo "Print bridge: the functions container has '${running_url:-nothing}'; recreating it with $bridge_url."
+          WAREHOUSE_COMPOSE_WITHOUT_LAN=1 bash "$ROOT/scripts/compose.sh" up -d functions || echo 'Warning: the functions container could not be recreated with the new bridge address (message above); printing may fail.' >&2
+        fi
+      fi
     else echo 'Warning: the Windows host address for the print bridge could not be worked out (no default route); printing will fail until it can.' >&2; fi
+  fi
+  # Mirrored networking has no vEthernet (WSL) adapter on Windows, so the bridge cannot bind its address and the gateway is not the
+  # Windows host. Said when wslinfo can tell; without it nothing is said.
+  if command -v wslinfo >/dev/null 2>&1 && [[ "$(wslinfo --networking-mode 2>/dev/null || true)" == mirrored ]]; then
+    echo 'Warning: WSL uses mirrored networking; the print bridge needs NAT mode (docs/PRINTING.md). Set networkingMode=nat in %UserProfile%\.wslconfig and run wsl --shutdown, or give -ListenAddress and PRINTBRIDGE_URL explicitly.' >&2
   fi
 fi
 node "$ROOT/scripts/doctor.mjs" --local

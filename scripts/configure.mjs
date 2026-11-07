@@ -423,6 +423,10 @@ export function configure(root, { stateDir, apiUrl, appUrl, company, providerEnv
       // The print settings (docs/PRINTING.md): added when missing, a value that exists is never replaced.
       const withPrintValues = addMissingPrintValues(readFileSync(envPath, 'utf8'));
       if (withPrintValues.added.length) replaceFileAtomically(envPath, withPrintValues.text);
+      if (withPrintValues.added.includes('PRINT_TRANSPORT')) {
+        const chosen = withPrintValues.text.match(/^PRINT_TRANSPORT=(.*)$/m)?.[1];
+        console.log(`Print settings added to compose.env: PRINT_TRANSPORT=${chosen} (docs/PRINTING.md). Printing stays off until you turn it on.`);
+      }
       // An installation made before this release lists the storage schema (and, before migration 103, the GraphQL
       // schema) for PostgREST; the old default becomes `public` (a list the operator changed is kept). setup.sh
       // then recreates rest with the new value.
