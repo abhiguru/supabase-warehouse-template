@@ -212,6 +212,10 @@ BEGIN
               IF (v_item->>'weight')::int < 0 THEN
                   RAISE EXCEPTION 'Weight cannot be negative for item at index %', v_item_index;
               END IF;
+              -- WH-56: a weight is at most 9999 kg (a new line has no stored weight to keep).
+              IF (v_item->>'weight')::int > 9999 THEN
+                  RAISE EXCEPTION 'Weight must be at most 9999 for item at index %', v_item_index;
+              END IF;
 
               INSERT INTO goodsreceived_trl (
                   gr_id,

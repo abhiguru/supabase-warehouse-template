@@ -487,6 +487,13 @@ BEGIN
             IF (v_item->>'weight')::int < 0 THEN
                 RAISE EXCEPTION 'Weight cannot be negative for item "%"', v_item_name;
             END IF;
+            -- WH-56: a new or changed weight is at most 9999 kg. A saved line keeps an older, larger weight until its weight is edited.
+            IF (v_item->>'weight')::int > 9999
+               AND ((v_item->>'id') IS NULL
+                    OR (v_item->>'weight')::int IS DISTINCT FROM
+                       (SELECT COALESCE(t.weight, 0) FROM goodsreceived_trl t WHERE t.id = (v_item->>'id')::uuid AND t.gr_id = p_grn_id)) THEN
+                RAISE EXCEPTION 'Weight must be at most 9999 for item "%"', v_item_name;
+            END IF;
 
             IF v_item->>'id' IS NOT NULL THEN
                 SELECT qty, stock, item_name

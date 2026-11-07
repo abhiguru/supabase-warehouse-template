@@ -91,7 +91,7 @@ The contract (token, endpoint, answers, what is stored) is [docs/CENTRAL_LOGIN.m
 
 - Schema changes are **new, append-only migrations** in `migrations/`; applied files are
   checksum-locked and must never be edited. Migrations 000-110 are the one file `00000000000000_baseline.sql`
-  (the old files: tag `migrations-pre-baseline`); the next migration is `00000000000155_<topic>.sql` (152 is held for WH-56; 153 and 155 were reserved for WH-111 and WH-119 and stayed unused: ask before taking either). Patch large baseline functions with the
+  (the old files: tag `migrations-pre-baseline`); the next migration is `00000000000155_<topic>.sql` (152 was held for WH-56 and 153 for WH-111, and neither is used; ask before taking either). Patch large baseline functions with the
   `DO $patch$` + marker-count pattern used by earlier migrations.
 - Roles are never created, altered or dropped in a migration (`tests/migration-roles.test.mjs`): they live in
   `docker/volumes/db/00-bootstrap.sql`, and a database-level bootstrap fix also ships as a migration
