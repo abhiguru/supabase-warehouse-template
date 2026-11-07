@@ -37,6 +37,7 @@ BACKUP_SECS="${WAREHOUSE_WATCH_BACKUP_SECS:-5400}"        # 90 min
 VERIFY_SECS="${WAREHOUSE_WATCH_VERIFY_SECS:-3600}"        # 60 min
 RETENTION_SECS="${WAREHOUSE_WATCH_RETENTION_SECS:-900}"   # 15 min
 PRUNE_SECS=300
+OFFSITE_SECS="${WAREHOUSE_WATCH_OFFSITE_SECS:-7200}"       # 120 min
 KILL_AFTER="${WAREHOUSE_WATCH_KILL_AFTER:-2m}"
 NODE="${WAREHOUSE_WATCH_NODE:-node}"
 
@@ -107,5 +108,19 @@ else
 fi
 step "$RETENTION_SECS" bash "$ROOT/scripts/retention.sh" apply
 if ((RC == 0)); then put retention ok; else put retention failed; put retention_message "$(why)"; fi
+# The optional off-site copy (scripts/offsite.sh, off unless the facility turned it on) goes last, so the local backup, its verify, pruning and
+# retention never wait for it, and a failure of it changes nothing above: it is recorded in config/offsite.last, and the checker alerts
+# (offsite_upload_failed). Only a backup whose verify passed is sent. A run stopped by its time limit continues next night where it stopped.
+if grep -qx 'ENABLED=yes' "$state/config/offsite.conf" 2>/dev/null; then
+  if [[ "$verified" == true ]]; then
+    step "$OFFSITE_SECS" bash "$ROOT/scripts/offsite.sh" run "$dir"
+    if ((RC == 0)); then put offsite ok; else
+      put offsite failed; put offsite_message "$(why)"
+      if ((RC == 124 || RC == 137)); then bash "$ROOT/scripts/offsite.sh" mark-failed "the upload did not finish within its time limit; run bash scripts/offsite.sh run by hand for a large first upload" >/dev/null 2>&1 || true; fi
+    fi
+  else
+    put offsite skipped; put offsite_message 'no verified backup to send'
+  fi
+fi
 put done 1
 exit 0

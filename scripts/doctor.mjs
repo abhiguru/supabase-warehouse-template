@@ -13,7 +13,7 @@ import { validateDbValues } from './db-roles.mjs';
 import { isFixtureAddress, isProviderPlaceholder } from './provider-placeholder.mjs';
 import { isMain } from './is-main.mjs';
 import { driveSpace, isWslHost, statfsWithTimeout, vhdxDrive, wslDriveVerdict } from './wsl-host.mjs';
-import { usbBackupWarning } from './usb-backup-status.mjs';
+import { usbBackupWarning, offsiteStatus } from './usb-backup-status.mjs';
 import { interruptedUpgradeWarning } from './upgrade-record.mjs';
 import { storedHeartbeatUrl, storedSensorWebhook, storedWebhook } from './alert-webhook.mjs';
 import { HEARTBEAT_DECLINED_NAME, HEARTBEAT_DECLINED_SENTENCE, declinedMarker } from './declined-marker.mjs';
@@ -439,7 +439,7 @@ export async function doctor({ hostPreflight = false, preflight = false, local =
   if (localOnly && !lanSettings(env).enabled) throw new Error('This facility is local-only and the warehouse network listener is off, so nothing can reach it. Turn it on with: bash scripts/lan.sh on auto');
   const lan = maintenance ? { failures: [], warnings: [], address: '' } : await lanReport(env, manifest.instanceId);
   const lanNote = (lan.address ? `\n${lan.address}` : '') + [...lan.warnings, ...(local ? lan.failures : [])].map(text => `\nWarning: LAN fallback: ${text}`).join('');
-  const usb = usbBackupWarning(state);
+  const usb = usbBackupWarning(state, { offsiteFresh: offsiteStatus(state).fresh });
   // The monitoring checker (scripts/watch.mjs) is run by a systemd timer that an operator installs with sudo
   // (scripts/watch-timer.sh); doctor warns when it is missing, silent, or has nowhere to post.
   const checker = checkerWarnings(state, { skipSensorWebhookAdvice: process.env.WAREHOUSE_SETUP_SENSOR_NOTICE === 'yes', localOnly });

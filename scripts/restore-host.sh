@@ -46,11 +46,13 @@ set -euo pipefail
 umask 077
 ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 # usage [0]: with 0 (an explicit --help) the text goes to standard output and the exit status is 0; otherwise it is an error.
-usage_text='Usage: npm run db:restore-host -- --state-dir ABSOLUTE_NEW_STATE --backup-key KEYFILE --yes [--images DIR] BACKUP_DIR_OR_ARCHIVE   (--allow-unsigned instead of --backup-key: only for when the backup key is lost)'
+usage_text='Usage: npm run db:restore-host -- --state-dir ABSOLUTE_NEW_STATE --backup-key KEYFILE --yes [--images DIR] BACKUP_DIR_OR_ARCHIVE   (--allow-unsigned instead of --backup-key: only for when the backup key is lost)
+   or: npm run db:restore-host -- --state-dir ABSOLUTE_NEW_STATE --backup-key KEYFILE --yes --from-offsite --offsite-endpoint URL --offsite-bucket NAME --offsite-credentials FILE [--offsite-region R] [--backup warehouse-<utc>]'
 usage() { if [[ "${1:-}" == 0 ]]; then echo "$usage_text"; exit 0; fi; echo "$usage_text" >&2; exit 1; }
 die() { echo "$*" >&2; exit 1; }
 
 state='' confirm=false source='' keyfile='' allow_unsigned=false images=''
+from_offsite=false offsite_backup='' offsite_endpoint='' offsite_bucket='' offsite_region='' offsite_cred='' offsite_dir=''
 while (($#)); do
   case "$1" in
     --state-dir) (($# > 1)) || usage; state="$2"; shift 2 ;;
@@ -58,12 +60,23 @@ while (($#)); do
     --allow-unsigned) allow_unsigned=true; shift ;;
     --images) (($# > 1)) || usage; images="$2"; shift 2 ;;
     --yes) confirm=true; shift ;;
+    --from-offsite) from_offsite=true; shift ;;
+    --backup) (($# > 1)) || usage; offsite_backup="$2"; shift 2 ;;
+    --offsite-endpoint) (($# > 1)) || usage; offsite_endpoint="$2"; shift 2 ;;
+    --offsite-bucket) (($# > 1)) || usage; offsite_bucket="$2"; shift 2 ;;
+    --offsite-region) (($# > 1)) || usage; offsite_region="$2"; shift 2 ;;
+    --offsite-credentials) (($# > 1)) || usage; offsite_cred="$2"; shift 2 ;;
     -h|--help) usage 0 ;;
     -*) echo "Unknown option: $1" >&2; usage ;;
     *) [[ -z "$source" ]] || usage; source="$1"; shift ;;
   esac
 done
-[[ -n "$state" && -n "$source" ]] || usage
+if [[ "$from_offsite" == true ]]; then
+  [[ -n "$state" && -z "$source" && -n "$offsite_endpoint" && -n "$offsite_bucket" && -n "$offsite_cred" ]] || usage
+  [[ "$allow_unsigned" != true && -n "$keyfile" ]] || die 'Refusing: the off-site copy is encrypted with the backup key, so --from-offsite needs --backup-key FILE (your copy of the lost installation'"'"'s config/backup.key) and cannot be used with --allow-unsigned.'
+else
+  [[ -n "$state" && -n "$source" && -z "$offsite_backup$offsite_endpoint$offsite_bucket$offsite_region$offsite_cred" ]] || usage
+fi
 [[ "$confirm" == true ]] || die 'Refusing: restore-host makes this host answer as the backed-up warehouse, with its identity and keys. Make sure the original host is permanently off, then pass --yes.'
 ((EUID != 0)) || die 'Run restore-host as the installation user (a member of the docker group), not as root.'
 # shellcheck source=scripts/backup-key.sh
@@ -89,7 +102,7 @@ if [[ -n "$images" ]]; then
   is_saved_images "$images" || die "--images must be a copy of the lost host's <state>/images folder (a directory with image-recipes.sha256 and one <service>.tar per image): $images"
   images="$(realpath -e -- "$images")"
   images_named=true
-else
+elif [[ -n "$source" ]]; then
   candidate="$(dirname -- "$source")/images"
   if is_saved_images "$candidate"; then images="$(realpath -e -- "$candidate")"; fi
 fi
@@ -125,8 +138,20 @@ WAREHOUSE_STATE_DIR="$state" node "$ROOT/scripts/doctor.mjs" --host-preflight
 # 2. The backup: an archive is checked against its .sha256 and unpacked next to
 #    the new state (same filesystem, removed on any failure); a directory is read in place.
 scratch=''
-cleanup() { [[ -z "$scratch" ]] || rm -rf -- "$scratch"; }
+cleanup() { [[ -z "$scratch" ]] || rm -rf -- "$scratch"; [[ -z "$offsite_dir" ]] || rm -rf -- "$offsite_dir"; }
 trap cleanup EXIT
+# --from-offsite: the backup is rebuilt from the bucket as an ordinary backup folder next to the new state (scripts/offsite.sh fetch decrypts
+# each object with the backup key and checks it against its name), and everything below treats it as a folder given by hand: the
+# signature, the list and the storage tree are checked against the backup key before anything is restored. The room needed is checked first.
+if [[ "$from_offsite" == true ]]; then
+  free_bytes="$(df -B1 --output=avail -- "$parent" | tail -n 1 | tr -d ' ')"
+  echo "Fetching the backup from the bucket into $parent (the space needed is about twice the backup plus 1 GiB; free: $((${free_bytes:-0} / 1048576)) MiB)." >&2
+  offsite_dir="$(mktemp -d -- "$parent/.restore-host-offsite.XXXXXX")"
+  fetch_args=(fetch --endpoint "$offsite_endpoint" --bucket "$offsite_bucket" --credentials-file "$offsite_cred" --backup-key "$keyfile" --dest "$offsite_dir")
+  [[ -z "$offsite_region" ]] || fetch_args+=(--region "$offsite_region")
+  [[ -z "$offsite_backup" ]] || fetch_args+=(--backup "$offsite_backup")
+  source="$(bash "$ROOT/scripts/offsite.sh" "${fetch_args[@]}")" || die 'Could not rebuild the backup from the bucket (message above). Nothing was created.'
+fi
 if [[ -f "$source" && ( "$source" == *.tar || "$source" == *.tar.enc ) ]]; then
   archive="$(realpath -e -- "$source")"
   file="$(basename -- "$archive")"

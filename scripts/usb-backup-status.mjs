@@ -54,10 +54,29 @@ export function usbRotationNote(state, now = Date.now()) {
   return drives.size === 1 ? ROTATION_NOTE : null;
 }
 
+// The optional off-site copy (scripts/offsite.sh): { enabled, fresh, problem }. fresh: an upload was checked in the last 2 days (this
+// satisfies the off-host copy rule, as a recent USB copy does). problem: what the alert offsite_upload_failed says, or null: the last
+// run failed, or it is on and no checked upload exists after 2 days. Reads two files of the state; the credentials are never read here.
+export const OFFSITE_FRESH_MS = 2 * 86400000;
+export function offsiteStatus(state, now = Date.now()) {
+  const conf = fields(read(resolve(state, 'config/offsite.conf')) ?? '');
+  const enabled = conf.ENABLED === 'yes';
+  if (!enabled) return { enabled: false, fresh: false, problem: null };
+  const last = fields(read(resolve(state, 'config/offsite.last')) ?? '');
+  const success = (Number(last.last_success_epoch) || 0) * 1000;
+  const fresh = success > 0 && now - success <= OFFSITE_FRESH_MS && last.result !== 'failed';
+  const since = (Number(conf.ENABLED_EPOCH) || 0) * 1000;
+  let problem = null;
+  if (last.result === 'failed') problem = `The off-site copy of the backups failed at ${last.finished_utc || 'an unknown time'}: ${last.message || 'no detail'}. Run bash scripts/offsite.sh status.`;
+  else if (!fresh && (success > 0 || now - since > OFFSITE_FRESH_MS)) problem = 'No off-site upload has been checked in the last 2 days (the nightly upload did not run or did not finish). Run bash scripts/offsite.sh status.';
+  return { enabled, fresh, problem };
+}
+
 export function usbBackupWarning(state, {
   now = Date.now(),
   maxAgeDays = Number(process.env.WAREHOUSE_USB_BACKUP_MAX_AGE_DAYS || 7),
   etc = process.env.WAREHOUSE_USB_BACKUP_ETC || '/etc',
+  offsiteFresh = false,   // true: a checked off-site upload exists from the last 2 days; it counts as the off-host copy (the key copy rule still applies)
   graceOver = true,   // false: the checker is in its first 7 days, so "no copy yet" is not said (a failed, stale or key-copy fault always is)
 } = {}) {
   const conf = read(resolve(etc, 'warehouse-usb-backup.conf'));
@@ -66,10 +85,11 @@ export function usbBackupWarning(state, {
   // Not set up here. A recorded decision (config/offhost-copy-declined, exact sentence, mode 0600) is the operator's answer, whatever an old
   // usb-backup.last says; it does not excuse an unconfirmed copy of the backup key, which is said all the same.
   const declined = noConf && declinedMarker(state, OFFHOST_DECLINED_NAME, OFFHOST_DECLINED_SENTENCE);
-  if (noConf && (!last || declined)) {
+  if (noConf && (!last || declined || offsiteFresh)) {
     const problem = escrowProblem(state);
     const show = `run WAREHOUSE_STATE_DIR=${resolve(state)} bash scripts/backup-key-escrow.sh show`;
-    const noCopy = !declined && graceOver;
+    const noCopy = !declined && graceOver && !offsiteFresh;
+    if (offsiteFresh) return problem ? `The backup key copy is not confirmed (${problem}); the off-site copy is encrypted with the backup key and cannot be opened without it: ${show}` : null;
     if (noCopy) return problem ? `${NO_OFFHOST_COPY} The backup key copy is not confirmed either (${problem}): ${show}` : NO_OFFHOST_COPY;
     return problem ? `The backup key copy is not confirmed (${problem}): ${show}` : null;
   }
@@ -89,6 +109,11 @@ export function usbBackupWarning(state, {
   if (setUp && setUp.ENCRYPT === 'yes') {
     const problem = escrowProblem(state);
     if (problem) return `USB archives are encrypted but the backup key copy is not confirmed (${problem}); runs are refused until it is: run WAREHOUSE_STATE_DIR=${resolve(state)} bash scripts/backup-key-escrow.sh show`;
+  }
+  // A checked off-site upload from the last 2 days is the off-host copy; the key copy is still required (the copy is encrypted with it).
+  if (offsiteFresh) {
+    const problem = escrowProblem(state);
+    return problem ? `The backup key copy is not confirmed (${problem}); the off-site copy is encrypted with the backup key and cannot be opened without it: run WAREHOUSE_STATE_DIR=${resolve(state)} bash scripts/backup-key-escrow.sh show` : null;
   }
   if (!last) return graceOver ? 'USB backup is set up but no copy has been made yet: attach the enrolled USB drive.' : null;
   const run = fields(last);
