@@ -263,6 +263,34 @@ A real facility gives its own Slack webhook, see [Setup](#setup).
 (prepend `91` to ten Indian digits) and a display name. The administrator is
 created locally and must complete a real SMS login before receiving a session.
 
+### Registering SMS with DLT
+
+Indian mobile operators deliver business SMS only from a sender and a message text that are registered on the DLT (Distributed Ledger
+Technology) platform of the telecom regulator. Registration is done on the portal of one of the operators, through MSG91 or directly,
+and it takes the longest of everything in the install: **start it first, and ask MSG91 for the current lead time and fee** (this guide
+does not state them, because they change). Without an approved template no code is delivered.
+
+What to register, and where each value goes:
+
+| Register | You receive | Goes into |
+|---|---|---|
+| The business (the principal entity) | The entity ID (numeric) | `MSG91_PE_ID` |
+| A header (the sender ID, six uppercase letters or digits) | The header, the same six characters | `MSG91_SENDER_ID` |
+| A content template of the OTP message | A DLT template ID (not used by this backend) | Entered in MSG91 with the Flow below |
+
+Sample template text (an operator may ask for changes; the variable is the six-digit code, written `{#var#}` in the DLT portal):
+
+```text
+{#var#} is your sign-in code for Example Cold Storage. Do not share it with anyone.
+```
+
+Then, in the MSG91 account, create a **Flow** (SMS) for the sender and the DLT template, and give it a variable named exactly `OTP`
+(MSG91 writes it `##OTP##` in the message). The Flow ID (24 lowercase hex characters) is `MSG91_TEMPLATE_ID` in the
+[provider file](#private-inputs), together with the auth key of the MSG91 account. The backend sends the code to the Flow as the
+variable `OTP` (`functions/operator-otp/provider.ts`); a Flow whose variable has another name (such as `VAR1`) sends the message without
+the code. Check with an owned phone before go-live (see **MSG91 provider file** above). The screens and field names of the DLT portals
+and of MSG91 differ and change; follow their current instructions for the registration itself.
+
 ## Setup
 
 **Decide the public hostname before the first run.** `--api-url` becomes the installation's identity: a later run with another

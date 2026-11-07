@@ -259,6 +259,13 @@ record the result and the evidence named (command output or a timed log) in the 
 - [ ] Known gaps noted in the release note, if still open: a restart with no console session signed in (Windows auto logon off)
       with the tasks registered by the script.
 
+## Short install guide rerun
+
+- [ ] When the release changes `setup.sh`, `start.sh`, `scripts/lan.sh`, `scripts/watch-timer.sh`, the host prerequisites or
+      [STANDARD_INSTALL.md](STANDARD_INSTALL.md) itself, follow that guide word for word on a fresh Ubuntu 24.04 virtual machine, from
+      step 1 to the administrator signed in on a phone, fix every mismatch in the guide and repeat the run. Then update its
+      "Last tested" line with the release and the date.
+
 ## Release note
 
 Publish by hand. The `publish-images` job has already made the release as a **draft** that holds `release-images.json`; give it its
