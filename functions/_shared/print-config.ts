@@ -14,8 +14,9 @@ export const DEFAULT_PRINTER_NAME = 'LQ1310_RAW';
 export const CUPS_SERVER_URL = 'http://cups:631';
 
 const CUPS_QUEUE = /^[a-zA-Z0-9_-]{1,127}$/;
-// A Windows printer name may hold spaces and a few punctuation marks; it travels in a header, so printable ASCII only.
-const BRIDGE_PRINTER = /^[A-Za-z0-9][A-Za-z0-9 _.()#-]{0,126}$/;
+// A Windows printer name may hold spaces and a few punctuation marks (the usual "EPSON LQ-1310 ESC/P2" has a slash); it travels in a
+// header, so printable ASCII only: no control characters, CR or LF.
+const BRIDGE_PRINTER = /^[A-Za-z0-9][A-Za-z0-9 _.()#/-]{0,126}$/;
 
 /** cups when unset or empty, bridge when asked for, null for any other value (a configuration error, never guessed). */
 export function printTransportName(get: EnvGet): PrintTransportName | null {

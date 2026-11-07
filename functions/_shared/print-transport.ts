@@ -49,6 +49,41 @@ export interface TransportDeps {
   /** One IPP Print-Job: the reply, or a rejection. */
   ippPrintJob: (queueUrl: string, message: Record<string, unknown>) => Promise<unknown>;
   timeoutMs: number;
+  /** Opens a TCP connection to the bridge and closes it again; rejects when it cannot be made within the time. Defaults to Deno.connect. */
+  probe?: (hostname: string, port: number, timeoutMs: number) => Promise<void>;
+}
+
+/** How long the bridge connection may take before the bridge counts as not reachable (a firewall that drops packets shows up as this). */
+export const BRIDGE_CONNECT_TIMEOUT_MS = 3000;
+
+const defaultProbe = async (hostname: string, port: number, timeoutMs: number): Promise<void> => {
+  let timer: ReturnType<typeof setTimeout> | undefined;
+  const attempt = Deno.connect({ hostname, port });
+  const timeout = new Promise<never>((_, reject) => { timer = setTimeout(() => reject(new Error('connect timeout')), timeoutMs); });
+  try {
+    const conn = await Promise.race([attempt, timeout]);
+    conn.close();
+  } catch (error) {
+    // A connection that completes after the time ran out is closed, not leaked.
+    attempt.then(conn => conn.close(), () => {});
+    throw error;
+  } finally {
+    if (timer !== undefined) clearTimeout(timer);
+  }
+};
+
+/** Errors that mean nothing was sent: the connection was refused, the host or network is unreachable, or the name did not resolve. */
+const PRE_SEND_ERROR = /connection refused|econnrefused|unreachable|enetunreach|ehostunreach|no route to host|dns error|failed to lookup|enotfound|name or service not known/i;
+
+function errorText(error: unknown): string {
+  const parts: string[] = [];
+  let current: unknown = error;
+  for (let depth = 0; depth < 4 && current; depth++) {
+    const { message, cause } = current as { message?: unknown; cause?: unknown };
+    if (typeof message === 'string') parts.push(message);
+    current = cause;
+  }
+  return parts.join(' | ');
 }
 
 const defaultDeps = (): TransportDeps => ({
@@ -110,6 +145,15 @@ async function submitToBridge(request: RawJobRequest, docName: string, deps: Tra
   if (token === '') return failed('bridge', 'PRINTBRIDGE_TOKEN is not set');
   const printer = printerName(deps.env, 'bridge');
   if (printer === null) return failed('bridge', 'PRINTER_NAME is not a valid printer name');
+  // First a bare connection: if it cannot be made (refused, dropped by a firewall, no route), nothing was sent and the job is plainly failed.
+  const target = new URL(base);
+  const port = Number(target.port) || (target.protocol === 'https:' ? 443 : 80);
+  try {
+    await (deps.probe ?? defaultProbe)(target.hostname.replace(/^\[|\]$/g, ''), port, Math.min(BRIDGE_CONNECT_TIMEOUT_MS, deps.timeoutMs));
+  } catch (error) {
+    console.error('print-transport: bridge connection failed:', error instanceof Error ? error.name : 'unknown');
+    return failed('bridge', 'The print bridge could not be reached');
+  }
   let response: Response;
   try {
     response = await deps.fetch(`${base}/print/raw`, {
@@ -127,21 +171,26 @@ async function submitToBridge(request: RawJobRequest, docName: string, deps: Tra
   } catch (error) {
     const name = String((error as { name?: unknown } | null)?.name ?? 'unknown');
     console.error('print-transport: bridge request failed:', name);
-    // A timeout may still have printed; a refused or unreachable connection did not.
-    return name === 'TimeoutError' || name === 'AbortError'
-      ? failed('bridge', 'The print bridge did not confirm the job', true)
-      : failed('bridge', 'The print bridge could not be reached');
+    // The connection was made, so the bytes may have been sent: only an error that clearly happened before any byte was sent
+    // (refused, unreachable, DNS) is a plain failure. A timeout, a reset or anything unknown may still have printed.
+    return PRE_SEND_ERROR.test(errorText(error))
+      ? failed('bridge', 'The print bridge could not be reached')
+      : failed('bridge', 'The print bridge did not confirm the job', true);
   }
   let body: unknown = null;
   try { body = await response.json(); } catch { /* not JSON: handled below */ }
   const success = typeof body === 'object' && body !== null && (body as { success?: unknown }).success === true;
   if (response.ok && success) return { ok: true, transport: 'bridge', jobId: null, confirmed: false };
   console.error(`print-transport: bridge answered ${response.status}`);
-  if (response.status === 401 || response.status === 403) return failed('bridge', 'The print bridge refused the token');
+  if (response.status === 401) return failed('bridge', 'The print bridge refused the token');
+  if (response.status === 403) return failed('bridge', 'The print bridge does not serve this printer queue (PRINTER_NAME must equal the bridge\'s -Printer)');
+  if (response.status === 413) return failed('bridge', 'The print job is larger than the 2 MB the print bridge accepts');
   // A 2xx that does not say success, or a 5xx after the body was sent: the job may have reached the spooler.
   return response.ok
     ? failed('bridge', 'The print bridge did not confirm the job', true)
-    : failed('bridge', 'The print bridge could not print the job');
+    : response.status >= 500
+      ? failed('bridge', 'The Windows spooler refused the job')
+      : failed('bridge', 'The print bridge could not print the job');
 }
 
 /**
