@@ -614,8 +614,13 @@ The figures are in [INVOICE_RULES.md](INVOICE_RULES.md), "Charging rule".
 - `set_charging_rule(p_rule jsonb)`: administrators. All four fields are required; a missing or wrong one, or a minimum shorter than
   one step, is raised as SQLSTATE `22023` with a sentence. Answers `{success:true, changed, rule, previous_rule}`; the same rule again
   changes and records nothing. Invoices already saved keep their rule.
-- `generate_invoice_data_for_grn_with_pricing(p_gr_id)` answers `charging` (the facility's rule) and `storage_amount` on each item;
-  `totals` follow the rule's rounding. `p_duration_mode` now defaults to NULL: the rule's `days_counted`.
+- `generate_invoice_data_for_grn_with_pricing(p_gr_id, p_duration_mode DEFAULT NULL, p_invoice_id DEFAULT NULL)` answers `charging` and
+  `storage_amount` on each item; `totals` follow the rule's rounding. Without `p_invoice_id` the rule is the facility's; with the id of a
+  live invoice (an edit, a move to another GRN included) it is that invoice's stored rule, the one `update_invoice` saves with
+  (`Invoice not found` for any other id). `p_duration_mode` defaults to NULL: the rule's `days_counted`.
+- `update_invoice` always works the durations out under the invoice's stored rule; no server check compares an edit with the facility's
+  current minimum. The app's own minimum check on an edit uses `get_invoice_detail`'s `invoice.charging.minimum_days` (0 = one step:
+  `step_days`).
 - `save_invoice(p_invoice_id, p_invoice_data, p_invoice_items)`: `p_invoice_data.charging` is the rule the form showed. When it is
   not the facility's rule now the save is refused with `{success:false, error_code:'WH409', reason:'CHARGING_CHANGED', charging, sent, error, message}`
   and nothing is saved. Without the key there is no check.
@@ -630,6 +635,9 @@ The figures are in [INVOICE_RULES.md](INVOICE_RULES.md), "Charging rule".
 - With it on: `save_invoice`/`update_invoice` skip `GRN_HAS_STOCK`; a second invoice on a GRN is allowed; a line on another live invoice is
   refused with `A dispatch line is already on another invoice` (WH409). `generate_invoice_data_for_grn_with_pricing` answers a GRN with
   stock or another invoice and lists only free dispatch lines (none: `items` is `[]`).
+- A dispatch line on another live invoice (setting on or off) is answered `{success:false, error_code:'WH409', reason:'DISPATCH_LINE_INVOICED',
+  error:'A dispatch line is already on another invoice', message}` by `save_invoice` and `update_invoice`.
+- `get_all_grn_items`: each row has `invoice_state` (it has no invoiced filter). The GRN activity PDF (`invoicing`) also takes `'partly_invoiced'`.
 - `get_grn_list`: each GRN has `invoice_state` (`not_invoiced`, `partly_invoiced`, `invoiced`); the filter `invoiced` also takes
   `'partly_invoiced'`. `get_grn_details`: the invoice summary has `invoice_state` and `invoices` [{id, inv_no, inv_fin_year, inv_date, total}].
   `get_customer_grn_activity`: the invoice status has `invoiced_amount` (all live invoices of the GRN) and `invoice_state`.

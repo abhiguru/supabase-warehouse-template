@@ -20,7 +20,12 @@
 --    edit (update_invoice), the header recalculation and every reader use the invoice's stored rule. Days counted: a duration_mode the
 --    request carries still wins, as before; without one the facility's rule decides (the app sends none). The invoice form's preview
 --    (generate_invoice_data_for_grn_with_pricing, generate_invoice_data_for_grn, build_invoice_form_lines) uses the facility's rule
---    and answers it as `charging`; its p_duration_mode defaults change from 'legacy' to NULL (= the facility's days counted).
+--    and answers it as `charging`; its p_duration_mode defaults change from 'legacy' to NULL (= the rule's days counted).
+--    generate_invoice_data_for_grn_with_pricing gains p_invoice_id (uuid, default NULL): given a live invoice, the preview prices with
+--    that invoice's stored rule (step, minimum, days counted, rounding) and answers it as `charging`, so an edit, a move to another
+--    GRN included, previews exactly what update_invoice saves. (The old two-argument signature is dropped; one-argument calls work.)
+--    The invoice is passed to build_invoice_form_lines as the transaction-local setting warehouse.form_invoice_id
+--    (warehouse_security.form_charging_rule).
 --  * CHARGING_CHANGED: the invoice form sends the rule it showed as `charging` in the invoice data; a save whose rule is no longer the
 --    facility's is refused as RATES_CHANGED is (WH409, nothing saved). No `charging` key (an older app): no check.
 --  * Readers: get_invoice_detail and get_invoice_data (definition files) answer `charging` on the header and `storage_amount` on each
@@ -109,6 +114,35 @@ CREATE FUNCTION warehouse_security.charging_rule_json(r warehouse_security.charg
 $$;
 ALTER FUNCTION warehouse_security.charging_rule_json(warehouse_security.charging_rule) OWNER TO supabase_admin;
 REVOKE ALL ON FUNCTION warehouse_security.charging_rule_json(warehouse_security.charging_rule) FROM PUBLIC;
+
+-- The rule the invoice form prices with: the stored rule of the live invoice named in warehouse.form_invoice_id (set for the
+-- length of one preview, or of update_invoice's rate check), else the facility's.
+CREATE FUNCTION warehouse_security.form_charging_rule() RETURNS warehouse_security.charging_rule
+    LANGUAGE plpgsql STABLE
+    SET search_path TO 'pg_catalog'
+    AS $$
+DECLARE
+    v_rule warehouse_security.charging_rule := warehouse_security.current_charging_rule();
+    v_step smallint;
+    v_minimum smallint;
+    v_days text;
+    v_rounding text;
+BEGIN
+    SELECT i.charge_step_days, i.charge_minimum_days, COALESCE(i.duration_mode, 'legacy'), i.total_rounding
+      INTO v_step, v_minimum, v_days, v_rounding
+      FROM public.invoice i
+     WHERE i.id = NULLIF(current_setting('warehouse.form_invoice_id', true), '')::uuid
+       AND i.deleted_at IS NULL AND i.cancelled_at IS NULL;
+    IF FOUND THEN
+        v_rule.step_days := v_step;
+        v_rule.minimum_days := v_minimum;
+        v_rule.days_counted := v_days;
+        v_rule.rounding := v_rounding;
+    END IF;
+    RETURN v_rule;
+END $$;
+ALTER FUNCTION warehouse_security.form_charging_rule() OWNER TO supabase_admin;
+REVOKE ALL ON FUNCTION warehouse_security.form_charging_rule() FROM PUBLIC;
 
 -- The days and months charged for one dispatch line. Columns as calculate_invoice_duration (no_of_days, billable_days, duration) plus
 -- charged_days. Today's rule (15, 30) keeps calculate_invoice_duration's own expression; every other rule gives the months to two decimals.
@@ -405,8 +439,8 @@ $m$p_duration_mode text DEFAULT NULL::text)$m$,
 $m$    v_duration_mode text;
     v_charging warehouse_security.charging_rule;
     v_grn_date date;$m$,
-$m$    -- Migration 164: the facility's charging rule; days counted as sent, else the rule's.
-    v_charging := warehouse_security.current_charging_rule();
+$m$    -- Migration 164: the facility's charging rule, or the stored rule of the invoice being edited; days counted as sent, else the rule's.
+    v_charging := warehouse_security.form_charging_rule();
     v_duration_mode := public.validate_invoice_duration_mode(COALESCE(NULLIF(btrim(p_duration_mode), ''), v_charging.days_counted));$m$,
 $m$warehouse_security.charge_duration(v_grn_date, dy.disp_bd, v_duration_mode, v_charging.step_days, v_charging.minimum_days) c$m$,
 $m$warehouse_security.storage_amount(COALESCE(u.unit_price, 0), r.disp_qty, dur.duration, dur.no_of_days, v_charging.step_days, v_charging.minimum_days)::numeric(12,2) END AS storage_amount$m$,
@@ -429,19 +463,39 @@ $m$'totals', v_recalculation->'totals',
         'message'$m$
 ], ARRAY[
 $m$p_duration_mode text DEFAULT NULL::text)$m$,
-$m$    -- Migration 164: days counted as sent, else the facility's charging rule.
+$m$    -- Migration 164: days counted as sent, else the charging rule's (the facility's, or the stored rule of the invoice being edited).
     v_duration_mode := public.validate_invoice_duration_mode(COALESCE(NULLIF(btrim(p_duration_mode), ''),
-        (warehouse_security.current_charging_rule()).days_counted));$m$,
+        (warehouse_security.form_charging_rule()).days_counted));$m$,
 $m$'totals', v_recalculation->'totals',
         'charging', v_recalculation->'charging',
         'message'$m$
 ]);
 
-SELECT pg_temp.patch_function('public.generate_invoice_data_for_grn_with_pricing(uuid, text)'::regprocedure, ARRAY[
-$m$p_duration_mode text DEFAULT 'legacy'::text)$m$
-], ARRAY[
-$m$p_duration_mode text DEFAULT NULL::text)$m$
-]);
+-- The RPC the app calls: p_invoice_id prices the preview with that invoice's stored rule (an edit). The signature grows, so the old
+-- one is dropped (PostgREST would see two overloads); a call with p_gr_id alone (the app, create_dispatch_with_stock_check_internal)
+-- resolves to the new one.
+DROP FUNCTION public.generate_invoice_data_for_grn_with_pricing(uuid, text);
+CREATE FUNCTION public.generate_invoice_data_for_grn_with_pricing(p_gr_id uuid, p_duration_mode text DEFAULT NULL::text,
+                                                                  p_invoice_id uuid DEFAULT NULL::uuid) RETURNS jsonb
+    LANGUAGE plpgsql SECURITY DEFINER
+    SET search_path TO 'pg_catalog', 'public', 'extensions', 'utils', 'pg_temp'
+    AS $$
+DECLARE
+    v_result jsonb;
+BEGIN
+  PERFORM warehouse_security.authorize_rpc('generate_invoice_data_for_grn_with_pricing', jsonb_build_object());
+  IF p_invoice_id IS NOT NULL
+     AND NOT EXISTS (SELECT 1 FROM public.invoice i WHERE i.id = p_invoice_id AND i.deleted_at IS NULL AND i.cancelled_at IS NULL) THEN
+    RETURN jsonb_build_object('success', false, 'error', 'Invoice not found');
+  END IF;
+  PERFORM set_config('warehouse.form_invoice_id', COALESCE(p_invoice_id::text, ''), true);
+  v_result := public.generate_invoice_data_for_grn(p_gr_id, p_duration_mode);
+  PERFORM set_config('warehouse.form_invoice_id', '', true);
+  RETURN v_result;
+END $$;
+ALTER FUNCTION public.generate_invoice_data_for_grn_with_pricing(uuid, text, uuid) OWNER TO supabase_admin;
+REVOKE ALL ON FUNCTION public.generate_invoice_data_for_grn_with_pricing(uuid, text, uuid) FROM PUBLIC, anon, authenticated;
+GRANT EXECUTE ON FUNCTION public.generate_invoice_data_for_grn_with_pricing(uuid, text, uuid) TO authenticated, service_role;
 
 -- 5.5 The recalculation rows (tests and the lot-rate reader): the stored rule of the invoice named, else the facility's.
 SELECT pg_temp.patch_function('public.build_invoice_recalculation_rows(uuid, text, uuid)'::regprocedure, ARRAY[
