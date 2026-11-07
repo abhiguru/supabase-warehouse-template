@@ -1165,8 +1165,7 @@ bundle's own copy, takes the tag from the bundle's source, then does what an onl
 that is proved to restore, the images from the bundle, setup of the new release. An older bundle than the installed release is refused.
 
 **Signing in: pairing codes.** There is no SMS. An administrator opens Users, the person, **Make sign-in code**; the first administrator gets a code from the host:
-`bash scripts/pairing-code.sh <10-digit mobile>` (a terminal QR when `qrencode` is installed, always the text). The code is 8 characters and a secret, valid for 10 minutes, once, for that person only
-(a new code replaces the earlier one; a person needs the person's profile first, and a customer is added by an administrator in person). The phone sends the code over the Wi-Fi; the server proves
+`bash scripts/pairing-code.sh <10-digit mobile>` (a terminal QR; it needs `qrencode`, `sudo apt install qrencode`, and stops before making a code without it). Pairing is **by QR only**: no code is shown or typed. The QR is valid for 10 minutes, once, for that person only (a new one replaces the earlier one; the person needs a profile first, and a customer is added by an administrator in person). The phone scans the QR and sends the code in it over the Wi-Fi; the server proves
 it knows the secret, then sends the session and its warehouse network key encrypted under a key derived from the secret, so neither crosses the Wi-Fi readable. Break-glass codes still work for workers.
 Sessions last as normal sessions do (30 days idle, 90 in all); then the person needs a new code.
 

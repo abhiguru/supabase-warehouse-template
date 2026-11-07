@@ -1756,7 +1756,7 @@ returns is a placeholder (`https://wh-<12 hex>.local-only.invalid`), so identify
 **Making a code (administrators only).** `POST /rest/v1/rpc/make_pairing_code { "p_profile_id": "<user_profiles.id>" }` answers
 `{ success: true, data: { pairing_id, code, secret, expires_at, user: { id, name, role } } }`. `code` is 8 characters from `23456789ABCDEFGHJKMNPQRSTVWXYZ`; `secret` is 64 hex
 characters; `expires_at` is 10 minutes after the call. An earlier unused code of that person stops working. Refusals: 42501 for a person who is inactive, not approved, a service account
-or not in this facility, and for a facility that is not local-only. The QR text is JSON: `{"v":1,"addr":"http://<lan address>:<port>","instance_id":"<uuid>","code":"XXXXXXXX","secret":"<64 hex>"}`;
+or not in this facility, and for a facility that is not local-only. Pairing is by QR only: the app shows `code` and `secret` only inside the QR, never as text to type, and has no manual entry. The QR text is JSON: `{"v":1,"addr":"http://<lan address>:<port>","instance_id":"<uuid>","code":"XXXXXXXX","secret":"<64 hex>"}`;
 the app builds it from its own server address, `instanceId`, and this answer (`scripts/pairing-code.sh` builds the same text on the host).
 
 **Redeeming (unsigned, no token).** `POST <lan>/functions/v1/pairing-redeem` with `{ "code": "XXXXXXXX", "nonce": "<64 hex, 32 fresh random bytes>" }` (at most 1024 bytes). Answers:

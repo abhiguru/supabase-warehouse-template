@@ -246,7 +246,7 @@ letters, digits and dashes), and `scripts/ingress.mjs` refuses headers that carr
 bound to loopback (no tunnel runs, nothing public is published), makes `gateway-lan` mandatory (`lan.sh off` is refused) and refuses to install without the `lan-signer` (WH-133), so the only
 way in is signed. The unsigned calls in that mode are the pairing exchange, `GET /app`, `GET /app/warehouse.apk` and the LAN signer's existing exemptions. The pairing secret is held in
 `warehouse_security.pairing_codes` (no API grant) for at most 10 minutes and erased when used; the code cannot be guessed in the window (30^8 codes, 10 tries per address per 10 minutes, one live
-code per person), and what the server sends back is encrypted under a key derived from the secret. The server hands the encrypted session to anyone who redeems a live code, so a phone that has only the typed 8 characters, without the secret, cannot read it: the secret (in the QR) is needed.
+code per person), and what the server sends back is encrypted under a key derived from the secret. The server hands the encrypted session to anyone who redeems a live code, so a phone that has the code without the secret cannot read it; both live only in the QR, and nothing is shown to type.
 
 ## LAN fallback (gateway-lan)
 
