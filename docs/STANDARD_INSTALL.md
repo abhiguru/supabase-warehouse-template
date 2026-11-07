@@ -337,4 +337,5 @@ the app. During an internet outage the app works on the warehouse Wi-Fi, but a p
 - **Upgrades:** `bash upgrade.sh vX.Y.Z` from the checkout, with `WAREHOUSE_STATE_DIR` set ([Rerun and upgrade](OPERATOR_INSTALL.md#rerun-and-upgrade)).
 - **Backups:** plug the enrolled drive in; check with `bash scripts/backup-usb.sh status`
   ([USB backup drive](OPERATOR_INSTALL.md#usb-backup-drive)). Everything about restore is in [Backup and restore](OPERATOR_INSTALL.md#backup-and-restore).
+- **Off-site copy (optional):** a second copy of the backups in a cloud bucket; it needs `rclone` installed ([Off-site copy](OPERATOR_INSTALL.md#off-site-copy-optional)). That section is added by WH-145, so the link resolves once both are in one batch.
 - **Help:** [SUPPORT.md](../SUPPORT.md) (say your release, `git describe --tags`, and attach the output of `node scripts/doctor.mjs`).
