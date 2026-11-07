@@ -49,9 +49,10 @@ order, and what not to do. The commands run from the checkout with `WAREHOUSE_ST
    [LAN fallback](OPERATOR_INSTALL.md#lan-fallback-plain-http-on-the-warehouse-network) is on (`bash scripts/lan.sh status`) **and the
    phones have a version of the app that uses it (not released yet; until then it changes nothing for them)**, phones that are signed in
    and on the warehouse Wi-Fi switch to it after the public address fails and keep working; signing in still needs the internet, except
-   for an administrator with a [break-glass code](OPERATOR_INSTALL.md#break-glass-administrator-sign-in). If they do not, see
+   for a worker with a [break-glass code](OPERATOR_INSTALL.md#break-glass-administrator-sign-in). If they do not, see
    [the app says the LAN address is unreachable](#the-app-says-the-lan-address-is-unreachable).
-6. Alerts that could not be sent are not sent later. After the outage run `node scripts/watch.mjs status`.
+6. An alert whose post failed is sent again at the next 5-minute run, once the channel is reachable; a start or clear that could not be
+   posted is kept, not lost. After the outage run `node scripts/watch.mjs status`.
 
 ### Power cut
 
@@ -499,13 +500,13 @@ Turn the fallback off with `bash scripts/lan.sh off`; the phones keep working ov
   apply to the whole warehouse Wi-Fi, so a wave of sign-ins (everyone's session ending the same week) can fill them.
 - **A user cannot get a code because someone used up the limits of their number**: clear that phone's counters
   with `warehouse_security.reset_otp_limits` (same section).
-- **Nobody can get a code at all (MSG91 balance, DLT header or provider outage) and an administrator cannot sign in**: use the
-  break-glass sign-in. On the server, `bash scripts/break-glass-admin.sh 9XXXXXXXXX` prints a one-time code for that administrator, valid
+- **Nobody can get a code at all (MSG91 balance, DLT header or provider outage) and a worker cannot sign in** (administrator, supervisor or staff): use the
+  break-glass sign-in. On the server, `bash scripts/break-glass-admin.sh 9XXXXXXXXX` prints a one-time code for that worker, valid
   10 minutes; they type it instead of the SMS code ([Break-glass administrator sign-in](OPERATOR_INSTALL.md#break-glass-administrator-sign-in)).
-  It refuses a number that is not an active administrator, and every code made and used is in `public.audit_log`
-  (`table_name = 'break_glass'`). Staff and customers wait for the SMS service to be repaired; an administrator who is signed in
+  It refuses a number that is not an active, approved administrator, supervisor or staff member, and every code made and used is in `public.audit_log`
+  (`table_name = 'break_glass'`). Customers wait for the SMS service to be repaired; a worker who is signed in
   can then help from the app. Sessions that are open keep working while they are used (30 days idle, 90 days at most).
-  Three things to know. The command prints the code only to a terminal. If the administrator's app still answers "Too many OTP requests"
+  Three things to know. The command prints the code only to a terminal. If the worker's app still answers "Too many OTP requests"
   on the code screen, switch their phone from the facility Wi-Fi to mobile data (the Wi-Fi's address may be at its limit) and check
   that `otp_global_hourly_cap` is not `0` and `otp_daily_provider_attempt_cap` is not used up. If the app shows "SMS delivery unavailable"
   and no code screen, the `functions` container is an old one: `setup.sh` recreates it on every run (a rerun fixes it); an installation last set up by an older release needs `bash scripts/compose.sh up -d --force-recreate functions`. And it does not

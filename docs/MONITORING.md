@@ -94,7 +94,7 @@ An alert fires after two failing runs in a row (10 minutes), except the event al
 | `pdf_renderer_down` | The function runtime cannot reach the PDF renderer |
 | `sms_delivery` | Checked every hour: more than 20% of the last 24 hours' sign-in code requests (judged from 10 requests up), or more than 10, or at least half of the last hour's (from 5 requests up), were not accepted by the SMS provider (at once; see "SMS delivery") |
 | `sms_ceiling_reached` | The SMS spending ceiling is reached: this hour's SMS sends are at `otp_global_hourly_cap`, or the last 24 hours' SMS sends at `otp_daily_provider_attempt_cap`; code requests are refused until it frees up (at once, then once a day while it lasts) |
-| `break_glass_used` | A break-glass administrator code was made or used in the last 24 hours (at once; see "Break-glass sign-in") |
+| `break_glass_used` | A break-glass sign-in code (any worker's) was made or used in the last 24 hours (at once; see "Break-glass sign-in") |
 | `audit_write_failed` | An audit row could not be written in the last 24 hours; the save went through (once a day while it lasts; see "audit_write_failed") |
 | `clock_unsynced` | `timedatectl` says the clock is not synchronised, or the host clock is more than 10 s from the clock of the public address's Cloudflare edge |
 | `cloudflared_old` | Weekly warning (it repeats every 7 days, not every 4 hours; it never calls the network). The installed `cloudflared --version` was released 11 months ago or more (Cloudflare supports only versions within a year of its newest, and the tunnel runs with `--no-autoupdate`); or the output of `cloudflared --version` is not one this check knows (a warning of its own, also weekly); or the tunnel's unit (`warehouse-<state directory name>-tunnel.service`, else the stock `cloudflared.service` where the first is not running) is running a binary that was replaced since it started (its `/proc/<pid>/exe` says `(deleted)`, or the file on disk is newer than the unit's start): restart it. Nothing is judged where `cloudflared` is not installed. Fix: `sudo apt install --only-upgrade cloudflared`, then `sudo systemctl restart` the tunnel unit ([Monthly host maintenance](OPERATOR_INSTALL.md#monthly-host-maintenance)) |
@@ -176,14 +176,14 @@ its time servers.
 
 ## Break-glass sign-in
 
-`scripts/break-glass-admin.sh` (migration 126) prints a one-time sign-in code for an administrator while SMS does not work. Making
+`scripts/break-glass-admin.sh` (migration 126) prints a one-time sign-in code for a worker (administrator, supervisor or staff member; migration 132 widened it from administrators) while SMS does not work. Making
 a code and signing in with one each write a row to `public.audit_log` (`table_name` `break_glass`, `action` `CODE_ISSUED` or
 `SIGN_IN`; the code itself is never written). It is a way past the SMS code, so `break_glass_used` fires **at once** when such a
 row is younger than 24 hours, and stays until the last one is a day old. The alert names the actions and the time of the latest
 row, not the number. If it was you or your staff, nothing is wrong; if not, a person with shell access to the host did it: look
 at `select created_at, action, user_id, ip_address from public.audit_log where table_name = 'break_glass' order by created_at desc`
 (as `supabase_admin`, through `bash scripts/compose.sh exec db psql -U supabase_admin -d postgres`), end the sessions of that
-administrator, and change who has access to the host. A database without migration 126 has no such rows, so the check passes.
+worker, and change who has access to the host. A database without migration 126 has no such rows, so the check passes.
 
 ## Self-healing
 

@@ -2214,8 +2214,9 @@ database and takes the operator lock.
 bash scripts/pooler.sh on       # generates the three secrets where missing, creates role pgbouncer, schema pgbouncer (get_auth) and
                                 # database _supabase (scripts/configure-pooler.sql), records POOLER_ENABLED=true, starts supavisor
                                 # with --profile pooler up -d --no-deps (db is not recreated); idempotent
-bash scripts/pooler.sh off      # stops and removes the container, records POOLER_ENABLED=false; deletes nothing (role, schema,
-                                # database and secrets stay, the pgbouncer password is not rotated while off; `on` reuses them)
+bash scripts/pooler.sh off      # stops and removes the container, records POOLER_ENABLED=false, and DELETES the
+                                # role pgbouncer, schema pgbouncer, database _supabase and the three pooler secrets (it refuses and changes
+                                # nothing if they are in use); `on` creates new ones
 bash scripts/pooler.sh status   # prints on, off or unset
 ```
 
