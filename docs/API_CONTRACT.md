@@ -622,6 +622,18 @@ The figures are in [INVOICE_RULES.md](INVOICE_RULES.md), "Charging rule".
 - `get_invoice_detail` (`invoice.charging`, `items[].storage_amount`) and `get_invoice_data` (`data.header.charging`,
   `data.items[].storage_amount`) answer the invoice's stored rule and each line's storage under it (null for a line with no quantity).
 
+### Invoicing goods as they leave (migration 165, WH-138)
+
+- `get_charging_rule()` and `set_charging_rule(p_rule)` carry `invoice_as_goods_leave` (boolean; optional in `p_rule`, left out: unchanged;
+  `previous_rule` carries it too). Turning it off while a GRN with stock has a live invoice answers
+  `{success:false, error_code:'WH409', reason:'PARTIAL_INVOICES_OPEN', count, gr_nos, error, message}` and changes nothing.
+- With it on: `save_invoice`/`update_invoice` skip `GRN_HAS_STOCK`; a second invoice on a GRN is allowed; a line on another live invoice is
+  refused with `A dispatch line is already on another invoice` (WH409). `generate_invoice_data_for_grn_with_pricing` answers a GRN with
+  stock or another invoice and lists only free dispatch lines (none: `items` is `[]`).
+- `get_grn_list`: each GRN has `invoice_state` (`not_invoiced`, `partly_invoiced`, `invoiced`); the filter `invoiced` also takes
+  `'partly_invoiced'`. `get_grn_details`: the invoice summary has `invoice_state` and `invoices` [{id, inv_no, inv_fin_year, inv_date, total}].
+  `get_customer_grn_activity`: the invoice status has `invoiced_amount` (all live invoices of the GRN) and `invoice_state`.
+
 ### Document numbering (migration 127, 2026-10-27)
 
 Each facility has one numbering rule per document type (`warehouse_security.document_numbering`, no direct grant: only these RPCs read or write it;

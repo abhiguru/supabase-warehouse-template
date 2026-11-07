@@ -340,8 +340,9 @@ BEGIN
             END IF;
         END IF;
 
-        -- D9: a line without an id is a new lot; an invoiced GRN takes none.
-        IF v_is_invoiced AND EXISTS (SELECT 1 FROM jsonb_array_elements(p_items) AS x(e) WHERE x.e->>'id' IS NULL) THEN
+        -- D9: a line without an id is a new lot; an invoiced GRN takes none. Migration 165: a partly invoiced GRN (the facility
+        -- invoices goods as they leave) takes new lots; with that setting off no GRN is partly invoiced.
+        IF v_is_invoiced AND warehouse_security.grn_invoice_state(p_grn_id) IS DISTINCT FROM 'partly_invoiced' AND EXISTS (SELECT 1 FROM jsonb_array_elements(p_items) AS x(e) WHERE x.e->>'id' IS NULL) THEN
             RETURN warehouse_security.refuse('GRN_INVOICED',
                 CASE WHEN v_inv_no IS NULL
                      THEN format('GRN %s is invoiced. A line can''t be added. Delete the invoice first.', v_stored_gr_no)

@@ -65,7 +65,19 @@ invoice saved before migration 164 is stored as the default rule. A `duration_mo
 The invoice form's preview answers the facility's rule as `charging`; the form sends it back as `charging` in the invoice data, and a
 save whose rule is no longer the facility's is refused with `CHARGING_CHANGED` (WH409, nothing saved; no `charging` key: no check).
 
-## Header rounding and save contract
+## Invoicing goods as they leave (migration 165)
+
+The charging rule's `invoice_as_goods_leave` (default false; `set_charging_rule` takes it as an optional key) lets a facility invoice
+dispatch lines while other lots of the GRN are still in store. With it off every rule of this page holds as written. With it on:
+the D9 stock check (`GRN_HAS_STOCK`) is not made, a GRN may have several live invoices, and a dispatch line is on one live invoice at
+most (`A dispatch line is already on another invoice`, WH409). The invoice form offers only the dispatch lines on no live invoice, and
+`get_invoiceable_grns` lists the GRNs that have one. A GRN is `invoiced` when it has no stock and every dispatch line is on a live
+invoice, `partly_invoiced` when it has a live invoice and is not invoiced, else `not_invoiced` (with the setting off: a live invoice
+means invoiced). `goodsreceived.invoiced` is the cache of `invoiced`. A partly invoiced GRN takes new lots; its GRN date is locked; its
+own rates stay live until it is invoiced. Each invoice rounds its own header, so a GRN invoiced in parts can total up to the rounding
+of each invoice more than one invoice would. Turning the setting off is refused while a GRN with stock has a live invoice
+(`PARTIAL_INVOICES_OPEN`, with the count and up to five GRN numbers).
+
 
 (With a charging rule other than the default, "ceiling" below reads as the invoice's `rounding`.) Preview subtotal sums line bases. Header tax is the ceiling of the sum of
 **unrounded** line tax bases; grand total is the ceiling of subtotal plus header
