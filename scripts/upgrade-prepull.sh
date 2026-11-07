@@ -82,7 +82,13 @@ for ref in "${refs[@]}"; do
         fi
         break
       fi
-      refuse "cosign is not installed, so the signatures of the images of $TO_LABEL cannot be checked. Install it: git show $TO_LABEL:scripts/install-cosign.sh | bash -s -- \"$STATE\" (a pinned, checksummed download, docs/OPERATOR_INSTALL.md, \"Check the image signatures\"), then run the upgrade again; or pass --unsigned to upgrade.sh to go on without the check (it is logged)." ;;
+      install_cmd="git show $TO_LABEL:scripts/install-cosign.sh | bash -s -- \"$STATE\""
+      if [[ "${WAREHOUSE_UPGRADE_HAS_UNSIGNED:-}" == yes ]]; then
+        skip_how="pass --unsigned to upgrade.sh (bash upgrade.sh --unsigned $TO_LABEL)"
+      else
+        skip_how="put WAREHOUSE_UNSIGNED=yes before the command (WAREHOUSE_UNSIGNED=yes bash upgrade.sh $TO_LABEL; the upgrade.sh that is running is from before the --unsigned option and would reject it)"
+      fi
+      refuse "cosign is not installed, so the signatures of the images of $TO_LABEL cannot be checked. Install it, from the checkout you run upgrade.sh in: $install_cmd (a pinned, checksummed download, docs/OPERATOR_INSTALL.md, \"Check the image signatures\"), then run the upgrade again; or $skip_how to go on without the check (it is logged in upgrades.log)." ;;
     *) refuse "the signature of the image $ref of $TO_LABEL did not check (see above). Do not upgrade to this release until the maintainer has answered (docs/RELEASE_CHECKLIST.md, \"Image publication\")." ;;
   esac
 done

@@ -63,7 +63,8 @@ refuse a wrong identity there). `build-images.sh --from-release` and the upgrade
   the image and builds it on the host instead (an unsigned local build, which the log says);
 - **no `cosign` on the host:** `setup.sh` of a signed release installs the pinned cosign into `<state>/bin/cosign` (`scripts/install-cosign.sh`: the official
   binary, installed only when its SHA-256 equals the value pinned in the script). An upgrade on a host that has none yet **refuses** at the pre-pull with the
-  command that installs it, or `bash upgrade.sh --unsigned ...` goes on without the check: that is warned on standard error and written to
+  command that installs it, or the check is skipped on purpose: `bash upgrade.sh --unsigned ...`, or `WAREHOUSE_UNSIGNED=yes bash upgrade.sh ...` (the only form an `upgrade.sh` from
+  before the option accepts, as on v0.7.0 or v0.8.0-rc.1: the variable reaches the release's pre-pull through the environment). Either way it is warned on standard error and written to
   `config/upgrades.log`. Nothing is ever pulled unchecked without that flag.
 
 A local build is the documented fallback and carries no signature. The release depends on one maintainer account (the workflow runs from this

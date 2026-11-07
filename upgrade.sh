@@ -420,6 +420,8 @@ main() {
   local DRY=no REF='' TAG='' ARG
   local -a SETUP_EXTRA=()
   ORIG_ARGS=("$@")
+  # Tells the release preflight (scripts/upgrade-prepull.sh) that this upgrade.sh accepts --unsigned; an older one does not export it.
+  export WAREHOUSE_UPGRADE_HAS_UNSIGNED=yes
   while (($#)); do
     case "$1" in
       -h|--help) usage; exit 0 ;;

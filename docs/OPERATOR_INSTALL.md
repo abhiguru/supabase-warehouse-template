@@ -2413,8 +2413,10 @@ are not signed and are not checked. What you may see:
 - `Image signature of <image>: verified` is the normal answer.
 - `Refusing: cosign is not installed, so the signatures ... cannot be checked`: the **first** upgrade into the signed era, on a host whose setup has not installed cosign yet.
   Nothing was changed. Install it with the command the message prints (`git show vX.Y.Z:scripts/install-cosign.sh | bash -s -- "$WAREHOUSE_STATE_DIR"`) and run the
-  upgrade again. Or, knowing the images are then not verified, add `--unsigned` (`bash upgrade.sh --unsigned vX.Y.Z`; an `upgrade.sh` from before the flag reads
-  `WAREHOUSE_UNSIGNED=yes` in the environment instead): a warning is printed and a line is added to `config/upgrades.log`.
+  upgrade again. Or, knowing the images are then not verified, skip the check. **Which form works depends on the `upgrade.sh` you run**, which is the installed one, not the release's: an
+  installation on v0.7.0 or v0.8.0-rc.1 has an `upgrade.sh` from before the option and rejects `--unsigned` ("Unknown option"), so put the variable before the command:
+  `WAREHOUSE_UNSIGNED=yes bash upgrade.sh vX.Y.Z`. From the first release that has the option, `bash upgrade.sh --unsigned vX.Y.Z` does the same (the refusal names the form
+  that fits the `upgrade.sh` that is running). Both print a warning and add a line to `config/upgrades.log`.
 - `NOT VERIFIED` (or `Refusing: the signature of the image ... did not check`): nothing was changed, and `--unsigned` does not override it. Do not use that image. Check the network (the check
   reaches Sigstore's public services), run the upgrade again, and if it still fails, stop and report it to the maintainers with the image name: it
   may be a release that was not published correctly or an image that was replaced. Building locally (a checkout that is not at the tag) is the fallback, and its images are unsigned.
