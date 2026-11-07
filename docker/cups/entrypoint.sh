@@ -48,6 +48,9 @@ echo "Starting CUPS daemon..."
 echo "========================================="
 
 # Start CUPS in the background to configure the queue; wait until it answers instead of a fixed sleep.
+# The entrypoint's CUPS commands (lpstat, lpadmin, cupsenable, cupsaccept) talk to the local domain socket as root.
+mkdir -p /run/cups
+export CUPS_SERVER=/run/cups/cups.sock
 /usr/sbin/cupsd
 for _ in $(seq 1 30); do
     if lpstat -r 2>/dev/null | grep -q 'is running'; then break; fi

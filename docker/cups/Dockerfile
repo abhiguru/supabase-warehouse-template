@@ -22,6 +22,9 @@ RUN useradd -r -G lpadmin -M printadmin
 
 EXPOSE 631
 
+# Local commands (entrypoint, healthcheck) use the domain socket; see config/cupsd.conf.
+ENV CUPS_SERVER=/run/cups/cups.sock
+
 RUN mkdir -p /var/log/cups /var/spool/cups /var/cache/cups /etc/cups
 RUN chown -R root:lpadmin /etc/cups /var/log/cups /var/spool/cups /var/cache/cups
 
