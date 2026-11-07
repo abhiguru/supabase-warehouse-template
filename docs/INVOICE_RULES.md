@@ -240,6 +240,54 @@ current dispatch line, GRN or item. Deleting the dispatch later still empties `d
 emptied before the migration has nothing to copy: it is listed with its amounts and reads "Details not available" (`details_available` false).
 The `kept_*` columns are not among the internal columns below: they hold what a line already shows.
 
+## GST documents (migration 173)
+
+Nothing here applies until an administrator saves the facility's GST details (`set_gst_details`): before that every invoice is saved as
+`doc_type` `invoice`, with every figure, read, PDF and pre-printed print exactly as described above, and an item's GST treatment is not
+used. An invoice saved before the details keeps `invoice` and today's rules for good, edits included.
+
+**Which document** (decided by the server at save and stored on the invoice):
+
+| Facility | Lines | Customer | Document |
+|---|---|---|---|
+| Not registered | any | any | `bill`: no tax on any line, no GSTIN or SAC |
+| Registered | all exempt | any | `bill_of_supply` |
+| Registered | all taxable | any | `tax_invoice` |
+| Registered | mixed | no valid GSTIN | `invoice_cum_bos` (tax on the taxable lines only) |
+| Registered | mixed | valid GSTIN | two documents in one transaction: `tax_invoice` (the number sent, the taxable lines, the discount) and `bill_of_supply` (the next number, the exempt lines), linked by `linked_invoice_id` |
+
+A line is exempt when its item's `gst_treatment` is `exempt_agri` at the save; an exempt line charges no tax whatever its rate's tax %, its
+stored tax % is 0, and so is every line of a bill. The invoice form answers `tax_percent` 0 for those lines, so the rate check and the
+total check agree with the save. Each document rounds its own header (the charging rule's rounding).
+
+**Saved documents keep what they were made with**: the facility's legal name, address, GSTIN, state and SACs, the customer's GSTIN, state
+and address, and each line's treatment. An edit keeps them (the customer's are taken again only when the edit moves the invoice to another
+customer); a line the edit adds takes its item's treatment, and the type follows the lines. An edit whose lines would need two documents is
+refused (`EDIT_NEEDS_TWO_DOCUMENTS`). The edit form does not offer the lines of the invoice's other document.
+
+**Tax split** (tax invoice and invoice-cum-bill of supply). The customer's state is the first two digits of a valid GSTIN, else
+`customers.state_code`; the place of supply is the customer's state, else the facility's. The same state as the facility (or none): CGST
+and SGST; another state: IGST. Rounding: the header tax is rounded per the charging rule first; then CGST = round(tax / 2, 2), half away
+from zero, and SGST = tax - CGST, so the two add up to the tax exactly (CGST is at most one paisa more). Each line: line tax = round(taxable
+value x tax % / 100, 2), split the same way. The lines can add up to less than the header by the header's rounding, as before.
+
+Worked (made-up figures, rule `up`, facility in Gujarat): 10 bags, 12.50 a month, labour 3.00, 5 %, 1.5 months: taxable 217.50, line tax
+10.88 (CGST 5.44, SGST 5.44), header tax 11 (CGST 5.50, SGST 5.50), total 229. The same customer with a Maharashtra GSTIN: IGST 11.00. With
+rounding `none` a tax of 10.87 splits 5.44 and 5.43.
+
+**Lost answer**: the kept answer of a two-document save is replayed, and `get_submission_result` finds it, only while both documents
+exist. Deleting or cancelling one document leaves the other as it is (the app asks about the other).
+
+**Printed documents.** The PDF of a GST document prints the title (TAX INVOICE, BILL OF SUPPLY, INVOICE-CUM-BILL OF SUPPLY, BILL), the
+facility's legal name, address, GSTIN and state, the customer's name, address ("Not given" when there is none), GSTIN and state, the place
+of supply and "Whether tax is payable on reverse charge: No" (tax documents), each line with its SAC, quantity, months (or One-time), rate,
+labour rate, taxable value and CGST/SGST or IGST, the totals by head, "Exempt supply, no GST charged" on a bill of supply, and "For <legal
+name>, Authorised signatory". The pre-printed form prints no title: half the tax in SGST and CGST for an `invoice` (as always), the stored
+CGST and SGST for a tax invoice or invoice-cum-bill of supply, and blank SGST, CGST and tax total for a bill or bill of supply. An IGST
+invoice is not printed on the form ("IGST invoices print on plain paper."). A value longer than its field on the form (an amount, quantity,
+weight, rate or months, the address, the amount in words, the customer's GSTIN) is never cut: that invoice is not printed and is named in
+`skipped` with `reason` `does_not_fit` and the field; the rest of the range prints.
+
 ## Internal columns
 
 Six columns of `invoice` are internal to the warehouse: `discount_reason`,

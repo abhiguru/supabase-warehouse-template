@@ -27,6 +27,12 @@ BEGIN
     IF role_name <> 'admin' THEN RAISE EXCEPTION 'Administrator required' USING ERRCODE = '42501'; END IF;
     RETURN;
   END IF;
+  -- The facility's GST details (migration 173): administrators only. set_item_gst_treatment (migration 173) is for administrators and
+  -- supervisors, like the rates: the line below admits them, and staff and customers are refused by the final ELSE.
+  IF rpc IN ('get_gst_details','set_gst_details') THEN
+    IF role_name <> 'admin' THEN RAISE EXCEPTION 'Administrator required' USING ERRCODE = '42501'; END IF;
+    RETURN;
+  END IF;
   -- Administrators and supervisors: every other RPC, among them cancel_invoice (migration 134; keeps the invoice on record) and
   -- delete_invoice (migration 146; removes it, administrators and supervisors only), record_payment, update_payment and
   -- delete_payment (migration 172), set_rack_presets (migration 131) and the rest of the management RPCs. Staff and
@@ -67,6 +73,8 @@ BEGIN
     'get_invoiceable_grns','get_invoices_list','get_invoice_data','get_invoice_detail',
     'get_invoice_items_detailed','get_customer_invoice_summary',
     'generate_invoice_data_for_grn_with_pricing',
+    -- Which document(s) the chosen lines make, for the invoice form's review step (migration 173).
+    'preview_invoice_documents',
     -- Orders and queue (user decision, 2026-10-09).
     'get_orders_list','get_order_with_items','get_or_create_cart',
     'add_item_to_order','update_order_item_quantity','remove_item_from_order',

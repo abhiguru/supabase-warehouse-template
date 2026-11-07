@@ -66,6 +66,10 @@ BEGIN
                 FROM payments p WHERE p.invoice_id = p_invoice_id), '[]'::jsonb));
     END IF;
 
+    -- Migration 173: doc_type, linked_invoice (the other document of a two-document save) and, for every type but 'invoice', the gst
+    -- object (what the document was made with, the tax split and each line's treatment and amounts).
+    v_invoice_header := v_invoice_header || COALESCE(warehouse_security.invoice_gst_json(p_invoice_id), '{}'::jsonb);
+
     -- Migration 143: a cancelled invoice reads the details its lines kept at cancel (details_kept_at set); the copy wins over the current
     -- dispatch line, GRN and item. A line whose dispatch went before the copy existed is listed with its amounts and details_available false.
     -- A live invoice reads exactly as before: its lines still need every join to match, as the inner joins demanded.

@@ -174,6 +174,29 @@ refuse an invoice with payments (`INVOICE_HAS_PAYMENTS` {inv_no}); `update_invoi
 `get_invoice_data` answer `paid_amount`, `due_amount` and `payment_status` (`due`, `part_paid`, `paid`) to administrators,
 supervisors and the invoice's customer. The service role and the database owner can still write the table directly.
 
+### GST documents (migration 173)
+
+- **Settings** (administrators): `get_gst_details()` answers `{success, data: {saved, registered, gstin, state_code, state_name,
+  legal_name, address, sac_storage, sac_labour, saved_at, saved_by, saved_by_name, states: [{code, name}]}}`; `saved` false means the
+  details were never saved and every document is made as before. `set_gst_details(p_details)` takes `{registered (boolean, required),
+  gstin (required when registered), address (required, up to 300), legal_name, sac_storage, sac_labour}` (a SAC is 4 to 8 digits, empty =
+  996721 / 996719; `legal_name` left out keeps the stored one, shared with the legal settings) and answers `{success, data}` as the getter.
+  A bad value raises 22023 and changes nothing; each change writes one `audit_log` row (`facility_gst`).
+- **Items**: `items.gst_treatment` (`taxable` default, `exempt_agri`), read from the table; `set_item_gst_treatment(p_item_id,
+  p_gst_treatment)` (administrators and supervisors; audited) answers `{success, data: {item_id, gst_treatment, changed}}`.
+- **Customers**: `customers.state_code` is generated from `customers.state` (the state's name from the list, matched without case or
+  punctuation; NULL when not one state for certain). The customer form's pick list writes the name.
+- **Review step**: `preview_invoice_documents(p_gr_id, p_disp_trl_ids, p_invoice_id default null, p_duration_mode default null)` (staff and
+  above) answers `{success, documents: [{doc_type, disp_trl_ids, item_names, subtotal, tax, total, tax_head, place_of_supply, cgst_amount,
+  sgst_amount, igst_amount}], document_count, current_doc_type, type_changes}`; totals are before any discount (a discount goes on the
+  first document). Refusals: `UNKNOWN_LINE`, `EDIT_NEEDS_TWO_DOCUMENTS` (an edit).
+- **Save and edit**: `save_invoice` answers `doc_type`, `linked_invoice_id` and `documents: [{invoice_id, inv_no, inv_fin_year, doc_type,
+  total}]`; a two-document save uses the number sent and the next one. `expected_total` is the sum of both totals. New refusals:
+  `NUMBER_TAKEN` (with the second number), `NUMBER_OUT_OF_RANGE`, `EDIT_NEEDS_TWO_DOCUMENTS`. `update_invoice` answers `doc_type`.
+- **Reads**: `get_invoices_list` rows carry `doc_type` and `linked_invoice_id`, filter `p_doc_type`; `get_invoice_detail` (`invoice`) and
+  `get_invoice_data` (`header`) carry `doc_type`, `linked_invoice` and `gst` (null for `invoice`). Rules: [INVOICE_RULES.md](INVOICE_RULES.md),
+  "GST documents".
+
 The baseline still holds other functions that are not granted to `anon` or
 `authenticated`. They are not API: do not grant one to make a call work; add a
 guarded RPC in a new migration instead.

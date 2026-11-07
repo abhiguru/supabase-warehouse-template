@@ -319,7 +319,9 @@ BEGIN
                         'role', v_invoice_header.created_by_role
                     )
                 -- Migration 172: paid_amount, due_amount and payment_status for administrators, supervisors and the invoice's customer.
-                ) || CASE WHEN auth.jwt()->>'role' = 'service_role' OR COALESCE(v_user_role, '') <> 'staff'
+                -- Migration 173: doc_type, linked_invoice and the gst object (warehouse_security.invoice_gst_json).
+                ) || COALESCE(warehouse_security.invoice_gst_json(v_invoice_header.invoice_id), '{}'::jsonb)
+                  || CASE WHEN auth.jwt()->>'role' = 'service_role' OR COALESCE(v_user_role, '') <> 'staff'
                           THEN warehouse_security.invoice_payment_state(v_invoice_header.invoice_id) ELSE '{}'::jsonb END,
                 'items', v_invoice_items
             )
