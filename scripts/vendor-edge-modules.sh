@@ -24,10 +24,10 @@ build() { # package, output name
 }
 build jose jose.mjs
 # ipp is a CommonJS package for Node (it requires http, url and Buffer): its file keeps the node: modules external and
-# gets a require() that works in ESM. Used by functions/_shared/ipp-client.ts only (the CUPS path of the print functions).
+# gets a require() that works in ESM and an explicit Buffer import (edge-runtime gives user code no global Buffer). Used by functions/_shared/ipp-client.ts only (the CUPS path of the print functions).
 printf "import ipp from 'ipp';\nexport default ipp;\nexport const Printer = ipp.Printer;\n" > entry.js
 node_modules/.bin/esbuild entry.js --bundle --format=esm --platform=node --target=es2022 \
-  --banner:js="import { createRequire as __createRequire } from 'node:module'; const require = __createRequire(import.meta.url);" \
+  --banner:js="import { createRequire as __createRequire } from 'node:module'; import { Buffer } from 'node:buffer'; const require = __createRequire(import.meta.url);" \
   --legal-comments=inline --log-level=warning --outfile="$out/ipp.mjs"
 # The licence of every package the file may contain (the production tree).
 node - <<'NODE' > "$out/LICENSES.txt"
