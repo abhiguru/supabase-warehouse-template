@@ -130,9 +130,12 @@ export async function startPrintJob(supabase: Rest, meta: JobMeta, requestId: st
 async function claimIfFailed(supabase: Rest, row: ExistingJob, meta: JobMeta): Promise<StartedJob> {
   if (row.status !== 'failed') return { kind: 'duplicate', row };
   // Nothing reached the printer last time: this retry may print. Only one retry wins the status change.
+  // created_at is reset too: sweep-print-jobs ages a row by it, and an old failed row re-queued now would otherwise be settled
+  // as 'unknown' while this retry is still printing.
+  const now = new Date().toISOString();
   const { data, error } = await supabase
     .from('print_jobs')
-    .update({ status: 'queued', error_message: null, cups_job_id: null, completed_at: null, content_size: meta.content_size, printer_name: meta.printer_name, updated_at: new Date().toISOString() })
+    .update({ status: 'queued', error_message: null, cups_job_id: null, completed_at: null, content_size: meta.content_size, printer_name: meta.printer_name, created_at: now, updated_at: now })
     .eq('id', row.id)
     .eq('status', 'failed')
     .select('id');
@@ -163,8 +166,10 @@ export async function finishPrintJob(supabase: Rest, started: StartedJob, meta: 
 /** The answer for a request that was already handled (nothing is printed). `range` is echoed like the normal answer. */
 export function duplicateResponse(row: ExistingJob, range: { start: string; end: string }): Response {
   const timestamp = new Date().toISOString();
-  // Same answer as the first time for a job the printer never confirmed: it may be on paper.
-  if (row.status === 'unknown' && row.error_message === UNCONFIRMED_NOTE) {
+  // Same answer as the first time for a job the printer never confirmed: it may be on paper. A row still 'queued' is another
+  // attempt still sending (or one that died before it recorded anything): nothing says it printed, so it is answered the same
+  // way (the app shows its "not confirmed, check the printer" text for PRINT_UNCONFIRMED), never as a success.
+  if ((row.status === 'unknown' && row.error_message === UNCONFIRMED_NOTE) || row.status === 'queued') {
     return new Response(
       JSON.stringify({ ...printFailureBody({ kind: 'unconfirmed', row: { cups_job_id: null, status: 'unknown', error_message: UNCONFIRMED_NOTE } }, row.id), duplicate: true }, null, 2),
       { headers: { 'Content-Type': 'application/json' }, status: 502 },
