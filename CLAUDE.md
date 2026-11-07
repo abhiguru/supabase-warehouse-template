@@ -61,6 +61,7 @@ The contract (token, endpoint, answers, what is stored) is [docs/CENTRAL_LOGIN.m
   on|off`, `auth_config` key `central_local_code`): with it on, an approved profile is asked
   for a facility SMS code (`otp_code`, `operator_verify_otp`; `link_required` without it) at
   **every** new sign-in, linked or not (a profile found by phone number is linked only after a correct code, migration 154).
+- **Administrator trust** (`setup.sh --central-admin-trust yes|no`, default yes, `auth_config` key `central_admin_trust`, migration 168): with `no`, an administrator profile is asked for the facility SMS code like `central_local_code` does for everyone; a facility on central sign-in keeps its own SMS provider (setup refuses `--central-issuer` without `--provider-env`).
 - A profile carries its central identity (`user_profiles.central_issuer`,
   `central_subject`). An administrator unlinks one with `clear_user_central_identity`.
 - Revocation stays local: `update_user_status(false)` revokes a profile's sessions.

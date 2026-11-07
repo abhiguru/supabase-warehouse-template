@@ -185,13 +185,13 @@ The operator scripts use only Node's built-in modules; `npm ci` is needed only t
 | App origin | `--app-url` (optional) | HTTPS origin (no path or port) stored as the trusted browser origin. Leave it out and it is the `--api-url` origin. |
 | Company name | `--company` | Display name of the facility, up to 120 characters. Required on a first install. |
 | Cloudflare Tunnel | `scripts/tunnel.sh adopt` (needs the state, so after setup) | A **new** tunnel for this host with a route for the `--api-url` hostname: its `config.yml` with the credentials JSON, or a dashboard token file. Not a config copied from another machine. See [Cloudflare Tunnel ingress](#cloudflare-tunnel-ingress). |
-| MSG91 provider file | `--provider-env` | Mode-0600 file with five keys; see **MSG91 provider file** below. Required on a first install, **except** a member installation that signs in through the association alone (`--central-issuer` given, no `--central-local-code on`): that one needs no SMS provider and stores none. |
+| MSG91 provider file | `--provider-env` | Mode-0600 file with five keys; see **MSG91 provider file** below. Required on a first install, and whenever `--central-issuer` names an issuer: a facility on central sign-in keeps its own SMS provider, so customers can still sign in when the central service can't send codes. |
 | SMS spending ceilings | `--sms-hourly-ceiling`, `--sms-daily-ceiling` | SMS sends an hour (`otp_global_hourly_cap`) and a day (`otp_daily_provider_attempt_cap`, the last 24 hours) for the whole facility; whole numbers. A terminal is offered 60 and 300 on a first install (Enter accepts); with no terminal and no option a first install gets 60 and 300. See **SMS spending ceiling** under [Authentication and OTP limits](#authentication-and-otp-limits). |
 | First administrator | `--admin-phone`, `--admin-name` (both required) | `91` and ten digits, and a display name; see **First administrator** below. |
 | Slack webhook file | `--alert-webhook-file` | Private file with the facility's incoming-webhook URL. `off` only for a non-production install; without the option a terminal is asked and no terminal means setup refuses. See [Setup](#setup). |
 | Sensor Slack webhook file | `--sensor-webhook-file` | Private file with a second, separate incoming-webhook URL for sensor alerts. Required when Slack alerts are on and sensors are on; `off` removes it; leave it out to keep what is stored. See [Setup](#setup). |
 | External heartbeat file | `--heartbeat-url-file` | Private file (mode 0600, outside the checkout, one line) with the ping URL of a dead-man switch such as healthchecks.io; stored as `config/heartbeat-url`. `off` removes it; leave it out to keep what is stored. Without one `npm run doctor` warns, unless the decision is recorded (`config/heartbeat-declined`, [MONITORING.md](MONITORING.md#external-heartbeat-the-dead-man-switch)). Association members also see [An association view with healthchecks](MONITORING.md#an-association-view-with-healthchecks). |
-| Central sign-in (members only) | `--central-issuer` with `--central-jwks-url` or `--central-jwks-file` | The issuer and the public key set (an address or a file) that the association gives you; see [Central sign-in](#central-sign-in). Leave out for SMS sign-in only. |
+| Central sign-in (members only) | `--central-issuer` with `--central-jwks-url` or `--central-jwks-file`, and `--central-admin-trust yes\|no` | The issuer and the public key set (an address or a file) that the association gives you, and whether a central sign-in alone may open an administrator's profile (default yes); see [Central sign-in](#central-sign-in). Leave out for SMS sign-in only. |
 | PDF letterhead | `--letterhead-file` | A JPEG or PNG banner (at most 2 MiB) that the GRN, dispatch, invoice and customer stock PDFs print at the top, or `off` for plain PDFs. On a first install setup asks for it on a terminal (Enter means plain PDFs) and, with no terminal and without the option, refuses; a rerun without the option asks nothing and keeps what is there. See [Letterhead image](#letterhead-image-optional). |
 | Database memory | `--db-memory` | Whole GiB from 1 to 256 (default: the database container's limit is 1 GiB). Sets the database container's memory limit and, from it, `shared_buffers` (a quarter) and `effective_cache_size` (half) in `config/compose.env` (`DB_MEMORY_LIMIT`, `DB_SHARED_BUFFERS`, `DB_EFFECTIVE_CACHE_SIZE`). Refused while the installation's containers run (`bash stop.sh` first); it applies when the database container is created. A host with 8 GiB of memory can give the database 2 to 4 GiB; leave the rest to the other services. |
 
@@ -227,15 +227,14 @@ rejected. The OTP worker accepts a request only after MSG91 confirms it, but an 
 handset delivery, so test with an owned phone. Real credentials are mandatory: there is no fixed-OTP or local delivery
 mode. Keep the file out of shell history and version control, and include it in your encrypted off-host backups.
 
-**No MSG91 file for a member that signs in through the association.** A facility that gives `--central-issuer` with its key set and does
-**not** turn on its own extra code (`--central-local-code`) never sends an SMS itself: the association sends the codes. Such an
-installation is set up **without** `--provider-env`. Setup then stores no SMS provider (the five provider lines of `config/compose.env` are
-left empty), `node scripts/doctor.mjs` accepts that as long as `CENTRAL_ISSUER` is set, and `operator-otp/request` answers
-`503 {"success": false, "code": "sms_not_configured", "error": "SMS sign-in is not set up on this facility. Use the association sign-in."}`.
-Three things are refused, so that nobody is left without a sign-in: `--central-local-code on` (the extra code is an SMS) on an installation
-with no provider; `--central-issuer off` on one (nothing could sign in); and a first install with neither `--provider-env` nor
-`--central-issuer`. To add a provider later, rerun setup with `--provider-env` (the provider lines are replaced as always). The break-glass
-code ([below](#break-glass-administrator-sign-in)) needs no provider either.
+**A member keeps its own SMS provider.** A facility that gives `--central-issuer` also gives `--provider-env`, and setup refuses without it:
+"A facility on central sign-in keeps its own SMS provider, so customers can still sign in when the central service can't send codes."
+The facility's own SMS sign-in stays open for every profile the facility has approved, customers included, so customers have a way in
+while the association's SMS is down. (An installation made before this rule with a central issuer and no provider keeps working and may
+rerun setup with the same issuer to replace its key set; `node scripts/doctor.mjs` warns about it, `operator-otp/request` answers
+`503 {"success": false, "code": "sms_not_configured", ...}`, and `--central-local-code on` and `--central-admin-trust no` stay refused
+until it has a provider.) `--central-issuer off` on an installation with no provider is refused (nothing could sign in). To add a provider
+later, rerun setup with `--provider-env`. The break-glass code ([below](#break-glass-administrator-sign-in)) needs no provider.
 
 **What setup keeps for you.** This backend stores the sign-in codes itself, as an HMAC
 (the `otp_verifications` table, checked by `operator_verify_otp`), and setup writes the `public.sms_config` row from the
@@ -858,8 +857,9 @@ central service for, and what you do not, is the first section of
 [CENTRAL_LOGIN.md](CENTRAL_LOGIN.md#what-the-facility-relies-on-the-central-service-for):
 in short, it vouches that a phone number belongs to a central account; it
 cannot approve anyone here, but its sign-in alone opens an existing person
-profile with that number (administrators included) unless you switch on this
-facility's own extra code, `--central-local-code on` below.
+profile with that number (administrators included) unless you answer **no** to the
+administrator trust question (`--central-admin-trust no`) or switch on this
+facility's own extra code for everyone, `--central-local-code on`, both below.
 
 Turn it on with the issuer the association gives you and **one** source for
 its public keys, added to the usual setup command (first installation or
@@ -903,6 +903,15 @@ bash setup.sh --operator \
   the functions container during that setup run; the database container is not touched.
 - Turn it off with `--central-issuer off` (and no key option). People who signed in centrally keep their profiles and
   sessions; they sign in with an SMS code from then on.
+- `--central-admin-trust yes|no` (default **yes**): whenever `--central-issuer` names an issuer, setup needs this answer. On a terminal
+  it asks: "May a sign-in from {issuer} alone open this facility's administrator accounts? Yes: the association's sign-in is enough
+  (today's rule for members). No: administrators must also enter a code this facility sends by SMS." Without a terminal and without
+  the flag it uses yes and prints that sentence once. With **no**, a central sign-in to an administrator profile asks for this
+  facility's own SMS code every time, and linking waits for it; other roles are unchanged. `--central-local-code on` covers everyone
+  and wins over this. A rerun without the flag keeps the stored answer; a changed answer applies from the next administrator
+  sign-in, and sessions already open are not ended. `no` needs an SMS provider (the code is an SMS). It is stored as
+  `CENTRAL_ADMIN_TRUST` in `config/compose.env` and, for `no`, as the `auth_config` key `central_admin_trust`
+  (migration 168); `--central-issuer off` clears it. If the facility's SMS is down, an administrator still has break-glass.
 - `--central-local-code on|off` (default **off**): with `on`, this facility also sends its own SMS code and asks for it at
   **every** new central sign-in, for every approved profile. Leave it off to let the association's single sign-in open this
   facility; the price is that whoever controls the central service, or a number's SMS there, can open any person profile

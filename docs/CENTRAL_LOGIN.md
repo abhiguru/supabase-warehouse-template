@@ -39,7 +39,8 @@ It relies on that statement in three places:
   open every facility. **Accepted consequence:** whoever controls the central
   service, or the SMS of a number at the central service, can open any person
   profile with that number at a facility that leaves the extra code off,
-  administrators included. A facility that does not accept this switches on
+  administrators included. A facility that does not accept this for its administrators answers **no** to the trust question
+  (`setup.sh --central-admin-trust no`, [below](#a-facilitys-own-code)); one that does not accept it for anyone switches on
   [its own code](#a-facilitys-own-code) (`setup.sh --central-local-code on`).
   A profile marked as a **service account** (migration 78, a machine) is never
   opened this way: `account_unavailable`, and it is not linked.
@@ -218,6 +219,11 @@ order, after the issuer, argument and single-use checks:
 
 ## A facility's own code
 
+**For administrators only (WH-148, migration 168).** `setup.sh --central-admin-trust no` (the default is `yes`; setup asks whenever
+`--central-issuer` is given) stores `warehouse_security.auth_config` key `central_admin_trust` = `no`. Then a central sign-in to a
+profile whose role is administrator follows the steps below exactly as if `central_local_code` were on, and no other role is asked.
+`central_local_code` on covers everyone and wins. A changed answer applies from the next central sign-in of an administrator.
+
 Off by default. A facility that wants more than the association's sign-in
 switches it on with `setup.sh --central-local-code on`; the database then holds
 `warehouse_security.auth_config` key `central_local_code` = `on`. Then **every**
@@ -252,9 +258,9 @@ marked used only when a session or a pending answer is given (migration 154); a
 refused profile leaves it usable until it expires or its attempts run out. The next sign-in of the
 same person asks again.
 
-**When the association's SMS is down.** A facility that signs in through the association needs no SMS provider of its own (no MSG91
-file: `setup.sh --central-issuer` without `--provider-env`; the facility's own extra code, `--central-local-code on`, does need one).
-When the association's service cannot send codes, a worker whose session has ended signs in with a **break-glass code from the facility**:
+**When the association's SMS is down.** A facility that signs in through the association keeps its own SMS provider (`setup.sh
+--central-issuer` is refused without `--provider-env`, WH-148), so its own SMS sign-in stays open for every profile the facility has
+approved, customers included; the app offers it when the central sign-in cannot send a code. A worker whose session has ended signs in with a **break-glass code from the facility**:
 
 1. *The operator* (anyone who can open a terminal on the facility's server) runs
    `bash scripts/break-glass-admin.sh <the worker's 10-digit number>` ([OPERATOR_INSTALL.md](OPERATOR_INSTALL.md#break-glass-administrator-sign-in)).
@@ -305,6 +311,7 @@ together with the phone number and can ask for access again.
 | `public.user_profiles.central_issuer`, `central_subject` | The identity a profile is linked to. Both set or both empty; one identity belongs to one profile. |
 | `warehouse_security.central_token_use` | One row per accepted token: the SHA-256 of `iss`, a space and `jti`, with the time after which the token is refused anyway. Removed when the next token is recorded and by `npm run retention:apply`. |
 | `warehouse_security.auth_config`, key `central_issuer` | The trusted issuer. `public.operator_central_exchange` refuses every other issuer, also from a caller that holds the service key. Written by `setup.sh`. |
+| `warehouse_security.auth_config`, key `central_admin_trust` | `no` when a central sign-in alone may not open an administrator's profile (administrators also enter this facility's code); absent = yes. Written by `setup.sh` (migration 168). |
 | `warehouse_security.auth_config`, key `central_local_code` | `on` when this facility asks for its own code at every central sign-in; absent = off. Written by `setup.sh`. |
 | `config/compose.env`: `CENTRAL_ISSUER`, `CENTRAL_JWKS_URL`, `CENTRAL_JWKS_FILE`, `CENTRAL_LOCAL_CODE` | The operator's settings. |
 | `public/central-jwks.json` in the state directory | The key file, when keys come from a file. Public keys only. `db:backup` copies it into the backup as `central-jwks.json` (checksummed and signed with the rest), `db:verify-restore` checks it and `db:restore-host` puts it back. A backup written before that holds no copy: `db:restore-host` then prints the `setup.sh` rerun that restores it. `doctor` fails while the file named by `CENTRAL_JWKS_FILE` is missing or not a usable key set. |
@@ -328,6 +335,7 @@ source are set.
 | `CENTRAL_ISSUER` | The association's issuer, an `https://` origin or URL, exactly as the tokens name it in `iss`. |
 | `CENTRAL_JWKS_URL` | The `https://` address of the issuer's public keys (JWKS). |
 | `CENTRAL_JWKS_FILE` | `central-jwks.json` when the keys were installed from a file with `setup.sh --central-jwks-file`. |
+| `CENTRAL_ADMIN_TRUST` | `yes` (default) or `no`: see `central_admin_trust` above (`setup.sh --central-admin-trust`). Meaningful only with central login on; turning central login off clears it. |
 | `CENTRAL_LOCAL_CODE` | `on` = this facility also asks for its own SMS code at every central sign-in (`setup.sh --central-local-code on`); empty or off = the association's sign-in alone (default). Meaningful only with central login on; turning central login off clears it. |
 
 Set, replace or remove them with `setup.sh`; see

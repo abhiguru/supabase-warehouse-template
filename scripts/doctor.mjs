@@ -227,14 +227,16 @@ export { projectPublishesPort };
 export function validateOperatorEnv(env, stateDir) {
   const state = resolve(stateDir);
   if (env.AUTH_MODE !== 'operator' || env.APP_ENV !== 'production' || env.SMS_PRODUCTION_MODE !== 'true') throw new Error('Operator configuration must use production mode and MSG91.');
-  // An installation that signs in through the association alone (setup.sh --central-issuer without --provider-env) has no SMS provider:
-  // all five lines empty. That is accepted only with CENTRAL_ISSUER set (without it nobody could sign in) and without the facility's
-  // own SMS code (CENTRAL_LOCAL_CODE=on needs a provider to send it). Any other set must be a complete production MSG91 provider.
+  // An installation made before WH-148 that signs in through the association alone has no SMS provider: all five lines empty.
+  // That is still accepted (the full doctor warns, centralNoProviderWarning) only with CENTRAL_ISSUER set (without it nobody could
+  // sign in) and without the facility's own SMS code (CENTRAL_LOCAL_CODE=on, or CENTRAL_ADMIN_TRUST=no for administrators, needs a
+  // provider to send it). Setup no longer makes such an installation. Any other set must be a complete production MSG91 provider.
   const providerKeys = ['SMS_PROVIDER', 'MSG91_AUTH_KEY', 'MSG91_TEMPLATE_ID', 'MSG91_PE_ID', 'MSG91_SENDER_ID'];
   const noProvider = providerKeys.every(key => !(env[key] || '').trim());
   if (noProvider) {
     if (!(env.CENTRAL_ISSUER || '').trim()) throw new Error('Operator configuration must use production mode and MSG91 (no SMS provider is set, and central sign-in is off: nobody could sign in).');
     if (env.CENTRAL_LOCAL_CODE === 'on') throw new Error('CENTRAL_LOCAL_CODE=on needs an SMS provider, and none is set: run setup.sh --central-local-code off, or give --provider-env.');
+    if (env.CENTRAL_ADMIN_TRUST === 'no') throw new Error('CENTRAL_ADMIN_TRUST=no needs an SMS provider (the administrator\'s code is an SMS), and none is set: give --provider-env, or run setup.sh --central-admin-trust yes.');
   } else {
     if (env.SMS_PROVIDER !== 'msg91') throw new Error('Operator configuration must use production mode and MSG91.');
     // One rule with the edge function (scripts/provider-placeholder.mjs): template text is never accepted,
@@ -396,6 +398,8 @@ export async function doctor({ hostPreflight = false, preflight = false, local =
   // Central sign-in from a key file: the file must be there, or every sign-in fails while the app still offers it.
   const keyFileWarning = checkCentralKeyFile(env, state);
   if (keyFileWarning) console.error(`Warning: ${keyFileWarning}`);
+  const providerWarning = centralNoProviderWarning(env);
+  if (providerWarning) console.error(`Warning: ${providerWarning}`);
   // The optional letterhead image: a fault is a warning only, because the PDFs are then made without it.
   const letterheadWarning = checkLetterhead(env, state);
   if (letterheadWarning) console.error(`Warning: ${letterheadWarning}`);
@@ -456,6 +460,15 @@ export function checkAppCompatFile(stateDir) {
     const notes = [interruptedUpgradeWarning(stateDir), maintenanceMarked(stateDir) ? 'Maintenance mode is on (config/maintenance): the API answers 503 "upgrading" to phones on purpose. Open it with: bash scripts/maintenance.sh off' : ''].filter(Boolean);
     throw new Error(`${path} is missing or invalid, so the public configuration answers 503 and no phone can sign in. Run setup.sh again (it writes the file).${notes.length ? ` ${notes.join(' ')}` : ''}`);
   }
+}
+
+// WH-148: a facility on central sign-in keeps its own SMS provider, so customers can still sign in when the central service cannot send
+// codes. An installation with a central issuer and no provider (made before the rule) gets this warning from the full doctor.
+export function centralNoProviderWarning(env) {
+  if (!(env.CENTRAL_ISSUER || '').trim()) return '';
+  const providerKeys = ['SMS_PROVIDER', 'MSG91_AUTH_KEY', 'MSG91_TEMPLATE_ID', 'MSG91_PE_ID', 'MSG91_SENDER_ID'];
+  if (!providerKeys.every(key => !(env[key] || '').trim())) return '';
+  return 'This facility signs in through central sign-in and has no SMS provider of its own: when the central service cannot send codes, customers have no way in (administrators, supervisors and staff still have break-glass). Rerun setup.sh with --provider-env (docs/OPERATOR_INSTALL.md, "MSG91 provider file").';
 }
 
 // Central sign-in with keys from a file (CENTRAL_JWKS_FILE, set by setup.sh --central-jwks-file): the

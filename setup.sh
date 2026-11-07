@@ -19,17 +19,21 @@ ADMIN_NAME=''
 COMPANY_ARG=''
 ALERT_ARG=''
 LETTERHEAD_ARG=''
+CENTRAL_ISSUER_ARG=''
+CENTRAL_TRUST_ARG=''
 CONFIG_ARGS=()
 SMS_HOURLY=''
 SMS_DAILY=''
 while (($#)); do
   case "$1" in
-    --state-dir|--api-url|--app-url|--company|--provider-env|--admin-phone|--admin-name|--central-issuer|--central-jwks-url|--central-jwks-file|--central-local-code|--alert-webhook-file|--sensor-webhook-file|--heartbeat-url-file|--letterhead-file|--gateway-port|--db-memory)
+    --state-dir|--api-url|--app-url|--company|--provider-env|--admin-phone|--admin-name|--central-issuer|--central-jwks-url|--central-jwks-file|--central-local-code|--central-admin-trust|--alert-webhook-file|--sensor-webhook-file|--heartbeat-url-file|--letterhead-file|--gateway-port|--db-memory)
       if (($# < 2)); then echo "Missing value for $1" >&2; exit 1; fi
       case "$1" in
         --state-dir) STATE="$2"; CONFIG_ARGS+=("$1" "$2") ;;
         --admin-phone) ADMIN_PHONE="$2" ;;
         --admin-name) ADMIN_NAME="$2" ;;
+        --central-issuer) CENTRAL_ISSUER_ARG="$2"; CONFIG_ARGS+=("$1" "$2") ;;
+        --central-admin-trust) CENTRAL_TRUST_ARG="$2"; CONFIG_ARGS+=("$1" "$2") ;;
         --company) COMPANY_ARG="$2"; CONFIG_ARGS+=("$1" "$2") ;;
         --alert-webhook-file) ALERT_ARG="$2"; if [[ "$2" != ask ]]; then CONFIG_ARGS+=("$1" "$2"); fi ;;
         --letterhead-file) LETTERHEAD_ARG="$2"; if [[ "$2" != ask ]]; then CONFIG_ARGS+=("$1" "$2"); fi ;;
@@ -98,6 +102,30 @@ fi
 if [[ -n "$SMS_DAILY" && ! "$SMS_DAILY" =~ ^[1-9][0-9]{0,6}$ ]]; then
   echo 'The daily SMS ceiling (--sms-daily-ceiling) must be a whole number from 1 to 9999999.' >&2
   exit 1
+fi
+# The central sign-in trust question (WH-148): whenever --central-issuer names an issuer, setup needs the answer to one question, by
+# --central-admin-trust yes|no or, on a terminal, by asking. The default is yes (today's rule for members); with no terminal and no
+# flag setup uses yes and says so once. A rerun keeps the stored answer unless the flag is given, so nothing is asked when compose.env
+# already holds one.
+if [[ -n "$CENTRAL_ISSUER_ARG" && "$CENTRAL_ISSUER_ARG" != off && -z "$CENTRAL_TRUST_ARG" ]] \
+   && ! grep -qE '^CENTRAL_ADMIN_TRUST=(yes|no)$' "$STATE/config/compose.env" 2>/dev/null; then
+  TRUST_QUESTION="May a sign-in from $CENTRAL_ISSUER_ARG alone open this facility's administrator accounts? Yes: the association's sign-in is enough (today's rule for members). No: administrators must also enter a code this facility sends by SMS."
+  if [[ -t 0 && -t 1 ]]; then
+    while :; do
+      read -r -p "$TRUST_QUESTION [yes/no, Enter for yes]: " CENTRAL_TRUST_ANSWER || CENTRAL_TRUST_ANSWER=''
+      CENTRAL_TRUST_ANSWER="${CENTRAL_TRUST_ANSWER:-yes}"
+      case "${CENTRAL_TRUST_ANSWER,,}" in
+        yes|y) CENTRAL_TRUST_ARG=yes; break ;;
+        no|n) CENTRAL_TRUST_ARG=no; break ;;
+        *) echo 'Answer yes or no.' >&2 ;;
+      esac
+    done
+  else
+    CENTRAL_TRUST_ARG=yes
+    echo "$TRUST_QUESTION" >&2
+    echo 'No terminal and no --central-admin-trust: using yes. Rerun with --central-admin-trust no to change it.' >&2
+  fi
+  CONFIG_ARGS+=(--central-admin-trust "$CENTRAL_TRUST_ARG")
 fi
 # A rerun may rewrite compose.env (provider replacement), so hold the operator
 # lock before configure.mjs whenever the state already exists; a first install
@@ -190,11 +218,13 @@ bash "$ROOT/scripts/pooler.sh" cleanup || echo 'Warning: the pooler clean-up did
 bash "$ROOT/scripts/db-roles.sh" apply
 bash "$ROOT/scripts/compose.sh" exec -T db psql -X -q -U supabase_admin -d postgres -v ON_ERROR_STOP=1 < "$ROOT/scripts/configure-auth.sql"
 # Central sign-in: the trusted issuer from compose.env (--central-issuer), or off, and whether this
-# facility also asks for its own SMS code at every sign-in (--central-local-code on; default off).
+# facility also asks for its own SMS code at every sign-in (--central-local-code on; default off), and whether a central sign-in alone may
+# open an administrator's profile (--central-admin-trust yes|no; default yes).
 # The lines are read, never sourced; configure.mjs stores no quotes, spaces, $ or #.
 CENTRAL_ISSUER_VALUE="$(sed -n 's/^CENTRAL_ISSUER=//p' "$STATE/config/compose.env" | head -n 1)"
 CENTRAL_LOCAL_CODE_VALUE="$(sed -n 's/^CENTRAL_LOCAL_CODE=//p' "$STATE/config/compose.env" | head -n 1)"
-bash "$ROOT/scripts/compose.sh" exec -T db psql -X -q -U supabase_admin -d postgres -v ON_ERROR_STOP=1 -v central_issuer="$CENTRAL_ISSUER_VALUE" -v central_local_code="$CENTRAL_LOCAL_CODE_VALUE" < "$ROOT/scripts/configure-central.sql"
+CENTRAL_ADMIN_TRUST_VALUE="$(sed -n 's/^CENTRAL_ADMIN_TRUST=//p' "$STATE/config/compose.env" | head -n 1)"
+bash "$ROOT/scripts/compose.sh" exec -T db psql -X -q -U supabase_admin -d postgres -v ON_ERROR_STOP=1 -v central_issuer="$CENTRAL_ISSUER_VALUE" -v central_local_code="$CENTRAL_LOCAL_CODE_VALUE" -v central_admin_trust="$CENTRAL_ADMIN_TRUST_VALUE" < "$ROOT/scripts/configure-central.sql"
 bash "$ROOT/scripts/compose.sh" exec -T db psql -X -q -U supabase_admin -d postgres -v ON_ERROR_STOP=1 < "$ROOT/scripts/configure-sms.sql"
 # The SMS spending ceilings: a given value is stored; a new install without one gets 60 an hour and 300 a day; a facility that already
 # sent codes keeps what it has (scripts/configure-sms-ceiling.sql).

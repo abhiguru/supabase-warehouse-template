@@ -107,6 +107,34 @@ export function centralLocalCodeValues(flag, central, current, provider = false)
   return {};
 }
 
+// The trust question (--central-admin-trust yes|no; WH-148): may a central sign-in alone open an existing administrator's profile?
+// yes (the default, today's rule for members): the association's sign-in is enough. no: an administrator also enters a code this
+// facility sends by SMS, every time, and linking waits for it (setup.sh stores CENTRAL_ADMIN_TRUST; migration 168 reads it). Other roles
+// are unchanged, and --central-local-code on still covers everyone. A rerun without the flag keeps the stored answer; `--central-issuer
+// off` clears it. `no` needs central sign-in and an SMS provider (the code is an SMS). Returns the line to write, or {}.
+export function centralAdminTrustValues(flag, central, current, provider = false) {
+  if (flag !== undefined && flag !== 'yes' && flag !== 'no') throw new Error('--central-admin-trust must be yes or no.');
+  const stored = current ? current.match(/^CENTRAL_ADMIN_TRUST=(.*)$/m)?.[1] ?? '' : '';
+  const issuer = central ? central.values.CENTRAL_ISSUER : (current?.match(/^CENTRAL_ISSUER=(.*)$/m)?.[1] ?? '');
+  if (flag !== undefined && !issuer) throw new Error('--central-admin-trust needs central sign-in: also give --central-issuer with --central-jwks-url or --central-jwks-file, or set it up first.');
+  if (flag === 'no' && !provider && !hasStoredProvider(current)) throw new Error('--central-admin-trust no needs an SMS provider: the administrator\'s code is an SMS, and this installation has none. Also give --provider-env (docs/OPERATOR_INSTALL.md, "MSG91 provider file").');
+  if (flag !== undefined) return stored === flag ? {} : { CENTRAL_ADMIN_TRUST: flag };
+  if (central && !issuer && stored) return { CENTRAL_ADMIN_TRUST: '' };
+  // The answer is stored once central sign-in is on, so a later rerun keeps it (yes when nobody chose).
+  if (central && issuer && !stored) return { CENTRAL_ADMIN_TRUST: 'yes' };
+  return {};
+}
+
+// WH-148: a facility on central sign-in keeps its own SMS provider, so customers can still sign in when the central service cannot
+// send codes. Setup refuses `--central-issuer <address>` when this call gives no provider file and none is stored. An installation
+// already set up with that same issuer and no provider (made before this rule) may still rerun, to replace its key set; the full
+// doctor warns about it.
+export function centralNeedsProvider(central, current, provider = false) {
+  if (!central?.values.CENTRAL_ISSUER || provider || hasStoredProvider(current)) return;
+  if (current && current.match(/^CENTRAL_ISSUER=(.*)$/m)?.[1] === central.values.CENTRAL_ISSUER) return;
+  throw new Error('A facility on central sign-in keeps its own SMS provider, so customers can still sign in when the central service can\'t send codes. Also give --provider-env (docs/OPERATOR_INSTALL.md, "MSG91 provider file").');
+}
+
 // The bytes of a key file the operator received from the association, after
 // the checks the edge function applies to a fetched key set, plus one: a file
 // that holds private key material is refused outright.
@@ -186,8 +214,6 @@ function removeOtherLetterheads(publicDir, keep) {
   return removed;
 }
 
-// What a central-only installation stores: empty lines (docker-compose.yml, doctor.mjs and configure-sms.sql read them as "no provider").
-const NO_PROVIDER = { SMS_PROVIDER: '', MSG91_AUTH_KEY: '', MSG91_TEMPLATE_ID: '', MSG91_PE_ID: '', MSG91_SENDER_ID: '' };
 
 function providerValues(path, checkout, apiUrl) {
   if (!isAbsolute(path) || resolve(path).startsWith(checkout + sep) || realpathSync(path).startsWith(checkout + sep)) throw new Error('--provider-env must be an absolute file outside the checkout.');
@@ -290,12 +316,13 @@ function projectContainersRunning(project) {
 export { lanAddressValue, lanCidrValue, lanPortValue } from './lan-common.mjs';
 export const GATEWAY_PORT_REMINDER = 'Update the Cloudflare Tunnel ingress for this installation to http://127.0.0.1:<port> (deploy/cloudflared-config.example.yml), then restart the tunnel.';
 
-export function configure(root, { stateDir, apiUrl, appUrl, company, providerEnv, centralIssuer, centralJwksUrl, centralJwksFile, centralLocalCode, alertWebhookFile, sensorWebhookFile, heartbeatUrlFile, letterheadFile, gatewayPort, dbMemory, portFree = loopbackPortFree, containersRunning = projectContainersRunning, faultAfterManifest = false } = {}) {
+export function configure(root, { stateDir, apiUrl, appUrl, company, providerEnv, centralIssuer, centralJwksUrl, centralJwksFile, centralLocalCode, centralAdminTrust, alertWebhookFile, sensorWebhookFile, heartbeatUrlFile, letterheadFile, gatewayPort, dbMemory, portFree = loopbackPortFree, containersRunning = projectContainersRunning, faultAfterManifest = false } = {}) {
   const port = gatewayPortValue(gatewayPort);
   const memory = dbMemoryValues(dbMemory);
   const central = centralValues(centralIssuer, centralJwksUrl, centralJwksFile);
   const letterhead = letterheadValue(letterheadFile);
   if (centralLocalCode !== undefined && centralLocalCode !== 'on' && centralLocalCode !== 'off') throw new Error('--central-local-code must be on or off.');
+  if (centralAdminTrust !== undefined && centralAdminTrust !== 'yes' && centralAdminTrust !== 'no') throw new Error('--central-admin-trust must be yes or no.');
   if (!stateDir || !isAbsolute(stateDir)) throw new Error('--state-dir must be an absolute path outside the checkout.');
   const checkout = realpathSync(root);
   // Checked before anything is written: a refused file changes nothing.
@@ -358,6 +385,7 @@ export function configure(root, { stateDir, apiUrl, appUrl, company, providerEnv
       {
         const text = readFileSync(envPath, 'utf8');
         if (centralLocalCode !== undefined || central) centralLocalCodeValues(centralLocalCode, central, text, Boolean(providerEnv));
+        if (centralAdminTrust !== undefined || central) { centralAdminTrustValues(centralAdminTrust, central, text, Boolean(providerEnv)); centralNeedsProvider(central, text, Boolean(providerEnv)); }
         // An installation with no SMS provider signs in through the association alone: turning that off would leave no sign-in.
         if (central && !central.values.CENTRAL_ISSUER && !providerEnv && !hasStoredProvider(text) && /^CENTRAL_ISSUER=\S/m.test(text)) {
           throw new Error('--central-issuer off would leave this installation with no way to sign in: it has no SMS provider. Also give --provider-env, or keep central sign-in.');
@@ -382,10 +410,10 @@ export function configure(root, { stateDir, apiUrl, appUrl, company, providerEnv
         const updated = replaceEnvLines(current, provider);
         if (updated !== current) { replaceFileAtomically(envPath, updated); providerUpdated = true; }
       }
-      if (central || centralLocalCode !== undefined) {
+      if (central || centralLocalCode !== undefined || centralAdminTrust !== undefined) {
         const current = readFileSync(envPath, 'utf8');
         // The extra code is decided before anything is written, so a refused flag changes nothing.
-        const localCode = centralLocalCodeValues(centralLocalCode, central, current, Boolean(providerEnv));
+        const localCode = { ...centralLocalCodeValues(centralLocalCode, central, current, Boolean(providerEnv)), ...centralAdminTrustValues(centralAdminTrust, central, current, Boolean(providerEnv)) };
         // "Off" on a state that never had the lines changes nothing.
         const absent = !/^CENTRAL_(?:ISSUER|JWKS_URL|JWKS_FILE)=/m.test(current);
         const updated = !central ? setEnvLines(current, localCode)
@@ -466,13 +494,14 @@ export function configure(root, { stateDir, apiUrl, appUrl, company, providerEnv
     if (readdirSync(state).length) throw new Error('State directory is partially initialized; inspect it before retrying.');
   }
   // A member installation that signs in through the association (--central-issuer) needs no SMS provider: it stores none.
-  const centralOnly = !providerEnv && Boolean(central?.values.CENTRAL_ISSUER);
-  if (!apiUrl || !company || (!providerEnv && !centralOnly)) throw new Error('Fresh setup requires --api-url, --company and --provider-env (or --central-issuer with its keys, for an installation that uses the association\'s sign-in alone).');
+  centralNeedsProvider(central, null, Boolean(providerEnv));
+  if (!apiUrl || !company || !providerEnv) throw new Error('Fresh setup requires --api-url, --company and --provider-env.');
   centralLocalCodeValues(centralLocalCode, central, null, Boolean(providerEnv));
+  centralAdminTrustValues(centralAdminTrust, central, null, Boolean(providerEnv));
   const canonical = canonicalOrigin(apiUrl, '--api-url');
   const application = appUrl ? canonicalOrigin(appUrl, '--app-url') : canonical;
   if (company.length > 120 || !/^[^\u0000-\u001f\u007f-\u009f\u2028\u2029]+$/.test(company)) throw new Error('--company must be a printable name of at most 120 characters.');
-  const provider = centralOnly ? NO_PROVIDER : providerValues(providerEnv, checkout, canonical);
+  const provider = providerValues(providerEnv, checkout, canonical);
   if (port !== null && !portFree(port)) throw new Error(`127.0.0.1:${port} is already in use; choose another --gateway-port.`);
   const manifest = { schemaVersion: 1, instanceId: randomUUID(), displayName: company, companyName: company,
     canonicalOrigin: canonical, supportedApiVersions: ['1'], minimumClientVersion: '0.1.0',
@@ -484,7 +513,7 @@ export function configure(root, { stateDir, apiUrl, appUrl, company, providerEnv
     WAREHOUSE_MANIFEST_PATH: manifestPath, WAREHOUSE_PROJECT_NAME: `warehouse-${manifest.instanceId.slice(0, 12)}`,
     POSTGRES_PASSWORD: randomBytes(32).toString('hex'), ...generatedDbValues(), ...generateSigningKeys(), ...(port === null ? {} : { GATEWAY_HTTP_PORT: port }), ...(memory ?? {}),
     ...provider,
-    ...(central?.values ?? {}), ...centralLocalCodeValues(centralLocalCode, central, null, Boolean(providerEnv)), ...(letterhead?.bytes ? { LETTERHEAD_FILE: letterhead.name } : {}) };
+    ...(central?.values ?? {}), ...centralLocalCodeValues(centralLocalCode, central, null, Boolean(providerEnv)), ...centralAdminTrustValues(centralAdminTrust, central, null, Boolean(providerEnv)), ...(letterhead?.bytes ? { LETTERHEAD_FILE: letterhead.name } : {}) };
   values.CUPS_ADMIN_PASSWORD = randomBytes(32).toString('hex');
   Object.assign(values, printValues());
   const template = replaceEnvLines(readFileSync(resolve(root, '.env.example'), 'utf8'), values);
@@ -511,9 +540,9 @@ export function parseConfigureArgs(args) {
   const options = {};
   const names = { '--state-dir': 'stateDir', '--api-url': 'apiUrl', '--app-url': 'appUrl', '--company': 'company', '--provider-env': 'providerEnv',
     '--central-issuer': 'centralIssuer', '--central-jwks-url': 'centralJwksUrl', '--central-jwks-file': 'centralJwksFile',
-    '--central-local-code': 'centralLocalCode', '--alert-webhook-file': 'alertWebhookFile', '--sensor-webhook-file': 'sensorWebhookFile', '--heartbeat-url-file': 'heartbeatUrlFile', '--letterhead-file': 'letterheadFile', '--gateway-port': 'gatewayPort', '--db-memory': 'dbMemory' };
+    '--central-local-code': 'centralLocalCode', '--central-admin-trust': 'centralAdminTrust', '--alert-webhook-file': 'alertWebhookFile', '--sensor-webhook-file': 'sensorWebhookFile', '--heartbeat-url-file': 'heartbeatUrlFile', '--letterhead-file': 'letterheadFile', '--gateway-port': 'gatewayPort', '--db-memory': 'dbMemory' };
   for (let i = 0; i < args.length; i += 2) {
-    if (!names[args[i]] || !args[i + 1]) throw new Error('Usage: --state-dir ABSOLUTE [--api-url HTTPS --app-url HTTPS --company NAME --provider-env ABSOLUTE] [--central-issuer HTTPS|off (--central-jwks-url HTTPS | --central-jwks-file ABSOLUTE)] [--central-local-code on|off] [--alert-webhook-file ABSOLUTE|off] [--sensor-webhook-file ABSOLUTE|off] [--heartbeat-url-file ABSOLUTE|off] [--letterhead-file ABSOLUTE|off] [--gateway-port 1024-65535] [--db-memory 1-256]');
+    if (!names[args[i]] || !args[i + 1]) throw new Error('Usage: --state-dir ABSOLUTE [--api-url HTTPS --app-url HTTPS --company NAME --provider-env ABSOLUTE] [--central-issuer HTTPS|off (--central-jwks-url HTTPS | --central-jwks-file ABSOLUTE)] [--central-local-code on|off] [--central-admin-trust yes|no] [--alert-webhook-file ABSOLUTE|off] [--sensor-webhook-file ABSOLUTE|off] [--heartbeat-url-file ABSOLUTE|off] [--letterhead-file ABSOLUTE|off] [--gateway-port 1024-65535] [--db-memory 1-256]');
     options[names[args[i]]] = args[i + 1];
   }
   return options;
