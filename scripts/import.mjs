@@ -230,7 +230,7 @@ export function checkFile(file, text) {
         else if (row[field] !== '') row[field] = Number(v);
       }
       if (typeof row.weight_min === 'number' && typeof row.weight_max === 'number' && row.weight_min > row.weight_max) problem(line, 'Up to (kg)', 'must not be less than From (kg)');
-      for (const [field, label, limit] of [['rent', 'Rent (₹)', 999999], ['labour', 'Labour (₹)', 999999], ['tax', 'Tax (%)', 100]]) {
+      for (const [field, label, limit] of [['rent', 'Rent (₹)', 9999.99], ['labour', 'Labour (₹)', 9999.99], ['tax', 'Tax (%)', 100]]) {
         const v = asciiDigits(row[field]);
         if (row[field] === '') continue;
         if (!AMOUNT.test(v) || Number(v) > limit) problem(line, label, `"${row[field]}" must be a plain number from 0 to ${limit} with at most two decimals`);
@@ -354,7 +354,7 @@ export function main(argv, env = process.env, out = line => console.log(line)) {
   const conflicts = problems.length;
   if (apply) {
     const s = report.files;
-    out(`Saved: customers ${s.customers?.add ?? 0}, items ${s.items?.add ?? 0}, rates ${s.rates?.add ?? 0} (rows). Each added record is in the audit log as "import".`);
+    out(`Saved: customers ${s.customers?.add ?? 0}, items ${s.items?.add ?? 0}, rates ${s.rates?.add ?? 0} (rows). Each added record is in the audit log as "Import".`);
     if (conflicts) out(`${conflicts} conflict(s) were skipped and listed above; nothing existing was changed.`);
   } else {
     out(conflicts ? `No errors. ${conflicts} conflict(s) would be skipped; nothing existing is ever changed. Run again with --apply to save.` : 'No errors. Run again with --apply to save.');

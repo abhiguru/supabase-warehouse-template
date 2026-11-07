@@ -3,8 +3,8 @@
 --
 -- What it does, in one transaction (the caller's), in the order customers, items, rates:
 --  * Every write goes through the RPCs the app uses (create_customer, create_item, replace_item_rates), so every server rule, lock and audit
---    row applies. The call runs as the "import" actor: a service account profile named "import" (role admin, is_service_account) that this
---    function makes on its first use and keeps switched off between runs. Audit rows and price history therefore read "import".
+--    row applies. The call runs as the "import" actor: a service account profile named "Import" (role admin, is_service_account) that this
+--    function makes on its first use and keeps switched off between runs. Audit rows and price history therefore read "Import".
 --  * It looks at what the facility already holds before it writes:
 --      customer: the server's name rule (case and spaces ignored). Same fields = skipped; any field different = a conflict.
 --      item:     name + packaging word (WH-41), as create_item matches. Same description = skipped; different = a conflict.
@@ -78,7 +78,7 @@ BEGIN
     SELECT id INTO v_profile FROM public.user_profiles WHERE auth_user_id = c_sub;
     IF v_profile IS NULL THEN
       INSERT INTO public.user_profiles (auth_user_id, name, display_name, role, active, mobile, mobile_verified, enrollment_status, is_service_account)
-      VALUES (c_sub, 'import', 'import', 'admin', true, '0000000171', false, 'approved', true);
+      VALUES (c_sub, 'Import', 'Import', 'admin', true, '0000000171', false, 'approved', true);
     ELSE
       UPDATE public.user_profiles SET active = true, role = 'admin', enrollment_status = 'approved', is_service_account = true, deleted_at = NULL
        WHERE id = v_profile;
@@ -340,3 +340,20 @@ $$;
 ALTER FUNCTION public.import_batch(jsonb, boolean) OWNER TO supabase_admin;
 REVOKE ALL ON FUNCTION public.import_batch(jsonb, boolean) FROM PUBLIC, anon, authenticated;
 GRANT ALL ON FUNCTION public.import_batch(jsonb, boolean) TO service_role;
+
+-- Service accounts (user_profiles.is_service_account), among them the "Import" actor, are not listed in Settings -> Users (product decision of
+-- 2026-11-07). get_users_list leaves them out of the page and of the counts. The text is patched with a marker count, as earlier migrations do.
+DO $patch$
+DECLARE
+  v_def text;
+  v_old constant text := $m$AND (v_caller_role = 'admin' OR up.role != 'admin')$m$;
+  v_count integer;
+BEGIN
+  v_def := pg_get_functiondef('public.get_users_list(text, public.user_role[], boolean, integer, integer)'::regprocedure);
+  v_count := (length(v_def) - length(replace(v_def, v_old, ''))) / length(v_old);
+  IF v_count <> 2 THEN
+    RAISE EXCEPTION 'get_users_list: expected the marker twice, found % times', v_count;
+  END IF;
+  EXECUTE replace(v_def, v_old, v_old || ' AND NOT up.is_service_account');
+END
+$patch$;

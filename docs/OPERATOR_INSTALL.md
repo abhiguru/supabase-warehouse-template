@@ -453,7 +453,7 @@ Any one, two or all three files; `WAREHOUSE_STATE_DIR` must be set and the stack
 | `items.csv` | **Item name**, **Packaging** (Bag, Box, Crate or the item's own word), Description |
 | `rates.csv` | **Item name**, **Packaging**, Customer name (empty = the item's default rate), **Price type** (`Monthly` or `One-time`), **Start date**, **From (kg)**, **Up to (kg)**, **Rent (₹)**, **Labour (₹)**, **Tax (%)** |
 
-The labels are those of the app's customer, item and rate forms. In `rates.csv` one row is one weight band; the rows with the same item, customer, price type and start date make one rate. Rent, labour and tax are all required (0 is allowed, empty is not). A default rate's bands must start at 0 kg and follow on without a gap. A rate may name an item or customer from the `items.csv` or `customers.csv` of the same run.
+The labels are those of the app's customer, item and rate forms. In `rates.csv` one row is one weight band; the rows with the same item, customer, price type and start date make one rate. Rent, labour and tax are all required (0 is allowed, empty is not); rent and labour go up to 9999.99, tax to 100. A default rate's bands must start at 0 kg and follow on without a gap. A rate may name an item or customer from the `items.csv` or `customers.csv` of the same run.
 
 **What is checked.** Every row, by the same rules the app's saves use (required fields, lengths, mobile, GST and PAN shapes, weight bands, amounts, dates), and then against what the facility already holds:
 
@@ -465,7 +465,7 @@ The labels are those of the app's customer, item and rate forms. In `rates.csv` 
 
 **The answer.** One summary line per file (rows read, would add, skip, conflicts, errors), then one line per problem as `file line N, column X: reason` (a conflict ends with "(conflict)"). The exit status is 1 when there is any error, so a script can stop. The dry run really runs the import in the database and rolls it back, so it meets exactly what `--apply` would meet. Format errors (a bad date, a missing column) are listed first, and the database checks run once the files have none.
 
-**`--apply`** saves only when there are no errors, in one transaction, in the order customers, items, rates: it is all or nothing, and a failure leaves nothing behind. Conflicts do not stop it; they are skipped and listed again. Running the same files again adds nothing (everything is skipped). The records are written through the same server functions the app uses, as a service account named `import` (kept switched off between runs; the Users list shows it), so the audit log and the price history read "import". Take a backup first (`bash scripts/backup.sh`) when the facility already holds data.
+**`--apply`** saves only when there are no errors, in one transaction, in the order customers, items, rates: it is all or nothing, and a failure leaves nothing behind. Conflicts do not stop it; they are skipped and listed again. Running the same files again adds nothing (everything is skipped). The records are written through the same server functions the app uses, as a service account named `Import` (kept switched off between runs, and not listed in Settings → Users), so the audit log and the price history read "Import". Take a backup first (`bash scripts/backup.sh`) when the facility already holds data.
 
 ## Several facilities on one host
 
