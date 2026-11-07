@@ -4,7 +4,7 @@ import { submitRawJob, jobOutcome, printFailureBody, configuredPrinterName } fro
 import { readRequestId, startPrintJob, finishPrintJob, duplicateResponse } from '../_shared/print-request.ts'
 import { groupInvoiceLines, paginateInvoiceRows } from '../_shared/invoice-print-layout.ts'
 import type { InvoicePrintPage } from '../_shared/invoice-print-layout.ts'
-import { lineStorageAmount, cumulativeStorageAmount, resolveInvoiceFinYear } from '../_shared/invoice-print-amounts.ts'
+import { lineStorageAmount, cumulativeStorageAmount, resolveInvoiceFinYear, printedMonths } from '../_shared/invoice-print-amounts.ts'
 import { validatePrintAccess, createAuthErrorResponse } from '../_shared/auth-helpers.ts'
 import { sanitizeForPrinter, encodeLatin1 } from '../_shared/printer-text.ts'
 
@@ -331,9 +331,10 @@ function generateInvoicePage(
     detailLine += padCenter(formatDate(item.dispatches_date), w.DELIVERY_DATE);
     detailLine += ' '.repeat(w.SPACE6);
 
-    // Months charged, always 1 decimal (1.0, 2.5, 12.0) so the column lines up
+    // Months charged in the 4-character column: 1 decimal for whole and half months (1.0, 2.5, 12.0, as always),
+    // 2 for steps of a day when they fit (1.33; 10.33 prints 10.3)
     const months = parseFloat(item.duration);
-    detailLine += padLeft(Number.isFinite(months) ? months.toFixed(1) : '', w.DURATION);
+    detailLine += padLeft(printedMonths(months, w.DURATION), w.DURATION);
     detailLine += ' '.repeat(w.SPACE7);
 
     // Weight - show on every dispatch row
