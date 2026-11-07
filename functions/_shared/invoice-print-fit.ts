@@ -78,3 +78,14 @@ export function headerFit(invoice: { invoice_label?: unknown; inv_no?: unknown; 
     throw new PrintFitError('GSTIN', gstin, Math.max(0, layout.STATE_OFFSET - gstinStart));
   }
 }
+
+/** The state field of the form's first line: the facility's state the invoice was made with (GST details), else GUJARAT as before. */
+export function preprintedState(invoice: { doc_type?: unknown; supplier_state_name?: unknown }): string {
+  const name = typeof invoice.supplier_state_name === 'string' ? invoice.supplier_state_name.trim() : '';
+  return invoice.doc_type && invoice.doc_type !== 'invoice' && name ? name.toUpperCase() : 'GUJARAT';
+}
+
+/** A reference that keeps its end: longer than `width`, it is cut at the front and starts with "..." (the form's latin1 ellipsis). */
+export function keepEnd(text: string, width: number): string {
+  return text.length > width ? '...' + text.slice(text.length - (width - 3)) : text;
+}

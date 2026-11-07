@@ -193,6 +193,11 @@ supervisors and the invoice's customer. The service role and the database owner 
 - **Save and edit**: `save_invoice` answers `doc_type`, `linked_invoice_id` and `documents: [{invoice_id, inv_no, inv_fin_year, doc_type,
   total}]`; a two-document save uses the number sent and the next one. `expected_total` is the sum of both totals. New refusals:
   `NUMBER_TAKEN` (with the second number), `NUMBER_OUT_OF_RANGE`, `EDIT_NEEDS_TWO_DOCUMENTS`. `update_invoice` answers `doc_type`.
+- **Delete**: the two documents of a pair are deleted together. `delete_invoice` refuses one of them (`INVOICE_PAIR`, with
+  `linked_invoice {id, inv_no, inv_fin_year, doc_type}`); `delete_invoice_pair(p_invoice_id, p_expected_updated_at, p_linked_expected_updated_at)`
+  (administrators and supervisors) deletes both in one transaction and answers `{success, deleted: 2, invoices: [two delete_invoice answers]}`,
+  or the refusal of either with `deleted: 0` and nothing deleted (`INVOICE_HAS_PAYMENTS`, `STALE_RECORD`, `Invoice not found`); `NOT_A_PAIR`
+  when the invoice has no live other document.
 - **Reads**: `get_invoices_list` rows carry `doc_type` and `linked_invoice_id`, filter `p_doc_type`; `get_invoice_detail` (`invoice`) and
   `get_invoice_data` (`header`) carry `doc_type`, `linked_invoice` and `gst` (null for `invoice`). Rules: [INVOICE_RULES.md](INVOICE_RULES.md),
   "GST documents".

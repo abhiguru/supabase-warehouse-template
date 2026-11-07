@@ -47,6 +47,10 @@
 --     get_invoice_range_for_print answers doc_type, gst_tax_head, cgst_amount and sgst_amount. A resend of a two-document save (request_key,
 --     get_submission_result) is answered only while both documents exist. preview_invoice_documents (staff and above) tells the review
 --     step which document(s) a set of dispatch lines makes, with each document's figures before any discount.
+--  8. A pair is deleted together: delete_invoice refuses one document of a pair (INVOICE_PAIR, naming the other); delete_invoice_pair
+--     (administrators and supervisors) deletes both in one transaction, or neither (the refusal of either, e.g. INVOICE_HAS_PAYMENTS or
+--     STALE_RECORD, with deleted 0). get_invoice_range_for_print also answers supplier_state_name (the facility's state the invoice was
+--     made with), which the pre-printed form prints instead of GUJARAT.
 --
 -- Worked by hand (made-up figures; facility GSTIN 24AAAAA0000A1Z5, Gujarat, registered; rule 'up'):
 --   A. Tax invoice, same state: 10 bags of Jeera (taxable), 12.50 a month, labour 3.00, tax 5 %, 1.5 months: storage 187.50 + labour
@@ -993,7 +997,7 @@ ALTER FUNCTION public.get_invoices_list(integer, integer, uuid, integer, text, t
 REVOKE ALL ON FUNCTION public.get_invoices_list(integer, integer, uuid, integer, text, text, text, text, integer, integer, text, timestamp with time zone, timestamp with time zone, uuid[], text, text) FROM PUBLIC, anon, authenticated;
 GRANT EXECUTE ON FUNCTION public.get_invoices_list(integer, integer, uuid, integer, text, text, text, text, integer, integer, text, timestamp with time zone, timestamp with time zone, uuid[], text, text) TO authenticated, service_role;
 
--- 6.6 The pre-printed print: the type, the tax head and the stored CGST and SGST of each invoice.
+-- 6.6 The pre-printed print: the type, the tax head, the stored CGST and SGST and the facility's state the invoice was made with.
 SELECT pg_temp.patch_function('public.get_invoice_range_for_print(text, text, integer, integer)'::regprocedure, ARRAY[
 $m$as discount,
             i.created_by$m$,
@@ -1003,19 +1007,94 @@ $m$'gstin', iwi.gstin,
                 'trl'$m$
 ], ARRAY[
 $m$as discount,
-            i.doc_type, i.gst_tax_head, i.cgst_amount, i.sgst_amount,  -- Migration 173
+            i.doc_type, i.gst_tax_head, i.cgst_amount, i.sgst_amount, i.gst_supplier_state,  -- Migration 173
             i.created_by$m$,
 $m$iwc.gstin, iwc.created_by,
-            iwc.doc_type, iwc.gst_tax_head, iwc.cgst_amount, iwc.sgst_amount
+            iwc.doc_type, iwc.gst_tax_head, iwc.cgst_amount, iwc.sgst_amount, iwc.gst_supplier_state
     ),$m$,
 $m$'gstin', iwi.gstin,
                 'doc_type', iwi.doc_type,
                 'gst_tax_head', iwi.gst_tax_head,
                 'cgst_amount', iwi.cgst_amount,
                 'sgst_amount', iwi.sgst_amount,
+                'supplier_state_name', warehouse_security.gst_state_name(iwi.gst_supplier_state),
                 'trl'$m$
 ]);
 
+-- 6.7 The two documents of a two-document save are deleted together (owner decision 2026-11-07): delete_invoice refuses one of a pair
+-- (INVOICE_PAIR), delete_invoice_pair below deletes both in one transaction.
+SELECT pg_temp.patch_function('public.delete_invoice(uuid, timestamp with time zone)'::regprocedure, ARRAY[
+$m$  END IF;
+
+  -- The lines first (invoice_trl.invoice_id$m$
+], ARRAY[
+$m$  END IF;
+  -- Migration 173: one document of a pair is deleted only with the other (delete_invoice_pair names both in warehouse.invoice_pair_delete).
+  IF EXISTS (SELECT 1 FROM invoice l JOIN invoice i ON i.linked_invoice_id = l.id
+              WHERE i.id = p_invoice_id AND l.deleted_at IS NULL)
+     AND position(p_invoice_id::text IN COALESCE(current_setting('warehouse.invoice_pair_delete', true), '')) = 0 THEN
+    RETURN warehouse_security.refuse('INVOICE_PAIR', 'This invoice was saved together with another document. Delete both together.',
+      jsonb_build_object('invoice_id', p_invoice_id, 'inv_no', v_inv_no, 'inv_fin_year', v_fin_year,
+                         'linked_invoice', (SELECT jsonb_build_object('id', l.id, 'inv_no', l.inv_no, 'inv_fin_year', l.inv_fin_year, 'doc_type', l.doc_type)
+                                              FROM invoice l JOIN invoice i ON i.linked_invoice_id = l.id WHERE i.id = p_invoice_id)));
+  END IF;
+  -- The lines first (invoice_trl.invoice_id$m$
+]);
+
 DROP FUNCTION pg_temp.patch_function(regprocedure, text[], text[], boolean);
+
+-- Both documents of a pair, in one transaction: each through delete_invoice (its locks, version check, payment refusal and audit rows);
+-- a refusal of either deletes neither and is the answer. p_expected_updated_at is the version of p_invoice_id the screen read,
+-- p_linked_expected_updated_at that of the other document (either may be NULL: no check).
+CREATE FUNCTION public.delete_invoice_pair(p_invoice_id uuid, p_expected_updated_at timestamptz DEFAULT NULL,
+                                           p_linked_expected_updated_at timestamptz DEFAULT NULL) RETURNS jsonb
+    LANGUAGE plpgsql SECURITY DEFINER
+    SET search_path TO 'pg_catalog', 'public', 'extensions', 'utils', 'pg_temp'
+    AS $$
+DECLARE
+  v_linked uuid;
+  v_first jsonb;
+  v_second jsonb;
+  v_detail text;
+BEGIN
+  PERFORM warehouse_security.authorize_rpc('delete_invoice_pair', jsonb_build_object('p_invoice_id', p_invoice_id));
+  IF COALESCE(warehouse_security.active_role(), '') NOT IN ('admin', 'supervisor') AND auth.jwt()->>'role' IS DISTINCT FROM 'service_role' THEN
+    RAISE EXCEPTION 'Administrator required' USING ERRCODE = '42501';
+  END IF;
+  PERFORM pg_advisory_xact_lock(71040);
+  SELECT i.linked_invoice_id INTO v_linked FROM invoice i WHERE i.id = p_invoice_id AND i.deleted_at IS NULL FOR UPDATE;
+  IF NOT FOUND THEN
+    RETURN jsonb_build_object('success', false, 'error', 'Invoice not found');
+  END IF;
+  IF v_linked IS NULL OR NOT EXISTS (SELECT 1 FROM invoice l WHERE l.id = v_linked AND l.deleted_at IS NULL) THEN
+    RETURN warehouse_security.refuse('NOT_A_PAIR', 'This invoice has no other document. Delete it on its own.',
+      jsonb_build_object('invoice_id', p_invoice_id));
+  END IF;
+  PERFORM 1 FROM invoice l WHERE l.id = v_linked FOR UPDATE;
+  BEGIN
+    PERFORM set_config('warehouse.invoice_pair_delete', p_invoice_id::text || ',' || v_linked::text, true);
+    v_first := public.delete_invoice(p_invoice_id, p_expected_updated_at);
+    IF v_first->>'success' IS DISTINCT FROM 'true' THEN
+      RAISE EXCEPTION 'pair_fail' USING DETAIL = v_first::text;
+    END IF;
+    v_second := public.delete_invoice(v_linked, p_linked_expected_updated_at);
+    IF v_second->>'success' IS DISTINCT FROM 'true' THEN
+      RAISE EXCEPTION 'pair_fail' USING DETAIL = v_second::text;
+    END IF;
+    PERFORM set_config('warehouse.invoice_pair_delete', '', true);
+  EXCEPTION WHEN OTHERS THEN
+    -- The block is rolled back: neither document is deleted. The refusal of the one that failed is the answer.
+    PERFORM set_config('warehouse.invoice_pair_delete', '', true);
+    IF SQLERRM = 'pair_fail' THEN
+      GET STACKED DIAGNOSTICS v_detail = PG_EXCEPTION_DETAIL;
+      RETURN v_detail::jsonb || jsonb_build_object('deleted', 0);
+    END IF;
+    RAISE;
+  END;
+  RETURN jsonb_build_object('success', true, 'message', 'Both documents deleted', 'deleted', 2, 'invoices', jsonb_build_array(v_first, v_second));
+END $$;
+ALTER FUNCTION public.delete_invoice_pair(uuid, timestamptz, timestamptz) OWNER TO supabase_admin;
+REVOKE ALL ON FUNCTION public.delete_invoice_pair(uuid, timestamptz, timestamptz) FROM PUBLIC, anon, authenticated;
+GRANT EXECUTE ON FUNCTION public.delete_invoice_pair(uuid, timestamptz, timestamptz) TO authenticated, service_role;
 
 NOTIFY pgrst, 'reload schema';

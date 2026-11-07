@@ -7,7 +7,7 @@ import type { InvoicePrintPage } from '../_shared/invoice-print-layout.ts'
 import { lineStorageAmount, cumulativeStorageAmount, resolveInvoiceFinYear, printedMonths } from '../_shared/invoice-print-amounts.ts'
 import { validatePrintAccess, createAuthErrorResponse } from '../_shared/auth-helpers.ts'
 import { sanitizeForPrinter, encodeLatin1 } from '../_shared/printer-text.ts'
-import { fitted, headerFit, preprintedRefusal, preprintedTaxFields, PrintFitError, IGST_PLAIN_PAPER } from '../_shared/invoice-print-fit.ts'
+import { fitted, headerFit, keepEnd, preprintedRefusal, preprintedState, preprintedTaxFields, PrintFitError, IGST_PLAIN_PAPER } from '../_shared/invoice-print-fit.ts'
 
 // ESC/P Control Codes for Epson LQ 1310
 const ESC = '\x1B';
@@ -232,7 +232,8 @@ function generateInvoicePage(
     // Truncate if too long
     headerLine = headerLine.substring(0, LAYOUT.STATE_OFFSET);
   }
-  headerLine += 'GUJARAT';
+  // WH-151: the facility's state from the GST details the invoice was made with (GUJARAT until they are saved), never cut.
+  headerLine += fitted(preprintedState(invoice), LAYOUT.DATE_OFFSET - LAYOUT.STATE_OFFSET, 'state');
 
   // DATE at position 93 (19.8cm) - use absolute positioning
   const lengthAfterState = headerLine.length;
@@ -307,7 +308,8 @@ function generateInvoicePage(
 
       // GRN No at the end
       const grnRef = `${item.grns_gr_no}/${item.grn_items_quantity || 0}`;
-      headerLine += padRight(truncateString(grnRef, w.GRN_NO), w.GRN_NO);
+      // WH-151: a long reference keeps its end (GRN number and quantity), cut at the front with "...".
+      headerLine += padRight(keepEnd(grnRef, w.GRN_NO), w.GRN_NO);
 
       output += headerLine + '\n';
       return;

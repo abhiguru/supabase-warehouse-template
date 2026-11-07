@@ -276,15 +276,18 @@ Worked (made-up figures, rule `up`, facility in Gujarat): 10 bags, 12.50 a month
 rounding `none` a tax of 10.87 splits 5.44 and 5.43.
 
 **Lost answer**: the kept answer of a two-document save is replayed, and `get_submission_result` finds it, only while both documents
-exist. Deleting or cancelling one document leaves the other as it is (the app asks about the other).
+exist. The two documents are deleted together or not at all: `delete_invoice` refuses one of a pair (`INVOICE_PAIR`) and
+`delete_invoice_pair` deletes both in one transaction (a refusal of either, such as `INVOICE_HAS_PAYMENTS`, deletes neither). Cancelling
+one leaves the other as it is.
 
 **Printed documents.** The PDF of a GST document prints the title (TAX INVOICE, BILL OF SUPPLY, INVOICE-CUM-BILL OF SUPPLY, BILL), the
 facility's legal name, address, GSTIN and state, the customer's name, address ("Not given" when there is none), GSTIN and state, the place
 of supply and "Whether tax is payable on reverse charge: No" (tax documents), each line with its SAC, quantity, months (or One-time), rate,
 labour rate, taxable value and CGST/SGST or IGST, the totals by head, "Exempt supply, no GST charged" on a bill of supply, and "For <legal
-name>, Authorised signatory". The pre-printed form prints no title: half the tax in SGST and CGST for an `invoice` (as always), the stored
+name>, Authorised signatory". The pre-printed form prints no title, and in its state field the facility's state the invoice was made with (GUJARAT, as before, for an
+`invoice` or a bill of an unregistered facility); a GRN reference longer than its 10 characters keeps its end and starts with "...". It prints half the tax in SGST and CGST for an `invoice` (as always), the stored
 CGST and SGST for a tax invoice or invoice-cum-bill of supply, and blank SGST, CGST and tax total for a bill or bill of supply. An IGST
-invoice is not printed on the form ("IGST invoices print on plain paper."). A value longer than its field on the form (an amount, quantity,
+invoice is not printed on the form ("IGST invoices print on plain paper."). A value longer than its field on the form (an amount, quantity, the state,
 weight, rate or months, the address, the amount in words, the customer's GSTIN) is never cut: that invoice is not printed and is named in
 `skipped` with `reason` `does_not_fit` and the field; the rest of the range prints.
 
