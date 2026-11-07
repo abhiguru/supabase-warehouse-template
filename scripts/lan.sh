@@ -3,7 +3,10 @@
 # address, which the app uses only when the public address fails (an internet outage). It is off by default: an installation that
 # never turns it on has no gateway-lan container and publishes nothing but the loopback gateway port.
 # The fallback needs no certificate, no DNS record and no port forwarding (a DHCP reservation for the host is advised). Read
-# docs/OPERATOR_INSTALL.md, "LAN fallback", first: while the fallback is in use, tokens cross the Wi-Fi unencrypted.
+# docs/OPERATOR_INSTALL.md, "LAN fallback", first: while the fallback is in use, tokens cross the Wi-Fi unencrypted (still true: every
+# request and answer is signed with the session's warehouse network key, so nothing can be changed on the way, but everything can be
+# read). The listener passes every request through its signer, the lan-signer service, which this script starts, recreates and removes
+# with gateway-lan.
 #
 #   bash scripts/lan.sh on [<address>|auto] [--cidr <range>] [--port <n>]
 #                                   Turns the fallback on. <address> is the host's own private address (10.x.x.x, 172.16-31.x.x,

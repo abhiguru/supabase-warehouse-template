@@ -1118,25 +1118,33 @@ turning the fallback on only opens the listener: nothing uses it, and the exposu
   never from a header (the public gateway trusts the tunnel's `CF-Connecting-IP`), so the limits and the sign-in functions see each
   phone's own address; it answers the warehouse network only (`LAN_CIDR`); it answers only a request whose `Host` is the server's own
   LAN address (see below); and every answer carries `X-Warehouse-Path: lan`, which is how the app and `doctor` tell the two paths apart.
+- **Signed requests and answers.** A second small container, `lan-signer` (same profile, the function runtime's own image), sits between
+  the listener and the API: it refuses (HTTP 403) every request that is not signed with the **warehouse network key** of a signed-in
+  phone's session, and signs every answer, so nothing can be changed on the Wi-Fi unnoticed. Each session has its own key; the phone gets
+  it over the internet (at sign-in, or at its next configuration check) and it ends with the session. **You do nothing for it:** `lan.sh
+  on|off|start` start and remove the two containers together, and `rotate-keys.sh` recreates both. A phone that has no key yet (signed in
+  before this release and not on the internet since) keeps using the internet only until it has been online once.
 - **What it is not.** It is not a way to sign in with an SMS code or through the association: those need the internet, so a phone that
   is not signed in cannot sign in during an outage, with one exception: **an administrator can sign in over the LAN fallback with a
   break-glass code** ([Break-glass administrator sign-in](#break-glass-administrator-sign-in)). It does not publish anything to the
   internet, and the tunnel and the public gateway are unchanged (the public gateway has no LAN listener at all).
-- **The exposure you accept.** While a phone uses this path, its access token (one hour) and any
-  refresh token it exchanges cross the Wi-Fi **unencrypted**, and so do the photos and documents it sends and receives. Anybody who has
-  the Wi-Fi password, or is on the network, can read them. That has these consequences:
-  - **A token that is read works from anywhere, not only on the LAN**, including from the attacker's own mobile data during your outage,
-    until it ends.
-  - **A stolen refresh token keeps a session alive**: a thief who refreshes first keeps the session going (30 days idle, 90 at most)
-    until the real phone presents the token it had; reuse detection then ends the session for both. The same mechanism lets anyone on
-    the Wi-Fi **sign phones out during an outage**, when they cannot sign back in.
-  - **Administrator tokens carry administrator rights.**
-  - **A stale saved address can send tokens to another device**: if the host's address changes and a phone still holds the old one, the
-    app is to check the address before it sends anything (and once a day while the internet is up), but a phone that was offline since
-    the change has no way to know.
-  - What stays in force: a refresh token is replaced at every use and a stolen one used beside the real phone ends that session (reuse
-    detection), sessions are deleted when a person is deactivated, the LAN path is used only while the public path fails, the listener
-    refuses every address outside `LAN_CIDR` and every `Host` but its own address, and it is published on that address only.
+- **The exposure you accept.** The fallback is plain http **with signatures, not encryption**.
+  - **What signing closes:** a request or an answer changed on the way (an amount, a quantity, stock figures, an invoice PDF) is refused
+    or thrown away; a device that copies the server's answers cannot make a phone send it its tokens; a request recorded on the Wi-Fi
+    cannot be sent again.
+  - **What stays: everything can be read.** While a phone uses this path, its access token (one hour), any refresh token it exchanges,
+    the photos and documents it sends and receives, and every answer cross the Wi-Fi **unencrypted**. Anybody who has the Wi-Fi password,
+    or is on the network, can read them. **A token that is read works from anywhere, not only on the LAN**, including from the
+    attacker's own mobile data during your outage, until it ends (one hour). **A read refresh token can still be raced**: a thief who
+    refreshes first keeps the session going until the real phone presents the token it had; reuse detection then ends the session for
+    both (which also lets such a person sign phones out during an outage). **Administrator tokens carry administrator rights.**
+  - **A break-glass sign-in over the LAN is not protected by signing**: the code, and that session's tokens and key, cross the Wi-Fi in
+    clear, so for that session (24 hours at most) the exposure is as above without the protection of signing.
+  - Photos shown on a phone's screen are not checked; photos and documents that are shared, printed or saved are.
+  - What stays in force as well: a refresh token is replaced at every use and a stolen one used beside the real phone ends that session
+    (reuse detection), sessions and their keys are deleted when a person is deactivated or signed out, the LAN path is used only while
+    the public path fails, the listener refuses every address outside `LAN_CIDR` and every `Host` but its own address, and it is
+    published on that address only.
   Protect the Wi-Fi like a key: a strong password that visitors do not get (give them a guest network that cannot reach the server),
   and turn the fallback off with `bash scripts/lan.sh off` if the facility does not want this exposure. The full statement is in
   [CONTAINER_SECURITY.md](CONTAINER_SECURITY.md#lan-fallback-gateway-lan).
@@ -1156,7 +1164,7 @@ bash scripts/lan.sh off            # removes the container and the variables
 that fails puts the earlier settings back and starts the service with them again). The range defaults to the network of the interface
 (`192.168.1.0/24` for `192.168.1.20/24`) and the port to 8080, or to the one already set. It writes `LAN_ENABLED`, `LAN_BIND_IP`,
 `LAN_HTTP_PORT`, `LAN_CIDR` and `COMPOSE_PROFILES=lan` (added beside any profile already listed) to `config/compose.env`, starts
-`gateway-lan`, recreates the function runtime (a few seconds; it now offers the address to signed-in phones), runs the LAN checks of
+`gateway-lan` and `lan-signer`, recreates the function runtime (a few seconds; it now offers the address to signed-in phones), runs the LAN checks of
 `doctor` and prints, for example:
 
 ```

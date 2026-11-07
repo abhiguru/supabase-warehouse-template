@@ -383,6 +383,101 @@ are stable: they are the interface, and a change to them is announced here.
    is typed in clear on the Wi-Fi (valid 10 minutes, once). The refresh RPC (REST) may use the LAN path.
 8. **Writes** are never resent after a transport failure or a switch of path (the lost-answer rule above).
 
+### Signing on the LAN path (WH-133, migration 163)
+
+From this release every request on the LAN path (`urls.lan`) is signed by the phone and every answer by the server, with the
+**warehouse network key** of the phone's session (HMAC-SHA256). The server side is `docker/lan-signer/signer.ts` (the canonical strings
+are its `canonicalRequest`, `canonicalAnswer`, `canonicalProof`); the app mirrors this section exactly. The public (https) path is
+unchanged. It replaces rule 2 of the hand-off below (the `instanceId` probe) with the proof in item 3.
+
+1. **The key.** 32 bytes, sent as 64 lowercase hex characters; its id is the session id (a UUID, lowercase), the `session_id` claim of
+   the access token. Use the 32 decoded bytes as the HMAC key. It is delivered:
+   - in every sign-in answer that makes a new session (`operator-otp/verify`, `operator-otp/break-glass`, `central-exchange`; any answer
+     whose session comes from `warehouse_security.issue_session` without a session id): `data.session.lan_key_id` and
+     `data.session.lan_key`, beside `access_token` and
+     `refresh_token`. A refresh answer (`refresh_jwt_token`) never carries it; the key stays the same across refreshes.
+   - in the signed-in `get-config` answer as `data.lanKey: { "id": "<uuid>", "key": "<64 hex>" }`, only when the request came over the
+     public https address. It is absent over the LAN path, on a plain-http public address, and when the session has ended.
+   Keep it with that facility's session tokens and remove it with them. Never send it to another facility or another origin.
+2. **Hex and hashes.** Every hash and signature is lowercase hex. `sha256(body)` is SHA-256 of the body bytes exactly as sent or as
+   received after the transport's own decompression (what `arrayBuffer()` gives); an empty body is
+   `e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855`. Times are whole Unix seconds in decimal, no leading zero.
+   Lines are joined with `\n` (LF), no newline at the end, encoded as UTF-8 (every part is printable ASCII).
+3. **Identity proof before any credential** (replaces the `instanceId` check). `GET <lan>/functions/v1/get-public-config`, no
+   `Authorization`, with `X-Lan-Key-Id: <key id>` and `X-Lan-Challenge: <64 hex, 32 fresh random bytes>`. A good answer has status 200,
+   `X-Warehouse-Path: lan`, `X-Lan-Server-Time: <seconds>` and `X-Lan-Proof: <hex>` where
+   ```
+   proof = HMAC(key, "WH-LAN-PROOF-1\n<key id>\n<challenge>\n<X-Lan-Server-Time>\n<status>\n<sha256(body)>")
+   ```
+   and `data.instanceId` is the saved one. Compare the proof in constant time. Anything else (no or wrong proof, another status, an
+   unsigned 403 `lan_key_unknown`) means "another device" (or a key the server no longer has): send nothing with credentials to that
+   address. Keep `offset = X-Lan-Server-Time - local seconds at receipt` for item 4.
+4. **Every other request is signed.** Headers:
+   - `X-Lan-Key-Id`: the key id;
+   - `X-Lan-Time`: `local seconds + offset` (the offset from the last proof or the last signed answer);
+   - `X-Lan-Request-Id`: 32 lowercase hex characters, 16 fresh random bytes per request (a retry is a new request with a new id);
+   - `X-Lan-Signature`: `HMAC(key, canonical request)`, where the canonical request is
+   ```
+   WH-LAN-REQ-1
+   <METHOD, upper case>
+   <request target: path and query exactly as on the request line, e.g. /rest/v1/rpc/save_grn or /rest/v1/items?select=id&limit=50>
+   <key id>
+   <X-Lan-Time>
+   <X-Lan-Request-Id>
+   <sha256(request body)>
+   accept:<value>
+   accept-profile:<value>
+   apikey:<value>
+   authorization:<value>
+   cache-control:<value>
+   content-profile:<value>
+   content-type:<value>
+   prefer:<value>
+   range:<value>
+   x-upsert:<value>
+   ```
+   Each header value with leading and trailing spaces and tabs removed, empty when the header is not sent; names exactly as listed,
+   in this order. **Only these ten headers reach the server** (others, `x-client-info` and `user-agent` included, are dropped), so set
+   every one you need explicitly, `Content-Type` whenever there is a body; a header that the platform adds and the signature does not
+   cover breaks it. The target must be in the form a WHATWG `URL` gives (`url.pathname + url.search`, no `#`, nothing that a URL parser
+   would re-encode, no `..`); otherwise the request is refused (`lan_malformed` or `lan_request_target`). The body is hashed whole, so
+   a body must be bytes the app knows (a string, an ArrayBuffer); a multipart body that the platform builds cannot be signed. A bearer
+   token must belong to the same session as the key (`lan_session_mismatch`). Do not set `Accept-Encoding`.
+5. **Every answer to a signed request is signed** (the inner server's own 401/403/404/413/429/502/503/504 and the signer's refusals
+   after the signature checked out included). Headers: `X-Lan-Request-Id` (echo), `X-Lan-Server-Time`, `X-Lan-Signature` =
+   ```
+   HMAC(key, "WH-LAN-ANS-1\n<key id>\n<the request id the phone sent>\n<X-Lan-Server-Time>\n<status>\n<sha256(body)>\n
+     content-disposition:<v>\ncontent-range:<v>\ncontent-type:<v>\nlocation:<v>\npreference-applied:<v>\nretry-after:<v>\n
+     www-authenticate:<v>\nx-request-id:<v>")
+   ```
+   (one string; the line breaks inside the block are only for reading; values as in item 4, empty when absent). Only these eight
+   answer headers, `X-Warehouse-Path` and the `X-Lan-*` headers are passed on. Use the request id the phone sent, not the echo. Check
+   the signature in constant time over the whole body before using any of it; on success, update the offset from `X-Lan-Server-Time`.
+6. **Refusals and unsigned answers.** The signer's refusals are JSON `{"message", "code"}` with `X-Warehouse-Path: lan`:
+
+   | Status | `code` | Signed | When |
+   |---|---|---|---|
+   | 403 | `lan_not_signed` | no | no `X-Lan-Signature` on a request that needs one |
+   | 403 | `lan_malformed` | no | a signature header or the target is malformed |
+   | 403 | `lan_key_unknown` | no | the key id is not a live session's |
+   | 403 | `lan_signature` | no | the signature does not match |
+   | 413 | `lan_body_too_large` | no | body over 50 MB (or over the limit of an unsigned request) |
+   | 503 | `lan_key_lookup`, `lan_busy` | no | the key could not be read; too much in memory |
+   | 403 | `lan_time` | yes | `X-Lan-Time` more than 300 s from the server's clock, or before the signer started |
+   | 403 | `lan_request_target` | yes | the target is not in canonical form |
+   | 403 | `lan_replayed` | yes | the key id and request id were used in the last 10 minutes |
+   | 403 | `lan_session_mismatch` | yes | the bearer token is another session's |
+   | 503 | `lan_busy` | yes | too many request ids remembered |
+   | 502, 504 | `lan_upstream`, `lan_answer_too_large`, `lan_timeout` | yes | the inner server failed |
+
+   gateway-lan's outer server also answers unsigned, with `X-Warehouse-Path: lan`: 403 `lan_address` (outside `LAN_CIDR`), 404 (wrong
+   `Host`), 413, 429, 502 `lan_signer_down`, 504. A 403 is never a sign-out. An unsigned or wrongly signed answer to a signed request is
+   not the server's own: discard it and leave the LAN path. A request is never resent on the LAN path (a write ends as a lost answer).
+7. **Requests without a signature.** Exactly these (method and target as written, no query): `GET /functions/v1/hello`,
+   `GET /functions/v1/get-public-config` (the proof of item 3, or a plain answer without one), `GET /rest/v1/` (the operator's key check)
+   and `POST /functions/v1/operator-otp/break-glass` (at most 4 KB; no key exists yet). Their answers are not signed, except the proof.
+   The break-glass answer carries the new session's key in clear over the Wi-Fi (accepted; that session lasts 24 hours at most).
+
 ## Writes: refusals, version tokens, request codes and locks
 
 Rules shared by the dispatch, GRN, invoice and order writes. History: migrations 120, 121 and 124 (2026-10-20 and 21).
