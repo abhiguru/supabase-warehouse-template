@@ -1066,6 +1066,26 @@ export function checkBreakGlass(ctx) {
     'Someone with shell access made a one-time administrator code (scripts/break-glass-admin.sh) or signed in with one. Check that it was you or your staff: docs/MONITORING.md, "Break-glass sign-in".', { immediate: true })];
 }
 
+// A save whose audit row could not be written (WH-115): audit_trigger_func lets the save through and records the failure in
+// warehouse_security.audit_write_failures (table, row id, action, error). The audit trail has a gap for each row; the operator is told
+// once a day while there are failures in the last 24 hours. Read-only.
+const AUDIT_FAILURE_SQL = `SELECT count(*), COALESCE(string_agg(DISTINCT table_name, ','), ''), COALESCE(max(created_at)::text, '')
+  FROM warehouse_security.audit_write_failures WHERE created_at > now() - interval '24 hours'`;
+export function checkAuditWrites(ctx) {
+  if (!databaseReady(ctx)) return null;   // postgres_down says so
+  const q = ctx.compose(['exec', '-T', '-e', 'PGOPTIONS=-c statement_timeout=10000', 'db', 'psql', '-X', '-qAt', '-F', '|',
+    '-v', 'ON_ERROR_STOP=1', '-U', 'supabase_admin', '-d', 'postgres', '-c', AUDIT_FAILURE_SQL]);
+  if (q.status !== 0) throw new Error(`audit failure query failed: ${clip(q.stderr.trim(), 200)}`);
+  const [count, tables = '', latest = ''] = q.stdout.trim().split('\n').pop().split('|');
+  if (!/^\d+$/.test(count ?? '')) throw new Error('unexpected audit failure query output');
+  const rows = Number(count);
+  return [result('audit_writes', 'audit_write_failed', rows === 0,
+    rows ? `${rows} audit row${rows === 1 ? '' : 's'} could not be written in the last 24 hours (tables: ${tables.replaceAll(',', ', ')}; latest ${latest || 'unknown'}). The saves went through.`
+      : 'Every audit row of the last 24 hours was written',
+    'The audit trail has a gap for each of these saves. Look at warehouse_security.audit_write_failures (table, row id, error): docs/MONITORING.md, "audit_write_failed".',
+    { repeatHours: 24 })];
+}
+
 // The SMS spending ceilings (docs/OPERATOR_INSTALL.md, "SMS spending ceiling"; WH-119): the facility-wide hourly ceiling on sign-in codes
 // (auth_config `otp_global_hourly_cap`, 300 when unset) and the ceiling on provider requests in any 24 hours
 // (`otp_daily_provider_attempt_cap`, none when unset). While either is reached, every code request is refused (429) until older
@@ -1344,7 +1364,7 @@ export const CHECKS = [
   ['stack_restarts', checkStackRestarts],
   ['container_memory', checkContainerMemory], ['api_local', checkApiLocal], ['api_public', checkApiPublic], ['api_lan', checkApiLan],
   ['api_logs', checkApiLogs], ['pdf_renderer', checkPdfRenderer], ['central_key', checkCentralKey], ['letterhead', checkLetterhead], ['backups', checkBackups],
-  ['restore_space', checkRestoreSpace], ['upgrade', checkUpgrade], ['sms_delivery', checkSmsDelivery], ['sms_ceiling', checkSmsCeiling], ['break_glass', checkBreakGlass], ['clock', checkClock],
+  ['restore_space', checkRestoreSpace], ['upgrade', checkUpgrade], ['sms_delivery', checkSmsDelivery], ['sms_ceiling', checkSmsCeiling], ['break_glass', checkBreakGlass], ['audit_writes', checkAuditWrites], ['clock', checkClock],
   ['cloudflared', checkCloudflared], ['host_node', checkHostNode], ['root_copies', checkRootCopies], ['sensors_stale', checkSensors],
   ['print_sweep', checkPrintSweep],
 ];

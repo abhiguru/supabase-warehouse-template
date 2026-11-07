@@ -833,7 +833,7 @@ The rules:
 - A break-glass sign-in opens a session that **ends 24 hours after the sign-in** (`refresh_sessions.hard_expires_at`; a refresh renews the
   access token but never moves the end), after which the worker must sign in again. It does not mark the number as verified by SMS and does
   not make the sign-in address a trusted source of the phone.
-- Making a code and using one are each written to `public.audit_log` (kept 24 months: [audit_log retention](CONTAINER_SECURITY.md#audit_log-retention)); the code itself never is. To see them:
+- Making a code and using one are each written to `public.audit_log` (kept 8 years, 2,920 days: [audit_log retention](CONTAINER_SECURITY.md#audit_log-retention)); the code itself never is. To see them:
 
   ```sql
   SELECT created_at, action, new_data->>'name' AS administrator, ip_address

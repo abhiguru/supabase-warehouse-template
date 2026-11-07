@@ -92,6 +92,7 @@ An alert fires after two failing runs in a row (10 minutes), except the event al
 | `sms_delivery` | Checked every hour: more than 20% of the last 24 hours' sign-in code requests (judged from 10 requests up), or more than 10, or at least half of the last hour's (from 5 requests up), were not accepted by the SMS provider (at once; see "SMS delivery") |
 | `sms_ceiling_reached` | The SMS spending ceiling is reached: this hour's sign-in codes are at `otp_global_hourly_cap`, or the MSG91 requests of the last 24 hours at `otp_daily_provider_attempt_cap`; code requests are refused until it frees up (at once, then once a day while it lasts) |
 | `break_glass_used` | A break-glass administrator code was made or used in the last 24 hours (at once; see "Break-glass sign-in") |
+| `audit_write_failed` | An audit row could not be written in the last 24 hours; the save went through (once a day while it lasts; see "audit_write_failed") |
 | `clock_unsynced` | `timedatectl` says the clock is not synchronised, or the host clock is more than 10 s from the clock of the public address's Cloudflare edge |
 | `cloudflared_old` | Weekly warning (it repeats every 7 days, not every 4 hours; it never calls the network). The installed `cloudflared --version` was released 11 months ago or more (Cloudflare supports only versions within a year of its newest, and the tunnel runs with `--no-autoupdate`); or the output of `cloudflared --version` is not one this check knows (a warning of its own, also weekly); or the tunnel's unit (`warehouse-<state directory name>-tunnel.service`, else the stock `cloudflared.service` where the first is not running) is running a binary that was replaced since it started (its `/proc/<pid>/exe` says `(deleted)`, or the file on disk is newer than the unit's start): restart it. Nothing is judged where `cloudflared` is not installed. Fix: `sudo apt install --only-upgrade cloudflared`, then `sudo systemctl restart` the tunnel unit ([Monthly host maintenance](OPERATOR_INSTALL.md#monthly-host-maintenance)) |
 | `host_node_eol` | Weekly warning. The Node.js that runs the checker is within 60 days of the end of its major, or past it: 22 on 2027-04-30, 24 on 2028-04-30, 26 on 2029-04-30; a major outside the table warns too: an odd-numbered one (no long-term support), an older one, or one newer than the table (the table is `NODE_END_OF_LIFE` in `scripts/watch.mjs`, and the dates in [MAINTENANCE_CALENDAR.md](MAINTENANCE_CALENDAR.md)). Fix: unpack the next even-numbered major and run `sudo bash scripts/watch-timer.sh install --state <state> --node <path>` |
@@ -151,6 +152,11 @@ refusals and lost answers. It does **not** see a code MSG91 accepted and the tel
 after acceptance): that shows as users saying no code arrives, and the cure is in the MSG91 console
 ([TROUBLESHOOTING.md](TROUBLESHOOTING.md#sms-codes-not-arriving)). There is no balance check: MSG91's balance endpoint needs
 a key with more rights than the sending key.
+
+`audit_write_failed` is read every 5 minutes from `warehouse_security.audit_write_failures`, where the audit trigger records each audit row it
+could not write (table, row id, action, error). The save itself is not stopped, so the audit trail has a gap for it; the alert repeats once a day
+while there are failures in the last 24 hours. To look: `bash scripts/compose.sh exec -T db psql -X -U supabase_admin -d postgres -c "SELECT * FROM warehouse_security.audit_write_failures ORDER BY created_at DESC LIMIT 20"`.
+Audit rows cannot be changed or deleted by any API role or the service role (migration 155); only the retention job removes them, after 8 years.
 
 `sms_ceiling_reached` is read every 5 minutes from the counters that `operator_prepare_otp` keeps and posts once a day while a ceiling stays
 reached (set them as OPERATOR_INSTALL.md, "SMS spending ceiling", says). It says the ceiling is reached, not how many people were turned away.
