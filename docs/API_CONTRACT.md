@@ -1027,7 +1027,9 @@ SQLSTATE 42501 first.
   When the save switches an item from inactive to active and that gave it the standard rate tiers, `data` also carries `rate_source: 'standard'`; otherwise `data` has no `rate_source`.
 - `delete_item_safe(p_item_id)`: for an item that does not exist the refusal also carries `error_code: 'NOT_FOUND'` (still `{ success: false, message: 'Item not found' }`); its other refusals and texts are unchanged.
 - `get_items`: the search text also matches `packaging` (case-insensitive substring, like name and description).
-  Order, paging and the answer are unchanged.
+  Order, paging and the answer are unchanged. Who may call it: every signed-in role (administrator, supervisor, staff and customer):
+  `warehouse_security.authorize_rpc` lets `get_items`, `get_item` and `search_items_autocomplete` through without a role check. (The
+  "administrators and supervisors only" comment in migration 114 belongs to `get_item_usage` below, not to `get_items`.)
 - `get_item_usage(p_item_id uuid)`, read-only, administrators and supervisors: answer
   `{ success: true, data: { item_id, name, active, grn_lines, order_lines, grn_rates, price_rows, rate_count,
   in_use, can_delete } }`. `grn_lines` (GRN lines, including lines of deleted GRNs, as `delete_item_safe` counts them), `order_lines` and `grn_rates` are what makes
