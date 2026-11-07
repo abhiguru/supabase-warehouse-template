@@ -308,6 +308,12 @@ class Bridge:
             dropped = self.queue.prune(now, QUEUE_MAX_AGE)
             if dropped:
                 log.warning("event=queue_pruned dropped=%d", dropped)
+                # One line per reason; the monitor (scripts/sensor-alerts.mjs) counts these lines.
+                too_old, over = self.queue.last_pruned
+                if too_old:
+                    log.warning("event=readings_dropped reason=older_than_29_days hub=- dropped=%d", too_old)
+                if over:
+                    log.warning("event=readings_dropped reason=queue_over_%d_rows hub=- dropped=%d", self.queue.max_rows, over)
         if self.health_path:
             health.write(self.health_path, {
                 "time": iso(now), "version": __version__, "queued": self.queue.size(),

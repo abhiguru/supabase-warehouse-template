@@ -46,6 +46,7 @@ def open_db(path: str) -> sqlite3.Connection:
 class Queue:
     def __init__(self, db: sqlite3.Connection, max_rows: int = 200_000):
         self.db, self.max_rows = db, max_rows
+        self.last_pruned = (0, 0)  # (too old, over max_rows) of the latest prune, for the log's reason
         with db:
             db.executescript(SCHEMA)
 
@@ -133,6 +134,7 @@ class Queue:
             over = self.db.execute(
                 "DELETE FROM outbox WHERE id IN (SELECT id FROM outbox ORDER BY id DESC LIMIT -1 OFFSET ?)",
                 (self.max_rows,)).rowcount
+            self.last_pruned = (old, over)
             return old + over
 
     def size(self) -> int:

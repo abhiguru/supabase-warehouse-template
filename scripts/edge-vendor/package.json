@@ -1,8 +1,9 @@
 {
   "name": "warehouse-edge-vendor",
   "private": true,
-  "description": "Builds the library the edge functions load (jose), as a file under functions/vendor.",
+  "description": "Builds the libraries the edge functions load (jose, ipp), as files under functions/vendor.",
   "dependencies": {
+    "ipp": "2.0.1",
     "jose": "6.2.12"
   },
   "devDependencies": {

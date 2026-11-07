@@ -281,7 +281,9 @@ UNIT
 # for a while: a power cut inside that time leaves them stopped, and nothing else starts them before someone runs start.sh.
 # --no-build --no-recreate: a boot starts stopped containers and creates missing ones, nothing more. It never builds or recreates
 # (a changed compose file, image or database command is applied by setup.sh, with its preflights and under the operator lock),
-# so a checkout that was pulled but not set up yet is not applied by a reboot. Wants=, not Requires=: restarting Docker (an
+# so a checkout that was pulled but not set up yet is not applied by a reboot. The one exception is the Windows print bridge address
+# (ExecStartPost: scripts/print-bridge-sync.sh recreates functions only when PRINT_TRANSPORT=bridge and its PRINTBRIDGE_URL is out of date;
+# the leading - means a failure there never fails the boot). Wants=, not Requires=: restarting Docker (an
 # apt upgrade of docker-ce) does not run this unit again.
 # ConditionPathExists=!...: stop.sh writes config/stopped-by-operator and start.sh, setup.sh and restore.sh remove it; while it
 # exists a reboot leaves the stack down (a stop the operator asked for, or a manual procedure in the middle).
@@ -300,6 +302,7 @@ WorkingDirectory=$ROOT
 Environment=WAREHOUSE_STATE_DIR=$state
 Environment=PATH=$path
 ExecStart=/bin/bash $ROOT/scripts/compose.sh up -d --no-build --no-recreate
+ExecStartPost=-/bin/bash $ROOT/scripts/print-bridge-sync.sh --quiet
 TimeoutStartSec=10min
 
 [Install]

@@ -185,6 +185,11 @@ names the candidate it was built for; the revision is the commit of both.
       `supavisor`) open Package settings, link it to this repository if it is not, and set its visibility to **Public**; then re-run the job. The
       step "Check that the images pull without credentials" fails until every package is public, so a private package is never
       discovered by a facility silently building instead.
+- [ ] **Signatures.** The step "Sign every published image (keyless) and check the signatures" is green: every image of the list is signed by the
+      workflow run and passes `scripts/verify-image-signature.sh` (and a wrong identity is refused). Check one by hand with the `cosign verify` command of
+      [CONTAINER_SECURITY.md](CONTAINER_SECURITY.md#image-signatures). If the step fails, nothing is attached: fix the cause (the job needs
+      `id-token: write`; Sigstore's services must answer), re-run the job on a draft release, or cut the next candidate. Never publish a release whose
+      images do not verify: a facility that cannot verify them refuses the upgrade (or builds locally).
 - [ ] In the release (a draft, or published) check the asset `release-images.json`: `release` is the tag, `commit` is
       `git rev-parse vX.Y.Z^{commit}`, there is one image for every recipe (`jq -r '.images | keys[]' release-images.json`: the services of
       `docker/docker-compose.yml` that have `build:`), and each `ref` is `ghcr.io/abhiguru/supabase-warehouse-template/<service>@sha256:<64 hex>`.

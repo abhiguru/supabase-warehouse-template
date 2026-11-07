@@ -139,17 +139,17 @@ SELECT pg_temp.gl_assert(pg_temp.gl_numbers(public.get_grn_list(NULL, :'end_day'
       jsonb_build_object('gr_no', 'GLE'))) = ARRAY['GLE4', 'GLE3', 'GLE2', 'GLE1'],
   'staff, receipts with only an end day (up to E) and only a start day (from S)');
 -- Migration 87: a total weight above int4 is summed as numeric, not an overflow error.
--- One more receipt: 50000 bags of 50000 kg = 2500000000 kg (an int4 product would overflow).
+-- One more receipt: 250000 bags of 9999 kg (the most a line weighs since WH-56) = 2499750000 kg (an int4 product would overflow).
 SELECT pg_temp.gl_assert(public.save_grn(p_gr_no => 'GLEW1', p_date => (:'end_day'::date::text || 'T10:00:00+05:30')::timestamptz,
   p_customer_id => :'quince'::uuid, p_customer_name => 'GRN List Day Quince Cold', p_idempotency_key => 'grn-list-end-day-GLEW1',
   p_items => jsonb_build_array(jsonb_build_object('item_id', :'turmeric', 'item_name', 'GRN List Day Turmeric', 'packaging', 'Bag',
-    'qty', 50000, 'weight', 50000)))->>'success' = 'true', 'fixture receipt GLEW1 with a huge weight');
+    'qty', 250000, 'weight', 9999)))->>'success' = 'true', 'fixture receipt GLEW1 with a huge weight');
 SELECT pg_temp.gl_assert(r->>'success' = 'true'
-  AND (SELECT (x->>'total_weight')::numeric FROM jsonb_array_elements(r#>'{data,grns}') x WHERE x->>'gr_no' = 'GLEW1') = 2500000000,
-  'a receipt of 50000 x 50000 kg lists total_weight 2500000000: ' || r::text)
+  AND (SELECT (x->>'total_weight')::numeric FROM jsonb_array_elements(r#>'{data,grns}') x WHERE x->>'gr_no' = 'GLEW1') = 2499750000,
+  'a receipt of 250000 x 9999 kg lists total_weight 2499750000: ' || r::text)
 FROM (SELECT public.get_grn_list(:'end_day', :'end_day', 'date', 'desc', 50, 0,
   jsonb_build_object('gr_no', 'GLEW1')) AS r) answer;
--- The dispatch list sums the same way: a dispatch of the whole receipt weighs 2500000000 kg, not an overflow.
+-- The dispatch list sums the same way: a dispatch of the whole receipt weighs 2499750000 kg, not an overflow.
 RESET ROLE;
 SELECT id AS admin_profile FROM public.user_profiles WHERE mobile = '919888888561' \gset
 SELECT id AS huge_lot FROM public.goodsreceived_trl WHERE gr_id = (SELECT id FROM public.goodsreceived WHERE gr_no = 'GLEW1') \gset
@@ -160,14 +160,14 @@ SET LOCAL session_replication_role = replica;
 INSERT INTO public.dispatch(disp_no, disp_date, customer_id, customer_name)
  VALUES ('GLEWD1', '2026-05-02', :'quince'::uuid, 'GRN List Day Quince Cold');
 INSERT INTO public.dispatch_trl(gr_id, gr_trl_id, disp_id, disp_qty)
- SELECT t.gr_id, t.id, (SELECT id FROM public.dispatch WHERE disp_no = 'GLEWD1'), 50000
+ SELECT t.gr_id, t.id, (SELECT id FROM public.dispatch WHERE disp_no = 'GLEWD1'), 250000
  FROM public.goodsreceived_trl t WHERE t.id = :'huge_lot'::uuid;
 SET LOCAL session_replication_role = origin;
 SELECT set_config('request.jwt.claims', :'admin_claims', true);
 SET LOCAL ROLE authenticated;
 SELECT pg_temp.gl_assert(r->>'success' = 'true'
-  AND (SELECT (x->>'total_weight')::numeric FROM jsonb_array_elements(r#>'{data,dispatches}') x WHERE x->>'disp_no' = 'GLEWD1') = 2500000000,
-  'a dispatch of 50000 x 50000 kg lists total_weight 2500000000: ' || r::text)
+  AND (SELECT (x->>'total_weight')::numeric FROM jsonb_array_elements(r#>'{data,dispatches}') x WHERE x->>'disp_no' = 'GLEWD1') = 2499750000,
+  'a dispatch of 250000 x 9999 kg lists total_weight 2499750000: ' || r::text)
 FROM (SELECT public.get_dispatch_list_with_items(:'quince'::uuid, '{}'::jsonb, 'dispatch_date', 'desc', 1, 50, false) AS r) answer;
 RESET ROLE;
 

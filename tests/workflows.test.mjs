@@ -620,8 +620,9 @@ test('release.yml publishes the release images in a job of their own: build, sca
   assert.doesNotMatch(checks.replace('\n    permissions:\n      contents: read\n      checks: read\n', ''), /\n    permissions:|packages:\s*write|contents:\s*write/, 'the checks job writes nothing, and its only own permissions are contents: read and checks: read');
   assert.match(publish, /^    needs: release\n/, 'it runs only after the validation, tests and audit of the release job pass');
   assert.match(publish, /\n    if: github\.repository == 'abhiguru\/supabase-warehouse-template'\n/, 'a fork has no right to the registry namespace');
-  assert.match(publish, /\n    permissions:\n      contents: write\n      packages: write\n    steps:\n/, 'exactly the two write permissions, on this job');
-  assert.doesNotMatch(publish, /write-all|id-token|actions:\s*write|pull-requests:\s*write/);
+  assert.match(publish, /\n    permissions:\n      contents: write\n      packages: write\n      id-token: write [^\n]*\n    steps:\n/, 'the two write permissions plus id-token for the keyless signature, on this job');
+  assert.doesNotMatch(checks, /id-token/, 'the OIDC token is available to the publishing job only');
+  assert.doesNotMatch(publish, /write-all|actions:\s*write|pull-requests:\s*write/);
   assert.doesNotMatch(release, /continue-on-error|\|\| true/, 'no step may be softened');
   assert.doesNotMatch(release, /secrets\./, 'the job needs no secret beyond the run\'s own token');
 
@@ -632,6 +633,7 @@ test('release.yml publishes the release images in a job of their own: build, sca
     'Reuse the images of the pre-release at this commit, if there is one', 'Install Trivy 0.76.0',
     'Build every image without the cache and scan it', 'Log in to ghcr.io', 'Push the images that were scanned and write release-images.json',
     'Re-tag the images of the pre-release and write release-images.json',
+    'Install cosign', 'Sign every published image (keyless) and check the signatures',
     'Check that the images pull without credentials', 'Attach release-images.json to the GitHub Release',
     "Remove this job's images and log out of ghcr.io"]);
   const step = name => `\n${publish.split(`\n      - name: ${name}\n`)[1].split(/\n      - /)[0]}`;
@@ -844,4 +846,48 @@ test('scale-check is scheduled only, needs validate, runs the 5-year seed and th
   assert.match(job, /SCALE_OUTPUT: \$\{\{ runner\.temp \}\}\/scale-check\.json/, 'the file the check writes is the file that is uploaded');
   assert.match(job, /- name: Stop only this checkout's operator project\n {8}if: always\(\)\n {8}run: test ! -f "\$WAREHOUSE_STATE_DIR\/config\/compose\.env" \|\| bash scripts\/compose\.sh --profile '\*' down\n/);
   assert.doesNotMatch(job, /continue-on-error/, 'no step is softened');
+});
+
+// WH-116: the images are signed keyless in the publishing job, after they are pushed and before the anonymous pull check and the attach.
+test('release.yml signs every published image with a pinned cosign, checks it with the facility\'s own script, and fails on a signature that does not check', () => {
+  const release = readFileSync(new URL('../.github/workflows/release.yml', import.meta.url), 'utf8');
+  const publish = release.split(/\n  publish-images:\n/)[1];
+  const installer = publish.split('\n      - name: Install cosign\n')[1].split(/\n      - name:/)[0];
+  assert.match(installer, /uses: sigstore\/cosign-installer@[0-9a-f]{40} # v\d+\.\d+\.\d+\n\s+with:\n\s+cosign-release: v\d+\.\d+\.\d+\n?$/, 'the installer is pinned by commit and the cosign version is explicit');
+  const sign = publish.split('\n      - name: Sign every published image (keyless) and check the signatures\n')[1].split(/\n      - name:/)[0];
+  assert.match(sign, /COSIGN_YES: 'true'/);
+  assert.match(sign, /WAREHOUSE_SIGNED: 'yes'/);
+  assert.match(sign, /jq -r '\.images\[\]\.ref' "\$RUNNER_TEMP\/release-images\.json"/);
+  assert.match(sign, /\[\[ -n "\$refs" \]\] \|\| \{[^}]*exit 1; \}/, 'an empty list fails');
+  assert.match(sign, /cosign sign "\$ref" \|\| \{[^}]*exit 1; \}/, 'signing is by digest reference and a failure stops the run');
+  assert.match(sign, /bash scripts\/verify-image-signature\.sh "\$ref" \|\| \{[^}]*exit 1; \}/);
+  assert.match(sign, /WAREHOUSE_COSIGN_IDENTITY_REGEXP='\^https:\/\/github\\\.com\/example\/not-this-repository\/\.\*\$' bash scripts\/verify-image-signature\.sh "\$ref" 2> \/dev\/null; then\n\s+echo "::error::The check accepted \$ref against a wrong identity\."; exit 1/, 'a wrong identity must be refused');
+  assert.doesNotMatch(sign, /\|\| true|continue-on-error/);
+  // Order: after the push or re-tag, before the anonymous pull check and the attach.
+  assert.ok(publish.indexOf('Install cosign') > publish.indexOf('--retag'));
+  assert.ok(publish.indexOf('Sign every published image') < publish.indexOf('Check that the images pull without credentials'));
+  assert.ok(publish.indexOf('Sign every published image') < publish.indexOf('gh release upload'));
+});
+
+test('the signature check script: wrong use is 2, a tree without docker/images-signed is 10, no cosign is 11, and the identity is this repository\'s release workflow', () => {
+  const rootDir = fileURLToPath(new URL('..', import.meta.url));
+  const ref = `ghcr.io/example/image@sha256:${'a'.repeat(64)}`;
+  const script = join(rootDir, 'scripts/verify-image-signature.sh');
+  assert.equal(existsSync(join(rootDir, 'docker/images-signed')), true, 'this tree publishes signed images');
+  for (const args of [[], ['not a ref'], [ref, 'extra'], [`ghcr.io/example/image:latest`]]) assert.equal(spawnSync('bash', [script, ...args], { encoding: 'utf8' }).status, 2, args.join(' '));
+  const scratch = mkdtempSync(join(tmpdir(), 'warehouse-verify-sig-'));
+  try {
+    const tree = join(scratch, 'tree');
+    mkdirSync(join(tree, 'scripts'), { recursive: true });
+    writeFileSync(join(tree, 'scripts/verify-image-signature.sh'), readFileSync(script));
+    const env = { ...process.env, WAREHOUSE_SIGNED: '', WAREHOUSE_STATE_DIR: '', STATE: '', PATH: '/usr/bin:/bin' };
+    const older = spawnSync('bash', [join(tree, 'scripts/verify-image-signature.sh'), ref], { encoding: 'utf8', env });
+    assert.equal(older.status, 10, older.stdout + older.stderr);
+    mkdirSync(join(tree, 'docker'));
+    writeFileSync(join(tree, 'docker/images-signed'), '');
+    const missing = spawnSync('bash', [join(tree, 'scripts/verify-image-signature.sh'), ref], { encoding: 'utf8', env });
+    assert.equal(missing.status, 11, missing.stdout + missing.stderr);
+    assert.match(missing.stderr, /cosign is not installed on this host/);
+  } finally { rmSync(scratch, { recursive: true, force: true }); }
+  assert.match(readFileSync(script, 'utf8'), /\^https:\/\/github\\\\\.com\/abhiguru\/supabase-warehouse-template\/\\\\\.github\/workflows\/release\\\\\.yml@refs\/tags\/v\[0-9\]/);
 });

@@ -83,6 +83,18 @@ BEGIN
   IF p_rates IS NOT NULL AND warehouse_security.active_role() = 'staff' THEN
     RETURN warehouse_security.rate_failure('RATES_MANAGER_ONLY', 'Only administrators and supervisors can set rates on a GRN');
   END IF;
+  -- WH-111: an edit sends the GRN's whole line list (lines not sent are removed under the rules below), so a missing, NULL or empty list
+  -- would delete every line that has no dispatch, stock movement or order line. It is refused by name and nothing is written; a GRN with
+  -- no lines left is deleted with delete_grn_safe, not emptied by an edit.
+  IF p_items IS NULL OR jsonb_typeof(p_items) <> 'array' OR jsonb_array_length(p_items) = 0 THEN
+    RETURN jsonb_build_object(
+      'success', false,
+      'error_code', 'WH409',
+      'reason', 'GRN_LINES_REQUIRED',
+      'error', 'A GRN needs at least one line. Delete the GRN instead.',
+      'message', 'A GRN needs at least one line. Delete the GRN instead.'
+    );
+  END IF;
   -- Migration 95: a line's name and packaging fit the receipt columns (80 and 40 characters, as the catalog).
   IF jsonb_typeof(p_items) = 'array' THEN
     v_item_index := 0;
@@ -194,7 +206,9 @@ BEGIN
         -- is not saved over; nothing is written. This is after the saved-answer lookup above, so a retry of this user's own
         -- committed save is answered from it and never refused for what its first try changed. No token (an older app,
         -- fas-sync): no check.
-        SELECT g.updated_at, g.gr_no, g.date, COALESCE(g.invoiced, false), g.customer_name
+        SELECT g.updated_at, g.gr_no, g.date,
+               -- WH-112: one rule for "invoiced": a live invoice (neither deleted nor cancelled); the flag is only a cache.
+               EXISTS (SELECT 1 FROM invoice li WHERE li.gr_id = g.id AND li.deleted_at IS NULL AND li.cancelled_at IS NULL), g.customer_name
         INTO v_stored_updated_at, v_stored_gr_no, v_stored_date, v_stored_invoiced, v_stored_customer_name
         FROM goodsreceived g
         WHERE g.id = p_grn_id
@@ -475,6 +489,13 @@ BEGIN
             IF (v_item->>'weight')::int < 0 THEN
                 RAISE EXCEPTION 'Weight cannot be negative for item "%"', v_item_name;
             END IF;
+            -- WH-56: a new or changed weight is at most 9999 kg. A saved line keeps an older, larger weight until its weight is edited.
+            IF (v_item->>'weight')::int > 9999
+               AND ((v_item->>'id') IS NULL
+                    OR (v_item->>'weight')::int IS DISTINCT FROM
+                       (SELECT COALESCE(t.weight, 0) FROM goodsreceived_trl t WHERE t.id = (v_item->>'id')::uuid AND t.gr_id = p_grn_id)) THEN
+                RAISE EXCEPTION 'Weight must be at most 9999 for item "%"', v_item_name;
+            END IF;
 
             IF v_item->>'id' IS NOT NULL THEN
                 SELECT qty, stock, item_name
@@ -695,7 +716,7 @@ BEGIN
         -- (Migration 121: the rates that go are collected, to refuse the edit below when it would drop a rate it may not.)
         WITH gone AS (
             DELETE FROM public.grn_rates gr WHERE gr.gr_id = p_grn_id
-              AND NOT EXISTS (SELECT 1 FROM public.goodsreceived g WHERE g.id = p_grn_id AND g.invoiced IS TRUE)
+              AND NOT EXISTS (SELECT 1 FROM public.invoice li WHERE li.gr_id = p_grn_id AND li.deleted_at IS NULL AND li.cancelled_at IS NULL) -- WH-112: live-invoice rule
               AND (gr.price_type <> (SELECT CASE WHEN upper(COALESCE(g.pricing_mode, '')) = 'ONE_TIME' THEN 'one_time' ELSE 'monthly' END
                                        FROM public.goodsreceived g WHERE g.id = p_grn_id)
                    OR NOT EXISTS (SELECT 1 FROM public.goodsreceived_trl t WHERE t.gr_id = p_grn_id AND t.item_id = gr.item_id

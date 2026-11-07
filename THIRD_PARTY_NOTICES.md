@@ -19,12 +19,12 @@ The edge functions carry one third-party library as a built file:
 `functions/vendor/jose.mjs` (`jose` 6.2.12, MIT, Filip Skokan). supabase-js is
 no longer bundled: the functions reach PostgREST and Storage through
 `functions/_shared/supabase-rest.ts`, original project code on plain `fetch`.
-The licence text of every package `jose.mjs` may contain is in
+The licence text of every package `jose.mjs` and `ipp.mjs` may contain is in
 `functions/vendor/LICENSES.txt`; the exact versions are in
 `scripts/edge-vendor/package-lock.json`. `jose` at the same version is also
-the locked local development dependency the unit tests use. The optional `ipp`
-2.0.1 package (MIT) is not vendored: the printing functions import it at run
-time, and the router refuses those functions.
+the locked local development dependency the unit tests use. The printing
+functions also carry `ipp` 2.0.1 (MIT, William Kapke) as the built file
+`functions/vendor/ipp.mjs`, so a worker downloads nothing when it prints.
 
 The Compose files reference pinned upstream container images but do not
 redistribute their contents. Operators who redistribute images must review each
@@ -127,7 +127,7 @@ functions it carries are listed in `tests/baseline_roles.sql`. The earlier files
 | Sensor bridge (`docker/sensor-bridge/`) | Original project work; installs python-kasa and its pinned dependencies from PyPI at image build time, not vendored | GPL-3.0-or-later (bridge code); GPL-3.0 (python-kasa) | `docker/sensor-bridge/LICENSE`; "Sensor bridge" section above |
 | Supabase database initialization scripts (`docker/volumes/db/roles.sql`; `_supabase.sql` and `pooler.sql` no longer exist) and Supavisor configuration | Adapted from `supabase/supabase` self-hosting material; `docker/volumes/db/00-bootstrap.sql` is original | Apache-2.0 | `LICENSES/Apache-2.0.txt`; upstream copyright notices retained in copied files where present |
 | `jose` | Vendored as one built file, `functions/vendor/jose.mjs` (esbuild from the locked npm package, checksummed in `functions/vendor/SHA256SUMS`); also the unit tests' locked development dependency | MIT, Filip Skokan | `functions/vendor/LICENSES.txt`; `scripts/edge-vendor/package-lock.json` |
-| `ipp` | Optional runtime npm import used only by unsupported printing paths; not vendored | MIT | Upstream npm package license |
+| `ipp` | Vendored as one built file, `functions/vendor/ipp.mjs` (esbuild from the locked npm package, checksummed in `functions/vendor/SHA256SUMS`); used by the CUPS print path | MIT, William Kapke | `functions/vendor/LICENSES.txt`; `scripts/edge-vendor/package-lock.json` |
 | Source-built recipe (`docker/storage`) | Copied upstream manifest plus security patches; archives fetched by checksum at build time | Apache-2.0 | `LICENSES/storage/` and the section above |
 | PDF renderer (`docker/pdf-renderer/`) | Original project work; downloads Chrome for Testing (chrome-headless-shell) at image build time (checksum pinned) and installs puppeteer-core with `npm ci`; fonts are Debian packages; nothing third-party is committed | MIT (renderer code); BSD-3-Clause plus bundled notices (Chrome for Testing); Apache-2.0 (puppeteer-core) | `LICENSES/chrome-headless-shell/`, `LICENSES/puppeteer-core/`; the archive's `LICENSE.headless_shell` stays in the image at `/opt/chs` |
 | Referenced publisher images | Pulled at setup time; contents are not redistributed in the source archive | Per the table in "Referenced publisher images" | Exact tags and digests in `docker/docker-compose.yml` and `docker/*/Dockerfile`; downstream operators must review image licences before distribution |

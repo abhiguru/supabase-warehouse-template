@@ -8,6 +8,51 @@ file used to carry for earlier installations are in git: `git show b45ae0b:CHANG
 
 ## Unreleased
 
+**Printing works out of the box on an Epson LQ-1310 (Linux through CUPS, Windows through a print bridge). Migration 151.** Upgrade the app in the same window.
+
+### Added
+
+- **Windows print bridge (`scripts/windows/print-bridge.ps1`, `register-tasks.ps1 -PrintOnly -Printer ... -SetTokenFromWsl ...`).** A Windows host sends raw printer bytes to the Windows spooler with no CUPS: token-checked, one queue, 2 MB limit, daily log. `PRINT_TRANSPORT`, `PRINTER_NAME`, `PRINTBRIDGE_TOKEN` and the bridge address (default port 6632) are set up by `setup.sh`. Not run on a Windows host yet. [PRINTING.md](docs/PRINTING.md).
+- **`cancel-print-job` and `sweep-print-jobs`.** Cancel stops the CUPS job before the row says `cancelled`; a job that cannot be stopped answers 409 `CANNOT_CANCEL`. The 5-minute checker settles jobs stuck `queued` or `printing` as `unknown`.
+- **Print bridge review fixes.** The functions recreate on a changed bridge address; a connection that cannot be made is a plain failure and a reset after sending is "unconfirmed" (no double print); `/` is allowed in `PRINTER_NAME`; clearer 403, 413 and 5xx messages. On Windows the task runs a locked-down copy of the script, a re-run restarts the bridge, startup failures and the log are bounded and written. Re-run `register-tasks.ps1 -Force` after the upgrade. [PRINTING.md](docs/PRINTING.md).
+- **Print review fixes (second round).** CUPS cancel is sent under the job's own user name (it was always refused); `ipp.mjs` imports `Buffer` itself (the edge runtime has no global one, so every CUPS print, status check and cancel failed); the bridge address is corrected after a reboot by the boot unit and the self-heal restart as well as `start.sh` (`scripts/print-bridge-sync.sh`); `PRINTER_NAME` accepts `, & + :` and `get-printer-status` reports an invalid name instead of using the default queue, with its message; the CUPS healthcheck fails on a disabled queue; a failed print re-queued by a retry restarts its age for the sweep, and a retry that finds the job still `queued` is answered `PRINT_UNCONFIRMED`, not "already handled"; `cancel-print-job` and `sweep-print-jobs` reach the database directly; `configure.mjs` and `set-capability.mjs` messages corrected.
+- **One print, one job (migration 151).** `print_jobs.request_id` with a unique index on `(user_id, request_id)`; the print functions take an optional `request_id` and answer a repeat with `duplicate: true` without printing. Older apps and a database without the column keep the old order.
+
+### Fixed
+
+- **A GRN weight is at most 9999 on the server too (WH-56).** `save_grn` refuses a line over 9999; `update_grn` refuses a new line, or a saved line whose weight is being changed, over 9999 ("Weight must be at most 9999 for item ..."). A saved line with an older, larger weight is accepted unchanged until its weight is edited. Definition files `save_grn.sql` and `update_grn.sql`, no migration (152 is not used).
+
+- **The audit log is insert-only, and a failed audit write is reported (WH-115, migration 155).** A save still goes through when its audit row cannot be written, but the failure (table, row id, action, error) is now recorded in `warehouse_security.audit_write_failures` and the monitor posts `audit_write_failed` once a day while it keeps happening. `audit_log` and its partitions can no longer be updated or deleted by the service role or any other role (it keeps SELECT and INSERT); only the retention job removes rows, after 8 years. Partitions it creates get SELECT and INSERT only. `docs/OPERATOR_INSTALL.md` said 24 months for the audit log; it is 8 years (2,920 days). Not applied anywhere yet.
+
+- **Deleting a dispatch gives back only what it served on its source order (WH-129, migration 156).** The delete trigger no longer sets every line of the source order to fulfilled 0 / pending; a line served by another dispatch of the same order keeps its quantity and status, and the lines this dispatch served get back what it took (as `restore_to_order` already did). The order is still reopened; a direct dispatch is unchanged; the order's `dispatch_deleted` entry is as before. A source-order dispatch line from before migration 67 has no record of what it took and is now left as it is (it was reset before). Not applied anywhere yet.
+
+- **A GRN edit without lines no longer deletes the lines (WH-111).** `update_grn` refuses a missing, NULL or empty `p_items` with `{success:false, error_code:'WH409', reason:'GRN_LINES_REQUIRED'}` and the message "A GRN needs at least one line. Delete the GRN instead."; nothing is written. An edit that sends at least one line behaves as before. The app already sends its lines. Definition file `update_grn.sql`, no migration (the number reserved for it is not used).
+
+- **Sign-in access gaps (WH-114, migration 154).** (1) With the facility's own code on, a central sign-in no longer links an unlinked profile found by phone number until a correct facility code is given (`link_required` first; with the setting off nothing changes). (2) A correct SMS code is marked used only when a session or an access-request answer is given: a pending-limited, rejected, disabled or deactivated person is refused as before, and the code stays usable until it expires or its attempts run out. (3) `operator_finish_otp`, `operator_sms_config`, `operator_enrollment_status`, `operator_enrollment_signout`, `operator_break_glass_open` and `operator_review_enrollment` answer `unavailable` (the break-glass check answers false) when `auth_mode` is not `operator`. (4) The service role can call `clear_user_central_identity` (its body let only a signed-in administrator through); `authenticated` keeps its grant. Not applied anywhere yet.
+
+- **A GRN counts as invoiced only when it has a live invoice (WH-112, migration 160).** A live invoice is one that is not deleted and not cancelled: the GRN list filter, the rates step and the invoice move now agree, and migration 160 corrects the stored flags.
+
+- **The first order of a business whose order row was soft-deleted no longer fails (WH-113, migration 161).** It restarts empty; adding a line by order id refuses a deleted business.
+
+### Added
+
+- **SMS spending ceilings are set at setup (WH-119).** `setup.sh` offers 60 SMS sends an hour and 300 SMS sends a day for the whole facility on a terminal (Enter accepts), or takes `--sms-hourly-ceiling N` and `--sms-daily-ceiling N`; a new install without either gets 60 and 300 (`otp_global_hourly_cap`, `otp_daily_provider_attempt_cap`, stored by `scripts/configure-sms-ceiling.sql`). Both count sends as MSG91 requests (a code costs one, two when repeated). The monitor posts `sms_ceiling_reached` once a day while a ceiling is reached. No migration (the number reserved for it is not used). **Operator action on upgrade:** an installation that already sent codes keeps its stored figures and has no daily ceiling until it sets one: `bash setup.sh --operator <your usual options> --sms-daily-ceiling 300` (and `--sms-hourly-ceiling 60` to lower the hourly one from its default of 300). [OPERATOR_INSTALL.md](docs/OPERATOR_INSTALL.md), "SMS spending ceiling".
+
+- **Monitoring: per-sensor alerts (WH-118).** Temperature outside limits for 15 minutes, or silent for 30 minutes (settings `WAREHOUSE_SENSOR_OUT_OF_RANGE_MINUTES` and `WAREHOUSE_SENSOR_SILENT_MINUTES`), and a daily alert when the sensor bridge dropped readings.
+
+- **Release images are signed (WH-116).** Keyless cosign, GitHub OIDC. `setup.sh` installs a pinned, checksum-verified cosign into the state; an upgrade to a signed release refuses on a host without it (the message says how to install, or pass `--unsigned`, which is logged), a bad signature is always refused, and older unsigned releases are unchanged. The operator guide states what a backup contains and the ten-year key lifetime with the rotation steps.
+
+### Changed
+
+- **Staff may print** (owner decision, 2026-11-07), and print refusals carry a `code` (`PRINTING_OFF`, `PRINT_FORBIDDEN`, `PRINTER_FAILED`, `PRINT_UNCONFIRMED`). A printer failure now answers 502 `PRINTER_FAILED` (it was 500).
+- **The print routes are served** and answer 503 `PRINTING_OFF` only while the `printing` capability is off.
+- **CUPS container** creates the right raw queue or fails with a reason, and accepts jobs from the compose networks only.
+- **ESC/P2 output fixes** for the GRN, dispatch and invoice forms: bare DC4, page length, one form feed per slip, non-ASCII text printed as ASCII or `?`.
+- **Migration 151 also** reads the dispatch print range in natural order.
+
+- Release images: the db and pdf-renderer base digests move to the current builds of the same tags (postgres 18.6-trixie, node 24-trixie-slim) so the images carry apt and libapt-pkg7.0 3.0.4 (CVE-2026-109518, WH-128).
+- **Docs match the code (WH-117, WH-47).** Pooler off, alert retry, break-glass for all workers, 8-year audit retention, and `get_items` access corrected.
+
 ## v0.8.0 (2026-11-07)
 
 **Migrations 128 to 149: invoice cancel and delete, each item's own packaging word, items added by staff, signed-in devices, and a safer

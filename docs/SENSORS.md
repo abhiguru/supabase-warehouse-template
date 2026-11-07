@@ -68,6 +68,15 @@ recorded separately before anyone is told the screen works.
   `get_sensor_polling_data` then carry `temperature_alert`: `HIGH` above the highest,
   `LOW` below the lowest, null otherwise. No flag while the hub is offline or the
   temperature (`temperature_at`) is older than the sensor's staleness threshold.
+- **Alerts (Slack).** The 5-minute checker (`scripts/watch.mjs`) posts to the sensor alert channel (the facility's channel when no sensor
+  webhook is stored): `sensor_range:<sensor>` when a sensor with limits stays outside them for **15 minutes** (it names the sensor, its
+  location, the reading, the limit and the time; one recovery post when it has been back inside for 15 minutes), and
+  `sensor_silent:<sensor>` when a sensor that has reported before sends no reading for **30 minutes** while its hub is online (one
+  recovery post when it reports again). A sensor with no limits gets only the silence alert. A hub that is down keeps the existing
+  `sensors_stale` alert, not one per sensor; a sensor that was taken away is set inactive in the app so it stops alerting. Both times
+  are facility settings in `config/compose.env`: `WAREHOUSE_SENSOR_OUT_OF_RANGE_MINUTES` (default 15) and
+  `WAREHOUSE_SENSOR_SILENT_MINUTES` (default 30), whole minutes from 1 to 1440. Only temperature limits exist today, so there is no
+  humidity alert; SMS or call alerts wait for the alert-channel work. The alerts are not tested against a real sensor yet.
 - **Hub offline.** After three failed polls of a hub (about 10 minutes with the
   5-minute poll) the bridge sends heartbeats
   with `online=false` for it and keeps reconnecting with backoff; the app shows
@@ -75,7 +84,11 @@ recorded separately before anyone is told the screen works.
 - **Delivery.** Readings wait in an SQLite queue (`/data/bridge.sqlite3` in the
   `sensor-bridge-data` volume) until the function accepts them. A network
   error or a 5xx is retried with backoff from 15 seconds to 10 minutes; a 401
-  pauses posting for 5 minutes; any other 4xx is dropped after three tries.
+  pauses posting for 5 minutes; any other 4xx is dropped after three tries. **What is dropped:** a batch the server refused three times,
+  readings older than 29 days, and the oldest readings beyond 200,000 queued rows. Each drop is logged as
+  `event=readings_dropped reason=<refused_three_times|older_than_29_days|queue_over_200000_rows> hub=<id> dropped=<n>`, and the checker
+  posts the alert `sensor_dropped` once a day while the last 24 hours of the bridge log hold one (a bridge run as its own Compose project is
+  not read by the checker: read its own log).
   Sending a batch twice is harmless: `(device_id, measured_at)` is unique.
   Duplicates appear only when the bridge re-sends a batch whose answer it did
   not get (a timeout or a lost 200); a bridge that runs normally reports

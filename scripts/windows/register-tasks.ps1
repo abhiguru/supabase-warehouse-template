@@ -1,7 +1,7 @@
 <#
 .SYNOPSIS
 Registers the scheduled tasks a Windows (WSL2) warehouse host needs: "Warehouse WSL" (keep the distro running) and,
-optionally, "Warehouse USB" (attach the backup drive again after every restart).
+optionally, "Warehouse USB" (attach the backup drive again after every restart) and "Warehouse Print" (the print bridge for the LQ-1310).
 
 .DESCRIPTION
 Run from an elevated Windows PowerShell 5.1 or later. It asks once for the password of the Windows account that owns the
@@ -28,6 +28,33 @@ USB bus id of the backup drive, as "usbipd list" shows it (for example 2-4). Whe
 .PARAMETER Force
 Replace tasks that already exist. Without it the script refuses when a task it would register exists.
 
+.PARAMETER Printer
+Name of the local Windows print queue for the LQ-1310 (any driver; the bridge sends RAW and bypasses it), as "Get-Printer" shows it.
+When given, "Warehouse Print" is registered: it runs a copy of print-bridge.ps1 (made from the one next to this script into
+%ProgramData%\Warehouse\bin, writable by Administrators and SYSTEM only; run this script again after an upgrade to refresh it) at boot
+and every 2 minutes (a second copy is ignored), as the same account as the other tasks. A bridge that is already running is stopped
+first, so a new token, queue or script takes effect now. The queue must be set to spool (see print-bridge.ps1). The script also creates the token file, adds the firewall rule and
+shows the read-back. See print-bridge.ps1 for the protocol and for how to test without paper.
+
+.PARAMETER PrintPort
+TCP port of the bridge. Default 6632. The firewall rule "Warehouse Print" allows inbound TCP on this port from the WSL side only
+(the "vEthernet (WSL)" interface; when that adapter does not exist yet, the WSL address range 172.16.0.0/12).
+
+.PARAMETER PrintOnly
+Register only "Warehouse Print" (with -Printer). Same idea as -UsbOnly.
+
+.PARAMETER SetTokenFromWsl
+Distro name. Copies PRINTBRIDGE_TOKEN from the instance into the token file (%ProgramData%\Warehouse\print-bridge.token) by running
+"wsl.exe -d <distro> -- sed -n s/^PRINTBRIDGE_TOKEN=//p <ComposeEnv>". The token is generated once by the instance's configure step
+and lives in its compose.env (mode 0600); this is the one place it is created, so the Windows side follows it and the two cannot
+drift. The token appears only in this script's memory: not on any command line, not on the screen, not in a log. Needs -ComposeEnv.
+Without this switch the script creates a random token only when the file does not exist, and then the operator must put the same
+value into the instance (Get-Content the file in an elevated shell, paste it as PRINTBRIDGE_TOKEN in compose.env, restart the
+instance); that is the fallback, -SetTokenFromWsl is the supported way.
+
+.PARAMETER ComposeEnv
+Absolute Linux path of the instance's compose.env inside the distro (<state dir>/config/compose.env). Used by -SetTokenFromWsl.
+
 .PARAMETER UsbOnly
 Register only "Warehouse USB" (to add it later, or after the drive moved to another port). Requires -BusId.
 
@@ -53,7 +80,12 @@ param(
     [switch]$Force,
     [switch]$UsbOnly,
     [string]$Checkout,
-    [string]$State
+    [string]$State,
+    [string]$Printer,
+    [ValidateRange(1024, 65535)][int]$PrintPort = 6632,
+    [switch]$PrintOnly,
+    [string]$SetTokenFromWsl,
+    [string]$ComposeEnv
 )
 
 $ErrorActionPreference = 'Stop'
@@ -61,6 +93,13 @@ $ErrorActionPreference = 'Stop'
 $KeepAliveName = 'Warehouse WSL'
 $UsbName = 'Warehouse USB'
 $StopName = 'Warehouse WSL stop'
+$PrintName = 'Warehouse Print'
+$TokenFile = Join-Path $env:ProgramData 'Warehouse\print-bridge.token'
+$BridgeScript = Join-Path $PSScriptRoot 'print-bridge.ps1'
+# The task runs a copy kept here, not the script next to this one: that may be on \\wsl$ (not mounted at boot, and writable from Linux,
+# while the task runs elevated). Re-run this script after an upgrade to refresh the copy.
+$BinDir = Join-Path $env:ProgramData 'Warehouse\bin'
+$BridgeCopy = Join-Path $BinDir 'print-bridge.ps1'
 $DefaultUsbipd = 'C:\Program Files\usbipd-win\usbipd.exe'
 
 function Stop-Script([string]$Message) {
@@ -76,23 +115,50 @@ if (-not (New-Object Security.Principal.WindowsPrincipal($identity)).IsInRole([S
 }
 
 if ($UsbOnly -and -not $BusId) { Stop-Script '-UsbOnly needs -BusId.' }
-if ($Distro -notmatch '^[A-Za-z0-9._-]+$') { Stop-Script "-Distro '$Distro' is not a distro name (letters, digits, . _ - only)." }
-
-# wsl.exe -l -q prints UTF-16; strip NULs, carriage returns and a byte order mark whatever the console decoded.
-$previousEncoding = [Console]::OutputEncoding
-try {
-    [Console]::OutputEncoding = [Text.Encoding]::Unicode
-    $listing = @(& wsl.exe -l -q)
-    $wslExit = $LASTEXITCODE
-} catch {
-    Stop-Script "wsl.exe could not be run: $($_.Exception.Message)"
-} finally {
-    [Console]::OutputEncoding = $previousEncoding
+if ($PrintOnly -and -not $Printer) { Stop-Script '-PrintOnly needs -Printer.' }
+if ($PrintOnly -and ($UsbOnly -or $Checkout)) { Stop-Script '-PrintOnly cannot be combined with -UsbOnly or -Checkout.' }
+if ($PrintOnly -and $BusId) { Stop-Script '-PrintOnly cannot be combined with -BusId.' }
+if ($UsbOnly -and $Printer) { Stop-Script '-UsbOnly cannot be combined with -Printer.' }
+if (($SetTokenFromWsl -or $ComposeEnv) -and -not $Printer) { Stop-Script '-SetTokenFromWsl and -ComposeEnv need -Printer.' }
+if ($Printer) {
+    if ($Printer -notmatch '^[\x20-\x7E]+$') { Stop-Script "-Printer '$Printer' must be printable ASCII only." }
+    if ($Printer -match '["`$]') { Stop-Script "-Printer '$Printer' contains a character this script does not accept (double quote, backtick or dollar sign)." }
+    if (-not (Test-Path -LiteralPath $BridgeScript -PathType Leaf)) { Stop-Script "print-bridge.ps1 was not found next to this script ($BridgeScript)." }
+    if (-not (Get-Command Get-Printer -ErrorAction SilentlyContinue)) { Stop-Script 'Get-Printer is not available (the PrintManagement module).' }
+    # Exact name: Get-Printer -Name takes wildcards, so a pattern such as EPSON* would pass here and then not match at run time.
+    if (-not (Get-Printer -ErrorAction SilentlyContinue | Where-Object { $_.Name -eq $Printer } | Select-Object -First 1)) {
+        $have = (@(Get-Printer | ForEach-Object { $_.Name }) -join '; ')
+        Stop-Script "No local print queue named '$Printer'. Queues on this PC: $have"
+    }
+    if ($SetTokenFromWsl) {
+        if ($SetTokenFromWsl -notmatch '^[A-Za-z0-9._-]+$') { Stop-Script "-SetTokenFromWsl '$SetTokenFromWsl' is not a distro name." }
+        if (-not $ComposeEnv) { Stop-Script '-SetTokenFromWsl needs -ComposeEnv (the Linux path of the instance compose.env).' }
+        if ($ComposeEnv -notmatch '^/[A-Za-z0-9._/-]+$') { Stop-Script "-ComposeEnv '$ComposeEnv' is not a plain absolute Linux path (letters, digits, . _ - / only)." }
+    } elseif ($ComposeEnv) { Stop-Script '-ComposeEnv goes with -SetTokenFromWsl.' }
 }
-if ($wslExit -ne 0) { Stop-Script "wsl.exe -l -q failed (exit $wslExit)." }
-$distros = @($listing | ForEach-Object { ("$_" -replace "`0", '' -replace "`r", '' -replace [string][char]0xFEFF, '').Trim() } | Where-Object { $_ })
-if ($distros -notcontains $Distro) {
-    Stop-Script "WSL distro '$Distro' was not found (wsl.exe -l -q lists: $($distros -join ', ')). Pass -Distro with the right name."
+# -PrintOnly does not use -Distro (only the keep-alive, USB and stop tasks do); with it, -SetTokenFromWsl names the distro that is checked.
+if (-not $PrintOnly -and $Distro -notmatch '^[A-Za-z0-9._-]+$') { Stop-Script "-Distro '$Distro' is not a distro name (letters, digits, . _ - only)." }
+
+if ((-not $PrintOnly) -or $SetTokenFromWsl) {
+    # wsl.exe -l -q prints UTF-16; strip NULs, carriage returns and a byte order mark whatever the console decoded.
+    $previousEncoding = [Console]::OutputEncoding
+    try {
+        [Console]::OutputEncoding = [Text.Encoding]::Unicode
+        $listing = @(& wsl.exe -l -q)
+        $wslExit = $LASTEXITCODE
+    } catch {
+        Stop-Script "wsl.exe could not be run: $($_.Exception.Message)"
+    } finally {
+        [Console]::OutputEncoding = $previousEncoding
+    }
+    if ($wslExit -ne 0) { Stop-Script "wsl.exe -l -q failed (exit $wslExit)." }
+    $distros = @($listing | ForEach-Object { ("$_" -replace "`0", '' -replace "`r", '' -replace [string][char]0xFEFF, '').Trim() } | Where-Object { $_ })
+    if ((-not $PrintOnly) -and ($distros -notcontains $Distro)) {
+        Stop-Script "WSL distro '$Distro' was not found (wsl.exe -l -q lists: $($distros -join ', ')). Pass -Distro with the right name."
+    }
+    if ($SetTokenFromWsl -and ($distros -notcontains $SetTokenFromWsl)) {
+        Stop-Script "WSL distro '$SetTokenFromWsl' (-SetTokenFromWsl) was not found (wsl.exe -l -q lists: $($distros -join ', '))."
+    }
 }
 
 $usbipd = $null
@@ -119,15 +185,38 @@ foreach ($p in @($Checkout, $State)) {
 if ($Checkout -and $UsbOnly) { Stop-Script '-UsbOnly cannot be combined with -Checkout.' }
 
 $names = @()
-if (-not $UsbOnly) { $names += $KeepAliveName }
+if (-not $UsbOnly -and -not $PrintOnly) { $names += $KeepAliveName }
 if ($BusId) { $names += $UsbName }
 if ($Checkout) { $names += $StopName }
+if ($Printer) { $names += $PrintName }
 if (-not $Force) {
     foreach ($n in $names) {
         if (Get-ScheduledTask -TaskName $n -ErrorAction SilentlyContinue) {
             Stop-Script "The task '$n' already exists. Run again with -Force to replace it."
         }
     }
+    if ($Printer -and (Get-NetFirewallRule -DisplayName $PrintName -ErrorAction SilentlyContinue)) {
+        Stop-Script "The firewall rule '$PrintName' already exists. Run again with -Force to replace it."
+    }
+}
+
+# Read the token from the instance before anything is changed (nothing is printed; only a hex string is accepted).
+$newToken = $null
+if ($SetTokenFromWsl) {
+    $raw = $null
+    try {
+        $raw = @(& wsl.exe -d $SetTokenFromWsl -- sed -n 's/^PRINTBRIDGE_TOKEN=//p' $ComposeEnv)
+        $sedExit = $LASTEXITCODE
+    } catch {
+        Stop-Script "wsl.exe could not be run: $($_.Exception.Message)"
+    }
+    if ($sedExit -ne 0) { Stop-Script "Reading $ComposeEnv in distro '$SetTokenFromWsl' failed (exit $sedExit). Check the path." }
+    $candidate = (@($raw | ForEach-Object { ("$_" -replace "`0", '' -replace "`r", '').Trim() } | Where-Object { $_ }) | Select-Object -Last 1)
+    if (-not $candidate -or $candidate -notmatch '^[0-9a-fA-F]{32,128}$') {
+        Stop-Script "No valid PRINTBRIDGE_TOKEN (32 to 128 hex characters) in $ComposeEnv. Run the instance's configure step first (it generates it)."
+    }
+    $newToken = $candidate
+    $candidate = $null; $raw = $null
 }
 
 # ---- Credential: asked once, used for both tasks, never stored ----
@@ -183,7 +272,7 @@ function Register-WarehouseTask([string]$Name, $Action, $Settings, $Trigger = $n
     }
 }
 
-if (-not $UsbOnly) {
+if (-not $UsbOnly -and -not $PrintOnly) {
     $action = New-ScheduledTaskAction -Execute 'C:\Windows\System32\wsl.exe' -Argument "-d $Distro --exec /usr/bin/sleep infinity"
     $settings = New-ScheduledTaskSettingsSet -ExecutionTimeLimit ([TimeSpan]::Zero) -MultipleInstances IgnoreNew -StartWhenAvailable -AllowStartIfOnBatteries -DontStopIfGoingOnBatteries -RestartCount 999 -RestartInterval (New-TimeSpan -Minutes 1)
     Register-WarehouseTask $KeepAliveName $action $settings
@@ -203,6 +292,110 @@ if ($Checkout) {
     $settings = New-ScheduledTaskSettingsSet -ExecutionTimeLimit (New-TimeSpan -Seconds 90) -MultipleInstances IgnoreNew -AllowStartIfOnBatteries -DontStopIfGoingOnBatteries
     Register-WarehouseTask $StopName $action $settings (New-ShutdownTrigger) -NoStart
     Write-Host "Registered '$StopName' (best effort: it runs when Windows starts a shutdown or restart; Windows may kill WSL before it finishes)."
+}
+
+if ($Printer) {
+    $bridgeArguments = "-NoProfile -ExecutionPolicy Bypass -File `"$BridgeCopy`" -Printer `"$Printer`" -Port $PrintPort -TokenFile `"$TokenFile`""
+    $action = New-ScheduledTaskAction -Execute 'C:\Windows\System32\WindowsPowerShell\v1.0\powershell.exe' -Argument $bridgeArguments
+    $settings = New-ScheduledTaskSettingsSet -ExecutionTimeLimit ([TimeSpan]::Zero) -MultipleInstances IgnoreNew -StartWhenAvailable -AllowStartIfOnBatteries -DontStopIfGoingOnBatteries -RestartCount 999 -RestartInterval (New-TimeSpan -Minutes 1)
+    # Register first (not started), then token file and firewall rule; if those fail, undo what this run created.
+    Register-WarehouseTask $PrintName $action $settings -NoStart
+    $tokenCreated = $false
+    try {
+        # Token file: created empty with a restricted ACL before any secret is written to it.
+        $tokenDir = Split-Path -Parent $TokenFile
+        if (-not (Test-Path -LiteralPath $tokenDir)) { $null = New-Item -ItemType Directory -Path $tokenDir -Force }
+        $sid = New-Object Security.Principal.SecurityIdentifier($identity.User.Value)
+        $admins = New-Object Security.Principal.SecurityIdentifier([Security.Principal.WellKnownSidType]::BuiltinAdministratorsSid, $null)
+        $system = New-Object Security.Principal.SecurityIdentifier([Security.Principal.WellKnownSidType]::LocalSystemSid, $null)
+
+        # The copy of the bridge script the task runs: Administrators and SYSTEM full control, the task account read and execute only,
+        # inheritance off (on the folder, so nothing in it can be swapped, and on the file).
+        if (-not (Test-Path -LiteralPath $BinDir)) { $null = New-Item -ItemType Directory -Path $BinDir -Force }
+        $binAcl = New-Object Security.AccessControl.DirectorySecurity
+        $binAcl.SetAccessRuleProtection($true, $false)
+        foreach ($who in @($admins, $system)) {
+            $binAcl.AddAccessRule((New-Object Security.AccessControl.FileSystemAccessRule($who, 'FullControl', 'ContainerInherit,ObjectInherit', 'None', 'Allow')))
+        }
+        $binAcl.AddAccessRule((New-Object Security.AccessControl.FileSystemAccessRule($sid, 'ReadAndExecute', 'ContainerInherit,ObjectInherit', 'None', 'Allow')))
+        Set-Acl -LiteralPath $BinDir -AclObject $binAcl
+        Copy-Item -LiteralPath $BridgeScript -Destination $BridgeCopy -Force
+        $copyAcl = New-Object Security.AccessControl.FileSecurity
+        $copyAcl.SetAccessRuleProtection($true, $false)
+        foreach ($who in @($admins, $system)) {
+            $copyAcl.AddAccessRule((New-Object Security.AccessControl.FileSystemAccessRule($who, 'FullControl', 'Allow')))
+        }
+        $copyAcl.AddAccessRule((New-Object Security.AccessControl.FileSystemAccessRule($sid, 'ReadAndExecute', 'Allow')))
+        Set-Acl -LiteralPath $BridgeCopy -AclObject $copyAcl
+        Write-Host "Bridge script copied to '$BridgeCopy' (re-run this script after an upgrade to refresh it)."
+
+        if (-not (Test-Path -LiteralPath $TokenFile)) {
+            $null = New-Item -ItemType File -Path $TokenFile -Force
+            $tokenCreated = $true
+        }
+        $acl = New-Object Security.AccessControl.FileSecurity
+        $acl.SetAccessRuleProtection($true, $false)
+        foreach ($who in @($sid, $admins, $system)) {
+            $acl.AddAccessRule((New-Object Security.AccessControl.FileSystemAccessRule($who, 'FullControl', 'Allow')))
+        }
+        Set-Acl -LiteralPath $TokenFile -AclObject $acl
+        if ($newToken) {
+            [IO.File]::WriteAllText($TokenFile, $newToken + "`n")
+            Write-Host "Token file '$TokenFile' set from $ComposeEnv in distro '$SetTokenFromWsl'."
+            $newToken = $null
+        } elseif ($tokenCreated) {
+            $bytes = New-Object byte[] 32
+            $rng = [Security.Cryptography.RandomNumberGenerator]::Create()
+            $rng.GetBytes($bytes)
+            $rng.Dispose()
+            [IO.File]::WriteAllText($TokenFile, (($bytes | ForEach-Object { $_.ToString('x2') }) -join '') + "`n")
+            Write-Host "Token file '$TokenFile' created with a random token. Put the same value into the instance as PRINTBRIDGE_TOKEN (see -SetTokenFromWsl)."
+        } else {
+            Write-Host "Token file '$TokenFile' already exists and was left as it is (its ACL was reset to this account, Administrators and SYSTEM)."
+        }
+        if ((Get-Item -LiteralPath $TokenFile).Length -eq 0) { throw "Token file '$TokenFile' is empty." }
+
+        # Firewall: TCP <PrintPort> inbound from the WSL side only.
+        $existingRule = Get-NetFirewallRule -DisplayName $PrintName -ErrorAction SilentlyContinue
+        if ($existingRule) { $existingRule | Remove-NetFirewallRule }
+        $wslAdapter = Get-NetAdapter -ErrorAction SilentlyContinue | Where-Object { $_.Name -like 'vEthernet (WSL*' } | Select-Object -First 1
+        $rule = @{ DisplayName = $PrintName; Direction = 'Inbound'; Action = 'Allow'; Protocol = 'TCP'; LocalPort = $PrintPort; Profile = 'Any' }
+        if ($wslAdapter) { $rule.InterfaceAlias = $wslAdapter.Name } else { $rule.RemoteAddress = '172.16.0.0/12' }
+        $null = New-NetFirewallRule @rule
+        if ($wslAdapter) { Write-Host "Firewall rule '$PrintName': TCP $PrintPort inbound on interface '$($wslAdapter.Name)'." }
+        else { Write-Host "Firewall rule '$PrintName': TCP $PrintPort inbound from 172.16.0.0/12 (the WSL adapter does not exist yet; WSL was not running). Start WSL once (open the distro), then re-run with -Force to tie it to the interface." }
+
+    } catch {
+        $problem = $_.Exception.Message
+        Unregister-ScheduledTask -TaskName $PrintName -Confirm:$false -ErrorAction SilentlyContinue
+        Get-NetFirewallRule -DisplayName $PrintName -ErrorAction SilentlyContinue | Remove-NetFirewallRule -ErrorAction SilentlyContinue
+        if ($tokenCreated) { Remove-Item -LiteralPath $TokenFile -Force -ErrorAction SilentlyContinue }
+        Stop-Script "Setting up the print bridge failed, task and firewall rule removed: $problem"
+    }
+    # A re-run replaces the task, the copy and maybe the token, but a bridge that is already running keeps the old ones until it exits:
+    # stop it (the task first, then by process id if it is still there after about 10 seconds) so that the start below runs the new ones.
+    try {
+        Stop-ScheduledTask -TaskName $PrintName -ErrorAction SilentlyContinue
+        $stopDeadline = (Get-Date).AddSeconds(10)
+        do {
+            $running = @(Get-CimInstance Win32_Process -Filter "Name = 'powershell.exe'" -ErrorAction SilentlyContinue |
+                Where-Object { $_.CommandLine -and $_.CommandLine.IndexOf('print-bridge.ps1', [StringComparison]::OrdinalIgnoreCase) -ge 0 })
+            if ($running.Count -eq 0) { break }
+            Start-Sleep -Milliseconds 500
+        } while ((Get-Date) -lt $stopDeadline)
+        foreach ($left in $running) {
+            Write-Host "Stopping the old print bridge (process $($left.ProcessId))."
+            Stop-Process -Id $left.ProcessId -Force -ErrorAction SilentlyContinue
+        }
+    } catch {
+        Stop-Script "Could not stop the running print bridge: $($_.Exception.Message)"
+    }
+    try {
+        Start-ScheduledTask -TaskName $PrintName
+    } catch {
+        Stop-Script "Registered '$PrintName' but could not start it: $($_.Exception.Message)"
+    }
+    Write-Host "Registered and started '$PrintName'."
 }
 
 $credential = $null
@@ -235,6 +428,22 @@ foreach ($n in $names) {
 if ($Checkout) {
     Write-Host ''
     Write-Host "Note: '$StopName' is not started now; its State is Ready until a shutdown or restart runs it."
+}
+
+if ($Printer) {
+    Write-Host ''
+    Write-Host "== $PrintName (extras) =="
+    $fw = Get-NetFirewallRule -DisplayName $PrintName -ErrorAction SilentlyContinue
+    if ($fw) {
+        $pf = $fw | Get-NetFirewallPortFilter
+        Write-Host "Firewall rule:        enabled=$($fw.Enabled), $($fw.Direction), $($fw.Action), TCP $($pf.LocalPort), interface: $(($fw | Get-NetFirewallInterfaceFilter).InterfaceAlias)"
+    } else { Write-Host 'Firewall rule:        MISSING' }
+    Write-Host "Token file:           $TokenFile ($((Get-Item -LiteralPath $TokenFile).Length) bytes)"
+    (Get-Acl -LiteralPath $TokenFile).Access | ForEach-Object { Write-Host "  ACL: $($_.IdentityReference) $($_.FileSystemRights) $($_.AccessControlType)" }
+    $logs = Join-Path $env:ProgramData 'Warehouse\logs'
+    Write-Host "Bridge log:           $logs\print-bridge-<date>.log (the 'start listen=' line shows the address; if the task is Ready with result 1, read the task's last run and start the bridge by hand to see the message)"
+    Write-Host 'Windows 11: the Hyper-V firewall (Get-NetFirewallHyperVVMSetting -Name ''{40E0AC32-46A5-438A-A0B2-2B479E8F2E90}'') filters traffic INTO the WSL VM, not from WSL to the host, so nothing is changed. If the instance cannot reach the bridge in mirrored networking mode, check it and the Windows firewall profile first.'
+    Write-Host "Test with no paper: see print-bridge.ps1 (pause the queue, send, look at Get-PrintJob, remove the job). Nothing was printed."
 }
 
 if ($BusId) {

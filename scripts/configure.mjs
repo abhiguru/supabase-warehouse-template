@@ -7,6 +7,7 @@ import { isMain } from './is-main.mjs';
 import { generateSigningKeys, replaceEnvLines, updateRestSchemas } from './keys.mjs';
 import { KEY_SET_MAX_BYTES, holdsPrivateKey, usableKeys } from './central-key-set.mjs';
 import { addMissingDbValues, generatedDbValues } from './db-roles.mjs';
+import { addMissingPrintValues, printValues } from './print-settings.mjs';
 import { isFixtureAddress, isProviderPlaceholder } from './provider-placeholder.mjs';
 import { LETTERHEAD_NAMES, readLetterhead } from './letterhead.mjs';
 import { HEARTBEAT_FILE, LEGACY_WEBHOOK_FILE, SENSOR_WEBHOOK_FILE, WEBHOOK_FILE, assertSensorWebhookPlaceable, placeHeartbeatUrl, placeSensorWebhook, placeWebhook, readAlertWebhook, readHeartbeatUrl, readSensorWebhook } from './alert-webhook.mjs';
@@ -419,6 +420,13 @@ export function configure(root, { stateDir, apiUrl, appUrl, company, providerEnv
       // before the database starts, because an older backup carries none.
       const withDbValues = addMissingDbValues(readFileSync(envPath, 'utf8'));
       if (withDbValues.added.length) replaceFileAtomically(envPath, withDbValues.text);
+      // The print settings (docs/PRINTING.md): added when missing, a value that exists is never replaced.
+      const withPrintValues = addMissingPrintValues(readFileSync(envPath, 'utf8'));
+      if (withPrintValues.added.length) replaceFileAtomically(envPath, withPrintValues.text);
+      if (withPrintValues.added.includes('PRINT_TRANSPORT')) {
+        const chosen = withPrintValues.text.match(/^PRINT_TRANSPORT=(.*)$/m)?.[1];
+        console.log(`Print settings added to compose.env: PRINT_TRANSPORT=${chosen} (docs/PRINTING.md). Printing stays off until you turn it on.`);
+      }
       // An installation made before this release lists the storage schema (and, before migration 103, the GraphQL
       // schema) for PostgREST; the old default becomes `public` (a list the operator changed is kept). setup.sh
       // then recreates rest with the new value.
@@ -453,7 +461,7 @@ export function configure(root, { stateDir, apiUrl, appUrl, company, providerEnv
         replaceFileAtomically(envPath, setEnvLines(readFileSync(envPath, 'utf8'), newMemory));
         dbMemoryChanged = true;
       }
-      return { created: false, dbMemoryChanged, state, manifest, providerUpdated, centralUpdated, letterheadUpdated, letterhead: letterhead === undefined ? undefined : letterhead.bytes ? letterhead.name : letterheadUpdated ? null : undefined, gatewayPortChanged, gatewayPortRenamed, restSchemasUpdated, graphqlSchemaKept, retiredKeysRemoved, dbValuesAdded: withDbValues.added, backupKeyCreated, monitoringUpdated: placed.moved, monitoringCleaned: placed.cleaned, webhook: webhookReport, sensorWebhook: sensorWebhookReport, heartbeatUrl: heartbeatReport };
+      return { created: false, dbMemoryChanged, state, manifest, providerUpdated, centralUpdated, letterheadUpdated, letterhead: letterhead === undefined ? undefined : letterhead.bytes ? letterhead.name : letterheadUpdated ? null : undefined, gatewayPortChanged, gatewayPortRenamed, restSchemasUpdated, graphqlSchemaKept, retiredKeysRemoved, dbValuesAdded: withDbValues.added, printValuesAdded: withPrintValues.added, backupKeyCreated, monitoringUpdated: placed.moved, monitoringCleaned: placed.cleaned, webhook: webhookReport, sensorWebhook: sensorWebhookReport, heartbeatUrl: heartbeatReport };
     }
     if (readdirSync(state).length) throw new Error('State directory is partially initialized; inspect it before retrying.');
   }
@@ -478,6 +486,7 @@ export function configure(root, { stateDir, apiUrl, appUrl, company, providerEnv
     ...provider,
     ...(central?.values ?? {}), ...centralLocalCodeValues(centralLocalCode, central, null, Boolean(providerEnv)), ...(letterhead?.bytes ? { LETTERHEAD_FILE: letterhead.name } : {}) };
   values.CUPS_ADMIN_PASSWORD = randomBytes(32).toString('hex');
+  Object.assign(values, printValues());
   const template = replaceEnvLines(readFileSync(resolve(root, '.env.example'), 'utf8'), values);
   const stage = `${state}.installing-${randomBytes(8).toString('hex')}`;
   mkdirSync(stage, { mode: 0o700 });
@@ -524,7 +533,8 @@ if (isMain(import.meta.url)) {
               : result.dbValuesAdded?.length ? 'Preserved existing operator state; only missing generated values were added.'
                 : result.retiredKeysRemoved?.length ? `Preserved existing operator state; removed the unused ${result.retiredKeysRemoved.join(', ')}.`
                   : result.gatewayPortRenamed ? 'Preserved existing operator state; renamed KONG_HTTP_PORT to GATEWAY_HTTP_PORT in config/compose.env (the same port).'
-                    : 'Preserved existing operator state unchanged.');
+                    : result.printValuesAdded?.length ? `Preserved existing operator state; only the missing print settings were added (${result.printValuesAdded.join(', ')}).`
+                      : 'Preserved existing operator state unchanged.');
     // The first message above names only one change; the schema list is always reported, even beside another change.
     if (result.restSchemasUpdated && (result.providerUpdated || result.centralUpdated || result.gatewayPortChanged)) {
       console.log('Updated PostgREST\'s schema list in existing operator state (now `public` only).');

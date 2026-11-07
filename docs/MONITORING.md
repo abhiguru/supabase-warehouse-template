@@ -76,6 +76,9 @@ An alert fires after two failing runs in a row (10 minutes), except the event al
 | `db_dead_tuples_high` | More than 100,000 dead tuples (consider `VACUUM`) |
 | `service_down:<name>` | A service of the default profile is not running, or is unhealthy, or has been "starting" for more than 4 minutes. The 5-minute checker does not judge a container whose health is "starting" within 4 minutes of its start (so a run right after a host restart does not alert), unless that container restarted in the last hour (a crash loop gets no grace); `health`, `doctor --local` and the daily gate always count "starting" as failing. The optional `supavisor`, `cups` and `sensor-bridge` only while their container exists (`supavisor` only after `pooler.sh on`); `service_down:gateway-lan` only while the LAN fallback is on (`COMPOSE_PROFILES` lists `lan`). A bridge that runs but delivers nothing (hubs moved to new addresses) is `sensors_stale` below, not this alert |
 | `sensors_stale` | Only while the `sensors` capability is on. Readings do not reach the database: no hub row, a hub offline or silent, no reading newer than the limit (16 minutes by default; 3 x the larger of `SENSOR_BRIDGE_HEARTBEAT_SECONDS` and `_POLL_SECONDS`, plus `_POST_SECONDS`), or `SENSOR_BRIDGE_HUBS` set with no `sensor-bridge` container. The summary names each fault, for example "Sensors: hub 192.0.2.10 offline for 5 days" (a reading fault adds "(readings limit 16 minutes)"). A query that fails or times out is also this alert ("the sensor tables could not be read"), not `check_error`. Not judged for the first 16 minutes after the database or the bridge container started (readings need that long to arrive; a container that restarted in the last hour gets no such grace); during those minutes a standing alert is kept, not cleared. Not judged while PostgreSQL is down (`postgres_down` says that). A stopped or unhealthy bridge is also `service_down:sensor-bridge`. What to do: `node scripts/doctor.mjs --local` names the fault and the command to read the bridge log; usually a hub got a new address (`docs/SENSORS.md`, Troubleshooting; `docs/TROUBLESHOOTING.md`, "Sensors show no data") |
+| `sensor_range:<sensor id>` | Only while the `sensors` capability is on. A sensor with temperature limits stayed outside them for 15 minutes (`WAREHOUSE_SENSOR_OUT_OF_RANGE_MINUTES` in `config/compose.env`). The summary names the sensor, its location and the reading; the detail the limits and times. Fires at once, posts once, and clears (one recovery post) after 15 minutes back inside |
+| `sensor_silent:<sensor id>` | A sensor that has reported before sent no reading for 30 minutes (`WAREHOUSE_SENSOR_SILENT_MINUTES`) while its hub is online and posting. A hub that is down is `sensors_stale`'s alone, not one alert per sensor. Fires at once, posts once, clears when the sensor reports again. A sensor taken away is set inactive in the app |
+| `sensor_dropped` | The sensor bridge log of the last 24 hours holds `event=readings_dropped` (a batch refused three times, readings older than 29 days, or more than 200,000 queued rows). Repeats every 24 hours while the log shows one; read only while `SENSOR_BRIDGE_HUBS` is set here (a bridge run as its own Compose project is not read) |
 | `service_healed:<name>` | The checker started or restarted that service itself, or has done so 6 times in 24 hours and stopped (see "Self-healing"; at once; stays for an hour, or while it is stopped trying) |
 | `container_oom:<name>` | A container was killed for lack of memory (at once; stays for an hour) |
 | `container_restarts:<name>` | More than 3 restarts in the last hour. A restart of the whole stack (a host or WSL distro restart, or a start of the stack: every running container gets a new start time, all within 5 minutes of each other, and more than half of the default-profile services run) is not counted here but in `stack_restarts`; a container that starts late but within 5 minutes of the last recorded stack restart is part of it. One container or a subset restarting is counted, and a container's own restart counter always is |
@@ -90,7 +93,9 @@ An alert fires after two failing runs in a row (10 minutes), except the event al
 | `api_429_rate_high` | More than 2% of the gateway's requests in the last 5 minutes (judged from 50 requests up), or more than 20 of them, were answered 429 (rate limit): a client, or every phone on one Wi-Fi, is being refused |
 | `pdf_renderer_down` | The function runtime cannot reach the PDF renderer |
 | `sms_delivery` | Checked every hour: more than 20% of the last 24 hours' sign-in code requests (judged from 10 requests up), or more than 10, or at least half of the last hour's (from 5 requests up), were not accepted by the SMS provider (at once; see "SMS delivery") |
-| `break_glass_used` | A break-glass administrator code was made or used in the last 24 hours (at once; see "Break-glass sign-in") |
+| `sms_ceiling_reached` | The SMS spending ceiling is reached: this hour's SMS sends are at `otp_global_hourly_cap`, or the last 24 hours' SMS sends at `otp_daily_provider_attempt_cap`; code requests are refused until it frees up (at once, then once a day while it lasts) |
+| `break_glass_used` | A break-glass sign-in code (any worker's) was made or used in the last 24 hours (at once; see "Break-glass sign-in") |
+| `audit_write_failed` | An audit row could not be written in the last 24 hours; the save went through (once a day while it lasts; see "audit_write_failed") |
 | `clock_unsynced` | `timedatectl` says the clock is not synchronised, or the host clock is more than 10 s from the clock of the public address's Cloudflare edge |
 | `cloudflared_old` | Weekly warning (it repeats every 7 days, not every 4 hours; it never calls the network). The installed `cloudflared --version` was released 11 months ago or more (Cloudflare supports only versions within a year of its newest, and the tunnel runs with `--no-autoupdate`); or the output of `cloudflared --version` is not one this check knows (a warning of its own, also weekly); or the tunnel's unit (`warehouse-<state directory name>-tunnel.service`, else the stock `cloudflared.service` where the first is not running) is running a binary that was replaced since it started (its `/proc/<pid>/exe` says `(deleted)`, or the file on disk is newer than the unit's start): restart it. Nothing is judged where `cloudflared` is not installed. Fix: `sudo apt install --only-upgrade cloudflared`, then `sudo systemctl restart` the tunnel unit ([Monthly host maintenance](OPERATOR_INSTALL.md#monthly-host-maintenance)) |
 | `host_node_eol` | Weekly warning. The Node.js that runs the checker is within 60 days of the end of its major, or past it: 22 on 2027-04-30, 24 on 2028-04-30, 26 on 2029-04-30; a major outside the table warns too: an odd-numbered one (no long-term support), an older one, or one newer than the table (the table is `NODE_END_OF_LIFE` in `scripts/watch.mjs`, and the dates in [MAINTENANCE_CALENDAR.md](MAINTENANCE_CALENDAR.md)). Fix: unpack the next even-numbered major and run `sudo bash scripts/watch-timer.sh install --state <state> --node <path>` |
@@ -151,6 +156,14 @@ after acceptance): that shows as users saying no code arrives, and the cure is i
 ([TROUBLESHOOTING.md](TROUBLESHOOTING.md#sms-codes-not-arriving)). There is no balance check: MSG91's balance endpoint needs
 a key with more rights than the sending key.
 
+`audit_write_failed` is read every 5 minutes from `warehouse_security.audit_write_failures`, where the audit trigger records each audit row it
+could not write (table, row id, action, error). The save itself is not stopped, so the audit trail has a gap for it; the alert repeats once a day
+while there are failures in the last 24 hours. To look: `bash scripts/compose.sh exec -T db psql -X -U supabase_admin -d postgres -c "SELECT * FROM warehouse_security.audit_write_failures ORDER BY created_at DESC LIMIT 20"`.
+Audit rows cannot be changed or deleted by any API role or the service role (migration 155); only the retention job removes them, after 8 years.
+
+`sms_ceiling_reached` is read every 5 minutes from the counters that `operator_prepare_otp` keeps and posts once a day while a ceiling stays
+reached (set them as OPERATOR_INSTALL.md, "SMS spending ceiling", says). It says the ceiling is reached, not how many people were turned away.
+
 `clock_unsynced` compares two things: systemd's own verdict (`timedatectl show -p NTPSynchronized`) and the difference between
 the host clock and the clock of the facility's public address. The reference is the `ts=` line of `<public address>/cdn-cgi/trace`,
 which the Cloudflare edge answers itself: the request never reaches the gateway (no log line, no rate-limit budget), and the
@@ -163,14 +176,14 @@ its time servers.
 
 ## Break-glass sign-in
 
-`scripts/break-glass-admin.sh` (migration 126) prints a one-time sign-in code for an administrator while SMS does not work. Making
+`scripts/break-glass-admin.sh` (migration 126) prints a one-time sign-in code for a worker (administrator, supervisor or staff member; migration 132 widened it from administrators) while SMS does not work. Making
 a code and signing in with one each write a row to `public.audit_log` (`table_name` `break_glass`, `action` `CODE_ISSUED` or
 `SIGN_IN`; the code itself is never written). It is a way past the SMS code, so `break_glass_used` fires **at once** when such a
 row is younger than 24 hours, and stays until the last one is a day old. The alert names the actions and the time of the latest
 row, not the number. If it was you or your staff, nothing is wrong; if not, a person with shell access to the host did it: look
 at `select created_at, action, user_id, ip_address from public.audit_log where table_name = 'break_glass' order by created_at desc`
 (as `supabase_admin`, through `bash scripts/compose.sh exec db psql -U supabase_admin -d postgres`), end the sessions of that
-administrator, and change who has access to the host. A database without migration 126 has no such rows, so the check passes.
+worker, and change who has access to the host. A database without migration 126 has no such rows, so the check passes.
 
 ## Self-healing
 
@@ -357,7 +370,7 @@ line; `off` removes it; leaving the option out keeps the stored one). It is stor
 not in a backup, and `node scripts/watch.mjs test-message sensors` tests it.
 
 - **Sent to the sensor webhook** (when it fires, repeats and clears): `sensors_stale`, `check_error:sensors_stale` (the sensor check could
-  not run), `service_down:sensor-bridge`, `container_restarts:sensor-bridge`, `container_oom:sensor-bridge` and
+  not run), `sensor_range:<sensor id>`, `sensor_silent:<sensor id>`, `sensor_dropped`, `service_down:sensor-bridge`, `container_restarts:sensor-bridge`, `container_oom:sensor-bridge` and
   `container_memory:sensor-bridge`. Every other alert stays on the facility webhook.
 - **Heartbeat.** The daily "Monitoring is alive" message goes to the facility webhook as before and, when a sensor webhook is stored, also
   to the sensor webhook (a short "Monitoring is alive (sensor alerts)" message), so a silent sensor channel can be told from a broken one.

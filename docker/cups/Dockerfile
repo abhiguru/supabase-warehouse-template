@@ -22,6 +22,9 @@ RUN useradd -r -G lpadmin -M printadmin
 
 EXPOSE 631
 
+# Local commands (entrypoint, healthcheck) use the domain socket; see config/cupsd.conf.
+ENV CUPS_SERVER=/run/cups/cups.sock
+
 RUN mkdir -p /var/log/cups /var/spool/cups /var/cache/cups /etc/cups
 RUN chown -R root:lpadmin /etc/cups /var/log/cups /var/spool/cups /var/cache/cups
 
@@ -29,7 +32,7 @@ COPY entrypoint.sh /entrypoint.sh
 RUN chmod +x /entrypoint.sh
 
 HEALTHCHECK --interval=30s --timeout=10s --start-period=40s --retries=3 \
-    CMD curl -f http://localhost:631/ || exit 1
+    CMD lpstat -p "${PRINTER_NAME:-LQ1310_RAW}" 2>/dev/null | head -n 1 | grep -q ' enabled since' || exit 1
 
 ENTRYPOINT ["/entrypoint.sh"]
 CMD ["/usr/sbin/cupsd", "-f"]

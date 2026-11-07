@@ -1,17 +1,19 @@
 import { restClient } from '../_shared/supabase-rest.ts'
 import { monitorPrintJobStatus } from '../_shared/print-status-monitor.ts'
-import { SUBMIT_TIMEOUT_MS, submitWithTimeout } from '../_shared/print-monitor-rule.ts'
-import { submittedJob } from '../_shared/ipp-validate.ts'
+import { submitRawJob, jobOutcome, printFailureBody, configuredPrinterName } from '../_shared/print-transport.ts'
+import { readRequestId, startPrintJob, finishPrintJob, duplicateResponse } from '../_shared/print-request.ts'
 import { groupInvoiceLines, paginateInvoiceRows } from '../_shared/invoice-print-layout.ts'
 import type { InvoicePrintPage } from '../_shared/invoice-print-layout.ts'
 import { lineStorageAmount, cumulativeStorageAmount, resolveInvoiceFinYear } from '../_shared/invoice-print-amounts.ts'
 import { validatePrintAccess, createAuthErrorResponse } from '../_shared/auth-helpers.ts'
+import { sanitizeForPrinter, encodeLatin1 } from '../_shared/printer-text.ts'
 
 // ESC/P Control Codes for Epson LQ 1310
 const ESC = '\x1B';
 const LF = '\x0A';
 const FF = '\x0C';
 const CR = '\x0D';
+const DC4 = '\x14';
 
 const ESCP = {
   RESET: ESC + '@',
@@ -19,7 +21,6 @@ const ESCP = {
   PICA_10CPI: ESC + 'P',           // 10 characters per inch (default)
   ELITE_12CPI: ESC + 'M',          // 12 characters per inch
   CONDENSED_17CPI: ESC + '\x0F',   // 17 characters per inch
-  CONDENSED_OFF: ESC + '\x12',
 
   // Line spacing
   LINE_SPACING_1_8: ESC + '0',     // 1/8 inch (8 lines per inch)
@@ -36,7 +37,7 @@ const ESCP = {
   UNDERLINE_ON: ESC + '-1',
   UNDERLINE_OFF: ESC + '-0',
   DOUBLE_WIDTH_ON: ESC + '\x0E',      // SO - Double-width on
-  DOUBLE_WIDTH_OFF: ESC + '\x14',     // DC4 - Double-width off
+  DOUBLE_WIDTH_OFF: DC4,              // DC4 (bare, no ESC) - Double-width off
   DOUBLE_HEIGHT_ON: ESC + 'w1',       // Double-height on
   DOUBLE_HEIGHT_OFF: ESC + 'w0',      // Double-height off
 
@@ -51,6 +52,10 @@ const ESCP = {
 // At 10 CPI and 6 LPI: 91 chars × 47 lines per invoice
 // 23.2cm continuous paper @ 10 CPI = 91 characters width
 
+// Default layout profile: calibrated for the standard pre-printed invoice form (fanfold stationery,
+// 23 cm tall x 23.2 cm wide) on an Epson LQ-1310 at 10 CPI / 6 LPI. Adjust these values to suit a
+// different form. Columns are character positions; *_180 values are fine vertical moves in 1/180 inch
+// (30/180 = one line), taken from a line and given back after it so later lines do not move.
 const LAYOUT = {
   // Page dimensions
   PAGE_WIDTH: 91,            // 23.2cm @ 10 CPI = 91.3 chars
@@ -59,6 +64,15 @@ const LAYOUT = {
 
   // Header section (positions scaled for 10 CPI)
   HEADER_START_LINE: 0,      // No empty lines at start
+
+  // Paper: fanfold continuous stationery on the push tractor. Each page feeds from top-of-form
+  // (where the printer parks the paper, and returns it after tear-off) down to the first print
+  // line, and ends with FF to the next form's top-of-form, so no manual positioning is needed.
+  HEADER_DROP_180: 6,        // Invoice-no + name lines dropped 6/180" (20% of a line)
+  TAX_DROP_180: 15,          // SGST/CGST amounts dropped 15/180" (50% of a line)
+  TOP_OFFSET_MM: 34,         // First print line below the form's top perforation
+  LOAD_POSITION_MM: 10.5,    // Top-of-form below the perforation
+  FORM_LENGTH_MM: 203.2,     // Perforation-to-perforation pitch = 8", sent as page length in 1/360" units
   INVOICE_NO_OFFSET: 8,      // Invoice number (2cm from left @ 10 CPI = 7.87 chars)
   GSTIN_OFFSET: 21,          // GSTIN field offset (5.3cm from left @ 10 CPI = 20.9 chars)
   STATE_OFFSET: 51,          // State field offset (13cm from left @ 10 CPI = 51.2 chars)
@@ -86,9 +100,9 @@ const LAYOUT = {
     DELIVERY_DATE: 9,     // 2.2cm @ 10 CPI = 8.67 chars - moved 1 char left
     SPACE6: 0,            // Stays at 0
     DURATION: 4,          // Back to 4 - moves WEIGHT 1 char right
-    SPACE7: 0,            // Stays at 0 - no space between DURATION and WEIGHT
+    SPACE7: 1,            // 1 char before WEIGHT: weight moved 1 char right...
     WEIGHT: 6,            // Weight column with 2 decimal precision (e.g., 5.00)
-    SPACE8: 2,            // Back to 2 - moves RATE 1 char left
+    SPACE8: 1,            // ...taken from this gap, so RATE onward stays put
     RATE: 6,              // 1.6cm @ 10 CPI = 6.30 chars
     SPACE9: 0,            // Reduced from 1 to 0 - moves AMOUNT 1 char left
     AMOUNT: 10,           // Reduced from 11 to 10 - moves AMOUNT 1 more char left (total 2 left)
@@ -171,15 +185,25 @@ const CONTINUED = ' contd.';
 function generateInvoicePage(
   invoice: any,
   page: InvoicePrintPage<any>,
-  cumulativeItems: any[],  // All lines from page 1 to current page for cumulative totals
+  allItems: any[],  // Every line of the invoice (for the Invoice total row)
   pageNum: number,
   totalPages: number,
   isLastPage: boolean
 ): string {
   let output = '';
 
+  // === TOP OFFSET ===
+  // Feed from top-of-form down to TOP_OFFSET_MM (ESC J n = n/180", at most 255 per command).
+  // HEADER_DROP_180 is added: the invoice-no and name lines sit that much lower, and it is
+  // taken back after the name line so the item table does not move.
+  let topFeed = Math.max(0, Math.round((LAYOUT.TOP_OFFSET_MM - LAYOUT.LOAD_POSITION_MM) / 25.4 * 180)) + LAYOUT.HEADER_DROP_180;
+  while (topFeed > 0) {
+    const n = Math.min(255, topFeed);
+    output += ESC + 'J' + String.fromCharCode(n);
+    topFeed -= n;
+  }
+
   // === HEADER SECTION ===
-  // No blank lines before header
 
   // Line 1: Invoice No, GSTIN, State (GUJARAT), and Date ALL on same line
   // Build header using absolute positioning to avoid overlaps
@@ -229,7 +253,9 @@ function generateInvoicePage(
     invoice.mobile
   ].filter(part => part).join(', ');
   const fullAddress = truncateString(addressParts, LAYOUT.PAGE_WIDTH - LAYOUT.ADDRESS_OFFSET - 5);
-  output += createLine(fullAddress, LAYOUT.ADDRESS_OFFSET);
+  // End the name line with CR + only the rest of a line, giving back HEADER_DROP_180
+  output += ' '.repeat(LAYOUT.ADDRESS_OFFSET) + fullAddress + CR;
+  output += ESC + 'J' + String.fromCharCode(30 - LAYOUT.HEADER_DROP_180);
 
   // === ITEMS TABLE ===
   // Add 2 more blank lines after customer address (3 total before items)
@@ -257,11 +283,14 @@ function generateInvoicePage(
       headerLine += padLeft(String(item.grn_items_quantity || 0), w.INW_QTY);
       headerLine += ' '.repeat(w.SPACE3);
 
-      headerLine += padCenter(formatDate(item.grns_date), w.DEPOSIT_DATE);
+      // Date of deposit, 1 char right. Only header rows print it, and their Out Qty cell is
+      // always blank, so the extra char comes out of that blank cell: dispatch rows and the
+      // totals row (which share these widths) do not move.
+      headerLine += ' ' + padCenter(formatDate(item.grns_date), w.DEPOSIT_DATE);
       headerLine += ' '.repeat(w.SPACE4);
 
-      // Empty dispatch columns on header row
-      headerLine += ' '.repeat(w.OUT_QTY);
+      // Empty dispatch columns on header row (Out Qty 1 narrower: see the date above)
+      headerLine += ' '.repeat(w.OUT_QTY - 1);
       headerLine += ' '.repeat(w.SPACE5);
       headerLine += ' '.repeat(w.DELIVERY_DATE);
       headerLine += ' '.repeat(w.SPACE6);
@@ -302,7 +331,9 @@ function generateInvoicePage(
     detailLine += padCenter(formatDate(item.dispatches_date), w.DELIVERY_DATE);
     detailLine += ' '.repeat(w.SPACE6);
 
-    detailLine += padLeft(String(item.duration || ''), w.DURATION);
+    // Months charged, always 1 decimal (1.0, 2.5, 12.0) so the column lines up
+    const months = parseFloat(item.duration);
+    detailLine += padLeft(Number.isFinite(months) ? months.toFixed(1) : '', w.DURATION);
     detailLine += ' '.repeat(w.SPACE7);
 
     // Weight - show on every dispatch row
@@ -328,111 +359,86 @@ function generateInvoicePage(
   const emptyRowCount = Math.max(0, LAYOUT.ITEMS_PER_PAGE - page.rows.length);
   output += emptyLines(emptyRowCount);
 
-  // === TOTALS SECTION ===
-  // No blank lines before totals (removed to make room for 4 more item lines)
+  // === TOTALS: this page's rows only, then the whole invoice ===
+  // Inward qty counts each GRN group once per page (a group continued onto the next page counts
+  // on both pages); out qty and amount sum the page's dispatch rows. A multi-page invoice labels
+  // the row "Page N:" and adds an "Invoice total" row (all pages) below it on every page.
+  const sumRows = (rows: any[]) => {
+    let inw = 0, out = 0;
+    rows.forEach((item: any, index: number) => {
+      if (index === 0 || item.grn_items_id !== rows[index - 1].grn_items_id) {
+        inw += item.grn_items_quantity || 0;
+      }
+      out += item.dispatches_items_disp_qty || 0;
+    });
+    // The storage amounts the database computed, added in paise
+    return { inw, out, amt: cumulativeStorageAmount(rows) };
+  };
+  const pageSums = sumRows(page.lines);
 
-  // === CUMULATIVE TOTALS (from page 1 to current page) ===
+  // Column positions: INW_QTY, OUT_QTY and the right edge of AMOUNT
+  const W = LAYOUT.COL_WIDTHS;
+  const inwQtyColStart = W.ITEM_NAME + W.SPACE1 + W.PACKAGING + W.SPACE2;
+  const outQtyColStart = inwQtyColStart + W.INW_QTY + W.SPACE3 + W.DEPOSIT_DATE + W.SPACE4;
+  const amountColEnd = outQtyColStart + W.OUT_QTY + W.SPACE5 + W.DELIVERY_DATE + W.SPACE6 +
+                       W.DURATION + W.SPACE7 + W.WEIGHT + W.SPACE8 + W.RATE + W.SPACE9 + W.AMOUNT;
 
-  // Calculate cumulative unique GRN qty total (sum only first item in each grn_items_id group)
-  const uniqueGrnQtyTotal = cumulativeItems.reduce((total: number, item: any, index: number) => {
-    if (index === 0 || item.grn_items_id !== cumulativeItems[index - 1].grn_items_id) {
-      return total + (item.grn_items_quantity || 0);
-    }
-    return total;
-  }, 0);
+  // A totals row: label, inward qty, outward qty, amount (right aligned in the amount column)
+  const totalsRow = (label: string, sums: { inw: number; out: number; amt: number }) => {
+    let row = padRight(label, inwQtyColStart);
+    row += padLeft(String(sums.inw), W.INW_QTY);
+    row += ' '.repeat(Math.max(0, outQtyColStart - row.length));
+    row += padLeft(String(sums.out), W.OUT_QTY);
+    row += ' '.repeat(Math.max(0, amountColEnd - W.AMOUNT - row.length));
+    row += padLeft(formatCurrency(sums.amt), W.AMOUNT);
+    return row;
+  };
 
-  // Calculate cumulative total dispatch qty (sum ALL rows from page 1 to current page)
-  const totalDispQty = cumulativeItems.reduce((sum: number, item: any) => sum + (item.dispatches_items_disp_qty || 0), 0);
-
-  // Cumulative storage amount (the server amounts of all lines from page 1 to current page, in paise)
-  const totalAmount = cumulativeStorageAmount(cumulativeItems);
-
-  // Totals row (always show on every page)
-  // Calculate exact position of INW_QTY column: ITEM_NAME + SPACE1 + PACKAGING + SPACE2
-  const inwQtyColStart = LAYOUT.COL_WIDTHS.ITEM_NAME + LAYOUT.COL_WIDTHS.SPACE1 +
-                         LAYOUT.COL_WIDTHS.PACKAGING + LAYOUT.COL_WIDTHS.SPACE2;
-  let totalsLine = ' '.repeat(inwQtyColStart);
-  totalsLine += padLeft(String(uniqueGrnQtyTotal), LAYOUT.COL_WIDTHS.INW_QTY);
-
-  // Calculate exact position of OUT_QTY column
-  const outQtyColStart = inwQtyColStart + LAYOUT.COL_WIDTHS.INW_QTY + LAYOUT.COL_WIDTHS.SPACE3 +
-                         LAYOUT.COL_WIDTHS.DEPOSIT_DATE + LAYOUT.COL_WIDTHS.SPACE4;
-  totalsLine += ' '.repeat(outQtyColStart - totalsLine.length);
-  totalsLine += padLeft(String(totalDispQty), LAYOUT.COL_WIDTHS.OUT_QTY);
-
-  // Add continuation message if not last page
-  if (!isLastPage) {
-    // Calculate exact position of AMOUNT column
-    const amountColEnd = inwQtyColStart + LAYOUT.COL_WIDTHS.INW_QTY + LAYOUT.COL_WIDTHS.SPACE3 +
-                         LAYOUT.COL_WIDTHS.DEPOSIT_DATE + LAYOUT.COL_WIDTHS.SPACE4 +
-                         LAYOUT.COL_WIDTHS.OUT_QTY + LAYOUT.COL_WIDTHS.SPACE5 +
-                         LAYOUT.COL_WIDTHS.DELIVERY_DATE + LAYOUT.COL_WIDTHS.SPACE6 +
-                         LAYOUT.COL_WIDTHS.DURATION + LAYOUT.COL_WIDTHS.SPACE7 +
-                         LAYOUT.COL_WIDTHS.WEIGHT + LAYOUT.COL_WIDTHS.SPACE8 +
-                         LAYOUT.COL_WIDTHS.RATE + LAYOUT.COL_WIDTHS.SPACE9 +
-                         LAYOUT.COL_WIDTHS.AMOUNT;
-    totalsLine += ' '.repeat(amountColEnd - totalsLine.length - LAYOUT.COL_WIDTHS.AMOUNT);
-    totalsLine += padLeft(formatCurrency(totalAmount), LAYOUT.COL_WIDTHS.AMOUNT);
-    totalsLine += '   Continued...';
-  } else {
-    // On last page, show amount total in amount column
-    const amountColEnd = inwQtyColStart + LAYOUT.COL_WIDTHS.INW_QTY + LAYOUT.COL_WIDTHS.SPACE3 +
-                         LAYOUT.COL_WIDTHS.DEPOSIT_DATE + LAYOUT.COL_WIDTHS.SPACE4 +
-                         LAYOUT.COL_WIDTHS.OUT_QTY + LAYOUT.COL_WIDTHS.SPACE5 +
-                         LAYOUT.COL_WIDTHS.DELIVERY_DATE + LAYOUT.COL_WIDTHS.SPACE6 +
-                         LAYOUT.COL_WIDTHS.DURATION + LAYOUT.COL_WIDTHS.SPACE7 +
-                         LAYOUT.COL_WIDTHS.WEIGHT + LAYOUT.COL_WIDTHS.SPACE8 +
-                         LAYOUT.COL_WIDTHS.RATE + LAYOUT.COL_WIDTHS.SPACE9 +
-                         LAYOUT.COL_WIDTHS.AMOUNT;
-    totalsLine += ' '.repeat(amountColEnd - totalsLine.length - LAYOUT.COL_WIDTHS.AMOUNT);
-    totalsLine += padLeft(formatCurrency(totalAmount), LAYOUT.COL_WIDTHS.AMOUNT);
-  }
-
+  let totalsLine = totalsRow(totalPages > 1 ? `Page ${pageNum}:` : '', pageSums);
+  if (!isLastPage) totalsLine += '   Continued...';
   output += totalsLine + '\n';
 
-  // === FOOTER SECTION (fixed height = 23 lines @ 6 LPI for continuous form alignment) ===
+  // Invoice total (whole invoice) under the page total on EVERY page of a multi-page invoice.
+  // On the last page it takes the first of the 2 spacing lines before the tax block, so the
+  // tax and grand-total lines do not move.
+  const printInvoiceTotal = totalPages > 1;
+  if (printInvoiceTotal) {
+    output += totalsRow('Invoice total', sumRows(allItems)) + '\n';
+  }
+
+  // === FOOTER SECTION (last page only; every page ends with FF) ===
   if (isLastPage) {
-    // Last page: Print actual tax and grand total
-    // Spacing before tax section - 2 blank lines
-    output += '\n\n';
+    // Spacing before tax section - 2 lines (1 if the Invoice total row used one)
+    output += printInvoiceTotal ? '\n' : '\n\n';
 
     // Tax breakdown (SGST and CGST)
     const sgst = (invoice.tax_amount || 0) / 2;
     const cgst = (invoice.tax_amount || 0) / 2;
+    const taxLeftOffset = 12; // 3cm from left @ 10 CPI
 
-    // Calculate positions: 3cm from left = 11.82 chars @ 10 CPI
-    const taxLeftOffset = 12; // 3cm from left
-    // Amount column position (where item amounts appear)
-    const amountColEnd = inwQtyColStart + LAYOUT.COL_WIDTHS.INW_QTY + LAYOUT.COL_WIDTHS.SPACE3 +
-                         LAYOUT.COL_WIDTHS.DEPOSIT_DATE + LAYOUT.COL_WIDTHS.SPACE4 +
-                         LAYOUT.COL_WIDTHS.OUT_QTY + LAYOUT.COL_WIDTHS.SPACE5 +
-                         LAYOUT.COL_WIDTHS.DELIVERY_DATE + LAYOUT.COL_WIDTHS.SPACE6 +
-                         LAYOUT.COL_WIDTHS.DURATION + LAYOUT.COL_WIDTHS.SPACE7 +
-                         LAYOUT.COL_WIDTHS.WEIGHT + LAYOUT.COL_WIDTHS.SPACE8 +
-                         LAYOUT.COL_WIDTHS.RATE + LAYOUT.COL_WIDTHS.SPACE9 +
-                         LAYOUT.COL_WIDTHS.AMOUNT;
-
-    // SGST line - SGST at 3cm, Labour under amount column
-    let sgstLine = ' '.repeat(taxLeftOffset);
-    sgstLine += padLeft(formatCurrency(sgst), 10);
+    // SGST/CGST amounts (left, at 3cm) sit TAX_DROP_180/180" below their lines; Labour and
+    // Tax Total (amount column) stay on the lines. The printer cannot feed backwards, so each
+    // line prints in two passes, top to bottom:
+    //   Y      : Labour            Y+drop    : SGST
+    //   Y+30   : Tax total         Y+30+drop : CGST
+    //   Y+60   : Grand total (unchanged)
     const labourPos = amountColEnd - 10; // Right align in amount column
-    sgstLine += ' '.repeat(labourPos - sgstLine.length);
-    sgstLine += padLeft(formatCurrency(invoice.labour || 0), 10);
-    output += sgstLine + '\n';
-
-    // CGST line - CGST at 3cm, Tax Total under amount column
-    let cgstLine = ' '.repeat(taxLeftOffset);
-    cgstLine += padLeft(formatCurrency(cgst), 10);
-    cgstLine += ' '.repeat(labourPos - cgstLine.length);
-    cgstLine += padLeft(formatCurrency(invoice.tax_amount || 0), 10);
-    output += cgstLine + '\n';
+    const drop = LAYOUT.TAX_DROP_180;
+    output += ' '.repeat(labourPos) + padLeft(formatCurrency(invoice.labour || 0), 10) + CR;
+    output += ESC + 'J' + String.fromCharCode(drop);
+    output += ' '.repeat(taxLeftOffset) + padLeft(formatCurrency(sgst), 10) + CR;
+    output += ESC + 'J' + String.fromCharCode(30 - drop);
+    output += ' '.repeat(labourPos) + padLeft(formatCurrency(invoice.tax_amount || 0), 10) + CR;
+    output += ESC + 'J' + String.fromCharCode(drop);
+    output += ' '.repeat(taxLeftOffset) + padLeft(formatCurrency(cgst), 10) + CR;
+    output += ESC + 'J' + String.fromCharCode(30 - drop);
 
     // Grand total line - just value, no label or "Rs.", aligned under amount column
     let grandTotalLine = ' '.repeat(labourPos);
     grandTotalLine += padLeft(formatCurrency(invoice.total || 0), 10);
     output += grandTotalLine + '\n';
 
-    // Total in words on next line - 12 chars from left margin
+    // Total in words, one line below the grand total - 12 chars from left margin
     const totalWordsOffset = 12;
     let amountInWords = invoice.inwords || '';
     // Remove "Rupees " if it exists at the start, ensure "only" at end
@@ -441,15 +447,12 @@ function generateInvoicePage(
       amountInWords = amountInWords + ' only';
     }
     const truncatedWords = truncateString(amountInWords, LAYOUT.PAGE_WIDTH - totalWordsOffset - 5);
+    output += '\n';
     output += createLine(truncatedWords, totalWordsOffset);
-
-    // Additional spacing to reach total footer height (16 more blank lines = 2 + 8 + 1 + 1)
-    output += '\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n';
-  } else {
-    // Non-last page: Empty lines to maintain same footer height (22 lines total)
-    // 2 blank + SGST + CGST + Grand total + Total in words + 16 blank = 22 lines
-    output += '\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n';
   }
+
+  // End of page: FF to the next form's top-of-form (the page length is set in the job header)
+  output += ESCP.FORM_FEED;
 
   return output;
 }
@@ -470,7 +473,13 @@ function generatePrePrintedInvoice(invoiceData: any): string {
   output += ESCP.LINE_SPACING_1_6;   // 6 lines per inch (standard)
   output += ESC + '\x6C' + '\x00';   // Left margin = 0 (no margin)
   output += ESC + '\x51' + String.fromCharCode(110); // Right margin = 110 chars for 10 CPI
-  // RAW mode - CUPS will NOT wrap lines, printer gets full ESC/P control
+  // Page length = one invoice form, so FF lands exactly on the next form's top-of-form.
+  // 8" is not a whole number of lines at the default units, so use ESC/P2 fine units:
+  //   ESC ( U 01 00 10      -> unit = 10/3600" = 1/360"
+  //   ESC ( C 02 00 mL mH   -> page length = (mH*256 + mL) units
+  const formUnits = Math.round(LAYOUT.FORM_LENGTH_MM / 25.4 * 360);   // 203.2mm -> 2880
+  output += ESC + '(U' + '\x01\x00' + String.fromCharCode(10);
+  output += ESC + '(C' + '\x02\x00' + String.fromCharCode(formUnits & 0xFF) + String.fromCharCode(formUnits >> 8);
 
   // Pages by printed rows: a group header takes a row, is repeated (contd.) when
   // its group goes on to the next page, and never ends a page on its own.
@@ -480,11 +489,10 @@ function generatePrePrintedInvoice(invoiceData: any): string {
   // Generate each page - simply concatenate like GRN/Dispatch (continuous form handles positioning)
   for (let pageNum = 1; pageNum <= totalPages; pageNum++) {
     const page = pages[pageNum - 1];
-    const cumulativeItems = pages.slice(0, pageNum).flatMap((p) => p.lines);  // All lines from page 1 to current page
     const isLastPage = (pageNum === totalPages);
 
     // Simply concatenate each page's output - continuous form handles positioning
-    const pageContent = generateInvoicePage(invoice, page, cumulativeItems, pageNum, totalPages, isLastPage);
+    const pageContent = generateInvoicePage(invoice, page, items, pageNum, totalPages, isLastPage);
     output += pageContent;
   }
 
@@ -504,7 +512,11 @@ Deno.serve(async (req) => {
     const userName = userProfile.name;
     const userId = userProfile.auth_user_id;
 
-    const { start_inv_no_str, end_inv_no_str, inv_fin_year, limit_count, debug } = await req.json();
+    const { start_inv_no_str, end_inv_no_str, inv_fin_year, limit_count, debug, request_id } = await req.json();
+    // Optional: one uuid per user print action, reused for its retries; a repeat is answered without printing (print-request.ts).
+    const requestIdRead = readRequestId(request_id);
+    if (!requestIdRead.ok) return requestIdRead.response;
+    const requestId = requestIdRead.requestId;
 
     if (!start_inv_no_str || !end_inv_no_str) {
       throw new Error('Missing required parameters: start_inv_no_str and end_inv_no_str');
@@ -550,7 +562,7 @@ Deno.serve(async (req) => {
 
     results.forEach((invoice: any, index: number) => {
       // Simply concatenate each invoice's output - continuous form handles positioning
-      const invoiceContent = generatePrePrintedInvoice(invoice);
+      const invoiceContent = generatePrePrintedInvoice(sanitizeForPrinter(invoice));
       printContent += invoiceContent;
     });
 
@@ -568,7 +580,7 @@ Deno.serve(async (req) => {
         .replace(/\x1BE/g, '[BOLD_ON]')
         .replace(/\x1BF/g, '[BOLD_OFF]')
         .replace(/\x1B\x0E/g, '[DOUBLE_WIDTH_ON]')
-        .replace(/\x1B\x14/g, '[DOUBLE_WIDTH_OFF]')
+        .replace(/\x14/g, '[DOUBLE_WIDTH_OFF]')
         .replace(/\x1Bw1/g, '[DOUBLE_HEIGHT_ON]')
         .replace(/\x1Bw0/g, '[DOUBLE_HEIGHT_OFF]');
 
@@ -594,85 +606,49 @@ Deno.serve(async (req) => {
       );
     }
 
-    // Import IPP and send to printer in RAW mode
-    const ipp = await import("npm:ipp@2.0.1");
-    const printer = ipp.Printer("http://cups:631/printers/LQ1310_RAW");
-
-    const Buffer = (await import("node:buffer")).Buffer;
-    const contentBuffer = Buffer.from(printContent);
-
-    const msg = {
-      "operation-attributes-tag": {
-        "requesting-user-name": "invoice-preprint",
-        "job-name": `Invoice-${start_inv_no_str}-to-${end_inv_no_str}`,
-        "document-format": "application/vnd.cups-raw"  // CUPS RAW - bypasses filters
-      },
-      data: contentBuffer
-    };
+    // Hand the finished printer bytes to the transport (CUPS or the Windows print bridge, PRINT_TRANSPORT).
+    // The bytes are the encoded document and nothing else: the layout and the character encoding above this
+    // line are the document's own; the transport neither changes nor translates them.
+    const contentBuffer = encodeLatin1(printContent);
 
     console.log('print-invoice-preprinted: Sending to printer...');
 
-    // Bounded by SUBMIT_TIMEOUT_MS so the submission and the status monitor
-    // fit the worker's lifetime (print-monitor-rule.ts). No answer in time is
-    // an unconfirmed job (submittedJob below), never resubmitted.
-    const result: any = await submitWithTimeout((signal) => new Promise((resolve, reject) => {
-      printer.execute("Print-Job", msg, (err: any, res: any) => {
-        if (signal.aborted) {
-          console.error('print-invoice-preprinted: IPP reply after the submission timeout, ignored:', err ?? 'reply');
-          return;
-        }
-        if (err) {
-          console.error('print-invoice-preprinted: IPP error:', err);
-          reject(err);
-        } else {
-          console.log('print-invoice-preprinted: IPP success');
-          resolve(res);
-        }
-      });
-    }));
-    if (result === null) {
-      console.error(`print-invoice-preprinted: no reply from the printer within ${SUBMIT_TIMEOUT_MS / 1000} s`);
+    // Duplicate guard: a request already handled is answered, a new one gets its queued row before anything is sent.
+    const jobMeta = {
+      job_type: 'Invoice' as const,
+      document_range_start: start_inv_no_str,
+      document_range_end: end_inv_no_str,
+      document_count: results.length,
+      user_id: userId,
+      user_name: userName,
+      content_size: contentBuffer.length,
+      printer_name: configuredPrinterName()
+    };
+    const started = await startPrintJob(supabase, jobMeta, requestId);
+    if (started.kind === 'duplicate') {
+      console.log('print-invoice-preprinted: repeated request_id, nothing printed');
+      return duplicateResponse(started.row, { start: String(start_inv_no_str), end: String(end_inv_no_str) });
     }
 
-    // Submitted only when the reply confirms the job with its id. Otherwise the
-    // paper may or may not come out: the job is recorded as 'unknown' (never
-    // resubmitted on a guess) and the caller is told the printer did not confirm it.
-    const submitted = submittedJob(result);
-    const jobId = submitted.ok ? submitted.jobId : null;
-    const jobUri = submitted.ok ? submitted.jobUri : '';
-
-    // Log print job to database
-    const { data: printJobRecord, error: logError } = await supabase
-      .from('print_jobs')
-      .insert({
-        cups_job_id: jobId,
-        job_type: 'Invoice',
-        document_range_start: start_inv_no_str,
-        document_range_end: end_inv_no_str,
-        document_count: results.length,
-        user_id: userId,
-        user_name: userName,
-        ...(submitted.ok ? { status: 'printing' } : { status: 'unknown', error_message: 'The printer did not confirm the job' }),
-        content_size: contentBuffer.length,
-        printer_name: 'LQ1310_RAW'
-      })
-      .select()
-      .single();
-
-    if (logError) {
-      console.error('print-invoice-preprinted: Failed to log print job:', logError);
-    }
-
-    if (!submitted.ok) {
+    const result = await submitRawJob({ bytes: contentBuffer, docName: `Invoice-${start_inv_no_str}-to-${end_inv_no_str}`, jobType: 'Invoice' });
+    const outcome = jobOutcome(result);
+    if (outcome.kind === 'failed') {
+      console.error('print-invoice-preprinted: print failed on the', result.transport, 'transport');
+      await finishPrintJob(supabase, started, jobMeta, outcome);
       return new Response(
-        JSON.stringify({
-          success: false,
-          error: 'The printer did not confirm the job',
-          // The job may be on paper: true even when it could not be logged (print_job_id null).
-          unconfirmed: true,
-          print_job_id: printJobRecord?.id || null,
-          timestamp: new Date().toISOString()
-        }, null, 2),
+        JSON.stringify(printFailureBody(outcome, null), null, 2),
+        { headers: { 'Content-Type': 'application/json' }, status: 502 }
+      );
+    }
+    const jobId = result.jobId;
+    const jobUri = result.jobUri ?? '';
+
+    // Record the outcome on the queued row (or insert the row now when there is none: no request_id, or no column yet)
+    const printJobRecord = { id: await finishPrintJob(supabase, started, jobMeta, outcome) };
+
+    if (outcome.kind === 'unconfirmed') {
+      return new Response(
+        JSON.stringify(printFailureBody(outcome, printJobRecord?.id || null), null, 2),
         {
           headers: { 'Content-Type': 'application/json' },
           status: 502
@@ -681,11 +657,11 @@ Deno.serve(async (req) => {
     }
 
     // Start background status monitoring (non-blocking)
-    if (printJobRecord?.id && jobId !== null) {
+    if (outcome.kind === 'tracked' && printJobRecord?.id) {
       EdgeRuntime.waitUntil(
         monitorPrintJobStatus(
           printJobRecord.id,
-          jobId,
+          outcome.row.cups_job_id,
           Deno.env.get('SUPABASE_URL') ?? '',
           Deno.env.get('SUPABASE_SERVICE_ROLE_KEY') ?? ''
         )
@@ -708,6 +684,7 @@ Deno.serve(async (req) => {
           print_job_id: printJobRecord?.id || null,
           cups_job_id: jobId,
           job_uri: jobUri,
+          transport: result.transport,
           printer: 'LQ1310_RAW (12 CPI, 103 chars width)',
           content_size: contentBuffer.length
         },

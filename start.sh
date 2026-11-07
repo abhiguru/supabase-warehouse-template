@@ -30,6 +30,10 @@ bash "$ROOT/scripts/lan.sh" start || echo 'Warning: the LAN fallback was not sta
 # Optional services (printing, sensors, pooler) are not part of that start; the LAN fallback was started by lan.sh above.
 # Replace the running ones whose image or configuration changed.
 bash "$ROOT/scripts/build-images.sh" --replace-optional || echo 'Warning: a running optional service was not replaced (message above). The core services are up.' >&2
+# The Windows print bridge (PRINT_TRANSPORT=bridge): scripts/compose.sh works out its address (the WSL2 default gateway) at every
+# command. Say what it is, and recreate the functions container when it carries another one (scripts/print-bridge-sync.sh, which the
+# boot unit and the monitoring checker run too). Printing is not needed for the start, so this never stops it.
+bash "$ROOT/scripts/print-bridge-sync.sh" || true
 node "$ROOT/scripts/doctor.mjs" --local
 # The monitoring checker runs from a systemd timer that start.sh cannot install (it needs sudo): print the command
 # when the timer is missing.

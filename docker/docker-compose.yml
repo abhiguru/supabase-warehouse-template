@@ -316,6 +316,13 @@ services:
       LETTERHEAD_FILE: ${LETTERHEAD_FILE:-}
       LETTERHEAD_DIR: /etc/warehouse/public
       INSTANCE_MANIFEST_PATH: /etc/warehouse/instance.json
+      # Where print jobs go (docs/PRINTING.md): cups = the printing profile's container, bridge = the Windows print bridge.
+      # PRINTBRIDGE_URL is worked out by scripts/compose.sh on a WSL2 host when compose.env leaves it empty. ":-" so a state
+      # from before these lines still renders.
+      PRINT_TRANSPORT: ${PRINT_TRANSPORT:-cups}
+      PRINTER_NAME: ${PRINTER_NAME:-LQ1310_RAW}
+      PRINTBRIDGE_URL: ${PRINTBRIDGE_URL:-}
+      PRINTBRIDGE_TOKEN: ${PRINTBRIDGE_TOKEN:-}
       # release.json and app-compat.json, which setup.sh writes there (get-public-config, get-config).
       PUBLIC_DIR: /etc/warehouse/public
     command:
@@ -498,18 +505,27 @@ services:
     restart: unless-stopped
     profiles: ["printing"]
     logging: *default-logging
+    # USB access: privileged, plus one bind of /dev/bus/usb. The bind shows a printer plugged in after the container started
+    # (a privileged container's own /dev is a copy made at start). It replaces the earlier /dev/usb bind and the `devices:`
+    # entry, which made Compose fail on a host without /dev/bus/usb (WSL2, a VM); now Compose creates an empty directory
+    # there and the container's start fails with a message that no USB printer was found (docker/cups/entrypoint.sh).
+    # The narrower device_cgroup_rules ("c 189:* rmw") would do without privileged but is not verified with this image.
     privileged: true
     volumes:
       - ./cups/config/cupsd.conf:/etc/cups/cupsd.conf.custom:ro,z
       - cups-spool:/var/spool/cups
-      - /dev/usb:/dev/usb:rw
-    devices:
-      - /dev/bus/usb:/dev/bus/usb
+      - /dev/bus/usb:/dev/bus/usb:rw
     environment:
       CUPS_ADMIN_USER: ${CUPS_ADMIN_USER:-admin}
       CUPS_ADMIN_PASSWORD: ${CUPS_ADMIN_PASSWORD:?Run setup to generate a password}
+      # The one raw queue the print functions use (PRINTER_NAME is shared with them); PRINTER_URI empty = the first USB Epson.
+      PRINTER_NAME: ${PRINTER_NAME:-LQ1310_RAW}
+      PRINTER_URI: ${PRINTER_URI:-}
+      PRINTER_DRIVER: raw
+    # Healthy only while the queue exists and is enabled: lpstat's FIRST line says "... enabled since" or "... disabled since" (a paused
+    # queue is disabled; the reason, e.g. "Paused", is a second line that must not be matched). (A CUPS that answers without the queue is not a working printer).
     healthcheck:
-      test: ["CMD", "curl", "-f", "http://localhost:631/"]
+      test: ["CMD-SHELL", "lpstat -p \"$$PRINTER_NAME\" 2>/dev/null | head -n 1 | grep -q ' enabled since'"]
       timeout: 10s
       interval: 30s
       retries: 3

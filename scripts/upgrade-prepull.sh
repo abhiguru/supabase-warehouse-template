@@ -64,6 +64,35 @@ while IFS= read -r ref; do [[ -z "$ref" ]] || refs+=("$ref"); done < <(node -e '
 hub=()
 while IFS= read -r ref; do [[ -z "$ref" ]] || hub+=("$ref"); done < <(sed -n 's/^[[:space:]]*image:[[:space:]]*\([^$[:space:]]*@sha256:[0-9a-f]\{64\}\)[[:space:]]*$/\1/p' "$TREE/docker/docker-compose.yml")
 
+# Signatures first, before anything is pulled, in --dry-run too (scripts/verify-image-signature.sh; a release without docker/images-signed is not
+# checked, as before). A signature that does not check refuses the upgrade. So does a host without cosign, unless the operator passed
+# --unsigned to upgrade.sh (WAREHOUSE_UNSIGNED=yes): then the images are used unverified, with a warning and a line in upgrades.log.
+for ref in "${refs[@]}"; do
+  sig_rc=0
+  bash "$HERE/verify-image-signature.sh" "$ref" || sig_rc=$?
+  case "$sig_rc" in
+    0) ;;
+    10) break ;;
+    11)
+      if [[ "${WAREHOUSE_UNSIGNED:-}" == yes ]]; then
+        printf 'Warning: cosign is not installed and --unsigned was given: the images of %s are used WITHOUT checking their signatures.\n' "$TO_LABEL" >&2
+        if [[ "$DRY" != yes ]]; then
+          (umask 077; printf '%s %s unsigned: images of %s used without a signature check (cosign missing, --unsigned)\n' "$(date -u +%Y-%m-%dT%H:%M:%SZ)" "${FROM_LABEL:-?}" "$TO_LABEL" >> "$STATE/config/upgrades.log") 2>/dev/null ||
+            printf 'Warning: could not write %s/config/upgrades.log.\n' "$STATE" >&2
+        fi
+        break
+      fi
+      install_cmd="git show $TO_LABEL:scripts/install-cosign.sh | bash -s -- \"$STATE\""
+      if [[ "${WAREHOUSE_UPGRADE_HAS_UNSIGNED:-}" == yes ]]; then
+        skip_how="pass --unsigned to upgrade.sh (bash upgrade.sh --unsigned $TO_LABEL)"
+      else
+        skip_how="put WAREHOUSE_UNSIGNED=yes before the command (WAREHOUSE_UNSIGNED=yes bash upgrade.sh $TO_LABEL; the upgrade.sh that is running is from before the --unsigned option and would reject it)"
+      fi
+      refuse "cosign is not installed, so the signatures of the images of $TO_LABEL cannot be checked. Install it, from the checkout you run upgrade.sh in: $install_cmd (a pinned, checksummed download, docs/OPERATOR_INSTALL.md, \"Check the image signatures\"), then run the upgrade again; or $skip_how to go on without the check (it is logged in upgrades.log)." ;;
+    *) refuse "the signature of the image $ref of $TO_LABEL did not check (see above). Do not upgrade to this release until the maintainer has answered (docs/RELEASE_CHECKLIST.md, \"Image publication\")." ;;
+  esac
+done
+
 if [[ "$DRY" == yes ]]; then
   say "Pre-pull of images: a real run would pull ${#refs[@]} image(s) of $TO_LABEL and ${#hub[@]} base image(s) before the API is closed (this dry run pulls nothing)."
   exit 0

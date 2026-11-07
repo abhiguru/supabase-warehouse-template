@@ -72,6 +72,13 @@ export class Builder implements PromiseLike<RestResult> {
   update(values: unknown): this { this.method = 'PATCH'; this.body = JSON.stringify(values); return this; }
   eq(column: string, value: unknown): this { this.params.push([column, `eq.${value}`]); return this; }
   gt(column: string, value: unknown): this { this.params.push([column, `gt.${value}`]); return this; }
+  lt(column: string, value: unknown): this { this.params.push([column, `lt.${value}`]); return this; }
+  /** `column=in.(a,b)`: values are plain words (statuses, ids); a value with a comma, quote or parenthesis is refused. */
+  in(column: string, values: readonly string[]): this {
+    if (values.length === 0 || values.some(value => !/^[A-Za-z0-9_.:-]+$/.test(value))) throw new Error('in(): values must be plain words');
+    this.params.push([column, `in.(${values.join(',')})`]);
+    return this;
+  }
   is(column: string, value: null | boolean): this { this.params.push([column, `is.${value}`]); return this; }
   /** Like postgrest-js: `order=col.asc|desc[.nullsfirst|.nullslast]`; several calls are joined by commas. */
   order(column: string, options: { ascending?: boolean; nullsFirst?: boolean } = {}): this {

@@ -59,6 +59,7 @@ import { redactServiceLog } from './service-diagnostics.mjs';
 import { MIN_VHDX_DRIVE_FREE_BYTES, MIN_VHDX_DRIVE_FREE_PERCENT, driveSpace, isWsl, statfsWithTimeout, vhdxDrive } from './wsl-host.mjs';
 import { usbBackupWarning, usbRotationNote } from './usb-backup-status.mjs';
 import { ageText, sensorCheck, sensorLimitSeconds } from './sensors-check.mjs';
+import { SENSOR_ALERTS_SQL, droppedFromLog, droppedSummary, sensorAlertMinutes, sensorAlerts } from './sensor-alerts.mjs';
 import { HEARTBEAT_URL_PATTERN, firstUrlLine, postSlackMessage, sensorTestMessage, testMessage } from './alert-webhook.mjs';
 import { fetchGithubJson, releaseLine } from './release-check.mjs';
 import { ADAPTERS, AUDIENCES, TARGET_IDS, audienceOf, ALERT_LOG, createAlertLog, deliver, historyLine, loadTargets, pickAudience, readAlertLog, secretsOf, targetsOf } from './notify.mjs';
@@ -397,6 +398,7 @@ export function defaultDeps(env = process.env) {
 
 // The alerts that go to the sensors audience: the sensor readings and the sensor-bridge container's own faults.
 export const isSensorAlert = id => id === 'sensors_stale' || id === 'check_error:sensors_stale'
+  || /^(sensor_range|sensor_silent):/.test(id) || id === 'sensor_dropped' || id === 'check_error:sensor_alerts' || id === 'check_error:sensor_dropped'
   || /^(service_down|container_restarts|container_oom|container_memory):sensor-bridge$/.test(id);
 
 // ---------------------------------------------------------------- context
@@ -1066,6 +1068,57 @@ export function checkBreakGlass(ctx) {
     'Someone with shell access made a one-time administrator code (scripts/break-glass-admin.sh) or signed in with one. Check that it was you or your staff: docs/MONITORING.md, "Break-glass sign-in".', { immediate: true })];
 }
 
+// A save whose audit row could not be written (WH-115): audit_trigger_func lets the save through and records the failure in
+// warehouse_security.audit_write_failures (table, row id, action, error). The audit trail has a gap for each row; the operator is told
+// once a day while there are failures in the last 24 hours. Read-only.
+const AUDIT_FAILURE_SQL = `SELECT count(*), COALESCE(string_agg(DISTINCT table_name, ','), ''), COALESCE(max(created_at)::text, '')
+  FROM warehouse_security.audit_write_failures WHERE created_at > now() - interval '24 hours'`;
+export function checkAuditWrites(ctx) {
+  if (!databaseReady(ctx)) return null;   // postgres_down says so
+  const q = ctx.compose(['exec', '-T', '-e', 'PGOPTIONS=-c statement_timeout=10000', 'db', 'psql', '-X', '-qAt', '-F', '|',
+    '-v', 'ON_ERROR_STOP=1', '-U', 'supabase_admin', '-d', 'postgres', '-c', AUDIT_FAILURE_SQL]);
+  if (q.status !== 0) throw new Error(`audit failure query failed: ${clip(q.stderr.trim(), 200)}`);
+  const [count, tables = '', latest = ''] = q.stdout.trim().split('\n').pop().split('|');
+  if (!/^\d+$/.test(count ?? '')) throw new Error('unexpected audit failure query output');
+  const rows = Number(count);
+  return [result('audit_writes', 'audit_write_failed', rows === 0,
+    rows ? `${rows} audit row${rows === 1 ? '' : 's'} could not be written in the last 24 hours (tables: ${tables.replaceAll(',', ', ')}; latest ${latest || 'unknown'}). The saves went through.`
+      : 'Every audit row of the last 24 hours was written',
+    'The audit trail has a gap for each of these saves. Look at warehouse_security.audit_write_failures (table, row id, error): docs/MONITORING.md, "audit_write_failed".',
+    { repeatHours: 24 })];
+}
+
+// The SMS spending ceilings (docs/OPERATOR_INSTALL.md, "SMS spending ceiling"; WH-119): the facility-wide hourly ceiling on SMS sends
+// (auth_config `otp_global_hourly_cap`, 300 when unset) and the ceiling on provider requests in any 24 hours
+// (`otp_daily_provider_attempt_cap`, none when unset). While either is reached, every code request is refused (429) until older
+// requests leave the window, so the operator is told once a day (repeatHours 24, at once the first time). Read-only; the counters
+// are the ones operator_prepare_otp keeps.
+const SMS_CEILING_SQL = `SELECT COALESCE((SELECT g.hourly_count FROM warehouse_security.operator_otp_global_limit g
+    WHERE g.id AND g.window_started > now() - interval '1 hour'), 0),
+  COALESCE((SELECT c.value FROM warehouse_security.auth_config c WHERE c.key = 'otp_global_hourly_cap'), ''),
+  COALESCE((SELECT sum(a.attempts) FROM warehouse_security.otp_provider_attempts a WHERE a.created_at > now() - interval '24 hours'), 0),
+  COALESCE((SELECT c.value FROM warehouse_security.auth_config c WHERE c.key = 'otp_daily_provider_attempt_cap'), '')`;
+export function checkSmsCeiling(ctx) {
+  if (!databaseReady(ctx)) return null;   // postgres_down says so
+  const q = ctx.compose(['exec', '-T', '-e', 'PGOPTIONS=-c statement_timeout=10000', 'db', 'psql', '-X', '-qAt', '-F', '|',
+    '-v', 'ON_ERROR_STOP=1', '-U', 'supabase_admin', '-d', 'postgres', '-c', SMS_CEILING_SQL]);
+  if (q.status !== 0) throw new Error(`SMS ceiling query failed: ${clip(q.stderr.trim(), 200)}`);
+  const [hourUsedText, hourCapText = '', dayUsedText, dayCapText = ''] = q.stdout.trim().split('\n').pop().split('|');
+  if (!/^\d+$/.test(hourUsedText ?? '') || !/^\d+$/.test(dayUsedText ?? '')) throw new Error('unexpected SMS ceiling query output');
+  const hourUsed = Number(hourUsedText);
+  const dayUsed = Number(dayUsedText);
+  const hourCap = /^[0-9]{1,6}$/.test(hourCapText) ? Number(hourCapText) : 300;   // the default of operator_prepare_otp
+  const dayCap = /^[0-9]{1,7}$/.test(dayCapText) ? Number(dayCapText) : null;       // no ceiling when unset or not a whole number
+  const hourHit = hourUsed >= hourCap;
+  const dayHit = dayCap !== null && dayUsed >= dayCap;
+  const which = [hourHit && `${hourUsed} of ${hourCap} SMS sends this hour`, dayHit && `${dayUsed} of ${dayCap} SMS sends in 24 hours`].filter(Boolean);
+  return [result('sms_ceiling', 'sms_ceiling_reached', !(hourHit || dayHit),
+    which.length ? `The SMS spending ceiling is reached: ${which.join('; ')}. Sign-in code requests are refused until it frees up.`
+      : 'The SMS spending ceilings are not reached',
+    'People cannot get a sign-in code until the hour or the 24 hours pass. If the traffic is real, raise the ceiling; if not, look for abuse: docs/OPERATOR_INSTALL.md, "SMS spending ceiling".',
+    { repeatHours: 24 })];
+}
+
 // The host clock: systemd's own verdict (NTPSynchronized) and, when the public address answers, the difference from the
 // clock of the address's edge. Central sign-in refuses a token when the clock is over 30 s off (docs/CENTRAL_LOGIN.md); backup
 // names and the 26 h backup rule use it too. The reference is Cloudflare's own `ts=` line of <origin>/cdn-cgi/trace, which the
@@ -1286,14 +1339,71 @@ export function checkSensors(ctx) {
     'See docs/SENSORS.md, Troubleshooting, and docs/TROUBLESHOOTING.md#sensors-show-no-data. node scripts/doctor.mjs --local names each fault with the command to read the bridge log.')];
 }
 
+// Per sensor (scripts/sensor-alerts.mjs): outside its temperature limits for 15 minutes, or silent for 30 minutes while its hub is up
+// (facility settings WAREHOUSE_SENSOR_OUT_OF_RANGE_MINUTES and WAREHOUSE_SENSOR_SILENT_MINUTES), one alert id per sensor and kind.
+// The minutes are counted from the readings, so the alerts are immediate; a sensor missing from the list clears its alert.
+export function checkSensorAlerts(ctx) {
+  let manifest = null;
+  try { manifest = JSON.parse(ctx.readText(join(ctx.state, 'public/instance.json')) ?? 'null'); } catch { /* no manifest: not on */ }
+  if (manifest?.capabilities?.sensors !== true) return [];
+  if (!databaseReady(ctx)) return null;
+  const env = ctx.env_();
+  const r = ctx.compose(['exec', '-T', '-e', 'PGOPTIONS=-c statement_timeout=10000', 'db', 'psql', '-X', '-qAt', '-v', 'ON_ERROR_STOP=1', '-U', 'supabase_admin', '-d', 'postgres', '-c', SENSOR_ALERTS_SQL]);
+  if (r.status !== 0) return null;   // sensors_stale already says the sensor tables could not be read
+  let devices;
+  try { devices = JSON.parse(String(r.stdout ?? '').trim()); } catch { return null; }
+  if (!Array.isArray(devices)) return null;
+  const { outMinutes, silentMinutes } = sensorAlertMinutes(env);
+  return sensorAlerts({ devices, nowMs: ctx.now(), outMinutes, silentMinutes, limitSeconds: sensorLimitSeconds(env) })
+    .map(a => result('sensor_alerts', a.id, false, a.summary, a.detail, { immediate: true, repeatHours: a.repeatHours }));
+}
+
+// Readings the sensor bridge dropped in the last 24 hours (it logs each drop with its reason): one alert, repeated daily while
+// the log still shows a drop. Only while this Compose project runs the bridge; a bridge run on its own is read with its own log.
+export function checkSensorDrops(ctx) {
+  let manifest = null;
+  try { manifest = JSON.parse(ctx.readText(join(ctx.state, 'public/instance.json')) ?? 'null'); } catch { /* no manifest: not on */ }
+  if (manifest?.capabilities?.sensors !== true) return [];
+  if (String(ctx.env_().SENSOR_BRIDGE_HUBS ?? '').trim() === '') return [];
+  const logs = ctx.compose(['--profile', 'sensors', 'logs', '--since', '24h', '--no-color', '--no-log-prefix', 'sensor-bridge'], { timeoutMs: 30000 });
+  if (logs.status !== 0) return null;
+  const found = droppedFromLog(String(logs.stdout ?? ''));
+  if (!found.total) return [result('sensor_dropped', 'sensor_dropped', true, 'The sensor bridge dropped no readings')];
+  return [result('sensor_dropped', 'sensor_dropped', false, droppedSummary(found),
+    'Dropped readings are gone for good: see docs/SENSORS.md, Delivery, for the three reasons. The bridge log lines are event=readings_dropped.', { immediate: true, repeatHours: 24 })];
+}
+
+// Settles print jobs nothing follows any more: the sweep-print-jobs function turns a job still queued or printing after 5 minutes into
+// 'unknown'. Runs only while printing is on and the API answers locally; the service-role key never leaves this host.
+export async function checkPrintSweep(ctx) {
+  let manifest = null;
+  try { manifest = JSON.parse(ctx.readText(join(ctx.state, 'public/instance.json')) ?? 'null'); } catch { /* no manifest: not on */ }
+  if (manifest?.capabilities?.printing !== true) return [];
+  const env = ctx.env_();
+  const port = gatewayPortText(env);
+  const key = env.SERVICE_ROLE_KEY;
+  if (!/^\d+$/.test(port ?? '') || !key) return null;   // not judged: checkApiLocal reports a missing port
+  try {
+    const response = await ctx.fetch(`http://127.0.0.1:${port}/functions/v1/sweep-print-jobs`, {
+      method: 'POST', headers: { apikey: key, Authorization: `Bearer ${key}` }, signal: AbortSignal.timeout(15000), redirect: 'error',
+    });
+    if (!response.ok) throw new Error(`HTTP ${response.status}`);
+    return [result('print_sweep', 'print_sweep_failed', true, 'Print jobs are swept')];
+  } catch (error) {
+    return [result('print_sweep', 'print_sweep_failed', false, 'Stuck print jobs could not be settled', `${error.message}. A print job that lost its status monitor stays "printing" until this works.`)];
+  }
+}
+
 export const CHECKS = [
   ['cpu', checkCpu], ['memory', checkMemory], ['disk', checkDisks], ['database', checkDatabase],
   ['services', checkServices], ['container_oom', checkContainerOom], ['container_restarts', checkContainerRestarts],
   ['stack_restarts', checkStackRestarts],
   ['container_memory', checkContainerMemory], ['api_local', checkApiLocal], ['api_public', checkApiPublic], ['api_lan', checkApiLan],
   ['api_logs', checkApiLogs], ['pdf_renderer', checkPdfRenderer], ['central_key', checkCentralKey], ['letterhead', checkLetterhead], ['backups', checkBackups],
-  ['restore_space', checkRestoreSpace], ['upgrade', checkUpgrade], ['sms_delivery', checkSmsDelivery], ['break_glass', checkBreakGlass], ['clock', checkClock],
+  ['restore_space', checkRestoreSpace], ['upgrade', checkUpgrade], ['sms_delivery', checkSmsDelivery], ['sms_ceiling', checkSmsCeiling], ['break_glass', checkBreakGlass], ['audit_writes', checkAuditWrites], ['clock', checkClock],
   ['cloudflared', checkCloudflared], ['host_node', checkHostNode], ['root_copies', checkRootCopies], ['sensors_stale', checkSensors],
+  ['sensor_alerts', checkSensorAlerts], ['sensor_dropped', checkSensorDrops],
+  ['print_sweep', checkPrintSweep],
 ];
 
 // Runs every check; a throwing check becomes one failing result carrying its (redacted) error text.
@@ -1365,6 +1475,8 @@ export function selfHeal(ctx) {
       } else if (idle) {
         const r = ctx.compose(act.args, { timeoutMs: 180000 });
         h.lastAt = now; h.unhealthyRuns = 0; h.actions.push(now);
+        // functions holds PRINTBRIDGE_URL from its creation: after a restart, put the current bridge address in (a no-op unless PRINT_TRANSPORT=bridge).
+        if (r.status === 0 && name === 'functions') ctx.run('bash', [join(ctx.root, 'scripts/print-bridge-sync.sh'), '--quiet'], { timeoutMs: 180000 });
         h.lastAction = r.status === 0 ? `${act.what}; the checker ${act.did}`
           : `${act.what}; the checker could not do it: ${clip(redact(String(r.stderr ?? '').trim(), ctx.env_()), 200)}`;
       }
@@ -1502,6 +1614,8 @@ export function evaluate(data, results, ran, now) {
       a.failingRuns = (a.failingRuns || 0) + 1; a.check = r.check; a.summary = r.summary; a.detail = r.detail;
       if (r.repeatHours !== undefined) a.repeatHours = r.repeatHours;   // an alert that repeats less often than the 4 hours of every other one
       if (!a.firingSince && (a.failingRuns >= LIMITS.failingRuns || r.immediate)) a.firingSince = now;
+      // Failing again while its clear post was still unsent: a new episode, so its start is posted at once (not held by the old repeat time).
+      if (a.clearPending) { a.lastSent = null; a.firingSince = (r.immediate ? now : null); a.failingRuns = 1; }
       a.clearPending = false;
     } else if (a) recover(data, r.id, a);
   }

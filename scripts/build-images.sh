@@ -244,6 +244,18 @@ select_release_images() {
 pull_release_image() {
   local service="$1" ref="$2" image="$3" out digests revision limit="${WAREHOUSE_IMAGE_PULL_TIMEOUT:-1200}" rc=0
   [[ "$limit" =~ ^[1-9][0-9]*$ ]] || limit=1200
+  # A release whose tree carries docker/images-signed has signed images (scripts/verify-image-signature.sh): one whose signature does not
+  # check, or that cannot be checked here (no cosign), is not pulled, and the image is built on this host, which is unsigned. An older
+  # release (no marker) is not checked, as before.
+  local sig_rc=0
+  bash "$ROOT/scripts/verify-image-signature.sh" "$ref" || sig_rc=$?
+  case "$sig_rc" in
+    0|10) ;;
+    11)
+      if [[ "${WAREHOUSE_UNSIGNED:-}" == yes ]]; then echo "Warning: the signature of the $service image of release $release_tag_used ($ref) is NOT checked: cosign is not installed and unsigned images were accepted (--unsigned)." >&2
+      else echo "Warning: the $service image of release $release_tag_used ($ref) is not used because its signature cannot be checked without cosign (bash scripts/install-cosign.sh); it is built here (an unsigned local build)." >&2; return 1; fi ;;
+    *) echo "Warning: the $service image of release $release_tag_used ($ref) is not used because its signature did not check; it is built here (an unsigned local build)." >&2; return 1 ;;
+  esac
   # A pull that stalls would hold setup inside the downtime window of an upgrade; after the limit the image is built here instead.
   # An image of this digest that is already on the host (the upgrade preflight pulled it before the API was closed, scripts/upgrade-prepull.sh)
   # is not fetched again: the digest and revision checks below are made on it all the same, and the downtime needs no registry.

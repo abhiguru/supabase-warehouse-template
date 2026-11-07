@@ -1,7 +1,7 @@
 # The official PostgreSQL 18 image (Debian trixie, pinned by tag and index digest). The recipe replaces its gosu:
 # the image ships gosu 1.19 built with an old Go toolchain, and Trivy reports fixable Go standard-library CVEs in
 # that binary. The shim below does the same job with util-linux's setpriv, so no Go build is needed.
-FROM postgres:18.6-trixie@sha256:edb0c08dc33befd0262ab3b5cf1c4f3f8cfd8b09e88c05b45adee29d6761ddb6
+FROM postgres:18.6-trixie@sha256:e3d24f6906d0760bf4da0dae872415391ededefad23fd471c47dc53b0ddf3c42
 # Delete the base image's binary in a layer of its own first: an image scanner (Trivy) reads each layer, and a file that is
 # only overwritten would still be reported as the Go binary it was.
 RUN rm -f /usr/local/bin/gosu

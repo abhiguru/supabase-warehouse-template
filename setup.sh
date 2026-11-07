@@ -20,6 +20,8 @@ COMPANY_ARG=''
 ALERT_ARG=''
 LETTERHEAD_ARG=''
 CONFIG_ARGS=()
+SMS_HOURLY=''
+SMS_DAILY=''
 while (($#)); do
   case "$1" in
     --state-dir|--api-url|--app-url|--company|--provider-env|--admin-phone|--admin-name|--central-issuer|--central-jwks-url|--central-jwks-file|--central-local-code|--alert-webhook-file|--sensor-webhook-file|--heartbeat-url-file|--letterhead-file|--gateway-port|--db-memory)
@@ -41,6 +43,14 @@ while (($#)); do
         --grn-numbering) GRN_NUMBERING="$2" ;;
         --dispatch-numbering) DISPATCH_NUMBERING="$2" ;;
         --invoice-numbering) INVOICE_NUMBERING="$2" ;;
+      esac
+      shift 2 ;;
+    --sms-hourly-ceiling|--sms-daily-ceiling)
+      # The SMS spending ceilings live in the database (docs/OPERATOR_INSTALL.md, "SMS spending ceiling"): checked here, stored after the migrations.
+      if (($# < 2)); then echo "Missing value for $1" >&2; exit 1; fi
+      case "$1" in
+        --sms-hourly-ceiling) SMS_HOURLY="$2" ;;
+        --sms-daily-ceiling) SMS_DAILY="$2" ;;
       esac
       shift 2 ;;
     *) echo "Unknown option: $1" >&2; exit 1 ;;
@@ -68,6 +78,27 @@ for numbering in grn dispatch invoice; do
     NUMBERING_VARS+=(-v "${numbering}_numbering=$rule")
   fi
 done
+# The SMS spending ceilings (WH-119): SMS sends an hour and a day (MSG91 requests) for the whole facility. Offered 60 and 300 on a new install
+# (Enter accepts each); with no terminal, or with the option given, nothing is asked. A rerun or upgrade asks nothing and keeps what is
+# stored (scripts/configure-sms-ceiling.sql decides what is stored; a value given here always replaces the stored one).
+if [[ ! -d "$STATE/config" && ( -z "$SMS_HOURLY" || -z "$SMS_DAILY" ) && -t 0 && -t 1 ]]; then
+  if [[ -z "$SMS_HOURLY" ]]; then
+    read -r -p 'SMS sends this facility may make in one hour (Enter for 60): ' SMS_HOURLY || true
+    SMS_HOURLY="${SMS_HOURLY:-60}"
+  fi
+  if [[ -z "$SMS_DAILY" ]]; then
+    read -r -p 'SMS sends this facility may make in one day, 24 hours (Enter for 300): ' SMS_DAILY || true
+    SMS_DAILY="${SMS_DAILY:-300}"
+  fi
+fi
+if [[ -n "$SMS_HOURLY" && ! "$SMS_HOURLY" =~ ^[1-9][0-9]{0,5}$ ]]; then
+  echo 'The hourly SMS ceiling (--sms-hourly-ceiling) must be a whole number from 1 to 999999.' >&2
+  exit 1
+fi
+if [[ -n "$SMS_DAILY" && ! "$SMS_DAILY" =~ ^[1-9][0-9]{0,6}$ ]]; then
+  echo 'The daily SMS ceiling (--sms-daily-ceiling) must be a whole number from 1 to 9999999.' >&2
+  exit 1
+fi
 # A rerun may rewrite compose.env (provider replacement), so hold the operator
 # lock before configure.mjs whenever the state already exists; a first install
 # can only take it once configure.mjs has created the state directory.
@@ -128,6 +159,11 @@ bash "$ROOT/scripts/db-version-preflight.sh"
 # `up` builds only a missing image. Rebuild those whose recipes changed, so that
 # an upgraded checkout does not keep the images of the first installation. A checkout at a release tag pulls the images the
 # release workflow built and scanned (by digest) where the recipe is the released one, and builds the rest here.
+# A release with signed images (docker/images-signed) is checked with cosign: install the pinned one into the state when the host has none.
+# Not being able to is a warning; build-images.sh then builds the images here (unsigned) unless the operator accepted unsigned images.
+if [[ -f "$ROOT/docker/images-signed" ]] && ! command -v cosign >/dev/null && [[ ! -x "$STATE/bin/cosign" ]]; then
+  bash "$ROOT/scripts/install-cosign.sh" "$STATE" || echo 'Warning: cosign could not be installed, so the signatures of the release images cannot be checked (message above).' >&2
+fi
 bash "$ROOT/scripts/build-images.sh" --from-release
 # A state that already has containers is about to have them recreated (an upgrade, or a rerun), and a recreated container starts with an
 # empty log: keep the last 48 hours of each service first (best effort, redacted; <state>/diagnostics/pre-setup-*). A first install has none.
@@ -160,6 +196,9 @@ CENTRAL_ISSUER_VALUE="$(sed -n 's/^CENTRAL_ISSUER=//p' "$STATE/config/compose.en
 CENTRAL_LOCAL_CODE_VALUE="$(sed -n 's/^CENTRAL_LOCAL_CODE=//p' "$STATE/config/compose.env" | head -n 1)"
 bash "$ROOT/scripts/compose.sh" exec -T db psql -X -q -U supabase_admin -d postgres -v ON_ERROR_STOP=1 -v central_issuer="$CENTRAL_ISSUER_VALUE" -v central_local_code="$CENTRAL_LOCAL_CODE_VALUE" < "$ROOT/scripts/configure-central.sql"
 bash "$ROOT/scripts/compose.sh" exec -T db psql -X -q -U supabase_admin -d postgres -v ON_ERROR_STOP=1 < "$ROOT/scripts/configure-sms.sql"
+# The SMS spending ceilings: a given value is stored; a new install without one gets 60 an hour and 300 a day; a facility that already
+# sent codes keeps what it has (scripts/configure-sms-ceiling.sql).
+bash "$ROOT/scripts/compose.sh" exec -T db psql -X -q -U supabase_admin -d postgres -v ON_ERROR_STOP=1 -v sms_hourly="$SMS_HOURLY" -v sms_daily="$SMS_DAILY" < "$ROOT/scripts/configure-sms-ceiling.sql"
 # Storage owns its schema upgrades; wait for them before creating private buckets
 # and access policies. This starts only storage and its internal dependencies.
 bash "$ROOT/scripts/compose.sh" up -d --wait --wait-timeout 180 storage

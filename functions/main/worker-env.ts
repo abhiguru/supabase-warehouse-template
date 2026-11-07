@@ -8,6 +8,7 @@ const signedIn = ['JWT_SECRET', 'SUPABASE_URL', 'SUPABASE_SERVICE_ROLE_KEY', 'SU
 // Where _shared/supabase-rest.ts sends its calls: PostgREST and Storage directly (docker-compose.yml), not through the gateway.
 // _shared/auth-helpers.ts (the profile lookup of every signed-in function) and the sign-in and sensor functions use only the REST address, so it is in `signedIn`.
 const storageApi = ['SUPABASE_STORAGE_URL'];
+const printing = ['PRINT_TRANSPORT', 'PRINTER_NAME', 'PRINTBRIDGE_URL', 'PRINTBRIDGE_TOKEN'];
 const documentPdf = [...signedIn, ...storageApi, 'SUPABASE_ANON_KEY', 'SUPABASE_PUBLIC_URL', 'PDF_RENDERER_URL'];
 // The four document PDFs also receive the letterhead image as a finished data URI: the router reads the file
 // (LETTERHEAD_FILE, in the public directory) and passes the text, as it does the central key set. It is not in the container environment.
@@ -39,10 +40,18 @@ export const workerEnvNames: Record<string, readonly string[]> = {
   // Report PDFs read like the document PDFs: caller token for the data, the
   // server key for the warehouse name and the upload.
   'generate-report-pdf': documentPdf,
-  // Refused with 503 by the router today; listed so that enabling printing
-  // does not fall back to the whole environment.
-  'get-printer-status': signedIn,
-  'print-via-ipp': signedIn,
+  // The print functions: the signed-in set, and where the bytes go (functions/_shared/print-config.ts). PRINTBRIDGE_TOKEN is the
+  // bridge's shared secret; it reaches only these workers. The three preprinted functions also use the REST client (storageApi).
+  'get-printer-status': [...signedIn, ...printing],
+  'print-via-ipp': [...signedIn, ...printing],
+  // Cancel-Job goes to CUPS (PRINTER_NAME, PRINT_TRANSPORT; never the bridge, so no PRINTBRIDGE_*); the row is read and updated with the
+  // server key, through the REST client (storageApi: direct, not through the gateway's rate limit and maintenance answer).
+  'cancel-print-job': [...signedIn, ...storageApi, 'PRINT_TRANSPORT', 'PRINTER_NAME'],
+  // Called by scripts/watch.mjs with the service-role key; it only updates print_jobs (REST client, as above).
+  'sweep-print-jobs': [...signedIn, ...storageApi],
+  'print-grn-preprinted': [...signedIn, ...storageApi, ...printing],
+  'print-dispatch-preprinted': [...signedIn, ...storageApi, ...printing],
+  'print-invoice-preprinted': [...signedIn, ...storageApi, ...printing],
 };
 
 export function workerEnv(name: string, env: Record<string, string | undefined>, extra: Record<string, string> = {}): [string, string][] {

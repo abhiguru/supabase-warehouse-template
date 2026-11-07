@@ -256,7 +256,7 @@ SELECT id AS lot_3 FROM public.goodsreceived_trl WHERE gr_id=:'grn_3'::uuid \gse
 SELECT (:'line'::jsonb || jsonb_build_object('id',:'lot_3')) AS line_3 \gset
 SELECT set_config('request.jwt.claims',:'staff_one_claims',true);
 SET LOCAL ROLE authenticated;
-SELECT pg_temp.dw_assert(public.update_grn(p_grn_id=>:'grn_3'::uuid,p_gr_no=>U&'\00A0\200B')->>'message'='GRN number is required','blank number refused on receipt edit');
+SELECT pg_temp.dw_assert(public.update_grn(p_grn_id=>:'grn_3'::uuid,p_gr_no=>U&'\00A0\200B',p_items=>jsonb_build_array(:'line_3'::jsonb))->>'message'='GRN number is required','blank number refused on receipt edit');
 SELECT pg_temp.dw_assert(pg_temp.dw_raises(format($s$SELECT public.update_grn(p_grn_id=>%L::uuid,p_items=>%L::jsonb)$s$,:'grn_3',
  jsonb_build_array(:'line_3'::jsonb || '{"qty":0}')),'%Quantity must be greater than 0%'),'receipt edit refuses quantity 0');
 SELECT pg_temp.dw_assert(pg_temp.dw_raises(format($s$SELECT public.update_grn(p_grn_id=>%L::uuid,p_items=>%L::jsonb)$s$,:'grn_3',

@@ -1,14 +1,16 @@
 import { restClient } from '../_shared/supabase-rest.ts'
 import { monitorPrintJobStatus } from '../_shared/print-status-monitor.ts'
-import { SUBMIT_TIMEOUT_MS, submitWithTimeout } from '../_shared/print-monitor-rule.ts'
-import { submittedJob } from '../_shared/ipp-validate.ts'
+import { submitRawJob, jobOutcome, printFailureBody, configuredPrinterName } from '../_shared/print-transport.ts'
+import { readRequestId, startPrintJob, finishPrintJob, duplicateResponse } from '../_shared/print-request.ts'
 import { validatePrintAccess, createAuthErrorResponse } from '../_shared/auth-helpers.ts'
+import { sanitizeForPrinter, encodeLatin1 } from '../_shared/printer-text.ts'
 
 // ESC/P Control Codes for Epson LQ 1310
 const ESC = '\x1B';
 const LF = '\x0A';
 const FF = '\x0C';
 const CR = '\x0D';
+const DC4 = '\x14';
 
 const ESCP = {
   RESET: ESC + '@',
@@ -16,7 +18,6 @@ const ESCP = {
   PICA_10CPI: ESC + 'P',           // 10 characters per inch (default)
   ELITE_12CPI: ESC + 'M',          // 12 characters per inch
   CONDENSED_17CPI: ESC + '\x0F',   // 17 characters per inch
-  CONDENSED_OFF: ESC + '\x12',
 
   // Line spacing
   LINE_SPACING_1_8: ESC + '0',     // 1/8 inch (8 lines per inch)
@@ -33,7 +34,7 @@ const ESCP = {
   UNDERLINE_ON: ESC + '-1',
   UNDERLINE_OFF: ESC + '-0',
   DOUBLE_WIDTH_ON: ESC + '\x0E',      // SO - Double-width on
-  DOUBLE_WIDTH_OFF: ESC + '\x14',     // DC4 - Double-width off
+  DOUBLE_WIDTH_OFF: DC4,              // DC4 (bare, no ESC) - Double-width off
   DOUBLE_HEIGHT_ON: ESC + 'w1',       // Double-height on
   DOUBLE_HEIGHT_OFF: ESC + 'w0',      // Double-height off
 
@@ -45,29 +46,33 @@ const ESCP = {
 
 // Plain text layout based on React component spec
 // Form dimensions: 831px × 633px
-// At 12 CPI and 6 LPI: 136 chars × 39 lines per form
+// At 12 CPI and 6 LPI: 136 chars × 36 lines per 6" slip
 // 15-inch continuous paper @ 12 CPI = 136 characters width (matches old Clipper)
 
+// Default layout profile: calibrated for the standard pre-printed GRN slip (two 6" slips per 12" sheet)
+// on an Epson LQ-1310 at 12 CPI / 6 LPI. Adjust these values to suit a different form.
+// Columns are character positions; *_180 values are fine vertical moves in 1/180 inch
+// (30/180 = one line), taken from the line and given back after it so later lines do not move.
 const LAYOUT = {
   // Page dimensions (2 slips per page)
   // Paper width: 15 inches @ 12 CPI = 136 characters (15×12 continuous paper)
   PAGE_WIDTH: 136,
-  SLIP_HEIGHT: 39,           // Each slip is ~39 lines tall
   SLIPS_PER_PAGE: 2,         // 2 slips per physical page
-  SLIP_SPACING: 1,           // Lines between slip 1 and slip 2
 
   // Header section (using spaces for positioning)
   // Line numbers are 0-indexed within each slip
   HEADER_START_LINE: 0,      // No empty lines at start of page
   GRN_NUMBER_OFFSET: 73,     // Column position for GR No (moved 1 more char right)
   DATE_OFFSET: 85,           // Column position for Date (moved 1 more char right)
-  SENDER_OFFSET: 73,         // Column position for Sender (moved 1 more char right)
-  CUSTOMER_OFFSET: 73,       // Column position for Customer (moved 1 more char right)
+  SENDER_OFFSET: 75,         // Column position for Sender / "From"
+  SENDER_DROP_180: 9,        // Sender line dropped 9/180" (30% of a line); remainder fed after it
+  CUSTOMER_OFFSET: 75,       // Column position for Customer name (address stays at 73)
   ADDRESS_OFFSET: 73,        // Column position for Address (moved 1 more char right)
 
   // Items table
   ITEMS_START_LINE: 16,      // Items start at line 17 (moved down by 3 lines to clear headers)
   ITEMS_PER_SLIP: 6,         // Max 6 items per slip
+  SLIP_INCHES: 6,            // Physical slip = half of a 12" sheet; sent as page length (ESC C NUL 6)
 
   // Column widths (matched to pre-printed form measurements in cm)
   // At 12 CPI: 1 char = 0.212 cm
@@ -75,16 +80,17 @@ const LAYOUT = {
   COL_WIDTHS: {
     SRNO: 2,         // 0.5cm - Item No
     SPACE1: 0,       // No spacing - columns are adjacent
-    ITEM_NAME: 13,   // 2.9cm - Item name (reduced by 1 char)
-    SPACE2: 0,       // No spacing
-    PACKAGING: 10,   // 2.9cm - Packaging type (reduced by 2 more chars)
-    SPACE3: 2,       // 2 chars padding before qty column
+    ITEM_NAME: 14,   // 2.9cm - Item name: 1-char indent + 13 chars (took 1 from PACKAGING)
+    SPACE2: 2,       // Packaging shifted 2 chars right...
+    PACKAGING: 9,    // 2.9cm - Packaging type (data max 9 chars; gave 1 to ITEM_NAME)
+    SPACE3: 0,       // ...taken from the gap before qty, so Qty onward stays put
     QTY: 5,          // 1.1cm - Quantity
     SPACE4: 2,       // 2 chars padding before weight column
     WEIGHT: 8,       // 1.7cm - Weight
     SPACE5: 0,       // No spacing
     RACK: 23,        // 4.95cm - Rack location
-    SPACE6: 0,       // No spacing
+    SPACE6: 2,       // Party mark shifted 2 chars right; Our Mark column moves too, but
+                     // its indent was dropped so its text moves only 1 char right
     PACKAGE_MARK: 23,// 4.9cm - Package marking
     SPACE7: 0,       // No spacing
     GRN_QTY: 15,     // 3.1cm - Our Mark (GRN/Qty)
@@ -94,6 +100,9 @@ const LAYOUT = {
   TOTAL_LINE: 22,            // Total line after 6 items + spacing
   TOTAL_OFFSET: 27,          // Where total qty appears (5.5cm from start of serial number column + 1 char padding)
   TOTAL_WORDS_OFFSET: 14,    // Where total in words appears (3.0cm from start of serial number column)
+  TOTAL_DROP_180: 9,         // Total line dropped 9/180" (0.3 line)
+  WORDS_DROP_180: 9,         // Total in words dropped 9/180" (30% of a line); remainder fed after
+  PAGE_NO_GAP: 12,           // Spaces between total qty and "(Page X of Y)"
 
   FOOTER_START_LINE: 32,     // Footer section
 };
@@ -180,7 +189,7 @@ function numberToIndianWords(num: number): string {
 }
 
 // Generate a single slip (6 items max)
-function generateSlip(grn: any, slipItems: any[], slipNumber: number, isLastSlip: boolean, totalItems: number, debug: boolean = false): string {
+function generateSlip(grn: any, slipItems: any[], slipNumber: number, isLastSlip: boolean, totalItems: number, debug: boolean = false, totalSlips: number = 1): string {
   let output = '';
 
   // === HEADER SECTION ===
@@ -204,8 +213,11 @@ function generateSlip(grn: any, slipItems: any[], slipNumber: number, isLastSlip
   output += formatDate(grn.date);
   output += '\n';
 
-  // Sender Name (right-aligned at column 65) - NO empty line before
-  output += createLine(truncateString(grn.sender_name || '', 30), LAYOUT.SENDER_OFFSET);
+  // Sender Name ("From") - dropped SENDER_DROP_180/180", then the rest of the line is fed
+  // so everything below stays put
+  output += ESC + 'J' + String.fromCharCode(LAYOUT.SENDER_DROP_180);
+  output += ' '.repeat(LAYOUT.SENDER_OFFSET) + truncateString(grn.sender_name || '', 30) + CR;
+  output += ESC + 'J' + String.fromCharCode(30 - LAYOUT.SENDER_DROP_180);
 
   // Empty line
   output += '\n';
@@ -235,37 +247,43 @@ function generateSlip(grn: any, slipItems: any[], slipNumber: number, isLastSlip
     let line = '';
     const w = LAYOUT.COL_WIDTHS;
 
-    // Sr No - left aligned
-    line += padRight(String(startItemNumber + idx) + '.', w.SRNO);
+    // Text columns are LEFT aligned (1-char indent) so every row lines up — centering
+    // shifted rows by value length. Numeric columns (qty, weight) are RIGHT aligned.
+
+    // Sr No - "1."-"9."; from 10 the dot is dropped so it fits the 2-char column
+    // (previously "10." was cut to "10" and ran straight into the item name)
+    const srNo = startItemNumber + idx;
+    line += padRight(srNo < 10 ? `${srNo}.` : String(srNo), w.SRNO);
     line += ' '.repeat(w.SPACE1);
 
-    // Item Name - center aligned
-    line += padCenter(truncateString(item.item_name || '', w.ITEM_NAME), w.ITEM_NAME);
+    // Item Name - left aligned, 1-char indent
+    line += padRight(' ' + truncateString(item.item_name || '', w.ITEM_NAME - 1), w.ITEM_NAME);
     line += ' '.repeat(w.SPACE2);
 
-    // Packaging - center aligned
-    line += padCenter(truncateString(item.packaging || '', w.PACKAGING), w.PACKAGING);
+    // Packaging - left aligned (data max 9 = full width, so no indent)
+    line += padRight(truncateString(item.packaging || '', w.PACKAGING), w.PACKAGING);
     line += ' '.repeat(w.SPACE3);
 
     // Qty - right aligned
     line += padLeft(String(item.qty || 0), w.QTY);
     line += ' '.repeat(w.SPACE4);
 
-    // Weight - center aligned
-    line += padCenter(String(item.weight || 0), w.WEIGHT);
+    // Weight - right aligned, units digit at column offset 4
+    line += padRight(padLeft(String(item.weight || 0), 5), w.WEIGHT);
     line += ' '.repeat(w.SPACE5);
 
-    // Rack - center aligned
-    line += padCenter(truncateString(item.rack || '', w.RACK), w.RACK);
+    // Rack - left aligned, 1-char indent
+    line += padRight(' ' + truncateString(item.rack || '', w.RACK - 1), w.RACK);
     line += ' '.repeat(w.SPACE6);
 
-    // Package Mark - center aligned
-    line += padCenter(truncateString(item.package_mark || '', w.PACKAGE_MARK), w.PACKAGE_MARK);
+    // Package Mark - left aligned, no indent (marks often fill all 23 chars; the rack
+    // column before it always has trailing space)
+    line += padRight(truncateString(item.package_mark || '', w.PACKAGE_MARK), w.PACKAGE_MARK);
     line += ' '.repeat(w.SPACE7);
 
-    // GRN/Qty - center aligned
+    // GRN/Qty (Our Mark) - left aligned at the column edge (no indent; see SPACE6)
     const grnQty = `${grn.gr_no}/${item.qty}`;
-    line += padCenter(truncateString(grnQty, w.GRN_QTY), w.GRN_QTY);
+    line += padRight(truncateString(grnQty, w.GRN_QTY), w.GRN_QTY);
 
     // Don't truncate - the line is 84 chars and should fit
     output += line + '\n';
@@ -279,26 +297,30 @@ function generateSlip(grn: any, slipItems: any[], slipNumber: number, isLastSlip
   // Show totals on ALL slips (not just the last one)
   output += '\n';
 
-  // Total quantity on first line with continuation message if not last slip
+  // Total quantity line
   let totalLine = ' '.repeat(LAYOUT.TOTAL_OFFSET);
   totalLine += padLeft(String(grn.total_qty || 0), 5);
 
-  // Add continuation message if not the last slip
-  if (!isLastSlip) {
-    totalLine += '  (Continued in next page)';
-  }
+  // Page X of Y on every slip (replaces "(Continued in next page)", same as dispatch)
+  totalLine += ' '.repeat(LAYOUT.PAGE_NO_GAP) + `(Page ${slipNumber} of ${totalSlips})`;
 
-  output += totalLine + '\n';
+  // Drop the total line TOTAL_DROP_180/180"; end with CR + only the remainder of the line
+  // so the lines below don't move
+  output += ESC + 'J' + String.fromCharCode(LAYOUT.TOTAL_DROP_180);
+  output += totalLine + CR;
+  if (30 - LAYOUT.TOTAL_DROP_180 > 0) output += ESC + 'J' + String.fromCharCode(30 - LAYOUT.TOTAL_DROP_180);
 
   // 1 empty line above total in words
   output += '\n';
 
-  // Total in words
+  // Total in words - dropped WORDS_DROP_180/180", remainder fed after
   const qtyWords = truncateString(
     grn.total_qty_in_words || numberToIndianWords(grn.total_qty || 0),
     35
   );
-  output += createLine(qtyWords, LAYOUT.TOTAL_WORDS_OFFSET);
+  output += ESC + 'J' + String.fromCharCode(LAYOUT.WORDS_DROP_180);
+  output += ' '.repeat(LAYOUT.TOTAL_WORDS_OFFSET) + qtyWords + CR;
+  output += ESC + 'J' + String.fromCharCode(30 - LAYOUT.WORDS_DROP_180);
 
   // === FOOTER SECTION ===
   // Show footer on ALL slips (not just the last one)
@@ -342,8 +364,10 @@ function generateSlip(grn: any, slipItems: any[], slipNumber: number, isLastSlip
     output += '\n\n';  // 2 empty lines if no note
   }
 
-  // 5 empty lines after note section (adjusted to maintain slip height)
-  output += emptyLines(5);
+  // End of slip: form feed to the next 6" perforation (page length set in the job header).
+  // Replaces the 5 trailing blank lines + 1 slip-spacing line (same 6" total) but cannot
+  // drift, and lets the printer's Auto Tear Off stop at every half-sheet perforation.
+  output += ESCP.FORM_FEED;
 
   return output;
 }
@@ -360,7 +384,9 @@ function generatePrePrintedGRN(grnData: any, debug: boolean = false): string {
   output += ESCP.LINE_SPACING_1_6;   // 6 lines per inch (standard)
   output += ESC + '\x6C' + '\x00';   // Left margin = 0 (no margin)
   output += ESC + '\x51' + String.fromCharCode(136); // Right margin = 136 chars
-  // RAW mode - CUPS will NOT wrap lines, printer gets full ESC/P control
+  // Page length = one slip (half of the 12" sheet) so FF / Auto Tear Off stop at every
+  // 6" perforation. ESC C NUL n = n inches.
+  output += ESC + 'C' + '\x00' + String.fromCharCode(LAYOUT.SLIP_INCHES);
 
   if (debug) {
     output += `[DEBUG: GRN ${grn.gr_no} - ${items.length} items = ${Math.ceil(items.length / LAYOUT.ITEMS_PER_SLIP)} slips]\n`;
@@ -376,16 +402,13 @@ function generatePrePrintedGRN(grnData: any, debug: boolean = false): string {
     const slipItems = items.slice(startIdx, endIdx);
     const isLastSlip = (slipNum === totalSlips);
 
-    // Generate slip content (39 lines)
-    const slipContent = generateSlip(grn, slipItems, slipNum, isLastSlip, items.length, debug);
+    // Generate slip content (one 6" slip, ends with FF)
+    const slipContent = generateSlip(grn, slipItems, slipNum, isLastSlip, items.length, debug, totalSlips);
     output += slipContent;
-
-    // Add spacing between slips (always 1 line between slips)
-    // Even after the last slip of a GRN, we add spacing for the next GRN
-    output += emptyLines(LAYOUT.SLIP_SPACING);
+    // (no inter-slip spacing line: each slip ends with FF to the next 6" perforation)
   }
 
-  // NO FORM FEEDS! Continuous paper flows naturally
+  // Each slip ends with FF (see generateSlip) — page length is SLIP_INCHES
 
   if (debug) {
     output += `[DEBUG: GRN ${grn.gr_no} complete - ${totalSlips} slips printed]\n`;
@@ -408,7 +431,11 @@ Deno.serve(async (req) => {
     const userName = userProfile.name;
     const userId = userProfile.auth_user_id;
 
-    const { start_gr_no, end_gr_no, debug } = await req.json();
+    const { start_gr_no, end_gr_no, debug, request_id } = await req.json();
+    // Optional: one uuid per user print action, reused for its retries; a repeat is answered without printing (print-request.ts).
+    const requestIdRead = readRequestId(request_id);
+    if (!requestIdRead.ok) return requestIdRead.response;
+    const requestId = requestIdRead.requestId;
 
     if (!start_gr_no || !end_gr_no) {
       throw new Error('Missing required parameters: start_gr_no and end_gr_no');
@@ -446,7 +473,7 @@ Deno.serve(async (req) => {
 
     results.forEach((grn: any, index: number) => {
       // Simply concatenate each GRN's output - continuous form handles positioning
-      const grnContent = generatePrePrintedGRN(grn, debug);
+      const grnContent = generatePrePrintedGRN(sanitizeForPrinter(grn), debug);
       printContent += grnContent;
     });
 
@@ -483,85 +510,49 @@ Deno.serve(async (req) => {
       );
     }
 
-    // Import IPP and send to printer in RAW mode
-    const ipp = await import("npm:ipp@2.0.1");
-    const printer = ipp.Printer("http://cups:631/printers/LQ1310_RAW");
-
-    const Buffer = (await import("node:buffer")).Buffer;
-    const contentBuffer = Buffer.from(printContent);
-
-    const msg = {
-      "operation-attributes-tag": {
-        "requesting-user-name": "grn-preprint",
-        "job-name": `GRN-${start_gr_no}-to-${end_gr_no}`,
-        "document-format": "application/vnd.cups-raw"  // CUPS RAW - bypasses filters
-      },
-      data: contentBuffer
-    };
+    // Hand the finished printer bytes to the transport (CUPS or the Windows print bridge, PRINT_TRANSPORT).
+    // The bytes are the encoded document and nothing else: the layout and the character encoding above this
+    // line are the document's own; the transport neither changes nor translates them.
+    const contentBuffer = encodeLatin1(printContent);
 
     console.log('print-grn-preprinted: Sending to printer...');
 
-    // Bounded by SUBMIT_TIMEOUT_MS so the submission and the status monitor
-    // fit the worker's lifetime (print-monitor-rule.ts). No answer in time is
-    // an unconfirmed job (submittedJob below), never resubmitted.
-    const result: any = await submitWithTimeout((signal) => new Promise((resolve, reject) => {
-      printer.execute("Print-Job", msg, (err: any, res: any) => {
-        if (signal.aborted) {
-          console.error('print-grn-preprinted: IPP reply after the submission timeout, ignored:', err ?? 'reply');
-          return;
-        }
-        if (err) {
-          console.error('print-grn-preprinted: IPP error:', err);
-          reject(err);
-        } else {
-          console.log('print-grn-preprinted: IPP success');
-          resolve(res);
-        }
-      });
-    }));
-    if (result === null) {
-      console.error(`print-grn-preprinted: no reply from the printer within ${SUBMIT_TIMEOUT_MS / 1000} s`);
+    // Duplicate guard: a request already handled is answered, a new one gets its queued row before anything is sent.
+    const jobMeta = {
+      job_type: 'GRN' as const,
+      document_range_start: start_gr_no,
+      document_range_end: end_gr_no,
+      document_count: results.length,
+      user_id: userId,
+      user_name: userName,
+      content_size: contentBuffer.length,
+      printer_name: configuredPrinterName()
+    };
+    const started = await startPrintJob(supabase, jobMeta, requestId);
+    if (started.kind === 'duplicate') {
+      console.log('print-grn-preprinted: repeated request_id, nothing printed');
+      return duplicateResponse(started.row, { start: String(start_gr_no), end: String(end_gr_no) });
     }
 
-    // Submitted only when the reply confirms the job with its id. Otherwise the
-    // paper may or may not come out: the job is recorded as 'unknown' (never
-    // resubmitted on a guess) and the caller is told the printer did not confirm it.
-    const submitted = submittedJob(result);
-    const jobId = submitted.ok ? submitted.jobId : null;
-    const jobUri = submitted.ok ? submitted.jobUri : '';
-
-    // Log print job to database
-    const { data: printJobRecord, error: logError } = await supabase
-      .from('print_jobs')
-      .insert({
-        cups_job_id: jobId,
-        job_type: 'GRN',
-        document_range_start: start_gr_no,
-        document_range_end: end_gr_no,
-        document_count: results.length,
-        user_id: userId,
-        user_name: userName,
-        ...(submitted.ok ? { status: 'printing' } : { status: 'unknown', error_message: 'The printer did not confirm the job' }),
-        content_size: contentBuffer.length,
-        printer_name: 'LQ1310_RAW'
-      })
-      .select()
-      .single();
-
-    if (logError) {
-      console.error('print-grn-preprinted: Failed to log print job:', logError);
-    }
-
-    if (!submitted.ok) {
+    const result = await submitRawJob({ bytes: contentBuffer, docName: `GRN-${start_gr_no}-to-${end_gr_no}`, jobType: 'GRN' });
+    const outcome = jobOutcome(result);
+    if (outcome.kind === 'failed') {
+      console.error('print-grn-preprinted: print failed on the', result.transport, 'transport');
+      await finishPrintJob(supabase, started, jobMeta, outcome);
       return new Response(
-        JSON.stringify({
-          success: false,
-          error: 'The printer did not confirm the job',
-          // The job may be on paper: true even when it could not be logged (print_job_id null).
-          unconfirmed: true,
-          print_job_id: printJobRecord?.id || null,
-          timestamp: new Date().toISOString()
-        }, null, 2),
+        JSON.stringify(printFailureBody(outcome, null), null, 2),
+        { headers: { 'Content-Type': 'application/json' }, status: 502 }
+      );
+    }
+    const jobId = result.jobId;
+    const jobUri = result.jobUri ?? '';
+
+    // Record the outcome on the queued row (or insert the row now when there is none: no request_id, or no column yet)
+    const printJobRecord = { id: await finishPrintJob(supabase, started, jobMeta, outcome) };
+
+    if (outcome.kind === 'unconfirmed') {
+      return new Response(
+        JSON.stringify(printFailureBody(outcome, printJobRecord?.id || null), null, 2),
         {
           headers: { 'Content-Type': 'application/json' },
           status: 502
@@ -570,11 +561,11 @@ Deno.serve(async (req) => {
     }
 
     // Start background status monitoring (non-blocking)
-    if (printJobRecord?.id && jobId !== null) {
+    if (outcome.kind === 'tracked' && printJobRecord?.id) {
       EdgeRuntime.waitUntil(
         monitorPrintJobStatus(
           printJobRecord.id,
-          jobId,
+          outcome.row.cups_job_id,
           Deno.env.get('SUPABASE_URL') ?? '',
           Deno.env.get('SUPABASE_SERVICE_ROLE_KEY') ?? ''
         )
@@ -595,6 +586,7 @@ Deno.serve(async (req) => {
           print_job_id: printJobRecord?.id || null,
           cups_job_id: jobId,
           job_uri: jobUri,
+          transport: result.transport,
           printer: 'LQ1310_RAW (12 CPI, 136 chars width)',
           content_size: contentBuffer.length
         },

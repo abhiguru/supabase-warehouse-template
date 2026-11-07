@@ -577,7 +577,8 @@ test('set-capability flips one manifest flag in place, keeps every other byte an
     assert.equal(readFileSync(manifestPath, 'utf8'), original, 'off restores the original bytes');
     const printing = run(['printing', 'on']);
     assert.equal(printing.status, 0, printing.stderr);
-    assert.match(printing.stdout, /503/);
+    assert.match(printing.stdout, /The print routes now answer once the function runtime has restarted/);
+    assert.doesNotMatch(printing.stdout, /503/, 'the old "still answer 503" text is gone: the router serves the routes as soon as the capability is on');
     assert.equal(readFileSync(manifestPath, 'utf8'), original.replace('"printing": false', '"printing": true'));
     assert.equal(run(['printing', 'off']).status, 0);
     // payments: accepted like the others, and written into a manifest that predates the key.

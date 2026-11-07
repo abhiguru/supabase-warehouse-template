@@ -216,9 +216,11 @@ SELECT pg_temp.oi_assert(:'save_q'::jsonb->>'raised'='Business is not active' AN
 
 -- update_grn: moving a GRN to a DELETED business is refused, nothing changes
 SELECT g.id AS grn_d2 FROM public.goodsreceived g WHERE g.gr_no='OI82B' AND g.customer_id=:'cust_d'::uuid \gset
+-- WH-111: an edit sends the GRN's whole line list; update_grn refuses a missing one before anything else.
+SELECT (SELECT jsonb_agg(jsonb_build_object('id',t.id,'item_id',t.item_id,'item_name',t.item_name,'packaging',t.packaging,'qty',t.qty,'weight',t.weight) ORDER BY t.id) FROM public.goodsreceived_trl t WHERE t.gr_id=:'grn_d2'::uuid) AS lines_grn_d2 \gset
 SELECT set_config('request.jwt.claims',:'admin_claims',true);
 SET LOCAL ROLE authenticated;
-SELECT pg_temp.oi_call(format('SELECT public.update_grn(p_grn_id=>%L::uuid,p_customer_id=>%L::uuid)',:'grn_d2',:'cust_q')) AS upd_to_q \gset
+SELECT pg_temp.oi_call(format('SELECT public.update_grn(p_grn_id=>%L::uuid,p_customer_id=>%L::uuid,p_items=>%L::jsonb)',:'grn_d2',:'cust_q',:'lines_grn_d2')) AS upd_to_q \gset
 RESET ROLE;
 SELECT pg_temp.oi_assert(:'upd_to_q'::jsonb->>'raised'='Business is not active' AND :'upd_to_q'::jsonb->>'state'='P0001'
  AND (SELECT customer_id=:'cust_d'::uuid FROM public.goodsreceived WHERE id=:'grn_d2'::uuid),

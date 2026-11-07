@@ -17,7 +17,7 @@ env:
   # MOBILE_REF: the one app commit the contract job checks against, always a full SHA
   # (tests/workflows.test.mjs refuses anything else). What it is for and when to move it:
   # CONTRIBUTING.md, "Mobile companion pin".
-  MOBILE_REF: a019cdad7de8785bc281e3f65a6501492a381d6a
+  MOBILE_REF: 48820692798dbdc8000c3ca6f6909f5c417736ad
   # MOBILE_MIN_REF: the app commits that carry the version app-compat.json names as minimumClientVersion, the oldest app builds this backend
   # still answers: a space-separated list of full SHAs, one per build handed out with that version. The contract job and release.yml check
   # each one (scripts/check-min-apps.sh), so nothing they call can be dropped unnoticed. When it moves: CONTRIBUTING.md, "Mobile companion pin".

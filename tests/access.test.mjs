@@ -79,3 +79,42 @@ test('the request id is repeated into a log line only when it is the gateway\'s 
   } finally { console.error = oldError; }
   assert.deepEqual(logged, [`auth error status=503 error=unknown request_id=${id}`, 'auth error status=500 error=TypeError request_id=-', 'auth error status=500 error=Error request_id=-'], 'a 4xx is the client\'s and logs nothing');
 });
+
+// WH-109 (owner decision of 2026-11-07): administrators, supervisors and staff print; customers and any other role do not.
+test('printing is open to admin, supervisor and staff; a customer or another role gets 403 PRINT_FORBIDDEN', async () => {
+  const { createAuthErrorResponse } = await import('../functions/_shared/auth-helpers.ts');
+  const oldDeno = globalThis.Deno, oldFetch = globalThis.fetch;
+  globalThis.Deno = { env: { get: key => ({ JWT_SECRET: secret, SUPABASE_URL: 'http://example.test', SUPABASE_SERVICE_ROLE_KEY: 'unit-test-only' })[key] } };
+  let role = 'admin';
+  globalThis.fetch = async () => new Response(JSON.stringify([{ id: userId, auth_user_id: userId, role, active: true }]));
+  try {
+    for (const allowed of ['admin', 'supervisor', 'staff']) {
+      role = allowed;
+      assert.equal((await validatePrintAccess(await request())).role, allowed, allowed);
+    }
+    for (const refused of ['customer', 'user', 'owner', '', 'STAFF']) {
+      role = refused;
+      const caught = await validatePrintAccess(await request()).catch(error => error);
+      assert.deepEqual([caught.status, caught.code], [403, 'PRINT_FORBIDDEN'], refused);
+      const response = createAuthErrorResponse(caught, {});
+      assert.equal(response.status, 403);
+      assert.deepEqual(await response.json(), { success: false, error: 'Admin, supervisor or staff access required to print', code: 'PRINT_FORBIDDEN' });
+    }
+  } finally { globalThis.fetch = oldFetch; globalThis.Deno = oldDeno; }
+});
+
+test('an error answer carries a code only for a refusal (below 500) that names an upper-case code', async () => {
+  const { createAuthErrorResponse } = await import('../functions/_shared/auth-helpers.ts');
+  const body = async error => (await createAuthErrorResponse(error, {}).json());
+  assert.deepEqual(await body({ status: 403, message: 'No', code: 'PRINT_FORBIDDEN' }), { success: false, error: 'No', code: 'PRINT_FORBIDDEN' });
+  assert.deepEqual(await body({ status: 403, message: 'No' }), { success: false, error: 'No' });
+  for (const code of ['print_forbidden', 'X', 'A'.repeat(41), 'BAD CODE', 'A1', '1A', 7, null, { a: 1 }]) {
+    assert.deepEqual(await body({ status: 403, message: 'No', code }), { success: false, error: 'No' }, JSON.stringify(code));
+  }
+  // A 5xx never reveals a message or a code.
+  const oldError = console.error;
+  console.error = () => {};
+  try {
+    assert.deepEqual(await body({ status: 503, message: 'db host x', code: 'PRINT_FORBIDDEN' }), { success: false, error: 'Server unavailable' });
+  } finally { console.error = oldError; }
+});

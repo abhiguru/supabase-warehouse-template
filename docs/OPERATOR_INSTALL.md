@@ -186,6 +186,7 @@ The operator scripts use only Node's built-in modules; `npm ci` is needed only t
 | Company name | `--company` | Display name of the facility, up to 120 characters. Required on a first install. |
 | Cloudflare Tunnel | `scripts/tunnel.sh adopt` (needs the state, so after setup) | A **new** tunnel for this host with a route for the `--api-url` hostname: its `config.yml` with the credentials JSON, or a dashboard token file. Not a config copied from another machine. See [Cloudflare Tunnel ingress](#cloudflare-tunnel-ingress). |
 | MSG91 provider file | `--provider-env` | Mode-0600 file with five keys; see **MSG91 provider file** below. Required on a first install, **except** a member installation that signs in through the association alone (`--central-issuer` given, no `--central-local-code on`): that one needs no SMS provider and stores none. |
+| SMS spending ceilings | `--sms-hourly-ceiling`, `--sms-daily-ceiling` | SMS sends an hour (`otp_global_hourly_cap`) and a day (`otp_daily_provider_attempt_cap`, the last 24 hours) for the whole facility; whole numbers. A terminal is offered 60 and 300 on a first install (Enter accepts); with no terminal and no option a first install gets 60 and 300. See **SMS spending ceiling** under [Authentication and OTP limits](#authentication-and-otp-limits). |
 | First administrator | `--admin-phone`, `--admin-name` (both required) | `91` and ten digits, and a display name; see **First administrator** below. |
 | Slack webhook file | `--alert-webhook-file` | Private file with the facility's incoming-webhook URL. `off` only for a non-production install; without the option a terminal is asked and no terminal means setup refuses. See [Setup](#setup). |
 | Sensor Slack webhook file | `--sensor-webhook-file` | Private file with a second, separate incoming-webhook URL for sensor alerts. Required when Slack alerts are on and sensors are on; `off` removes it; leave it out to keep what is stored. See [Setup](#setup). |
@@ -300,6 +301,14 @@ only the quick check.
 `payments` capability on (it has no payment entry screen). To turn it on: `node scripts/set-capability.mjs payments on` (it also adds the key to
 an `instance.json` written before it existed), then `bash scripts/compose.sh restart functions` so the app is told, and a new `db:backup`
 (`db:restore-host` installs the `instance.json` of the backup, so a host rebuilt from an older backup would switch payments back off; `db:restore` refuses a backup whose `instance.json` differs). `payments off` reverses it.
+
+**Printing is optional and off by default.** An Epson LQ-1310 prints GRN, dispatch and invoice forms; admin, supervisor and staff may print.
+Setup already wrote the settings (`PRINT_TRANSPORT`: `bridge` on a WSL2 host, else `cups`; `PRINTER_NAME`; `PRINTBRIDGE_TOKEN`). The steps:
+Linux host, plug in the printer and run `bash scripts/compose.sh --profile printing up -d --build --wait cups` (set `PRINTER_URI` in
+`compose.env` only to pin a device; the host's `usblp` module can block the printer); Windows host, install the Windows printer as a local queue, then in an elevated PowerShell in `scripts/windows`
+run `register-tasks.ps1 -PrintOnly -Printer "<queue>" -SetTokenFromWsl <distro> -ComposeEnv <state>/config/compose.env` (it registers the "Warehouse Print" task, copies the token and opens the firewall port for the WSL side; `PRINTER_NAME` in `compose.env` must be the same queue name), and test with the queue paused. Then, on both: `node scripts/set-capability.mjs printing on`, `bash scripts/compose.sh up -d functions`
+and a new `db:backup`. While the capability is off, the print routes answer 503 `PRINTING_OFF`. The full steps, the checks and what is not
+verified are in [PRINTING.md](PRINTING.md).
 
 **Monitoring is not a Compose profile.** One small program, the checker (`scripts/watch.mjs`), runs from a systemd
 timer every 5 minutes, tells the facility's Slack channel when something is wrong, and once a day makes and verifies a
@@ -498,8 +507,8 @@ last five such sources are kept).
 | Trusted lane | 5 per hour per phone and trusted source, up to the per-phone cap of 30; `otp_trusted_daily_reserve` (default 10) of the 30 cannot be used by other sources | known phones, from a trusted source | same 429 |
 | Resend cooldown | 60 s per phone and source | every request | 429 "Please wait before requesting another OTP." with `retry_after_seconds` |
 | Per source, sends | `otp_source_hourly_sends`, default 30 per hour over all phones; `otp_trusted_source_hourly_sends` (default 120) for the addresses you list in `otp_trusted_source_list` ([below](#the-facilitys-own-wi-fi-address)) | every request with a source | 429 "Too many OTP requests. Try again later." |
-| Warehouse cap | `otp_global_hourly_cap`, default 300 per hour; text `0` is the no-send switch (below) | every request | same 429 |
-| Provider requests | `otp_daily_provider_attempt_cap`, **off until you set it**: the most requests made to MSG91 in any 24 hours, a retry counted as a second request, a refused or timed-out one counted too | every request | same 429, and no SMS is sent |
+| Warehouse cap | `otp_global_hourly_cap`, 60 per hour on a new install (setup stores it), 300 when the key is absent (an installation made before WH-119); text `0` is the no-send switch (below) | every request | same 429 |
+| Provider requests | `otp_daily_provider_attempt_cap`, 300 on a new install (setup stores it), **off while the key is absent** (an installation made before WH-119; set it, below): the most requests made to MSG91 in any 24 hours, a retry counted as a second request, a refused or timed-out one counted too | every request | same 429, and no SMS is sent |
 | Unknown-number share | `otp_unknown_hourly_cap`, default 60 per hour, part of the warehouse cap | phones that are not known | same 429; known phones are still served |
 | Wrong codes | 5 per issued code in all, from every source together; sources other than the one that requested the code share 2 of the 5 | every verification | 400 "Invalid or expired OTP" |
 | Per source, failed verifications | `otp_source_hourly_failures`, default 20 per hour over all phones | every verification with a source | 429 "Too many OTP requests. Try again later." |
@@ -586,6 +595,16 @@ hour after its first request), or raise `otp_source_hourly_sends` or
   -- remove the ceiling
   DELETE FROM warehouse_security.auth_config WHERE key='otp_daily_provider_attempt_cap';
   ```
+- **SMS spending ceiling (a go-live step).** Two figures cap what the facility can spend, for all phones together: the SMS sends an hour
+  (`otp_global_hourly_cap`) and a day (`otp_daily_provider_attempt_cap`, any 24 hours). A send is one MSG91 request; a code costs two
+  when the function repeats the request. A new install gets 60 and 300 from `setup.sh` (it asks on a terminal; give `--sms-hourly-ceiling N` and
+  `--sms-daily-ceiling N` for an unattended setup). A rerun of `setup.sh` without the options changes nothing; with them it stores the
+  new figures. An installation that already sends codes keeps what it has: **an upgraded installation has no daily ceiling until you
+  set it**, with `bash setup.sh --operator <your usual options> --sms-daily-ceiling 300` or the `INSERT` above. Read both back:
+  `SELECT key, value FROM warehouse_security.auth_config WHERE key IN ('otp_global_hourly_cap','otp_daily_provider_attempt_cap');`.
+  When either is reached, a code request answers 429 (`rate_limited`) and the monitor posts `sms_ceiling_reached` once a day
+  ([MONITORING.md](MONITORING.md#sms-delivery-and-the-clock)). Pick figures from your members: a facility whose people sign in
+  within the same hour (a Monday morning) needs an hourly figure above that wave.
 - **No-send switch.** A cap of text `0` is accepted and blocks every send: set
   `otp_global_hourly_cap` to `0` to stop all SMS at once (every request answers
   429 and no code is created), then back to its value (default `300`) to resume.
@@ -814,7 +833,7 @@ The rules:
 - A break-glass sign-in opens a session that **ends 24 hours after the sign-in** (`refresh_sessions.hard_expires_at`; a refresh renews the
   access token but never moves the end), after which the worker must sign in again. It does not mark the number as verified by SMS and does
   not make the sign-in address a trusted source of the phone.
-- Making a code and using one are each written to `public.audit_log` (kept 24 months: [audit_log retention](CONTAINER_SECURITY.md#audit_log-retention)); the code itself never is. To see them:
+- Making a code and using one are each written to `public.audit_log` (kept 8 years, 2,920 days: [audit_log retention](CONTAINER_SECURITY.md#audit_log-retention)); the code itself never is. To see them:
 
   ```sql
   SELECT created_at, action, new_data->>'name' AS administrator, ip_address
@@ -1013,10 +1032,10 @@ confirm the hostname's DNS record points to `<tunnel-uuid>.cfargotunnel.com`.
 For a dashboard-managed tunnel the hostname and origin live in the dashboard
 and the YAML is not used.
 
-**A tunnel makes the installation public, so cap the SMS first. Setting `otp_daily_provider_attempt_cap` is a required go-live step
+**A tunnel makes the installation public, so cap the SMS first. Setting the SMS spending ceilings (`otp_global_hourly_cap` and `otp_daily_provider_attempt_cap`; `setup.sh` stores 60 and 300 on a new install) is a required go-live step
 for every installation that a phone number can reach from the internet.** Every accepted code request on a public address is a real,
-billed SMS, test installations included. Set the cap
-([Authentication and OTP limits](#authentication-and-otp-limits); it is off until you create it) before `install-service` below starts
+billed SMS, test installations included. Check the ceilings
+([SMS spending ceiling](#authentication-and-otp-limits); an installation made before WH-119 has no daily one until you create it) before `install-service` below starts
 the connector, read the value back, and never give a test
 installation a real provider key ([Test installations](#private-inputs)). Stop the tunnel when a test ends.
 
@@ -1367,6 +1386,9 @@ passed its verify (`config/backups-verified.list`) and the backup that an interr
 
 ## Rotate signing keys
 
+The anon and service keys are issued **valid for ten years** (`scripts/keys.mjs`), and the JWT secret has no expiry of its own, so they stay valid
+until you rotate: nothing rotates them for you. Rotation **signs every phone out** (every refresh session is deleted; users sign in again with a code).
+
 Rotate when the JWT secret, anon key or service key may have been exposed, when a device or backup holding them leaves
 your control, or on a planned schedule:
 
@@ -1434,6 +1456,15 @@ one filesystem, which is the normal case (`backups/` of the state).
 >   Any other text, a link, or looser permissions is ignored and the alert stays on. The decision does not excuse the copy of the backup key: that is still checked. `sudo bash scripts/backup-usb.sh uninstall` renames the record of the last copy (`config/usb-backup.last.uninstalled`), so a removed USB backup counts as no copy. A drive that is plugged in all the time shares
 >   the host's fire, flood and theft: the daily status says so once a week when only one drive has written in 30 days; enrol a
 >   second drive and swap them weekly.
+
+> **What a backup contains, and who may hold the drive**
+>
+> A backup is not only data. It holds the facility's **settings file `config/compose.env`** (the JWT secret, the anon and service keys, the database
+> passwords and the SMS provider key) and, once the tunnel has been adopted into the state, the **Cloudflare Tunnel credential**. A restore needs them,
+> so they are kept. Anyone who holds a backup and can read it can act as this facility's backend. The copy on the USB drive is **encrypted** with the
+> backup key (`config/backup.key`; keep the key copy apart from the drive). Let only the owner or a person the owner names hold the drive and the key
+> copy, never together in one place. If a drive or a backup leaves your control, [rotate the signing keys](#rotate-signing-keys) and see
+> [Retire or lose a host](#retire-or-lose-a-host).
 
 The services are stopped only for the database dump, the catalog queries and the last pass of the file copy, then restarted;
 the first pass of the copy, the checksums and the signing happen while the app is up. The stop does not grow with the size of the
@@ -2195,8 +2226,9 @@ database and takes the operator lock.
 bash scripts/pooler.sh on       # generates the three secrets where missing, creates role pgbouncer, schema pgbouncer (get_auth) and
                                 # database _supabase (scripts/configure-pooler.sql), records POOLER_ENABLED=true, starts supavisor
                                 # with --profile pooler up -d --no-deps (db is not recreated); idempotent
-bash scripts/pooler.sh off      # stops and removes the container, records POOLER_ENABLED=false; deletes nothing (role, schema,
-                                # database and secrets stay, the pgbouncer password is not rotated while off; `on` reuses them)
+bash scripts/pooler.sh off      # stops and removes the container, records POOLER_ENABLED=false, and DELETES the
+                                # role pgbouncer, schema pgbouncer, database _supabase and the three pooler secrets (it refuses and changes
+                                # nothing if they are in use); `on` creates new ones
 bash scripts/pooler.sh status   # prints on, off or unset
 ```
 
@@ -2370,6 +2402,24 @@ connection leaves it too). A failed step prints the same facts, then both ways o
 
 Every run that gets past the checks adds a line to `$WAREHOUSE_STATE_DIR/config/upgrades.log` (UTC time, from, to, the old commit,
 the backup, `resumed` for a rerun, then `ok` or the step it failed at).
+
+### Check the image signatures
+
+Releases from the one that added `docker/images-signed` publish **signed images** (cosign, keyless; the identity to trust is in
+[CONTAINER_SECURITY.md](CONTAINER_SECURITY.md#image-signatures)). `upgrade.sh` and `setup.sh` check the signature of every released image before using it.
+`setup.sh` installs the pinned `cosign` into `$WAREHOUSE_STATE_DIR/bin` itself (no root; checked against a SHA-256 pinned in `scripts/install-cosign.sh`). Older releases
+are not signed and are not checked. What you may see:
+
+- `Image signature of <image>: verified` is the normal answer.
+- `Refusing: cosign is not installed, so the signatures ... cannot be checked`: the **first** upgrade into the signed era, on a host whose setup has not installed cosign yet.
+  Nothing was changed. Install it with the command the message prints (`git show vX.Y.Z:scripts/install-cosign.sh | bash -s -- "$WAREHOUSE_STATE_DIR"`) and run the
+  upgrade again. Or, knowing the images are then not verified, skip the check. **Which form works depends on the `upgrade.sh` you run**, which is the installed one, not the release's: an
+  installation on v0.7.0 or v0.8.0-rc.1 has an `upgrade.sh` from before the option and rejects `--unsigned` ("Unknown option"), so put the variable before the command:
+  `WAREHOUSE_UNSIGNED=yes bash upgrade.sh vX.Y.Z`. From the first release that has the option, `bash upgrade.sh --unsigned vX.Y.Z` does the same (the refusal names the form
+  that fits the `upgrade.sh` that is running). Both print a warning and add a line to `config/upgrades.log`.
+- `NOT VERIFIED` (or `Refusing: the signature of the image ... did not check`): nothing was changed, and `--unsigned` does not override it. Do not use that image. Check the network (the check
+  reaches Sigstore's public services), run the upgrade again, and if it still fails, stop and report it to the maintainers with the image name: it
+  may be a release that was not published correctly or an image that was replaced. Building locally (a checkout that is not at the tag) is the fallback, and its images are unsigned.
 
 ### Found a problem after the upgrade
 
@@ -2675,7 +2725,7 @@ signed-in session, but that was **not tested** with auto logon off.
 What was **not** verified: `sudo` asking for a password, Windows 11, the Home edition, mirrored
 networking, that the `.wslconfig` memory limit takes effect, recovery after a WSL update with the task enabled, the version after
 `wsl --update`, a real Windows Update reboot, a graceful stop when Windows shuts down, a restart with the tasks registered by the script and no
-console session signed in at all, a physical re-plug of the drive, a USB run that also takes a fresh backup, printing, and the sensor bridge running for hours or days or through a restart ([Sensors (Windows)](#sensors-windows)).
+console session signed in at all, a physical re-plug of the drive, a USB run that also takes a fresh backup, printing (the print bridge, [PRINTING.md](PRINTING.md)), and the sensor bridge running for hours or days or through a restart ([Sensors (Windows)](#sensors-windows)).
 
 ### Prerequisites
 

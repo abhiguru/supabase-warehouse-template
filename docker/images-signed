@@ -1,0 +1,3 @@
+Releases cut from a tree that holds this file sign their images (keyless cosign, GitHub OIDC; docs/CONTAINER_SECURITY.md, "Image signatures").
+scripts/verify-image-signature.sh checks the signature of an image of such a release before a facility uses it. A tree without this file
+is an older release whose images are not signed; nothing is checked for it.

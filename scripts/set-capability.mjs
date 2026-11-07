@@ -111,7 +111,7 @@ if (isMain(import.meta.url)) {
         if (notice) console.log(notice);
       }
       if (result.name === 'payments' && result.enabled) console.log('The app now shows Paid and Pending on invoices. Payments are not entered in the app; only enter them in the database if you have a process for it.');
-      if (result.name === 'printing' && result.enabled) console.log('The print routes still answer 503 until printing is accepted (docs/PRINTING.md).');
+      if (result.name === 'printing' && result.enabled) console.log('The print routes now answer once the function runtime has restarted (above). Check the print settings and the printer first: docs/PRINTING.md.');
     }
   } catch (error) { console.error(`set-capability: ${error.message}`); process.exitCode = 1; }
 }

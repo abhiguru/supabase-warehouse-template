@@ -17,7 +17,9 @@ DECLARE
   v_unseen jsonb;
 BEGIN
   SELECT up.id INTO v_profile FROM public.user_profiles up WHERE up.auth_user_id = auth.uid() AND up.active;
-  SELECT g.customer_id, g.pricing_mode, warehouse_security.business_date(g.date), COALESCE(g.invoiced, false)
+  SELECT g.customer_id, g.pricing_mode, warehouse_security.business_date(g.date),
+         -- WH-112: one rule for "invoiced": the GRN has a live invoice (neither deleted nor cancelled); the goodsreceived.invoiced flag is only a cache.
+         EXISTS (SELECT 1 FROM public.invoice li WHERE li.gr_id = g.id AND li.deleted_at IS NULL AND li.cancelled_at IS NULL)
     INTO v_customer, v_mode, v_day, v_invoiced FROM public.goodsreceived g WHERE g.id = p_gr_id;
   v_type := CASE WHEN upper(COALESCE(v_mode, '')) = 'ONE_TIME' THEN 'one_time' ELSE 'monthly' END;
 

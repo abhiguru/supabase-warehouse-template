@@ -75,13 +75,18 @@ test('a submission without a reply in time is unconfirmed, and its late reply is
 });
 
 test('the three preprinted routes bound their submission', () => {
+  // Since WH-109 the routes submit through the transport, which bounds the CUPS send (and the bridge request) itself.
   for (const route of ['print-dispatch-preprinted', 'print-invoice-preprinted', 'print-grn-preprinted']) {
     const source = read(`functions/${route}/index.ts`);
-    assert.match(source, /import \{ SUBMIT_TIMEOUT_MS, submitWithTimeout \} from '\.\.\/_shared\/print-monitor-rule\.ts'/, route);
-    assert.match(source, /const result: any = await submitWithTimeout\(\(signal\) => new Promise/, route);
-    assert.match(source, /if \(signal\.aborted\) \{/, route);
-    assert.equal((source.match(/printer\.execute\("Print-Job"/g) ?? []).length, 1, route);
+    assert.equal((source.match(/submitRawJob\(/g) ?? []).length, 1, route);
+    assert.doesNotMatch(source, /Print-Job/, `${route} sends nothing itself`);
   }
+  const transport = read('functions/_shared/print-transport.ts');
+  assert.match(transport, /import \{ SUBMIT_TIMEOUT_MS, submitWithTimeout \} from '\.\/print-monitor-rule\.ts'/);
+  assert.match(transport, /submitWithTimeout\(\(\) => deps\.ippPrintJob\(queueUrl, message\), deps\.timeoutMs\)/);
+  assert.match(transport, /timeoutMs: SUBMIT_TIMEOUT_MS/);
+  assert.match(transport, /signal: AbortSignal\.timeout\(deps\.timeoutMs\)/);
+  assert.equal((transport.match(/execute\('Print-Job'/g) ?? []).length, 1);
 });
 
 // A fake clock: sleeping moves time on; each query takes queryMs.

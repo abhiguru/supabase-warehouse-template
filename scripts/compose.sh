@@ -107,5 +107,14 @@ fi
 # start.sh after a reboot, the setup of the next release, a restore, the checker starting a stopped gateway.
 maintenance_override=()
 if [[ -e "$STATE/config/maintenance" || -L "$STATE/config/maintenance" ]]; then maintenance_override=(WAREHOUSE_MAINTENANCE=upgrading); fi
-exec env "${unset_args[@]}" "${lan_override[@]}" "${maintenance_override[@]}" WAREHOUSE_PUBLIC_PATH="$STATE/public" docker compose --project-directory "$ROOT/docker" --project-name "$PROJECT" \
+# The Windows print bridge (docs/PRINTING.md): with PRINT_TRANSPORT=bridge and no PRINTBRIDGE_URL in compose.env, the address is the
+# WSL2 default gateway (the Windows host), worked out here for every command so that a container recreated by any script gets it.
+# Worked out at each command, never stored: it can change at a Windows restart. A value in compose.env wins.
+print_override=()
+if grep -Eq '^PRINT_TRANSPORT=bridge[[:space:]]*$' "$ENV_FILE" && ! grep -Eq '^PRINTBRIDGE_URL=.' "$ENV_FILE"; then
+  print_port="$(sed -n 's/^PRINTBRIDGE_PORT=//p' "$ENV_FILE" | head -n 1)"
+  print_url="$(bash "$ROOT/scripts/print-bridge-url.sh" "${print_port:-6632}" 2>/dev/null || true)"
+  if [[ -n "$print_url" ]]; then print_override=("PRINTBRIDGE_URL=$print_url"); fi
+fi
+exec env "${unset_args[@]}" "${lan_override[@]}" "${maintenance_override[@]}" "${print_override[@]}" WAREHOUSE_PUBLIC_PATH="$STATE/public" docker compose --project-directory "$ROOT/docker" --project-name "$PROJECT" \
   --env-file "$ENV_FILE" -f "$ROOT/docker/docker-compose.yml" "${extra[@]}" "$@"
