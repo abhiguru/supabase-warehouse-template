@@ -2027,6 +2027,35 @@ sudo rm -rf "$WAREHOUSE_STATE_DIR/data/db.pre-restore-<utc>" "$WAREHOUSE_STATE_D
 ls "$WAREHOUSE_STATE_DIR/data"   # only db and storage remain
 ```
 
+### Check that every stored file is there (`npm run storage:check`)
+
+Rows of the object catalog (`storage.objects`) can point at files that are not on disk, for example after the database and the
+files were copied separately. `npm run db:verify-restore` refuses a backup with such a row; this check finds them earlier and
+changes nothing (no row, no file, no hashing):
+
+```bash
+export WAREHOUSE_STATE_DIR=/absolute/path/to/this/warehouse
+npm run storage:check
+```
+
+It prints, per bucket, the rows, the files, the rows with no file and the files with no row, then each row with no file and the
+GRN or dispatch that uses it (`nothing` if none), and a last line: `All files present`, or `N rows have no file; M of them are
+used by a GRN or dispatch`. Exit status 0 is clean, 1 means rows with no file, 2 means it could not read (never a clean result).
+Files with no row are listed but are not a failure. The upgrade's preflight and dry run (`bash upgrade.sh --dry-run vX.Y.Z`) print
+the same report before any change; it only reports, and the backup proof stays the gate. Generated documents (`documents`) are
+reported like any other row; the check does not judge whether one is safe to remove.
+
+**Rule for copying data between servers.** Move data between upgraded servers only through the signed backup and restore
+(`db:backup`, `db:restore-host`): `storage.manifest` holds a checksum for every file, taken at one point in time. For a copy made
+any other way, run the check on the source first and on the target after, and compare the two reports.
+
+**On an older install (such as the old Windows box) with nothing installed there.** Run the query that
+`bash scripts/storage-file-check.sh --print-query` prints (from any checkout) in `psql -A -t -F "<TAB>"` against that database,
+saved to `catalog.tsv`, and list the files read-only with `(cd STORAGE_DIR && find . -type f | sed 's|^\./||') > files.txt`
+(STORAGE_DIR is the folder that holds the tenant folder, normally `data/storage`). Then, on any machine with bash:
+`bash scripts/storage-file-check.sh --catalog catalog.tsv --files files.txt`. Run it on the source before a copy and on the target
+after. A layout that has no `public.goodsreceived` or `dispatch` tables needs the query's last two columns trimmed.
+
 ### Content types of stored files (`npm run storage:retag`)
 
 The Storage service reads each stored file's content type and cache control from extended attributes of the file. A file

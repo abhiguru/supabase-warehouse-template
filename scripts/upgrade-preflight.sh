@@ -148,6 +148,13 @@ else
   fi
 fi
 
+# --- 4b. stored files, reported up front (WH-55) ----------------------------------------------------------------------------
+# Read-only; it only reports, in the terms of the backup proof (scripts/verify-restore.sh), which refuses a catalogued object with no file.
+# It never refuses and never changes anything: the proof of the upgrade's own backup stays the gate. A check that cannot read says so.
+say
+say 'Stored files (read-only check, scripts/storage-file-check.sh):'
+WAREHOUSE_STATE_DIR="$STATE" bash "$HERE/storage-file-check.sh" || say "Note: the check above found missing files or could not read; the upgrade's own backup proof refuses a catalogued object with no file. Nothing was changed."
+
 # --- 5. the migrations, applied to a copy of the facility's data -------------------------------------------------------------
 # With --dry-run too: the live database and its files are only read (the backup is restored into a disposable container).
 say
