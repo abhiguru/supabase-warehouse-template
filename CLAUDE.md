@@ -60,7 +60,7 @@ The contract (token, endpoint, answers, what is stored) is [docs/CENTRAL_LOGIN.m
 - **The facility's own code is optional and off by default** (`setup.sh --central-local-code
   on|off`, `auth_config` key `central_local_code`): with it on, an approved profile is asked
   for a facility SMS code (`otp_code`, `operator_verify_otp`; `link_required` without it) at
-  **every** new sign-in, linked or not.
+  **every** new sign-in, linked or not (a profile found by phone number is linked only after a correct code, migration 154).
 - A profile carries its central identity (`user_profiles.central_issuer`,
   `central_subject`). An administrator unlinks one with `clear_user_central_identity`.
 - Revocation stays local: `update_user_status(false)` revokes a profile's sessions.
@@ -91,7 +91,7 @@ The contract (token, endpoint, answers, what is stored) is [docs/CENTRAL_LOGIN.m
 
 - Schema changes are **new, append-only migrations** in `migrations/`; applied files are
   checksum-locked and must never be edited. Migrations 000-110 are the one file `00000000000000_baseline.sql`
-  (the old files: tag `migrations-pre-baseline`); the next migration is `00000000000152_<topic>.sql`. Patch large baseline functions with the
+  (the old files: tag `migrations-pre-baseline`); the next migration is `00000000000155_<topic>.sql` (152 is held for WH-56; 153 and 155 were reserved for WH-111 and WH-119 and stayed unused: ask before taking either). Patch large baseline functions with the
   `DO $patch$` + marker-count pattern used by earlier migrations.
 - Roles are never created, altered or dropped in a migration (`tests/migration-roles.test.mjs`): they live in
   `docker/volumes/db/00-bootstrap.sql`, and a database-level bootstrap fix also ships as a migration
