@@ -93,14 +93,19 @@ How it works:
   `scripts/print-bridge-url.sh` (the default gateway from `ip route`) yields the same address the bridge binds, with the port
   `PRINTBRIDGE_PORT` (default 6632). `scripts/compose.sh` works it out for every command and `start.sh` says what it found. The
   address can change at a Windows restart or `wsl --shutdown`, so it is not written to `compose.env`; but a container keeps the
-  address it was created with, so `start.sh` compares it with the one just worked out and recreates the `functions` container when they
-  differ. After a Windows restart, run `bash start.sh` (or `bash scripts/compose.sh up -d functions`). The bridge notices a changed address (it
+  address it was created with, so `scripts/print-bridge-sync.sh` compares it with the one just worked out and recreates the `functions`
+  container when they differ (only with `PRINT_TRANSPORT=bridge` and no `PRINTBRIDGE_URL` in `compose.env`). It runs from `start.sh`, from the
+  boot unit (`ExecStartPost`, after the containers are started) and after the monitoring checker restarts an unhealthy `functions`
+  container. **Restarts:** Docker's restart policy brings `functions` back with the address it had, before any of these runs, so between
+  a Windows or WSL restart and the boot unit's run (a few seconds to a minute or two, once Docker is up) prints can fail with "The print
+  bridge could not be reached"; the boot unit is installed by `sudo bash scripts/watch-timer.sh install --state "$WAREHOUSE_STATE_DIR"` (docs/MONITORING.md), and without it only
+  `bash start.sh` (or `bash scripts/print-bridge-sync.sh`) corrects the address. The bridge notices a changed address (it
   checks every 15 s), exits, and the scheduled task starts it again on the new one. A `PRINTBRIDGE_URL` in `compose.env`
   overrides the resolver; use the exact IP the bridge bound (the `start listen=` line in `%ProgramData%\Warehouse\logs`), never a
   name. That the two ends agree follows from how NAT mode is built and from the code; it has not been run on a Windows host.
   **Mirrored networking is not verified** (there is no `vEthernet (WSL)` adapter; the bridge stops with a message): use NAT mode.
   `start.sh` prints a warning when `wslinfo --networking-mode` says `mirrored`.
-- **Printer name.** `PRINTER_NAME` may hold letters, digits, spaces and `_ . ( ) # / -`, so the Windows name can be used as it is,
+- **Printer name.** `PRINTER_NAME` may hold letters, digits, spaces and `_ . ( ) # / , & + : -` (printable ASCII, starting with a letter or digit), so the Windows name can be used as it is,
   for example `EPSON LQ-1310 ESC/P2`.
 - **The queue must spool.** In the printer's Properties > Advanced, leave "Spool print documents so program finishes printing faster"
   selected. With "Print directly to the printer" the bridge waits for the printer itself, and an off or paperless printer then blocks it.
@@ -117,7 +122,9 @@ Steps:
 
 1. Install the printer in Windows as a local queue (any Epson driver: the bridge sends RAW and bypasses it) and print a Windows
    test page. Note the exact queue name (`Get-Printer | Format-Table Name`); put it as `PRINTER_NAME` in `config/compose.env`
-   (default `LQ1310_RAW`: you may name the Windows printer that) and restart the functions later in step 4.
+   (default `LQ1310_RAW`: you may name the Windows printer that) and restart the functions later in step 4. The name may use letters, digits,
+   spaces and `_ . ( ) # / , & + : -` and must start with a letter or digit; any other character is refused (the functions answer a
+   configuration error, and `get-printer-status` shows it; they never fall back to `LQ1310_RAW`). `register-tasks.ps1` accepts the same name.
 2. In an elevated PowerShell, in `scripts/windows` of the checkout (reach it through `\\wsl$`, or copy the folder to Windows), register
    the bridge. It asks once for the Windows password and registers the task "Warehouse Print" (at boot and every 2 minutes; a second
    copy is ignored), creates the token file, adds the firewall rule and reads them back:
@@ -157,6 +164,13 @@ row is written after the send, as before.
   `printing` more than 5 minutes after it was created as `unknown`, never `completed`, because nobody saw it finish.
 
 ## Operation notes
+
+- **No internet needed to print, one caveat.** The print functions load their libraries from `functions/vendor` and fetch nothing from the network at
+  run time. The edge runtime may still look up Node typings (`@types/node` from registry.npmjs.org) when a worker with a `node:` import is first
+  built; the same holds for the existing `operator-otp` and `central-exchange` (`node:net`) and for `print-via-ipp` before this release
+  (`node:buffer`), so it is not new. Observed once by Test with `--network none`; not verified on a normal install while the facility's
+  internet is down. If a print function does not boot with the internet down, restart `functions` once with it up (the runtime then has
+  its cache) and report it.
 
 - **Staff may print** (owner decision, 2026-11-07). The print functions read documents with the server's key, so a staff member can
   print any customer's documents, as staff can already see them in the app.
