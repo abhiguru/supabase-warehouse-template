@@ -68,7 +68,7 @@ Point an AI coding agent at this repository and tell it to install the backend. 
    7. The ping URL of an external heartbeat, a dead-man switch such as healthchecks.io ([External heartbeat](docs/MONITORING.md#external-heartbeat-the-dead-man-switch)), given as a private file (`--heartbeat-url-file`), or `off`. An association member is told the URL of its association check; if the operator declines, doctor keeps a warning unless they record the decision.
    8. A letterhead file, or `off`.
    9. Central sign-in, yes or no; if yes, the issuer and the key URL or file ([Central sign-in](docs/OPERATOR_INSTALL.md#central-sign-in)); if no, SMS sign-in only. If yes, also ask whether to require this facility's own SMS code at every central sign-in (`--central-local-code on`, default off; read the trade-off in [Central sign-in](docs/OPERATOR_INSTALL.md#central-sign-in)). The operator gives the association this facility's exact public origin (the `--api-url`) for its catalogue. The central identity service is not part of a facility install: the association's primary operator installs it once from its own repository (`central-identity-template`, private; ask the association). A facility needs only the issuer and the key set from the association.
-   10. The daily SMS ceiling, the most MSG91 requests they will pay for in 24 hours (`otp_daily_provider_attempt_cap`).
+   10. The SMS ceilings: codes an hour (default 60) and MSG91 requests in 24 hours (default 300) for the whole facility (`--sms-hourly-ceiling`, `--sms-daily-ceiling`; `otp_global_hourly_cap`, `otp_daily_provider_attempt_cap`).
    11. The host time zone, the facility's own.
    12. The state directory (absolute, outside the checkout; the guide uses `/srv/warehouse/<name>`).
 
@@ -101,8 +101,8 @@ Then read the guide's sections in pieces with the file reader (the table of cont
 2. Create the state directory as in [Private inputs](docs/OPERATOR_INSTALL.md#private-inputs) (**State directory**: the parent with
    `sudo install -d -m 0755 -o …`, which the operator runs, and the leaf without sudo), `export WAREHOUSE_STATE_DIR=<it>`, then
    [Setup](docs/OPERATOR_INSTALL.md#setup) with the inputs above, then `node scripts/doctor.mjs --local`.
-3. Set the SMS cap ([Authentication and OTP limits](docs/OPERATOR_INSTALL.md#authentication-and-otp-limits), `otp_daily_provider_attempt_cap`)
-   and read it back **before** the tunnel connector starts. Run the guide's `INSERT` and read-back through
+3. Check the SMS ceilings, which setup stored on a new install ([Authentication and OTP limits](docs/OPERATOR_INSTALL.md#authentication-and-otp-limits), `otp_daily_provider_attempt_cap`)
+   and read them back **before** the tunnel connector starts. Run the guide's read-back through
    `bash scripts/compose.sh exec -T db psql -X -U supabase_admin -d postgres -c "…"`.
 4. On a Windows host, first have the operator register the keep-alive task
    ([Keep the distro running and start it at boot](docs/OPERATOR_INSTALL.md#keep-the-distro-running-and-start-it-at-boot);

@@ -186,6 +186,7 @@ The operator scripts use only Node's built-in modules; `npm ci` is needed only t
 | Company name | `--company` | Display name of the facility, up to 120 characters. Required on a first install. |
 | Cloudflare Tunnel | `scripts/tunnel.sh adopt` (needs the state, so after setup) | A **new** tunnel for this host with a route for the `--api-url` hostname: its `config.yml` with the credentials JSON, or a dashboard token file. Not a config copied from another machine. See [Cloudflare Tunnel ingress](#cloudflare-tunnel-ingress). |
 | MSG91 provider file | `--provider-env` | Mode-0600 file with five keys; see **MSG91 provider file** below. Required on a first install, **except** a member installation that signs in through the association alone (`--central-issuer` given, no `--central-local-code on`): that one needs no SMS provider and stores none. |
+| SMS spending ceilings | `--sms-hourly-ceiling`, `--sms-daily-ceiling` | Codes an hour (`otp_global_hourly_cap`) and MSG91 requests in 24 hours (`otp_daily_provider_attempt_cap`) for the whole facility; whole numbers. A terminal is offered 60 and 300 on a first install (Enter accepts); with no terminal and no option a first install gets 60 and 300. See **SMS spending ceiling** under [Authentication and OTP limits](#authentication-and-otp-limits). |
 | First administrator | `--admin-phone`, `--admin-name` (both required) | `91` and ten digits, and a display name; see **First administrator** below. |
 | Slack webhook file | `--alert-webhook-file` | Private file with the facility's incoming-webhook URL. `off` only for a non-production install; without the option a terminal is asked and no terminal means setup refuses. See [Setup](#setup). |
 | Sensor Slack webhook file | `--sensor-webhook-file` | Private file with a second, separate incoming-webhook URL for sensor alerts. Required when Slack alerts are on and sensors are on; `off` removes it; leave it out to keep what is stored. See [Setup](#setup). |
@@ -506,8 +507,8 @@ last five such sources are kept).
 | Trusted lane | 5 per hour per phone and trusted source, up to the per-phone cap of 30; `otp_trusted_daily_reserve` (default 10) of the 30 cannot be used by other sources | known phones, from a trusted source | same 429 |
 | Resend cooldown | 60 s per phone and source | every request | 429 "Please wait before requesting another OTP." with `retry_after_seconds` |
 | Per source, sends | `otp_source_hourly_sends`, default 30 per hour over all phones; `otp_trusted_source_hourly_sends` (default 120) for the addresses you list in `otp_trusted_source_list` ([below](#the-facilitys-own-wi-fi-address)) | every request with a source | 429 "Too many OTP requests. Try again later." |
-| Warehouse cap | `otp_global_hourly_cap`, default 300 per hour; text `0` is the no-send switch (below) | every request | same 429 |
-| Provider requests | `otp_daily_provider_attempt_cap`, **off until you set it**: the most requests made to MSG91 in any 24 hours, a retry counted as a second request, a refused or timed-out one counted too | every request | same 429, and no SMS is sent |
+| Warehouse cap | `otp_global_hourly_cap`, 60 per hour on a new install (setup stores it), 300 when the key is absent (an installation made before WH-119); text `0` is the no-send switch (below) | every request | same 429 |
+| Provider requests | `otp_daily_provider_attempt_cap`, 300 on a new install (setup stores it), **off while the key is absent** (an installation made before WH-119; set it, below): the most requests made to MSG91 in any 24 hours, a retry counted as a second request, a refused or timed-out one counted too | every request | same 429, and no SMS is sent |
 | Unknown-number share | `otp_unknown_hourly_cap`, default 60 per hour, part of the warehouse cap | phones that are not known | same 429; known phones are still served |
 | Wrong codes | 5 per issued code in all, from every source together; sources other than the one that requested the code share 2 of the 5 | every verification | 400 "Invalid or expired OTP" |
 | Per source, failed verifications | `otp_source_hourly_failures`, default 20 per hour over all phones | every verification with a source | 429 "Too many OTP requests. Try again later." |
@@ -594,6 +595,16 @@ hour after its first request), or raise `otp_source_hourly_sends` or
   -- remove the ceiling
   DELETE FROM warehouse_security.auth_config WHERE key='otp_daily_provider_attempt_cap';
   ```
+- **SMS spending ceiling (a go-live step).** Two figures cap what the facility can spend, for all phones together: the codes an hour
+  (`otp_global_hourly_cap`) and the MSG91 requests in any 24 hours (`otp_daily_provider_attempt_cap`; a code is one request, two when
+  the function repeats it). A new install gets 60 and 300 from `setup.sh` (it asks on a terminal; give `--sms-hourly-ceiling N` and
+  `--sms-daily-ceiling N` for an unattended setup). A rerun of `setup.sh` without the options changes nothing; with them it stores the
+  new figures. An installation that already sends codes keeps what it has: **an upgraded installation has no daily ceiling until you
+  set it**, with `bash setup.sh --operator <your usual options> --sms-daily-ceiling 300` or the `INSERT` above. Read both back:
+  `SELECT key, value FROM warehouse_security.auth_config WHERE key IN ('otp_global_hourly_cap','otp_daily_provider_attempt_cap');`.
+  When either is reached, a code request answers 429 (`rate_limited`) and the monitor posts `sms_ceiling_reached` once a day
+  ([MONITORING.md](MONITORING.md#sms-delivery-and-the-clock)). Pick figures from your members: a facility whose people sign in
+  within the same hour (a Monday morning) needs an hourly figure above that wave.
 - **No-send switch.** A cap of text `0` is accepted and blocks every send: set
   `otp_global_hourly_cap` to `0` to stop all SMS at once (every request answers
   429 and no code is created), then back to its value (default `300`) to resume.
@@ -1021,10 +1032,10 @@ confirm the hostname's DNS record points to `<tunnel-uuid>.cfargotunnel.com`.
 For a dashboard-managed tunnel the hostname and origin live in the dashboard
 and the YAML is not used.
 
-**A tunnel makes the installation public, so cap the SMS first. Setting `otp_daily_provider_attempt_cap` is a required go-live step
+**A tunnel makes the installation public, so cap the SMS first. Setting the SMS spending ceilings (`otp_global_hourly_cap` and `otp_daily_provider_attempt_cap`; `setup.sh` stores 60 and 300 on a new install) is a required go-live step
 for every installation that a phone number can reach from the internet.** Every accepted code request on a public address is a real,
-billed SMS, test installations included. Set the cap
-([Authentication and OTP limits](#authentication-and-otp-limits); it is off until you create it) before `install-service` below starts
+billed SMS, test installations included. Check the ceilings
+([SMS spending ceiling](#authentication-and-otp-limits); an installation made before WH-119 has no daily one until you create it) before `install-service` below starts
 the connector, read the value back, and never give a test
 installation a real provider key ([Test installations](#private-inputs)). Stop the tunnel when a test ends.
 

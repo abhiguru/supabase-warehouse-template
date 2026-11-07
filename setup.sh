@@ -20,6 +20,8 @@ COMPANY_ARG=''
 ALERT_ARG=''
 LETTERHEAD_ARG=''
 CONFIG_ARGS=()
+SMS_HOURLY=''
+SMS_DAILY=''
 while (($#)); do
   case "$1" in
     --state-dir|--api-url|--app-url|--company|--provider-env|--admin-phone|--admin-name|--central-issuer|--central-jwks-url|--central-jwks-file|--central-local-code|--alert-webhook-file|--sensor-webhook-file|--heartbeat-url-file|--letterhead-file|--gateway-port|--db-memory)
@@ -41,6 +43,14 @@ while (($#)); do
         --grn-numbering) GRN_NUMBERING="$2" ;;
         --dispatch-numbering) DISPATCH_NUMBERING="$2" ;;
         --invoice-numbering) INVOICE_NUMBERING="$2" ;;
+      esac
+      shift 2 ;;
+    --sms-hourly-ceiling|--sms-daily-ceiling)
+      # The SMS spending ceilings live in the database (docs/OPERATOR_INSTALL.md, "SMS spending ceiling"): checked here, stored after the migrations.
+      if (($# < 2)); then echo "Missing value for $1" >&2; exit 1; fi
+      case "$1" in
+        --sms-hourly-ceiling) SMS_HOURLY="$2" ;;
+        --sms-daily-ceiling) SMS_DAILY="$2" ;;
       esac
       shift 2 ;;
     *) echo "Unknown option: $1" >&2; exit 1 ;;
@@ -68,6 +78,27 @@ for numbering in grn dispatch invoice; do
     NUMBERING_VARS+=(-v "${numbering}_numbering=$rule")
   fi
 done
+# The SMS spending ceilings (WH-119): codes an hour and MSG91 requests a day for the whole facility. Offered 60 and 300 on a new install
+# (Enter accepts each); with no terminal, or with the option given, nothing is asked. A rerun or upgrade asks nothing and keeps what is
+# stored (scripts/configure-sms-ceiling.sql decides what is stored; a value given here always replaces the stored one).
+if [[ ! -d "$STATE/config" && ( -z "$SMS_HOURLY" || -z "$SMS_DAILY" ) && -t 0 && -t 1 ]]; then
+  if [[ -z "$SMS_HOURLY" ]]; then
+    read -r -p 'SMS codes this facility may send in one hour (Enter for 60): ' SMS_HOURLY || true
+    SMS_HOURLY="${SMS_HOURLY:-60}"
+  fi
+  if [[ -z "$SMS_DAILY" ]]; then
+    read -r -p 'SMS requests this facility may make in 24 hours (Enter for 300): ' SMS_DAILY || true
+    SMS_DAILY="${SMS_DAILY:-300}"
+  fi
+fi
+if [[ -n "$SMS_HOURLY" && ! "$SMS_HOURLY" =~ ^[1-9][0-9]{0,5}$ ]]; then
+  echo 'The hourly SMS ceiling (--sms-hourly-ceiling) must be a whole number from 1 to 999999.' >&2
+  exit 1
+fi
+if [[ -n "$SMS_DAILY" && ! "$SMS_DAILY" =~ ^[1-9][0-9]{0,6}$ ]]; then
+  echo 'The daily SMS ceiling (--sms-daily-ceiling) must be a whole number from 1 to 9999999.' >&2
+  exit 1
+fi
 # A rerun may rewrite compose.env (provider replacement), so hold the operator
 # lock before configure.mjs whenever the state already exists; a first install
 # can only take it once configure.mjs has created the state directory.
@@ -160,6 +191,9 @@ CENTRAL_ISSUER_VALUE="$(sed -n 's/^CENTRAL_ISSUER=//p' "$STATE/config/compose.en
 CENTRAL_LOCAL_CODE_VALUE="$(sed -n 's/^CENTRAL_LOCAL_CODE=//p' "$STATE/config/compose.env" | head -n 1)"
 bash "$ROOT/scripts/compose.sh" exec -T db psql -X -q -U supabase_admin -d postgres -v ON_ERROR_STOP=1 -v central_issuer="$CENTRAL_ISSUER_VALUE" -v central_local_code="$CENTRAL_LOCAL_CODE_VALUE" < "$ROOT/scripts/configure-central.sql"
 bash "$ROOT/scripts/compose.sh" exec -T db psql -X -q -U supabase_admin -d postgres -v ON_ERROR_STOP=1 < "$ROOT/scripts/configure-sms.sql"
+# The SMS spending ceilings: a given value is stored; a new install without one gets 60 an hour and 300 a day; a facility that already
+# sent codes keeps what it has (scripts/configure-sms-ceiling.sql).
+bash "$ROOT/scripts/compose.sh" exec -T db psql -X -q -U supabase_admin -d postgres -v ON_ERROR_STOP=1 -v sms_hourly="$SMS_HOURLY" -v sms_daily="$SMS_DAILY" < "$ROOT/scripts/configure-sms-ceiling.sql"
 # Storage owns its schema upgrades; wait for them before creating private buckets
 # and access policies. This starts only storage and its internal dependencies.
 bash "$ROOT/scripts/compose.sh" up -d --wait --wait-timeout 180 storage

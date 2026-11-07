@@ -1066,6 +1066,37 @@ export function checkBreakGlass(ctx) {
     'Someone with shell access made a one-time administrator code (scripts/break-glass-admin.sh) or signed in with one. Check that it was you or your staff: docs/MONITORING.md, "Break-glass sign-in".', { immediate: true })];
 }
 
+// The SMS spending ceilings (docs/OPERATOR_INSTALL.md, "SMS spending ceiling"; WH-119): the facility-wide hourly ceiling on sign-in codes
+// (auth_config `otp_global_hourly_cap`, 300 when unset) and the ceiling on provider requests in any 24 hours
+// (`otp_daily_provider_attempt_cap`, none when unset). While either is reached, every code request is refused (429) until older
+// requests leave the window, so the operator is told once a day (repeatHours 24, at once the first time). Read-only; the counters
+// are the ones operator_prepare_otp keeps.
+const SMS_CEILING_SQL = `SELECT COALESCE((SELECT g.hourly_count FROM warehouse_security.operator_otp_global_limit g
+    WHERE g.id AND g.window_started > now() - interval '1 hour'), 0),
+  COALESCE((SELECT c.value FROM warehouse_security.auth_config c WHERE c.key = 'otp_global_hourly_cap'), ''),
+  COALESCE((SELECT sum(a.attempts) FROM warehouse_security.otp_provider_attempts a WHERE a.created_at > now() - interval '24 hours'), 0),
+  COALESCE((SELECT c.value FROM warehouse_security.auth_config c WHERE c.key = 'otp_daily_provider_attempt_cap'), '')`;
+export function checkSmsCeiling(ctx) {
+  if (!databaseReady(ctx)) return null;   // postgres_down says so
+  const q = ctx.compose(['exec', '-T', '-e', 'PGOPTIONS=-c statement_timeout=10000', 'db', 'psql', '-X', '-qAt', '-F', '|',
+    '-v', 'ON_ERROR_STOP=1', '-U', 'supabase_admin', '-d', 'postgres', '-c', SMS_CEILING_SQL]);
+  if (q.status !== 0) throw new Error(`SMS ceiling query failed: ${clip(q.stderr.trim(), 200)}`);
+  const [hourUsedText, hourCapText = '', dayUsedText, dayCapText = ''] = q.stdout.trim().split('\n').pop().split('|');
+  if (!/^\d+$/.test(hourUsedText ?? '') || !/^\d+$/.test(dayUsedText ?? '')) throw new Error('unexpected SMS ceiling query output');
+  const hourUsed = Number(hourUsedText);
+  const dayUsed = Number(dayUsedText);
+  const hourCap = /^[0-9]{1,6}$/.test(hourCapText) ? Number(hourCapText) : 300;   // the default of operator_prepare_otp
+  const dayCap = /^[0-9]{1,7}$/.test(dayCapText) ? Number(dayCapText) : null;       // no ceiling when unset or not a whole number
+  const hourHit = hourUsed >= hourCap;
+  const dayHit = dayCap !== null && dayUsed >= dayCap;
+  const which = [hourHit && `${hourUsed} of ${hourCap} sign-in codes this hour`, dayHit && `${dayUsed} of ${dayCap} SMS provider requests in 24 hours`].filter(Boolean);
+  return [result('sms_ceiling', 'sms_ceiling_reached', !(hourHit || dayHit),
+    which.length ? `The SMS spending ceiling is reached: ${which.join('; ')}. Sign-in code requests are refused until it frees up.`
+      : 'The SMS spending ceilings are not reached',
+    'People cannot get a sign-in code until the hour or the 24 hours pass. If the traffic is real, raise the ceiling; if not, look for abuse: docs/OPERATOR_INSTALL.md, "SMS spending ceiling".',
+    { repeatHours: 24 })];
+}
+
 // The host clock: systemd's own verdict (NTPSynchronized) and, when the public address answers, the difference from the
 // clock of the address's edge. Central sign-in refuses a token when the clock is over 30 s off (docs/CENTRAL_LOGIN.md); backup
 // names and the 26 h backup rule use it too. The reference is Cloudflare's own `ts=` line of <origin>/cdn-cgi/trace, which the
@@ -1313,7 +1344,7 @@ export const CHECKS = [
   ['stack_restarts', checkStackRestarts],
   ['container_memory', checkContainerMemory], ['api_local', checkApiLocal], ['api_public', checkApiPublic], ['api_lan', checkApiLan],
   ['api_logs', checkApiLogs], ['pdf_renderer', checkPdfRenderer], ['central_key', checkCentralKey], ['letterhead', checkLetterhead], ['backups', checkBackups],
-  ['restore_space', checkRestoreSpace], ['upgrade', checkUpgrade], ['sms_delivery', checkSmsDelivery], ['break_glass', checkBreakGlass], ['clock', checkClock],
+  ['restore_space', checkRestoreSpace], ['upgrade', checkUpgrade], ['sms_delivery', checkSmsDelivery], ['sms_ceiling', checkSmsCeiling], ['break_glass', checkBreakGlass], ['clock', checkClock],
   ['cloudflared', checkCloudflared], ['host_node', checkHostNode], ['root_copies', checkRootCopies], ['sensors_stale', checkSensors],
   ['print_sweep', checkPrintSweep],
 ];

@@ -90,6 +90,7 @@ An alert fires after two failing runs in a row (10 minutes), except the event al
 | `api_429_rate_high` | More than 2% of the gateway's requests in the last 5 minutes (judged from 50 requests up), or more than 20 of them, were answered 429 (rate limit): a client, or every phone on one Wi-Fi, is being refused |
 | `pdf_renderer_down` | The function runtime cannot reach the PDF renderer |
 | `sms_delivery` | Checked every hour: more than 20% of the last 24 hours' sign-in code requests (judged from 10 requests up), or more than 10, or at least half of the last hour's (from 5 requests up), were not accepted by the SMS provider (at once; see "SMS delivery") |
+| `sms_ceiling_reached` | The SMS spending ceiling is reached: this hour's sign-in codes are at `otp_global_hourly_cap`, or the MSG91 requests of the last 24 hours at `otp_daily_provider_attempt_cap`; code requests are refused until it frees up (at once, then once a day while it lasts) |
 | `break_glass_used` | A break-glass administrator code was made or used in the last 24 hours (at once; see "Break-glass sign-in") |
 | `clock_unsynced` | `timedatectl` says the clock is not synchronised, or the host clock is more than 10 s from the clock of the public address's Cloudflare edge |
 | `cloudflared_old` | Weekly warning (it repeats every 7 days, not every 4 hours; it never calls the network). The installed `cloudflared --version` was released 11 months ago or more (Cloudflare supports only versions within a year of its newest, and the tunnel runs with `--no-autoupdate`); or the output of `cloudflared --version` is not one this check knows (a warning of its own, also weekly); or the tunnel's unit (`warehouse-<state directory name>-tunnel.service`, else the stock `cloudflared.service` where the first is not running) is running a binary that was replaced since it started (its `/proc/<pid>/exe` says `(deleted)`, or the file on disk is newer than the unit's start): restart it. Nothing is judged where `cloudflared` is not installed. Fix: `sudo apt install --only-upgrade cloudflared`, then `sudo systemctl restart` the tunnel unit ([Monthly host maintenance](OPERATOR_INSTALL.md#monthly-host-maintenance)) |
@@ -150,6 +151,9 @@ refusals and lost answers. It does **not** see a code MSG91 accepted and the tel
 after acceptance): that shows as users saying no code arrives, and the cure is in the MSG91 console
 ([TROUBLESHOOTING.md](TROUBLESHOOTING.md#sms-codes-not-arriving)). There is no balance check: MSG91's balance endpoint needs
 a key with more rights than the sending key.
+
+`sms_ceiling_reached` is read every 5 minutes from the counters that `operator_prepare_otp` keeps and posts once a day while a ceiling stays
+reached (set them as OPERATOR_INSTALL.md, "SMS spending ceiling", says). It says the ceiling is reached, not how many people were turned away.
 
 `clock_unsynced` compares two things: systemd's own verdict (`timedatectl show -p NTPSynchronized`) and the difference between
 the host clock and the clock of the facility's public address. The reference is the `ts=` line of `<public address>/cdn-cgi/trace`,
