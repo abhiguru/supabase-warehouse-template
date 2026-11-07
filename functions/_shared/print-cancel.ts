@@ -8,14 +8,14 @@
 import { ippPrinter } from './ipp-client.ts';
 import { ippSucceeded } from './ipp-validate.ts';
 import { submitWithTimeout } from './print-monitor-rule.ts';
-import { cupsQueueUrl, type EnvGet } from './print-config.ts';
+import { cupsJobUser, cupsQueueUrl, type EnvGet } from './print-config.ts';
 
 export const CANCEL_TIMEOUT_MS = 10_000;
 /** A row still 'queued' or 'printing' after this long is settled as 'unknown' (the status monitor ends within 35 s). */
 export const STUCK_AFTER_MS = 5 * 60 * 1000;
 export const CANCELLABLE_STATUSES = ['queued', 'printing'] as const;
 
-export interface PrintJobRow { id: string; status: string; cups_job_id: number | null }
+export interface PrintJobRow { id: string; status: string; cups_job_id: number | null; job_type?: string | null }
 
 export type CancelDecision =
   | { kind: 'cancel'; cupsJobId: number }
@@ -41,13 +41,14 @@ export type CancelOutcome = 'cancelled' | 'refused' | 'unreachable';
 /** IPP Cancel-Job on the configured queue. 'refused': CUPS answered but did not cancel (finished, not found, not possible). */
 export async function cancelCupsJob(
   cupsJobId: number,
+  jobType: string | null | undefined,
   env: EnvGet,
   send: (queueUrl: string, message: Record<string, unknown>) => Promise<unknown> = defaultSend,
   timeoutMs = CANCEL_TIMEOUT_MS,
 ): Promise<CancelOutcome> {
   const queueUrl = cupsQueueUrl(env);
   if (queueUrl === null) return 'unreachable';
-  const message = { 'operation-attributes-tag': { 'requesting-user-name': 'warehouse-cancel', 'job-id': cupsJobId } };
+  const message = { 'operation-attributes-tag': { 'requesting-user-name': cupsJobUser(jobType), 'job-id': cupsJobId } };
   let reply: unknown;
   try {
     reply = await submitWithTimeout(() => send(queueUrl, message), timeoutMs);

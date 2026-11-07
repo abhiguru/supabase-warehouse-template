@@ -20,7 +20,7 @@ import { ippPrinter } from './ipp-client.ts';
 import { submittedJob } from './ipp-validate.ts';
 import { SUBMIT_TIMEOUT_MS, submitWithTimeout } from './print-monitor-rule.ts';
 import {
-  DEFAULT_PRINTER_NAME, bridgeBaseUrl, cupsQueueUrl, printTransportName, printerName, safeDocName,
+  DEFAULT_PRINTER_NAME, bridgeBaseUrl, cupsJobUser, cupsQueueUrl, printTransportName, printerName, safeDocName,
   type EnvGet, type PrintTransportName,
 } from './print-config.ts';
 
@@ -114,7 +114,7 @@ async function submitToCups(request: RawJobRequest, docName: string, deps: Trans
   if (queueUrl === null) return failed('cups', 'PRINTER_NAME is not a valid CUPS queue name');
   const message = {
     'operation-attributes-tag': {
-      'requesting-user-name': `warehouse-${request.jobType.toLowerCase()}`,
+      'requesting-user-name': cupsJobUser(request.jobType),
       'job-name': docName,
       'document-format': 'application/vnd.cups-raw', // raw: CUPS runs no filter over the bytes
     },

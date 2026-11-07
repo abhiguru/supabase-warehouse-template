@@ -31,7 +31,7 @@ Deno.serve(async (req) => {
     if (!url || !key) return reply(500, { success: false, error: 'Server configuration missing' });
     const db = restClient(url, key);
 
-    const { data: row, error: readError } = await db.from('print_jobs').select('id,status,cups_job_id').eq('id', id).maybeSingle();
+    const { data: row, error: readError } = await db.from('print_jobs').select('id,status,cups_job_id,job_type').eq('id', id).maybeSingle();
     if (readError) {
       console.error('cancel-print-job: read failed:', readError.code);
       return reply(503, { success: false, error: 'The print job could not be read' });
@@ -43,7 +43,7 @@ Deno.serve(async (req) => {
       return reply(decision.status, { success: false, code: decision.code, error: decision.error, print_job_id: id });
     }
 
-    const outcome = await cancelCupsJob(decision.cupsJobId, name => Deno.env.get(name));
+    const outcome = await cancelCupsJob(decision.cupsJobId, (row as PrintJobRow).job_type, name => Deno.env.get(name));
     if (outcome === 'unreachable') {
       console.error('cancel-print-job: CUPS did not answer the cancel');
       return reply(502, { success: false, code: 'CANCEL_FAILED', error: 'The print service did not confirm the cancel. The job may still print.', print_job_id: id });

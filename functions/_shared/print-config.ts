@@ -54,3 +54,6 @@ export function safeDocName(value: string): string {
   const cleaned = value.replace(/[^\x20-\x7E]/g, '?').trim().slice(0, 100);
   return cleaned || 'Print Job';
 }
+
+/** The IPP user name a CUPS job is submitted under, and cancelled under (CUPS lets only the job's owner cancel it: cupsd.conf, Cancel-Job). */
+export const cupsJobUser = (jobType: string | null | undefined): string => `warehouse-${String(jobType ?? '').toLowerCase()}`;
