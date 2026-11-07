@@ -4,9 +4,10 @@ import { join, resolve, sep } from 'node:path';
 import { createConnection } from 'node:net';
 import { spawnSync } from 'node:child_process';
 import { createHash, createHmac, timingSafeEqual } from 'node:crypto';
-import { backupToolProblems, centralKeyFault, collationProblem, gatewayPortText, letterheadProblem, probe, projectPublishesPort, readEnv, root, supportedNode, waitForDocker } from './doctor-common.mjs';
+import { backupToolProblems, centralKeyFault, collationProblem, localClockProblem, gatewayPortText, letterheadProblem, probe, projectPublishesPort, readEnv, root, supportedNode, waitForDocker } from './doctor-common.mjs';
 import { numberingLine, numberingProblems } from './numbering.mjs';
 import { canonicalOrigin } from './configure.mjs';
+import { DEFAULT_INGRESS, INGRESS_MODES, proxyAddressValue, proxyHeaderValue } from './ingress.mjs';
 import { validateDbValues } from './db-roles.mjs';
 import { isFixtureAddress, isProviderPlaceholder } from './provider-placeholder.mjs';
 import { isMain } from './is-main.mjs';
@@ -84,6 +85,8 @@ export function checkerWarnings(state, {
   serviceText = unit => { try { return readFileSync(join(unitDir(), unit.replace(/\.timer$/, '.service')), 'utf8'); } catch { return null; } },
   // setup.sh prints the same advice, with the exact command, at its end (alert-webhook.mjs sensor-notice), so its doctor run leaves it out.
   skipSensorWebhookAdvice = false,
+  // A local-only facility (WH-146) has no internet: no Slack webhook and no outside heartbeat are advised; its alerts show in the app.
+  localOnly = false,
   canWrite = path => { try { accessSync(path, constants.W_OK); return true; } catch (error) { return error?.code === 'ENOENT'; } },
 } = {}) {
   const out = [];
@@ -109,7 +112,8 @@ export function checkerWarnings(state, {
     out.push(`The daily backup timer ${dailyTimerUnit(state)} is not installed or not active, so no backup, verification or retention runs for this facility. Install it with: sudo bash scripts/watch-timer.sh install --state ${state} (docs/MONITORING.md).`);
   }
   const facilityWebhook = storedWebhook(state);
-  if (!facilityWebhook) out.push(NO_WEBHOOK_WARNING);
+  if (localOnly) { /* no outside alert channel in this mode */ }
+  else if (!facilityWebhook) out.push(NO_WEBHOOK_WARNING);
   else if (sensorsOn(state)) {
     const sensorWebhook = storedSensorWebhook(state);
     if (!sensorWebhook) {
@@ -124,7 +128,7 @@ export function checkerWarnings(state, {
     }
   }
   // The checker's own death is reported by nobody inside the host: an external dead-man switch does, unless the facility decided against it.
-  if (!storedHeartbeatUrl(state) && !declinedMarker(state, HEARTBEAT_DECLINED_NAME, HEARTBEAT_DECLINED_SENTENCE)) out.push(NO_HEARTBEAT_WARNING);
+  if (!localOnly && !storedHeartbeatUrl(state) && !declinedMarker(state, HEARTBEAT_DECLINED_NAME, HEARTBEAT_DECLINED_SENTENCE)) out.push(NO_HEARTBEAT_WARNING);
   // The alert record (logs/alerts.jsonl) is written by the checker and the daily pass as the operator user; a root-owned copy
   // (made by a sudo run of watch.mjs) would make every write fail quietly.
   let owner;
@@ -233,7 +237,15 @@ export function validateOperatorEnv(env, stateDir) {
   // provider to send it). Setup no longer makes such an installation. Any other set must be a complete production MSG91 provider.
   const providerKeys = ['SMS_PROVIDER', 'MSG91_AUTH_KEY', 'MSG91_TEMPLATE_ID', 'MSG91_PE_ID', 'MSG91_SENDER_ID'];
   const noProvider = providerKeys.every(key => !(env[key] || '').trim());
-  if (noProvider) {
+  // WH-146: the way requests reach the installation. A local-only installation has no SMS provider and no central sign-in by design.
+  const ingress = env.INGRESS || DEFAULT_INGRESS;
+  if (!INGRESS_MODES.includes(ingress)) throw new Error(`INGRESS must be one of ${INGRESS_MODES.join(', ')}.`);
+  if (ingress === 'trusted-proxy') { proxyAddressValue(env.TRUSTED_PROXY_ADDRESS); proxyHeaderValue(env.TRUSTED_PROXY_HEADER); }
+  else if ((env.TRUSTED_PROXY_ADDRESS || '') !== '' || (env.TRUSTED_PROXY_HEADER || '') !== '') throw new Error('TRUSTED_PROXY_ADDRESS and TRUSTED_PROXY_HEADER are set but INGRESS is not trusted-proxy.');
+  if (ingress === 'local-only' && (!noProvider || (env.CENTRAL_ISSUER || '').trim())) throw new Error('A local-only installation has no SMS provider and no central sign-in, and compose.env has one.');
+  if (noProvider && ingress === 'local-only') {
+    // Nothing to check: sign-in is by break-glass and, later, pairing codes (docs/OPERATOR_INSTALL.md, "Local-only facility").
+  } else if (noProvider) {
     if (!(env.CENTRAL_ISSUER || '').trim()) throw new Error('Operator configuration must use production mode and MSG91 (no SMS provider is set, and central sign-in is off: nobody could sign in).');
     if (env.CENTRAL_LOCAL_CODE === 'on') throw new Error('CENTRAL_LOCAL_CODE=on needs an SMS provider, and none is set: run setup.sh --central-local-code off, or give --provider-env.');
     if (env.CENTRAL_ADMIN_TRUST === 'no') throw new Error('CENTRAL_ADMIN_TRUST=no needs an SMS provider (the administrator\'s code is an SMS), and none is set: give --provider-env, or run setup.sh --central-admin-trust yes.');
@@ -420,12 +432,16 @@ export async function doctor({ hostPreflight = false, preflight = false, local =
   // Maintenance mode (scripts/maintenance.sh; an upgrade is under way or stopped half way): the LAN listener answers 503 "upgrading" like the public
   // gateway, on purpose, so it is not probed; the health check above said so as a warning.
   const maintenance = maintenanceMarked(state);
+  // A local-only facility (WH-146) has no public address: the warehouse network listener is its only one, so it must be on and healthy,
+  // and there is no tunnel, public address, outside release lookup or Slack to check.
+  if (localOnly && !lanSettings(env).enabled) throw new Error('This facility is local-only and the warehouse network listener is off, so nothing can reach it. Turn it on with: bash scripts/lan.sh on auto');
   const lan = maintenance ? { failures: [], warnings: [], address: '' } : await lanReport(env, manifest.instanceId);
   const lanNote = (lan.address ? `\n${lan.address}` : '') + [...lan.warnings, ...(local ? lan.failures : [])].map(text => `\nWarning: LAN fallback: ${text}`).join('');
   const usb = usbBackupWarning(state);
   // The monitoring checker (scripts/watch.mjs) is run by a systemd timer that an operator installs with sudo
   // (scripts/watch-timer.sh); doctor warns when it is missing, silent, or has nowhere to post.
-  const checker = checkerWarnings(state, { skipSensorWebhookAdvice: process.env.WAREHOUSE_SETUP_SENSOR_NOTICE === 'yes' });
+  const localOnly = (env.INGRESS || DEFAULT_INGRESS) === 'local-only';
+  const checker = checkerWarnings(state, { skipSensorWebhookAdvice: process.env.WAREHOUSE_SETUP_SENSOR_NOTICE === 'yes', localOnly });
   // The numbering rules the facility's GRN, dispatch and invoice numbers follow (docs/OPERATOR_INSTALL.md, "Document numbers"); information only.
   const inDb = args => probe('bash', [resolve(root, 'scripts/compose.sh'), 'exec', '-T', 'db', ...args]);
   const numbering = numberingLine(inDb);
@@ -435,8 +451,14 @@ export async function doctor({ hostPreflight = false, preflight = false, local =
     ? sensorReport({ env, db: inDb, compose: args => probe('bash', [resolve(root, 'scripts/compose.sh'), ...args]) }).map(text => `\nWarning: ${text}`).join('')
     : '';
   // A newer release, as a Note (not a Warning), for `--local` only: the full check stays free of the network lookup.
-  const releaseText = local ? await releaseNote(state) : '';
-  const note = [upgradeWarning, usb, ...checker].filter(Boolean).map(text => `\nWarning: ${text}`).join('') + lanNote + numberingWarnings + sensorWarnings + (numbering ? `\n${numbering}` : '') + releaseText;
+  const releaseText = local && !localOnly ? await releaseNote(state) : '';
+  // With no internet time the host clock is not checked against anything outside; say when no time source sets it (invoice and GRN dates rely on it).
+  const clockText = localOnly ? localClockProblem() : '';
+  const note = [upgradeWarning, usb, ...checker, clockText].filter(Boolean).map(text => `\nWarning: ${text}`).join('') + lanNote + numberingWarnings + sensorWarnings + (numbering ? `\n${numbering}` : '') + releaseText;
+  if (localOnly) {
+    if (lan.failures.length) throw new Error(`The warehouse network listener, this facility's only address, does not work: ${lan.failures.join('; ')}.`);
+    return `Local-only facility: services and the warehouse network listener are healthy (no public address, tunnel, SMS or Slack to check).${note}`;
+  }
   if (local) return `Local operator services and gateway are healthy.${note}`;
   if (maintenance) throw new Error('Maintenance mode is on (config/maintenance): the API answers 503 "upgrading" to phones on purpose, so the external check cannot pass. Open it with: bash scripts/maintenance.sh off');
   const response = await fetch(`${origin}/functions/v1/get-public-config`, { signal: AbortSignal.timeout(15000), redirect: 'error' });

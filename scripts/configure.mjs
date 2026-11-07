@@ -10,6 +10,7 @@ import { addMissingDbValues, generatedDbValues } from './db-roles.mjs';
 import { addMissingPrintValues, printValues } from './print-settings.mjs';
 import { isFixtureAddress, isProviderPlaceholder } from './provider-placeholder.mjs';
 import { LETTERHEAD_NAMES, readLetterhead } from './letterhead.mjs';
+import { ingressLines, localOnlyOrigin, storedIngress } from './ingress.mjs';
 import { HEARTBEAT_FILE, LEGACY_WEBHOOK_FILE, SENSOR_WEBHOOK_FILE, WEBHOOK_FILE, assertSensorWebhookPlaceable, placeHeartbeatUrl, placeSensorWebhook, placeWebhook, readAlertWebhook, readHeartbeatUrl, readSensorWebhook } from './alert-webhook.mjs';
 
 export function canonicalOrigin(value, name = 'URL') {
@@ -316,11 +317,22 @@ function projectContainersRunning(project) {
 export { lanAddressValue, lanCidrValue, lanPortValue } from './lan-common.mjs';
 export const GATEWAY_PORT_REMINDER = 'Update the Cloudflare Tunnel ingress for this installation to http://127.0.0.1:<port> (deploy/cloudflared-config.example.yml), then restart the tunnel.';
 
-export function configure(root, { stateDir, apiUrl, appUrl, company, providerEnv, centralIssuer, centralJwksUrl, centralJwksFile, centralLocalCode, centralAdminTrust, alertWebhookFile, sensorWebhookFile, heartbeatUrlFile, letterheadFile, gatewayPort, dbMemory, portFree = loopbackPortFree, containersRunning = projectContainersRunning, faultAfterManifest = false } = {}) {
+export function configure(root, { stateDir, apiUrl, appUrl, company, providerEnv, centralIssuer, centralJwksUrl, centralJwksFile, centralLocalCode, centralAdminTrust, alertWebhookFile, sensorWebhookFile, heartbeatUrlFile, letterheadFile, gatewayPort, dbMemory, ingress, proxyAddress, proxyHeader, portFree = loopbackPortFree, containersRunning = projectContainersRunning, faultAfterManifest = false } = {}) {
   const port = gatewayPortValue(gatewayPort);
   const memory = dbMemoryValues(dbMemory);
   const central = centralValues(centralIssuer, centralJwksUrl, centralJwksFile);
   const letterhead = letterheadValue(letterheadFile);
+  // WH-146: how requests reach the installation. Null = not given (an existing state keeps its mode; a new one is cloudflare-tunnel).
+  const ingressChoice = ingressLines({ ingress, proxyAddress, proxyHeader });
+  const localOnly = ingressChoice?.INGRESS === 'local-only';
+  if (localOnly) {
+    // A local-only facility has no public address, no SMS, no association sign-in and no Slack or other outside channel.
+    const given = Object.entries({ '--api-url': apiUrl, '--app-url': appUrl, '--provider-env': providerEnv, '--central-issuer': centralIssuer, '--central-jwks-url': centralJwksUrl,
+      '--central-jwks-file': centralJwksFile, '--central-local-code': centralLocalCode, '--sensor-webhook-file': sensorWebhookFile, '--heartbeat-url-file': heartbeatUrlFile })
+      .filter(([, value]) => value !== undefined).map(([name]) => name);
+    if (alertWebhookFile !== undefined && alertWebhookFile !== 'off') given.push('--alert-webhook-file');
+    if (given.length) throw new Error(`--ingress local-only has no public address, SMS, central sign-in or outside alert channel; leave out ${given.join(', ')}.`);
+  }
   if (centralLocalCode !== undefined && centralLocalCode !== 'on' && centralLocalCode !== 'off') throw new Error('--central-local-code must be on or off.');
   if (centralAdminTrust !== undefined && centralAdminTrust !== 'yes' && centralAdminTrust !== 'no') throw new Error('--central-admin-trust must be yes or no.');
   if (!stateDir || !isAbsolute(stateDir)) throw new Error('--state-dir must be an absolute path outside the checkout.');
@@ -382,8 +394,15 @@ export function configure(root, { stateDir, apiUrl, appUrl, company, providerEnv
       let gatewayPortChanged = false;
       let newPortText = null;
       let newMemory = null;
+      let ingressNew = null;
       {
         const text = readFileSync(envPath, 'utf8');
+        // WH-146: the way requests reach the installation is chosen once. The same choice again is accepted; a trusted proxy's address and
+        // header may be changed; any other change is refused.
+        const storedMode = storedIngress(text);
+        if (ingressChoice && ingressChoice.INGRESS !== storedMode) throw new Error(`This installation is ${storedMode}; changing it to ${ingressChoice.INGRESS} is not supported. Install a new facility in the mode you want.`);
+        if (storedMode === 'local-only' && (providerEnv || central || centralLocalCode !== undefined)) throw new Error('This installation is local-only: it has no SMS provider or central sign-in, and none can be added.');
+        if (ingressChoice && storedMode === 'trusted-proxy' && Object.entries(ingressChoice).some(([key, value]) => text.match(new RegExp(`^${key}=(.*)$`, 'm'))?.[1] !== value)) ingressNew = ingressChoice;
         if (centralLocalCode !== undefined || central) centralLocalCodeValues(centralLocalCode, central, text, Boolean(providerEnv));
         if (centralAdminTrust !== undefined || central) { centralAdminTrustValues(centralAdminTrust, central, text, Boolean(providerEnv)); centralNeedsProvider(central, text, Boolean(providerEnv)); }
         // An installation with no SMS provider signs in through the association alone: turning that off would leave no sign-in.
@@ -478,6 +497,8 @@ export function configure(root, { stateDir, apiUrl, appUrl, company, providerEnv
       const placed = placeWebhook(state, webhook);
       placeSensorWebhook(state, sensorWebhook);
       placeHeartbeatUrl(state, heartbeatUrl);
+      let ingressChanged = false;
+      if (ingressNew) { replaceFileAtomically(envPath, setEnvLines(readFileSync(envPath, 'utf8'), ingressNew)); ingressChanged = true; }
       // The gateway port is written last: a refusal above (state faults, the webhook) leaves it unchanged,
       // so the rerun after the fix still reports the change and prints the tunnel reminder.
       if (newPortText !== null) {
@@ -489,21 +510,27 @@ export function configure(root, { stateDir, apiUrl, appUrl, company, providerEnv
         replaceFileAtomically(envPath, setEnvLines(readFileSync(envPath, 'utf8'), newMemory));
         dbMemoryChanged = true;
       }
-      return { created: false, dbMemoryChanged, state, manifest, providerUpdated, centralUpdated, letterheadUpdated, letterhead: letterhead === undefined ? undefined : letterhead.bytes ? letterhead.name : letterheadUpdated ? null : undefined, gatewayPortChanged, gatewayPortRenamed, restSchemasUpdated, graphqlSchemaKept, retiredKeysRemoved, dbValuesAdded: withDbValues.added, printValuesAdded: withPrintValues.added, backupKeyCreated, monitoringUpdated: placed.moved, monitoringCleaned: placed.cleaned, webhook: webhookReport, sensorWebhook: sensorWebhookReport, heartbeatUrl: heartbeatReport };
+      return { created: false, ingressChanged, dbMemoryChanged, state, manifest, providerUpdated, centralUpdated, letterheadUpdated, letterhead: letterhead === undefined ? undefined : letterhead.bytes ? letterhead.name : letterheadUpdated ? null : undefined, gatewayPortChanged, gatewayPortRenamed, restSchemasUpdated, graphqlSchemaKept, retiredKeysRemoved, dbValuesAdded: withDbValues.added, printValuesAdded: withPrintValues.added, backupKeyCreated, monitoringUpdated: placed.moved, monitoringCleaned: placed.cleaned, webhook: webhookReport, sensorWebhook: sensorWebhookReport, heartbeatUrl: heartbeatReport };
     }
     if (readdirSync(state).length) throw new Error('State directory is partially initialized; inspect it before retrying.');
   }
   // A member installation that signs in through the association (--central-issuer) needs no SMS provider: it stores none.
   centralNeedsProvider(central, null, Boolean(providerEnv));
-  if (!apiUrl || !company || !providerEnv) throw new Error('Fresh setup requires --api-url, --company and --provider-env.');
-  centralLocalCodeValues(centralLocalCode, central, null, Boolean(providerEnv));
-  centralAdminTrustValues(centralAdminTrust, central, null, Boolean(providerEnv));
-  const canonical = canonicalOrigin(apiUrl, '--api-url');
+  const centralOnly = !providerEnv && Boolean(central?.values.CENTRAL_ISSUER);
+  // A local-only facility needs only a company name: its identity is the instanceId and its origin a placeholder that cannot resolve.
+  if (localOnly) { if (!company) throw new Error('Fresh setup requires --company.'); }
+  else if (!apiUrl || !company || (!providerEnv && !centralOnly)) throw new Error('Fresh setup requires --api-url, --company and --provider-env (or --central-issuer with its keys, for an installation that uses the association\'s sign-in alone).');
+  if (!localOnly) {
+    centralLocalCodeValues(centralLocalCode, central, null, Boolean(providerEnv));
+    centralAdminTrustValues(centralAdminTrust, central, null, Boolean(providerEnv));
+  }
+  const instanceId = randomUUID();
+  const canonical = localOnly ? localOnlyOrigin(instanceId) : canonicalOrigin(apiUrl, '--api-url');
   const application = appUrl ? canonicalOrigin(appUrl, '--app-url') : canonical;
   if (company.length > 120 || !/^[^\u0000-\u001f\u007f-\u009f\u2028\u2029]+$/.test(company)) throw new Error('--company must be a printable name of at most 120 characters.');
-  const provider = providerValues(providerEnv, checkout, canonical);
+  const provider = centralOnly || localOnly ? NO_PROVIDER : providerValues(providerEnv, checkout, canonical);
   if (port !== null && !portFree(port)) throw new Error(`127.0.0.1:${port} is already in use; choose another --gateway-port.`);
-  const manifest = { schemaVersion: 1, instanceId: randomUUID(), displayName: company, companyName: company,
+  const manifest = { schemaVersion: 1, instanceId, displayName: company, companyName: company,
     canonicalOrigin: canonical, supportedApiVersions: ['1'], minimumClientVersion: '0.1.0',
     capabilities: { sensors: false, printing: false, payments: false } };
   const values = { AUTH_MODE: 'operator', APP_ENV: 'production',
@@ -512,8 +539,8 @@ export function configure(root, { stateDir, apiUrl, appUrl, company, providerEnv
     WAREHOUSE_DB_PATH: join(state, 'data', 'db'), WAREHOUSE_STORAGE_PATH: join(state, 'data', 'storage'),
     WAREHOUSE_MANIFEST_PATH: manifestPath, WAREHOUSE_PROJECT_NAME: `warehouse-${manifest.instanceId.slice(0, 12)}`,
     POSTGRES_PASSWORD: randomBytes(32).toString('hex'), ...generatedDbValues(), ...generateSigningKeys(), ...(port === null ? {} : { GATEWAY_HTTP_PORT: port }), ...(memory ?? {}),
-    ...provider,
-    ...(central?.values ?? {}), ...centralLocalCodeValues(centralLocalCode, central, null, Boolean(providerEnv)), ...centralAdminTrustValues(centralAdminTrust, central, null, Boolean(providerEnv)), ...(letterhead?.bytes ? { LETTERHEAD_FILE: letterhead.name } : {}) };
+    ...provider, ...(ingressChoice ?? {}),
+    ...(central?.values ?? {}), ...centralLocalCodeValues(centralLocalCode, central, null, Boolean(providerEnv)), ...(localOnly ? {} : centralAdminTrustValues(centralAdminTrust, central, null, Boolean(providerEnv))), ...(letterhead?.bytes ? { LETTERHEAD_FILE: letterhead.name } : {}) };
   values.CUPS_ADMIN_PASSWORD = randomBytes(32).toString('hex');
   Object.assign(values, printValues());
   const template = replaceEnvLines(readFileSync(resolve(root, '.env.example'), 'utf8'), values);
@@ -540,9 +567,10 @@ export function parseConfigureArgs(args) {
   const options = {};
   const names = { '--state-dir': 'stateDir', '--api-url': 'apiUrl', '--app-url': 'appUrl', '--company': 'company', '--provider-env': 'providerEnv',
     '--central-issuer': 'centralIssuer', '--central-jwks-url': 'centralJwksUrl', '--central-jwks-file': 'centralJwksFile',
-    '--central-local-code': 'centralLocalCode', '--central-admin-trust': 'centralAdminTrust', '--alert-webhook-file': 'alertWebhookFile', '--sensor-webhook-file': 'sensorWebhookFile', '--heartbeat-url-file': 'heartbeatUrlFile', '--letterhead-file': 'letterheadFile', '--gateway-port': 'gatewayPort', '--db-memory': 'dbMemory' };
+    '--central-local-code': 'centralLocalCode', '--central-admin-trust': 'centralAdminTrust', '--alert-webhook-file': 'alertWebhookFile', '--sensor-webhook-file': 'sensorWebhookFile', '--heartbeat-url-file': 'heartbeatUrlFile', '--letterhead-file': 'letterheadFile', '--gateway-port': 'gatewayPort', '--db-memory': 'dbMemory',
+    '--ingress': 'ingress', '--proxy-address': 'proxyAddress', '--proxy-header': 'proxyHeader' };
   for (let i = 0; i < args.length; i += 2) {
-    if (!names[args[i]] || !args[i + 1]) throw new Error('Usage: --state-dir ABSOLUTE [--api-url HTTPS --app-url HTTPS --company NAME --provider-env ABSOLUTE] [--central-issuer HTTPS|off (--central-jwks-url HTTPS | --central-jwks-file ABSOLUTE)] [--central-local-code on|off] [--central-admin-trust yes|no] [--alert-webhook-file ABSOLUTE|off] [--sensor-webhook-file ABSOLUTE|off] [--heartbeat-url-file ABSOLUTE|off] [--letterhead-file ABSOLUTE|off] [--gateway-port 1024-65535] [--db-memory 1-256]');
+    if (!names[args[i]] || !args[i + 1]) throw new Error('Usage: --state-dir ABSOLUTE [--api-url HTTPS --app-url HTTPS --company NAME --provider-env ABSOLUTE] [--central-issuer HTTPS|off (--central-jwks-url HTTPS | --central-jwks-file ABSOLUTE)] [--central-local-code on|off] [--central-admin-trust yes|no] [--alert-webhook-file ABSOLUTE|off] [--sensor-webhook-file ABSOLUTE|off] [--heartbeat-url-file ABSOLUTE|off] [--letterhead-file ABSOLUTE|off] [--gateway-port 1024-65535] [--db-memory 1-256] [--ingress cloudflare-tunnel|trusted-proxy|local-only [--proxy-address IPV4 --proxy-header NAME]]');
     options[names[args[i]]] = args[i + 1];
   }
   return options;
@@ -556,6 +584,7 @@ if (isMain(import.meta.url)) {
       : result.providerUpdated ? 'Updated MSG91 provider settings in existing operator state.'
         : result.centralUpdated ? 'Updated central sign-in settings in existing operator state.'
           : result.letterheadUpdated ? 'Updated the letterhead image in existing operator state.'
+          : result.ingressChanged ? 'Updated the trusted proxy address and header in existing operator state.'
           : result.gatewayPortChanged ? 'Updated the gateway port in existing operator state.'
             : result.dbMemoryChanged ? 'Updated the database memory settings in existing operator state.'
             : result.restSchemasUpdated ? 'Updated PostgREST\'s schema list in existing operator state (now `public` only).'

@@ -211,12 +211,23 @@ select_release_images() {
   # container then fail to start, where a build here would have worked.
   arch="$(uname -m 2>/dev/null || true)"
   [[ "$arch" == x86_64 ]] || { echo "Not pulling the images of release $tag: they are built for x86-64 and this host is ${arch:-of an unknown architecture}, so the images are built here."; return 0; }
-  command -v curl >/dev/null || { echo "Not pulling the images of release $tag: curl is not installed, so the images are built here."; return 0; }
   commit="$(git -C "$ROOT" rev-parse HEAD)" || { echo "Not pulling the images of release $tag: this checkout's commit cannot be read, so the images are built here."; return 0; }
   url="https://github.com/abhiguru/supabase-warehouse-template/releases/download/${tag//+/%2B}/release-images.json"
   file="$(mktemp "$state/config/.release-images.XXXXXX" 2>/dev/null)" || { echo "Not pulling the images of release $tag: a temporary file cannot be made in $state/config, so the images are built here."; return 0; }
   release_file="$file"
-  if ! why="$(curl --fail --silent --show-error --location --proto '=https' --proto-redir '=https' --tlsv1.2 --max-time 60 --max-filesize 1048576 --output "$file" "$url" 2>&1)"; then
+  if [[ -n "${WAREHOUSE_OFFLINE_BUNDLE:-}" ]]; then
+    # An offline bundle (scripts/offline-bundle.sh, WH-146) supplies release-images.json; its images were loaded onto this host by digest
+    # beforehand, and pull_release_image finds them there. Nothing is fetched.
+    if ! cp -- "$WAREHOUSE_OFFLINE_BUNDLE/release-images.json" "$file"; then
+      rm -f -- "$file"
+      echo "Not using the offline bundle's images of release $tag: $WAREHOUSE_OFFLINE_BUNDLE/release-images.json cannot be read, so the images are built here."
+      return 0
+    fi
+  elif ! command -v curl >/dev/null; then
+    rm -f -- "$file"
+    echo "Not pulling the images of release $tag: curl is not installed, so the images are built here."
+    return 0
+  elif ! why="$(curl --fail --silent --show-error --location --proto '=https' --proto-redir '=https' --tlsv1.2 --max-time 60 --max-filesize 1048576 --output "$file" "$url" 2>&1)"; then
     rm -f -- "$file"
     echo "Not pulling the images of release $tag: $url could not be fetched (${why:-curl failed}), so the images are built here."
     return 0
