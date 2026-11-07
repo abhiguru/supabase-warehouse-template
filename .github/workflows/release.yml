@@ -128,6 +128,7 @@ jobs:
     permissions:
       contents: write
       packages: write
+      id-token: write # keyless cosign signing of the images (WH-116); GitHub's OIDC token names this workflow run as the signer
     steps:
       - name: Fresh Docker config and Trivy cache for this run
         # No inherited credential helper or credential store, no switched buildx builder, no Trivy cache from an earlier job.
@@ -205,6 +206,27 @@ jobs:
         env:
           REHEARSED: ${{ steps.rehearsed.outputs.rc }}
         run: bash scripts/publish-images.sh --retag "$GITHUB_REF_NAME" "$REHEARSED" "$RUNNER_TEMP/rehearsed-images.json" "$RUNNER_TEMP/release-images.json"
+      - name: Install cosign
+        uses: sigstore/cosign-installer@756fe2d284c7292c4e9b62c8a28f1e5629c59532 # v4.1.3
+      - name: Sign every published image (keyless) and check the signatures
+        # Every image of release-images.json is signed by digest with the job's GitHub OIDC identity (cosign, keyless; the signature goes to
+        # the same repository on ghcr.io and the certificate to the public Rekor log). A re-tagged image has the digest of its pre-release, so it
+        # is signed again under the final tag's run. Then the facility's own check (scripts/verify-image-signature.sh) must accept every image,
+        # and must refuse one against a wrong identity: a signature that does not check fails the run before the list is attached
+        # (docs/CONTAINER_SECURITY.md, "Image signatures"; docs/RELEASE_CHECKLIST.md, "Image publication").
+        env:
+          COSIGN_YES: 'true'
+          WAREHOUSE_SIGNED: 'yes'
+        run: |
+          refs="$(jq -r '.images[].ref' "$RUNNER_TEMP/release-images.json")"
+          [[ -n "$refs" ]] || { echo "::error::release-images.json lists no image."; exit 1; }
+          for ref in $refs; do
+            cosign sign "$ref" || { echo "::error::Could not sign $ref."; exit 1; }
+            bash scripts/verify-image-signature.sh "$ref" || { echo "::error::The signature of $ref does not check."; exit 1; }
+            if WAREHOUSE_COSIGN_IDENTITY_REGEXP='^https://github\.com/example/not-this-repository/.*$' bash scripts/verify-image-signature.sh "$ref" 2> /dev/null; then
+              echo "::error::The check accepted $ref against a wrong identity."; exit 1
+            fi
+          done
       - name: Check that the images pull without credentials
         # A package GitHub creates on the first push can start private. A facility could not pull it and would build silently, which
         # defeats the point: this run fails instead, before the list is attached. After the first release, set each package under

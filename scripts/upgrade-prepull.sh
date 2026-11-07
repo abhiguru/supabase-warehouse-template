@@ -86,6 +86,19 @@ pull() {
     refuse "the pulled image does not carry the digest ${ref##*@} that was asked for ($ref)."
   fi
 }
+# Signatures first, before anything is pulled (scripts/verify-image-signature.sh; a release without docker/images-signed is not checked, as
+# before). A signature that does not check refuses the upgrade; without cosign on this host the pre-pull is skipped with one warning and
+# setup inside the downtime builds the images here, which are unsigned local builds.
+for ref in "${refs[@]}"; do
+  sig_rc=0
+  bash "$HERE/verify-image-signature.sh" "$ref" || sig_rc=$?
+  case "$sig_rc" in
+    0) ;;
+    10) break ;;
+    11) printf 'Warning: cosign is not installed, so the signatures of the images of %s cannot be checked: they are not pulled ahead, and setup builds them here while the API is closed (unsigned local builds). Install cosign (docs/OPERATOR_INSTALL.md, "Check the image signatures") to pull and verify them.\n' "$TO_LABEL" >&2; exit 0 ;;
+    *) refuse "the signature of the image $ref of $TO_LABEL did not check (see above). Do not upgrade to this release until the maintainer has answered (docs/RELEASE_CHECKLIST.md, \"Image publication\")." ;;
+  esac
+done
 say "Pre-pull of images: pulling ${#refs[@]} image(s) of $TO_LABEL and ${#hub[@]} base image(s) while the facility still serves (nothing is tagged; setup finds them on this host)."
 for ref in "${refs[@]}"; do
   pull "$ref"

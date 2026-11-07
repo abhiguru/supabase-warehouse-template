@@ -1386,6 +1386,9 @@ passed its verify (`config/backups-verified.list`) and the backup that an interr
 
 ## Rotate signing keys
 
+The anon and service keys are issued **valid for ten years** (`scripts/keys.mjs`), and the JWT secret has no expiry of its own, so they stay valid
+until you rotate: nothing rotates them for you. Rotation **signs every phone out** (every refresh session is deleted; users sign in again with a code).
+
 Rotate when the JWT secret, anon key or service key may have been exposed, when a device or backup holding them leaves
 your control, or on a planned schedule:
 
@@ -1453,6 +1456,15 @@ one filesystem, which is the normal case (`backups/` of the state).
 >   Any other text, a link, or looser permissions is ignored and the alert stays on. The decision does not excuse the copy of the backup key: that is still checked. `sudo bash scripts/backup-usb.sh uninstall` renames the record of the last copy (`config/usb-backup.last.uninstalled`), so a removed USB backup counts as no copy. A drive that is plugged in all the time shares
 >   the host's fire, flood and theft: the daily status says so once a week when only one drive has written in 30 days; enrol a
 >   second drive and swap them weekly.
+
+> **What a backup contains, and who may hold the drive**
+>
+> A backup is not only data. It holds the facility's **settings file `config/compose.env`** (the JWT secret, the anon and service keys, the database
+> passwords and the SMS provider key) and, once the tunnel has been adopted into the state, the **Cloudflare Tunnel credential**. A restore needs them,
+> so they are kept. Anyone who holds a backup and can read it can act as this facility's backend. The copy on the USB drive is **encrypted** with the
+> backup key (`config/backup.key`; keep the key copy apart from the drive). Let only the owner or a person the owner names hold the drive and the key
+> copy, never together in one place. If a drive or a backup leaves your control, [rotate the signing keys](#rotate-signing-keys) and see
+> [Retire or lose a host](#retire-or-lose-a-host).
 
 The services are stopped only for the database dump, the catalog queries and the last pass of the file copy, then restarted;
 the first pass of the copy, the checksums and the signing happen while the app is up. The stop does not grow with the size of the
@@ -2390,6 +2402,19 @@ connection leaves it too). A failed step prints the same facts, then both ways o
 
 Every run that gets past the checks adds a line to `$WAREHOUSE_STATE_DIR/config/upgrades.log` (UTC time, from, to, the old commit,
 the backup, `resumed` for a rerun, then `ok` or the step it failed at).
+
+### Check the image signatures
+
+Releases from the one that added `docker/images-signed` publish **signed images** (cosign, keyless; the identity to trust is in
+[CONTAINER_SECURITY.md](CONTAINER_SECURITY.md#image-signatures)). `upgrade.sh` and `setup.sh` check the signature of every released image before using it,
+when `cosign` is installed on the host (install it from the Sigstore releases page and check its checksum; `cosign version` must work). Older releases
+are not signed and are not checked. What you may see:
+
+- `Image signature of <image>: verified` is the normal answer.
+- `cosign is not installed`: the upgrade does not pull the images ahead; setup builds them on the host (unsigned local builds, slower, and they need Docker Hub, Debian and npm to answer). Install cosign and run the upgrade again if you want the released images.
+- `NOT VERIFIED` (or `Refusing: the signature of the image ... did not check`): nothing was changed. Do not use that image. Check the network (the check
+  reaches Sigstore's public services), run the upgrade again, and if it still fails, stop and report it to the maintainers with the image name: it
+  may be a release that was not published correctly or an image that was replaced. Building locally (a checkout that is not at the tag) is the fallback, and its images are unsigned.
 
 ### Found a problem after the upgrade
 
