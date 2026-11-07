@@ -25,6 +25,12 @@ new migrations instead of editing applied files; migrations 000 to 110 are one b
 - **Document breaking changes** - Update `.env.example` if you add new env vars.
 - **Follow existing patterns** - Look at how existing edge functions and SQL are structured.
 
+## Texts and languages
+
+- Every on-screen text is in English and Gujarati. You may add English only; the maintainer adds the Gujarati before a release, and until then the English text is shown.
+- Do not machine-translate Gujarati. Leave it to the maintainer, who writes it from the app repository's `docs/GUJARATI_GLOSSARY.md`. If you do add Gujarati, it is accepted and checked against the glossary before the release.
+- Printed and PDF documents are English only.
+
 ## Mobile companion pin (`MOBILE_REF`)
 
 The `contract` job in `.github/workflows/ci.yml` checks this backend's API

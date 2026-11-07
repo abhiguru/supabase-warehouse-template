@@ -6,6 +6,14 @@ Storage, Deno edge functions and a PDF renderer, one installation
 per warehouse. It is used from the companion
 [React Native app](https://github.com/abhiguru/rn-warehouse-template).
 
+## What this release is for
+
+For cold storages, used on Android and iPhone phones. Each facility runs its own server.
+
+Not supported: e-invoicing (IRN), statutory warehouse receipts, one view across several facilities, tablets and office screens, and storage charged other than by package and month.
+
+General warehouses are not the target yet. Tell us in an issue if you need it.
+
 ## Quickstart
 
 Prerequisites, all required:
