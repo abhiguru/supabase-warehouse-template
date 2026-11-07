@@ -44,10 +44,11 @@ export const workerEnvNames: Record<string, readonly string[]> = {
   // bridge's shared secret; it reaches only these workers. The three preprinted functions also use the REST client (storageApi).
   'get-printer-status': [...signedIn, ...printing],
   'print-via-ipp': [...signedIn, ...printing],
-  // Cancel-Job goes to CUPS (PRINTER_NAME, PRINT_TRANSPORT); the row is read and updated with the server key.
-  'cancel-print-job': [...signedIn, ...printing],
-  // Called by scripts/watch.mjs with the service-role key; it only updates print_jobs.
-  'sweep-print-jobs': signedIn,
+  // Cancel-Job goes to CUPS (PRINTER_NAME, PRINT_TRANSPORT; never the bridge, so no PRINTBRIDGE_*); the row is read and updated with the
+  // server key, through the REST client (storageApi: direct, not through the gateway's rate limit and maintenance answer).
+  'cancel-print-job': [...signedIn, ...storageApi, 'PRINT_TRANSPORT', 'PRINTER_NAME'],
+  // Called by scripts/watch.mjs with the service-role key; it only updates print_jobs (REST client, as above).
+  'sweep-print-jobs': [...signedIn, ...storageApi],
   'print-grn-preprinted': [...signedIn, ...storageApi, ...printing],
   'print-dispatch-preprinted': [...signedIn, ...storageApi, ...printing],
   'print-invoice-preprinted': [...signedIn, ...storageApi, ...printing],

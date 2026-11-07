@@ -461,7 +461,7 @@ export function configure(root, { stateDir, apiUrl, appUrl, company, providerEnv
         replaceFileAtomically(envPath, setEnvLines(readFileSync(envPath, 'utf8'), newMemory));
         dbMemoryChanged = true;
       }
-      return { created: false, dbMemoryChanged, state, manifest, providerUpdated, centralUpdated, letterheadUpdated, letterhead: letterhead === undefined ? undefined : letterhead.bytes ? letterhead.name : letterheadUpdated ? null : undefined, gatewayPortChanged, gatewayPortRenamed, restSchemasUpdated, graphqlSchemaKept, retiredKeysRemoved, dbValuesAdded: withDbValues.added, backupKeyCreated, monitoringUpdated: placed.moved, monitoringCleaned: placed.cleaned, webhook: webhookReport, sensorWebhook: sensorWebhookReport, heartbeatUrl: heartbeatReport };
+      return { created: false, dbMemoryChanged, state, manifest, providerUpdated, centralUpdated, letterheadUpdated, letterhead: letterhead === undefined ? undefined : letterhead.bytes ? letterhead.name : letterheadUpdated ? null : undefined, gatewayPortChanged, gatewayPortRenamed, restSchemasUpdated, graphqlSchemaKept, retiredKeysRemoved, dbValuesAdded: withDbValues.added, printValuesAdded: withPrintValues.added, backupKeyCreated, monitoringUpdated: placed.moved, monitoringCleaned: placed.cleaned, webhook: webhookReport, sensorWebhook: sensorWebhookReport, heartbeatUrl: heartbeatReport };
     }
     if (readdirSync(state).length) throw new Error('State directory is partially initialized; inspect it before retrying.');
   }
@@ -533,7 +533,8 @@ if (isMain(import.meta.url)) {
               : result.dbValuesAdded?.length ? 'Preserved existing operator state; only missing generated values were added.'
                 : result.retiredKeysRemoved?.length ? `Preserved existing operator state; removed the unused ${result.retiredKeysRemoved.join(', ')}.`
                   : result.gatewayPortRenamed ? 'Preserved existing operator state; renamed KONG_HTTP_PORT to GATEWAY_HTTP_PORT in config/compose.env (the same port).'
-                    : 'Preserved existing operator state unchanged.');
+                    : result.printValuesAdded?.length ? `Preserved existing operator state; only the missing print settings were added (${result.printValuesAdded.join(', ')}).`
+                      : 'Preserved existing operator state unchanged.');
     // The first message above names only one change; the schema list is always reported, even beside another change.
     if (result.restSchemasUpdated && (result.providerUpdated || result.centralUpdated || result.gatewayPortChanged)) {
       console.log('Updated PostgREST\'s schema list in existing operator state (now `public` only).');
