@@ -14,6 +14,15 @@ these tags and move with `bash upgrade.sh vX.Y.Z` ([OPERATOR_INSTALL.md](OPERATO
 - Do not mark a task complete without recorded evidence. A passing source scan does not prove application security or
   native-device compatibility.
 
+## Legal text before a public app build (WH-140)
+
+The app's terms of use and privacy notice are a template that no lawyer has reviewed yet. This backend serves their facility values
+([PRIVACY_FOR_OPERATORS.md](PRIVACY_FOR_OPERATORS.md)); the app holds the text.
+
+- [ ] The owner has recorded the lawyer's review, with its date, and the app's `LEGAL_TEXT_REVIEWED` constant is `true` (the app's release check
+      refuses a public build while it is `false`). A release for a public store waits for this.
+- [ ] The default facility's legal values are real, not placeholders (`node scripts/doctor.mjs` shows no legal warning).
+
 ## Mobile contract before a release
 
 The `contract` CI job compares names only against the pinned app commit

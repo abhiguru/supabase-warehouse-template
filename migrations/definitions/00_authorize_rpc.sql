@@ -26,7 +26,9 @@ BEGIN
              'get_charging_rule','set_charging_rule','set_record_payments',
              'make_pairing_code','get_server_alerts',
              -- The connection history (migration 188, WH-177): the per-day figures of the phones' gaps.
-             'get_connection_history') THEN
+             'get_connection_history',
+             -- The facility's legal settings for the app's terms and privacy pages (migration 199, WH-140).
+             'set_facility_legal') THEN
     IF role_name <> 'admin' THEN RAISE EXCEPTION 'Administrator required' USING ERRCODE = '42501'; END IF;
     RETURN;
   END IF;

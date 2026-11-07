@@ -27,6 +27,7 @@ SMS_HOURLY=''
 SMS_DAILY=''
 INGRESS_ARG=''
 BUNDLE_FILE=''
+LEGAL_ARGS=()
 while (($#)); do
   case "$1" in
     --state-dir|--api-url|--app-url|--company|--provider-env|--admin-phone|--admin-name|--central-issuer|--central-jwks-url|--central-jwks-file|--central-local-code|--central-admin-trust|--alert-webhook-file|--sensor-webhook-file|--heartbeat-url-file|--support-link-file|--letterhead-file|--gateway-port|--db-memory|--ingress|--proxy-address|--proxy-header|--from-bundle)
@@ -45,6 +46,11 @@ while (($#)); do
         --letterhead-file) LETTERHEAD_ARG="$2"; if [[ "$2" != ask ]]; then CONFIG_ARGS+=("$1" "$2"); fi ;;
         *) CONFIG_ARGS+=("$1" "$2") ;;
       esac
+      shift 2 ;;
+    --legal-name|--legal-city|--legal-state|--grievance-name|--grievance-email|--grievance-phone)
+      # The facility's legal settings for the app's terms and privacy pages live in the database (docs/PRIVACY_FOR_OPERATORS.md): checked below, stored after the migrations.
+      if (($# < 2)); then echo "Missing value for $1" >&2; exit 1; fi
+      LEGAL_ARGS+=("$1=$2")
       shift 2 ;;
     --grn-numbering|--dispatch-numbering|--invoice-numbering)
       # The numbering rules live in the database (docs/OPERATOR_INSTALL.md, "Document numbers"): checked below, stored after the migrations.
@@ -288,6 +294,12 @@ bash "$ROOT/scripts/compose.sh" exec -T db psql -X -q -U supabase_admin -d postg
 # The SMS spending ceilings: a given value is stored; a new install without one gets 60 an hour and 300 a day; a facility that already
 # sent codes keeps what it has (scripts/configure-sms-ceiling.sql).
 bash "$ROOT/scripts/compose.sh" exec -T db psql -X -q -U supabase_admin -d postgres -v ON_ERROR_STOP=1 -v sms_hourly="$SMS_HOURLY" -v sms_daily="$SMS_DAILY" < "$ROOT/scripts/configure-sms-ceiling.sql"
+# The legal settings given on the command line (scripts/legal.mjs): a value that is refused changes nothing.
+LEGAL_VARS=()
+if ((${#LEGAL_ARGS[@]})); then
+  LEGAL_JSON="$(node "$ROOT/scripts/legal.mjs" check "${LEGAL_ARGS[@]}")" || exit 1
+  LEGAL_VARS=(-v "legal=$LEGAL_JSON")
+fi
 # Storage owns its schema upgrades; wait for them before creating private buckets
 # and access policies. This starts only storage and its internal dependencies.
 bash "$ROOT/scripts/compose.sh" up -d --wait --wait-timeout 180 storage
@@ -300,7 +312,7 @@ elif [[ "$EXISTING_ADMIN" != match ]]; then
   exit 1
 fi
 COMPANY="$(node -e 'const fs=require("fs"); console.log(JSON.parse(fs.readFileSync(process.argv[1],"utf8")).companyName)' "$STATE/public/instance.json")"
-bash "$ROOT/scripts/compose.sh" exec -T db psql -X -q -U supabase_admin -d postgres -v ON_ERROR_STOP=1 -v company="$COMPANY" ${NUMBERING_VARS[@]+"${NUMBERING_VARS[@]}"} < "$ROOT/scripts/configure-operator.sql"
+bash "$ROOT/scripts/compose.sh" exec -T db psql -X -q -U supabase_admin -d postgres -v ON_ERROR_STOP=1 -v company="$COMPANY" ${NUMBERING_VARS[@]+"${NUMBERING_VARS[@]}"} ${LEGAL_VARS[@]+"${LEGAL_VARS[@]}"} < "$ROOT/scripts/configure-operator.sql"
 # --remove-orphans also removes the containers of services that were removed from the Compose file (see CHANGELOG.md).
 # Services of a profile (printing, sensors, pooler) are disabled services, not
 # orphans, so they are kept.

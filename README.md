@@ -46,6 +46,7 @@ Then install the app, select the HTTPS origin and sign in as the administrator
 with a real SMS code.
 
 - Full guide (host setup, tunnel, backup and restore, key rotation, upgrades): [docs/OPERATOR_INSTALL.md](docs/OPERATOR_INSTALL.md)
+- Privacy under the 2023 Act, answering a person's request, the grievance contact: [docs/PRIVACY_FOR_OPERATORS.md](docs/PRIVACY_FOR_OPERATORS.md)
 - Something went wrong: [docs/TROUBLESHOOTING.md](docs/TROUBLESHOOTING.md)
 - What staff and customers may do: [docs/STAFF_GRN_POLICY.md](docs/STAFF_GRN_POLICY.md)
 - What is still open before production use: [docs/PRODUCTION_DEPENDENCIES.md](docs/PRODUCTION_DEPENDENCIES.md)
