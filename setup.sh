@@ -159,6 +159,11 @@ bash "$ROOT/scripts/db-version-preflight.sh"
 # `up` builds only a missing image. Rebuild those whose recipes changed, so that
 # an upgraded checkout does not keep the images of the first installation. A checkout at a release tag pulls the images the
 # release workflow built and scanned (by digest) where the recipe is the released one, and builds the rest here.
+# A release with signed images (docker/images-signed) is checked with cosign: install the pinned one into the state when the host has none.
+# Not being able to is a warning; build-images.sh then builds the images here (unsigned) unless the operator accepted unsigned images.
+if [[ -f "$ROOT/docker/images-signed" ]] && ! command -v cosign >/dev/null && [[ ! -x "$STATE/bin/cosign" ]]; then
+  bash "$ROOT/scripts/install-cosign.sh" "$STATE" || echo 'Warning: cosign could not be installed, so the signatures of the release images cannot be checked (message above).' >&2
+fi
 bash "$ROOT/scripts/build-images.sh" --from-release
 # A state that already has containers is about to have them recreated (an upgrade, or a rerun), and a recreated container starts with an
 # empty log: keep the last 48 hours of each service first (best effort, redacted; <state>/diagnostics/pre-setup-*). A first install has none.

@@ -2406,13 +2406,16 @@ the backup, `resumed` for a rerun, then `ok` or the step it failed at).
 ### Check the image signatures
 
 Releases from the one that added `docker/images-signed` publish **signed images** (cosign, keyless; the identity to trust is in
-[CONTAINER_SECURITY.md](CONTAINER_SECURITY.md#image-signatures)). `upgrade.sh` and `setup.sh` check the signature of every released image before using it,
-when `cosign` is installed on the host (install it from the Sigstore releases page and check its checksum; `cosign version` must work). Older releases
+[CONTAINER_SECURITY.md](CONTAINER_SECURITY.md#image-signatures)). `upgrade.sh` and `setup.sh` check the signature of every released image before using it.
+`setup.sh` installs the pinned `cosign` into `$WAREHOUSE_STATE_DIR/bin` itself (no root; checked against a SHA-256 pinned in `scripts/install-cosign.sh`). Older releases
 are not signed and are not checked. What you may see:
 
 - `Image signature of <image>: verified` is the normal answer.
-- `cosign is not installed`: the upgrade does not pull the images ahead; setup builds them on the host (unsigned local builds, slower, and they need Docker Hub, Debian and npm to answer). Install cosign and run the upgrade again if you want the released images.
-- `NOT VERIFIED` (or `Refusing: the signature of the image ... did not check`): nothing was changed. Do not use that image. Check the network (the check
+- `Refusing: cosign is not installed, so the signatures ... cannot be checked`: the **first** upgrade into the signed era, on a host whose setup has not installed cosign yet.
+  Nothing was changed. Install it with the command the message prints (`git show vX.Y.Z:scripts/install-cosign.sh | bash -s -- "$WAREHOUSE_STATE_DIR"`) and run the
+  upgrade again. Or, knowing the images are then not verified, add `--unsigned` (`bash upgrade.sh --unsigned vX.Y.Z`; an `upgrade.sh` from before the flag reads
+  `WAREHOUSE_UNSIGNED=yes` in the environment instead): a warning is printed and a line is added to `config/upgrades.log`.
+- `NOT VERIFIED` (or `Refusing: the signature of the image ... did not check`): nothing was changed, and `--unsigned` does not override it. Do not use that image. Check the network (the check
   reaches Sigstore's public services), run the upgrade again, and if it still fails, stop and report it to the maintainers with the image name: it
   may be a release that was not published correctly or an image that was replaced. Building locally (a checkout that is not at the tag) is the fallback, and its images are unsigned.
 

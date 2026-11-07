@@ -8,7 +8,7 @@
 #   1   the image has no signature, or one that does not check: it must not be used
 #   2   wrong use of the script
 #   10  this tree is an older release whose images are not signed (it has no docker/images-signed): nothing was checked
-#   11  cosign is not installed on this host: the signature could not be checked
+#   11  cosign is not installed on this host (not in PATH, not in <state>/bin): the signature could not be checked
 # A message that names the image goes to standard error for 1 and 11.
 # WAREHOUSE_COSIGN_IDENTITY_REGEXP and WAREHOUSE_COSIGN_ISSUER override the identity (a fork that signs its own releases); WAREHOUSE_SIGNED=yes
 # makes the check apply to a tree without the marker (the release workflow, which has just signed).
@@ -21,13 +21,19 @@ if [[ "${WAREHOUSE_SIGNED:-}" != yes && ! -f "$TREE/docker/images-signed" ]]; th
   echo "Image signature of $ref: not checked, this release's tree has no docker/images-signed (an older release, whose images are not signed)."
   exit 10
 fi
-if ! command -v cosign >/dev/null; then
+cosign_bin="$(command -v cosign || true)"
+if [[ -z "$cosign_bin" ]]; then
+  # The copy setup.sh installs into the operator state (scripts/install-cosign.sh).
+  state="${WAREHOUSE_STATE_DIR:-${STATE:-}}"
+  if [[ -n "$state" && -f "$state/bin/cosign" && -x "$state/bin/cosign" && ! -L "$state/bin/cosign" ]]; then cosign_bin="$state/bin/cosign"; fi
+fi
+if [[ -z "$cosign_bin" ]]; then
   echo "Image signature of $ref: cannot be checked, cosign is not installed on this host (docs/OPERATOR_INSTALL.md, \"Check the image signatures\")." >&2
   exit 11
 fi
 identity="${WAREHOUSE_COSIGN_IDENTITY_REGEXP:-^https://github\\.com/abhiguru/supabase-warehouse-template/\\.github/workflows/release\\.yml@refs/tags/v[0-9].*\$}"
 issuer="${WAREHOUSE_COSIGN_ISSUER:-https://token.actions.githubusercontent.com}"
-if out="$(cosign verify --certificate-identity-regexp "$identity" --certificate-oidc-issuer "$issuer" "$ref" 2>&1 >/dev/null)"; then
+if out="$("$cosign_bin" verify --certificate-identity-regexp "$identity" --certificate-oidc-issuer "$issuer" "$ref" 2>&1 >/dev/null)"; then
   echo "Image signature of $ref: verified (signed by the release workflow)."
   exit 0
 fi

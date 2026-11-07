@@ -65,9 +65,10 @@ set -euo pipefail
 
 usage() {
   cat >&2 <<'EOF'
-Usage: bash upgrade.sh [--dry-run] [--yes] [--admin-phone 91XXXXXXXXXX --admin-name NAME] vX.Y.Z [-- SETUP_OPTION VALUE ...]
+Usage: bash upgrade.sh [--dry-run] [--yes] [--unsigned] [--admin-phone 91XXXXXXXXXX --admin-name NAME] vX.Y.Z [-- SETUP_OPTION VALUE ...]
        bash upgrade.sh [--dry-run] [--yes] --ref COMMIT_OR_BRANCH [...]      (tests and development only)
 --dry-run changes nothing and prints what the release asks of you: run it first. --yes: no pause after that list.
+--unsigned: on a host without cosign, use the release images without checking their signatures (logged); see docs/OPERATOR_INSTALL.md, "Check the image signatures".
 WAREHOUSE_STATE_DIR must name the installed operator state. docs/OPERATOR_INSTALL.md, "Rerun and upgrade".
 EOF
 }
@@ -424,6 +425,7 @@ main() {
       -h|--help) usage; exit 0 ;;
       --dry-run) DRY=yes; shift ;;
       --yes) ASSUME_YES=yes; shift ;;
+      --unsigned) export WAREHOUSE_UNSIGNED=yes; echo "Warning: --unsigned: on a host without cosign the release images are used without a signature check (logged in upgrades.log)." >&2; shift ;;
       --ref|--admin-phone|--admin-name)
         if (($# < 2)) || [[ -z "$2" ]]; then echo "Missing value for $1" >&2; usage; exit 2; fi
         case "$1" in --ref) REF="$2" ;; --admin-phone) ADMIN_PHONE="$2" ;; --admin-name) ADMIN_NAME="$2" ;; esac

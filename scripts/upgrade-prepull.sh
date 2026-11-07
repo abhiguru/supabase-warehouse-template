@@ -64,6 +64,29 @@ while IFS= read -r ref; do [[ -z "$ref" ]] || refs+=("$ref"); done < <(node -e '
 hub=()
 while IFS= read -r ref; do [[ -z "$ref" ]] || hub+=("$ref"); done < <(sed -n 's/^[[:space:]]*image:[[:space:]]*\([^$[:space:]]*@sha256:[0-9a-f]\{64\}\)[[:space:]]*$/\1/p' "$TREE/docker/docker-compose.yml")
 
+# Signatures first, before anything is pulled, in --dry-run too (scripts/verify-image-signature.sh; a release without docker/images-signed is not
+# checked, as before). A signature that does not check refuses the upgrade. So does a host without cosign, unless the operator passed
+# --unsigned to upgrade.sh (WAREHOUSE_UNSIGNED=yes): then the images are used unverified, with a warning and a line in upgrades.log.
+for ref in "${refs[@]}"; do
+  sig_rc=0
+  bash "$HERE/verify-image-signature.sh" "$ref" || sig_rc=$?
+  case "$sig_rc" in
+    0) ;;
+    10) break ;;
+    11)
+      if [[ "${WAREHOUSE_UNSIGNED:-}" == yes ]]; then
+        printf 'Warning: cosign is not installed and --unsigned was given: the images of %s are used WITHOUT checking their signatures.\n' "$TO_LABEL" >&2
+        if [[ "$DRY" != yes ]]; then
+          (umask 077; printf '%s %s unsigned: images of %s used without a signature check (cosign missing, --unsigned)\n' "$(date -u +%Y-%m-%dT%H:%M:%SZ)" "${FROM_LABEL:-?}" "$TO_LABEL" >> "$STATE/config/upgrades.log") 2>/dev/null ||
+            printf 'Warning: could not write %s/config/upgrades.log.\n' "$STATE" >&2
+        fi
+        break
+      fi
+      refuse "cosign is not installed, so the signatures of the images of $TO_LABEL cannot be checked. Install it: git show $TO_LABEL:scripts/install-cosign.sh | bash -s -- \"$STATE\" (a pinned, checksummed download, docs/OPERATOR_INSTALL.md, \"Check the image signatures\"), then run the upgrade again; or pass --unsigned to upgrade.sh to go on without the check (it is logged)." ;;
+    *) refuse "the signature of the image $ref of $TO_LABEL did not check (see above). Do not upgrade to this release until the maintainer has answered (docs/RELEASE_CHECKLIST.md, \"Image publication\")." ;;
+  esac
+done
+
 if [[ "$DRY" == yes ]]; then
   say "Pre-pull of images: a real run would pull ${#refs[@]} image(s) of $TO_LABEL and ${#hub[@]} base image(s) before the API is closed (this dry run pulls nothing)."
   exit 0
@@ -86,19 +109,6 @@ pull() {
     refuse "the pulled image does not carry the digest ${ref##*@} that was asked for ($ref)."
   fi
 }
-# Signatures first, before anything is pulled (scripts/verify-image-signature.sh; a release without docker/images-signed is not checked, as
-# before). A signature that does not check refuses the upgrade; without cosign on this host the pre-pull is skipped with one warning and
-# setup inside the downtime builds the images here, which are unsigned local builds.
-for ref in "${refs[@]}"; do
-  sig_rc=0
-  bash "$HERE/verify-image-signature.sh" "$ref" || sig_rc=$?
-  case "$sig_rc" in
-    0) ;;
-    10) break ;;
-    11) printf 'Warning: cosign is not installed, so the signatures of the images of %s cannot be checked: they are not pulled ahead, and setup builds them here while the API is closed (unsigned local builds). Install cosign (docs/OPERATOR_INSTALL.md, "Check the image signatures") to pull and verify them.\n' "$TO_LABEL" >&2; exit 0 ;;
-    *) refuse "the signature of the image $ref of $TO_LABEL did not check (see above). Do not upgrade to this release until the maintainer has answered (docs/RELEASE_CHECKLIST.md, \"Image publication\")." ;;
-  esac
-done
 say "Pre-pull of images: pulling ${#refs[@]} image(s) of $TO_LABEL and ${#hub[@]} base image(s) while the facility still serves (nothing is tagged; setup finds them on this host)."
 for ref in "${refs[@]}"; do
   pull "$ref"

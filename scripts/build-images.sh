@@ -251,7 +251,9 @@ pull_release_image() {
   bash "$ROOT/scripts/verify-image-signature.sh" "$ref" || sig_rc=$?
   case "$sig_rc" in
     0|10) ;;
-    11) echo "Warning: the $service image of release $release_tag_used ($ref) is not used because its signature cannot be checked without cosign; it is built here (an unsigned local build)." >&2; return 1 ;;
+    11)
+      if [[ "${WAREHOUSE_UNSIGNED:-}" == yes ]]; then echo "Warning: the signature of the $service image of release $release_tag_used ($ref) is NOT checked: cosign is not installed and unsigned images were accepted (--unsigned)." >&2
+      else echo "Warning: the $service image of release $release_tag_used ($ref) is not used because its signature cannot be checked without cosign (bash scripts/install-cosign.sh); it is built here (an unsigned local build)." >&2; return 1; fi ;;
     *) echo "Warning: the $service image of release $release_tag_used ($ref) is not used because its signature did not check; it is built here (an unsigned local build)." >&2; return 1 ;;
   esac
   # A pull that stalls would hold setup inside the downtime window of an upgrade; after the limit the image is built here instead.

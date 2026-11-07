@@ -61,8 +61,10 @@ refuse a wrong identity there). `build-images.sh --from-release` and the upgrade
   unsigned releases are unchanged;
 - **a signature that does not check** makes `upgrade.sh` refuse at the pre-pull, naming the image, before anything is changed; `setup.sh` does not use
   the image and builds it on the host instead (an unsigned local build, which the log says);
-- **no `cosign` on the host:** the check cannot be made. The pre-pull is skipped with a warning and setup builds the images locally (unsigned
-  local builds); nothing is pulled unchecked. Install cosign to pull the released images ([OPERATOR_INSTALL.md](OPERATOR_INSTALL.md#check-the-image-signatures)).
+- **no `cosign` on the host:** `setup.sh` of a signed release installs the pinned cosign into `<state>/bin/cosign` (`scripts/install-cosign.sh`: the official
+  binary, installed only when its SHA-256 equals the value pinned in the script). An upgrade on a host that has none yet **refuses** at the pre-pull with the
+  command that installs it, or `bash upgrade.sh --unsigned ...` goes on without the check: that is warned on standard error and written to
+  `config/upgrades.log`. Nothing is ever pulled unchecked without that flag.
 
 A local build is the documented fallback and carries no signature. The release depends on one maintainer account (the workflow runs from this
 repository's tags); a second holder of the release rights is the owner's decision, not part of this mechanism.
