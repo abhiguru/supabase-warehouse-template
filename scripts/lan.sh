@@ -60,6 +60,9 @@ service_running() {
 case "$command" in
   status)
     node "$ROOT/scripts/lan.mjs" status "$live" "$(container_state)"
+    # The signer (WH-133) runs beside gateway-lan; its health is whether it can read the warehouse network keys.
+    signer_state="$(compose --profile lan ps --all --format '{{.State}} {{.Health}}' lan-signer 2>/dev/null | head -n 1 || true)"
+    if grep -qx 'LAN_ENABLED=true' "$live"; then echo "Container lan-signer: ${signer_state:-not found (is the stack started?)}"; fi
     ;;
   on)
     service_running gateway || { echo 'The gateway service is not running; start the instance first (bash start.sh).' >&2; exit 1; }

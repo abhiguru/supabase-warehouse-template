@@ -54,7 +54,7 @@ import { join, resolve } from 'node:path';
 import { isMain } from './is-main.mjs';
 import { RECORD_FILE, interruptedUpgradeWarning, readUpgradeRecord } from './upgrade-record.mjs';
 import { centralKeyFault, gatewayPortText, letterheadProblem, readEnv, root as checkoutRoot } from './doctor-common.mjs';
-import { LAN_SERVICE, describeAddresses, hostHasAddress, lanOrigin, lanSettings, probeLanKeys, readHostInterfaces } from './lan-common.mjs';
+import { LAN_SERVICE, describeAddresses, hostHasAddress, lanOrigin, lanSettings, probeLanKeys, probeLanSigner, readHostInterfaces } from './lan-common.mjs';
 import { redactServiceLog } from './service-diagnostics.mjs';
 import { MIN_VHDX_DRIVE_FREE_BYTES, MIN_VHDX_DRIVE_FREE_PERCENT, driveSpace, isWsl, statfsWithTimeout, vhdxDrive } from './wsl-host.mjs';
 import { usbBackupWarning, usbRotationNote } from './usb-backup-status.mjs';
@@ -790,6 +790,9 @@ export async function checkApiLan(ctx) {
     if (response.headers?.get('x-warehouse-path') !== 'lan') return down('The LAN address answers, but not from the gateway-lan listener', 'The header X-Warehouse-Path: lan is missing.');
     const keys = await probeLanKeys(lan, ctx.env_().ANON_KEY, (url, options) => ctx.fetch(url, options));
     if (!keys.ok) return down('The LAN listener does not accept this installation\'s API key', keys.text);
+    // WH-133: the probes above need no signature; every phone's request does, and the signer must be able to read keys for it.
+    const signer = await probeLanSigner(lan, (url, options) => ctx.fetch(url, options));
+    if (!signer.ok) return down('The LAN signer cannot check phones\' requests', signer.text);
     return [result('api_lan', 'lan_ip_changed', true, `The host still has ${lan.ip}`), result('api_lan', 'lan_http_down', true, `LAN fallback answers on ${lanOrigin(lan)}`)];
   } catch (error) { return down(`The LAN fallback does not answer on ${lanOrigin(lan)}`, `${error.cause?.code ?? error.message} (bash scripts/lan.sh status)`); }
 }
