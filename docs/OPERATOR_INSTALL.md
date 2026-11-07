@@ -2123,6 +2123,77 @@ The change of attributes counts as a change for the next backup: it links a file
 attributes are the same too, so **the first backup after a retag copies every photo again** (a full copy, as the first backup
 does).
 
+### Off-site copy (optional)
+
+Off by default. A fire or theft that takes the host takes a USB drive that stays plugged in as well. With this on, every night's backup is
+also sent to a storage bucket you own and pay for, **encrypted here first with the backup key** (the cipher the USB archives use), so the
+provider cannot read it. It sits beside the USB drive and follows the same rule for the key: **without a confirmed copy of the backup key
+([Backup key](#backup-key)) the setting is refused and uploads stop**, because the copy cannot be opened without it.
+
+**What you need.** A bucket on any S3-compatible service (AWS S3, Cloudflare R2, Backblaze B2, Wasabi, MinIO), kept **private**, and an access key
+that may write, read, list and delete in that bucket only. **`rclone` (1.60 or newer) on the host** (`sudo apt install rclone`): it only moves
+bytes, and is the one extra program this needs. Put the key in a file of two lines, mode 0600, anywhere outside the repository:
+
+```
+access_key_id=<the key id>
+secret_access_key=<the secret>
+```
+
+```bash
+export WAREHOUSE_STATE_DIR=/srv/warehouse/<name>
+bash scripts/offsite.sh on --endpoint https://<the service's S3 address> --bucket <bucket> --credentials-file ~/offsite.cred [--region <r>] [--max-rate <MB/s>]
+shred -u ~/offsite.cred      # a copy is kept in $WAREHOUSE_STATE_DIR/config/offsite.credentials (mode 0600)
+bash scripts/offsite.sh run  # the first upload, by hand: it can take long; an interrupted run continues
+bash scripts/offsite.sh status
+```
+
+`on` writes, reads back and deletes a test object, and refuses a bucket that anyone can read where the service lets it tell (it names the
+check that failed: endpoint, bucket, credentials file, backup key copy, write, read, public bucket, delete). Plain `http://` is refused except to
+the host itself. `off` stops the uploads and leaves the bucket alone; `on` with no options turns it on again with the same bucket.
+
+**Each night**, after the backup, its verify, the pruning and the retention (so none of them waits for it), `watch-daily.sh` sends the backup
+that was just verified. A file the earlier night already sent is not sent again, so only new photos and the database dump travel. `--max-rate`
+caps the speed. The upload has 2 hours (`WAREHOUSE_WATCH_OFFSITE_SECS`); one that does not finish continues the next night. After an upload the
+script checks it: every object the backup needs is listed with its size, and each object sent that night, the backup's list, and a seventh of
+all objects (a different seventh each weekday, so each object is read back once a week) are downloaded, decrypted and compared with their own
+name. `bash scripts/offsite.sh verify --deep` reads back everything.
+
+**What the provider sees.** Encrypted objects with random-looking names, a list per backup, and the dates of the backups. Not file names, photos or
+the database. The files sit under `warehouse-offsite/k-<fingerprint of the backup key>/` in the bucket.
+
+**Retention in the bucket.** The last 14 backups and the first backup of each of the last 12 months. The script removes the others, then the stored
+files that no kept backup uses (and are older than 2 days). It removes nothing unless it could read every backup it keeps. Do not set your own
+lifecycle rules on this folder.
+
+**If the key is replaced** (rotation of the backup key), new uploads go to a new folder named for the new key and send everything once; the old
+folder stays, is not touched and needs the **old** key (keep its copy as the rotation steps say); delete it yourself when you no longer need it.
+
+**What is never in the bucket or a backup.** The bucket credentials live only in `config/offsite.credentials` (mode 0600), which `backup.sh` does
+not copy; they are given to `rclone` through its environment, never a command line, and are removed from every message and log line. After a lost
+host you need them again: **keep a copy of the credentials, the endpoint, the bucket name and the backup key together, away from the host**
+(someone holding all four can read the backups: hold them like the key copy). If the credentials leak, revoke the access key at the provider and run `on` again.
+
+**Alerts.** `offsite_upload_failed` (daily while it lasts) on the first failed, unfinished or unchecked upload, or when none was checked for 2 days;
+the message names the cause (credentials, bucket full, network, a changed object). A failure never fails or delays the local backup. A checked upload
+from the last 2 days also satisfies `offhost_copy_missing` (the check for an unconfirmed key copy stays). `doctor` agrees.
+
+#### Recover a lost host from the off-site copy
+
+As [Recover a lost host from the USB drive](#recover-a-lost-host-from-the-usb-drive), with the bucket instead of the drive: you need the new host
+prepared, `rclone`, your **copy of the backup key**, the endpoint, the bucket name and a credentials file. Step 2 (choosing the backup) and the
+restore command become:
+
+```bash
+rclone version   # installed?
+npm run db:restore-host -- --state-dir /srv/warehouse/<name> --backup-key ~/backup.key --yes \
+  --from-offsite --offsite-endpoint https://<S3 address> --offsite-bucket <bucket> --offsite-credentials ~/offsite.cred [--offsite-region <r>] [--backup warehouse-<utc>]
+```
+
+Without `--backup` the newest backup is used; a wrong name lists what the bucket holds. The backup is rebuilt next to the new state (about twice its
+size plus 1 GiB free is needed), every object is checked against its name, and then the restore is exactly the USB one: the signed file list and the
+storage tree are checked against the backup key before anything is restored, so a changed or swapped object in the bucket is refused. The saved
+images are not in the bucket (`--images` as in the USB recovery; otherwise they are pulled or built). Everything after step 2 is unchanged.
+
 ### Recover a lost host from the USB drive
 
 Use this when the original host is gone (disk failure, reinstall, stolen or
