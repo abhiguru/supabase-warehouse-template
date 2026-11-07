@@ -289,7 +289,8 @@ name>, Authorised signatory". The pre-printed form prints no title, and in its s
 CGST and SGST for a tax invoice or invoice-cum-bill of supply, and blank SGST, CGST and tax total for a bill or bill of supply. An IGST
 invoice is not printed on the form ("IGST invoices print on plain paper."). A value longer than its field on the form (an amount, quantity, the state,
 weight, rate or months, the address, the amount in words, the customer's GSTIN) is never cut: that invoice is not printed and is named in
-`skipped` with `reason` `does_not_fit` and the field; the rest of the range prints.
+`skipped` with `reason` `does_not_fit` and the field; the rest of the range prints. When every invoice of the range is skipped (cancelled, IGST
+or not fitting) the answer is HTTP 422 with `code` `ALL_SKIPPED`, the message and the `skipped` list.
 
 ## Internal columns
 

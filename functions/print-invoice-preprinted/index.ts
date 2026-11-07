@@ -579,6 +579,15 @@ Deno.serve(async (req) => {
       }
     });
 
+    // WH-151: when every invoice of the range is skipped (cancelled, IGST, or a value that does not fit), the answer is a refusal the app
+    // can tell by its code: 422 ALL_SKIPPED with the skipped list and their reasons, and the same message as before.
+    const allSkipped = (message: string) => new Response(
+      JSON.stringify({ success: false, code: 'ALL_SKIPPED', error: message, skipped, timestamp: new Date().toISOString() }, null, 2),
+      { headers: { 'Content-Type': 'application/json' }, status: 422 });
+    if (results.length === 0 && skipped.length > 0) {
+      return allSkipped(`All ${skipped.length} Invoices in the range are cancelled and were skipped (${skipped.map((item: any) => item.invoice_label ?? item.inv_no).join(', ')})`);
+    }
+
     if (results.length === 0) {
       throw new Error(skipped.length > 0
         ? `All ${skipped.length} Invoices in the range are cancelled and were skipped (${skipped.map((item: any) => item.inv_no).join(', ')})`
@@ -586,7 +595,7 @@ Deno.serve(async (req) => {
     }
 
     if (printed.length === 0) {
-      throw new Error(`No invoice in the range can be printed on the form: ${skipped.filter((item: any) => item.message).map((item: any) => item.message).join(' ')}`);
+      return allSkipped(`No invoice in the range can be printed on the form: ${skipped.filter((item: any) => item.message).map((item: any) => item.message).join(' ')}`);
     }
 
     console.log('print-invoice-preprinted: Retrieved', results.length, 'Invoices');
