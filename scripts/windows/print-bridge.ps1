@@ -14,12 +14,16 @@ bypassed and every byte 0x00-0xFF reaches the printer unchanged.
   GET  /health      {"success":true,"printer":"<name>","printer_found":true,"status":"<spooler status>"}
                     (queue missing: 503 {"success":false,"printer":"<name>","printer_found":false,"error":"..."})   (token required too)
 
+The queue must SPOOL (Properties > Advanced > "Spool print documents so program finishes printing faster"): with "Print directly to
+the printer" WritePrinter blocks until the printer takes every byte, and an off or out-of-paper printer then blocks the whole bridge.
+
 Rules: the only queue it prints to is -Printer (any other X-Printer answers 403); the token is read from -TokenFile at start
 (the bridge refuses to start when the file is missing or empty) and compared in constant time; one job at a time; a request
 read timeout of 30 seconds; no body is logged and the token never is. It never prints anything by itself on start.
 
 Log: one line per request in %ProgramData%\Warehouse\logs\print-bridge-YYYYMMDD.log (one file per day, files older than 14
-days are deleted at start and at midnight): time, remote address, method, path, status, bytes, queue, document name, note.
+days are deleted at start and at midnight): time, remote address, method, path, status, bytes, queue, document name, note. A startup
+failure is logged too (the task has no console). Lines for 401, 404 and 405 answers stop after 200 a day.
 
 Listen address: by default the IPv4 address of the "vEthernet (WSL...)" adapter, so only the WSL side can reach it. That adapter
 appears when WSL runs; the bridge waits up to 2 minutes for it, then stops with a clear message. -ListenAddress overrides this
@@ -83,8 +87,29 @@ $ErrorActionPreference = 'Stop'
 $MaxBody = 2MB
 $LogDir = Join-Path $env:ProgramData 'Warehouse\logs'
 
+# ---- Logging (defined first: every startup failure is logged too, because the task runs with no console) ----
+$script:logDay = ''
+# Lines for requests that failed the token check (or never reached it) are capped per day, so a client that keeps knocking cannot fill the disk.
+$script:unauthLogged = 0
+$UnauthLogCap = 200
+function Write-BridgeLog([string]$Line) {
+    try {
+        $now = Get-Date
+        $day = $now.ToString('yyyyMMdd')
+        if (-not (Test-Path -LiteralPath $LogDir)) { $null = New-Item -ItemType Directory -Path $LogDir -Force }
+        if ($script:logDay -ne $day) {
+            $script:logDay = $day
+            $script:unauthLogged = 0
+            Get-ChildItem -LiteralPath $LogDir -Filter 'print-bridge-*.log' -ErrorAction SilentlyContinue |
+                Where-Object { $_.LastWriteTime -lt $now.AddDays(-14) } | Remove-Item -Force -ErrorAction SilentlyContinue
+        }
+        [IO.File]::AppendAllText((Join-Path $LogDir "print-bridge-$day.log"), ($now.ToString('yyyy-MM-dd HH:mm:ss') + ' ' + $Line + "`r`n"))
+    } catch { }
+}
+
 function Stop-Bridge([string]$Message) {
     [Console]::Error.WriteLine("print-bridge: $Message")
+    Write-BridgeLog "startup failed: $Message"
     exit 1
 }
 
@@ -101,7 +126,8 @@ $token = $null
 function Get-WslAddress {
     try {
         $f = Get-NetIPAddress -AddressFamily IPv4 -ErrorAction Stop |
-            Where-Object { $_.InterfaceAlias -like 'vEthernet (WSL*' } | Select-Object -First 1
+            Where-Object { $_.InterfaceAlias -like 'vEthernet (WSL*' -and [string]$_.AddressState -eq 'Preferred' -and $_.IPAddress -notlike '169.254.*' } |
+            Select-Object -First 1
         if ($f) { return $f.IPAddress }
     } catch { }
     return $null
@@ -208,22 +234,6 @@ public static class WarehouseRawPrinter
 }
 '@
 
-# ---- Logging ----
-$script:logDay = ''
-function Write-BridgeLog([string]$Line) {
-    try {
-        $now = Get-Date
-        $day = $now.ToString('yyyyMMdd')
-        if (-not (Test-Path -LiteralPath $LogDir)) { $null = New-Item -ItemType Directory -Path $LogDir -Force }
-        if ($script:logDay -ne $day) {
-            $script:logDay = $day
-            Get-ChildItem -LiteralPath $LogDir -Filter 'print-bridge-*.log' -ErrorAction SilentlyContinue |
-                Where-Object { $_.LastWriteTime -lt $now.AddDays(-14) } | Remove-Item -Force -ErrorAction SilentlyContinue
-        }
-        [IO.File]::AppendAllText((Join-Path $LogDir "print-bridge-$day.log"), ($now.ToString('yyyy-MM-dd HH:mm:ss') + ' ' + $Line + "`r`n"))
-    } catch { }
-}
-
 function Clean-Text([string]$Text, [int]$Max) {
     if ($null -eq $Text) { return '' }
     $t = ($Text -replace '[\x00-\x1F\x7F]', ' ').Trim()
@@ -239,8 +249,26 @@ function Test-Token([string]$Given) {
     return ($diff -eq 0)
 }
 
+# Before an error answer, reads and drops up to 64 KB of the request body: closing a connection that still has unread request bytes can
+# reset it, and the client then sees a reset instead of the reply. Each read waits at most 2 seconds.
+function Skip-Body($Request) {
+    try {
+        if (-not $Request.HasEntityBody) { return }
+        $buf = New-Object byte[] 8192
+        $total = 0
+        $in = $Request.InputStream
+        while ($total -lt 65536) {
+            $task = $in.ReadAsync($buf, 0, $buf.Length)
+            if (-not $task.Wait(2000)) { break }
+            if ($task.Result -le 0) { break }
+            $total += $task.Result
+        }
+    } catch { }
+}
+
 function Send-Json($Context, [int]$Status, [hashtable]$Body) {
     try {
+        if ($Status -ge 400) { Skip-Body $Context.Request }
         $bytes = [Text.Encoding]::UTF8.GetBytes(($Body | ConvertTo-Json -Compress))
         $r = $Context.Response
         $r.StatusCode = $Status
@@ -255,7 +283,9 @@ function Send-Json($Context, [int]$Status, [hashtable]$Body) {
 
 function Get-SpoolerStatus {
     try {
-        $p = Get-Printer -Name $Printer -ErrorAction Stop
+        # Exact name: Get-Printer -Name takes wildcards, and a queue called "EPSON*" must not stand in for "EPSON LQ-1310".
+        $p = Get-Printer -ErrorAction Stop | Where-Object { $_.Name -eq $Printer } | Select-Object -First 1
+        if (-not $p) { throw 'not found' }
         return @{ ok = $true; found = $true; status = [string]$p.PrinterStatus }
     } catch {
         return @{ ok = $false; found = $false; status = "queue '$Printer' not found" }
@@ -303,13 +333,14 @@ try {
             continue
         }
         $req = $ctx.Request
-        $remote = "$($req.RemoteEndPoint.Address)"
-        $path = $req.Url.AbsolutePath
-        $method = $req.HttpMethod
-        $queue = Clean-Text $req.Headers['X-Printer'] 200
-        $doc = Clean-Text $req.Headers['X-Doc-Name'] 127
+        $remote = ''; $path = ''; $method = ''; $queue = ''; $doc = ''
         $status = 500; $bytesIn = 0; $note = ''
         try {
+            $remote = "$($req.RemoteEndPoint.Address)"
+            $path = $req.Url.AbsolutePath
+            $method = $req.HttpMethod
+            $queue = Clean-Text $req.Headers['X-Printer'] 200
+            $doc = Clean-Text $req.Headers['X-Doc-Name'] 127
             if ($path -ne '/print/raw' -and $path -ne '/health') {
                 $status = 404; $note = 'not found'
                 Send-Json $ctx $status @{ success = $false; error = 'Not found' }
@@ -365,7 +396,14 @@ try {
             $status = 500; $note = Clean-Text $_.Exception.Message 200
             Send-Json $ctx 500 @{ success = $false; error = 'Internal error' }
         }
-        Write-BridgeLog "$remote $method $path $status bytes=$bytesIn queue='$queue' doc='$doc' $note"
+        # 404, 405 and 401 come from clients that have not proved they hold the token: those lines stop after a daily cap.
+        $logIt = $true
+        if ($status -eq 404 -or $status -eq 405 -or $status -eq 401) {
+            $script:unauthLogged++
+            if ($script:unauthLogged -eq $UnauthLogCap + 1) { Write-BridgeLog "more than $UnauthLogCap requests without a valid token today; further ones are not logged" }
+            if ($script:unauthLogged -gt $UnauthLogCap) { $logIt = $false }
+        }
+        if ($logIt) { Write-BridgeLog "$remote $method $path $status bytes=$bytesIn queue='$queue' doc='$doc' $note" }
     }
 } finally {
     $listener.Close()
