@@ -91,7 +91,9 @@ DO $patch$
 DECLARE
   def text := pg_get_functiondef('warehouse_maintenance.run_database_retention(timestamptz,boolean)'::regprocedure);
   before_text text := $m$'GRANT ALL ON public.%I TO service_role'$m$;
-  after_text text := $m$'GRANT SELECT, INSERT ON public.%I TO service_role'$m$;
+  -- The default privileges give a new table ALL to service_role, so the grant is preceded by the same REVOKE as section 3.
+  after_text text := $m$'REVOKE ALL ON public.%I FROM PUBLIC, anon, authenticated, service_role', v_name);
+        EXECUTE format('GRANT SELECT, INSERT ON public.%I TO service_role'$m$;
   found int;
 BEGIN
   found := (length(def) - length(replace(def, before_text, ''))) / length(before_text);
