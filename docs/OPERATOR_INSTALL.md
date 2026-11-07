@@ -186,7 +186,7 @@ The operator scripts use only Node's built-in modules; `npm ci` is needed only t
 | Company name | `--company` | Display name of the facility, up to 120 characters. Required on a first install. |
 | Cloudflare Tunnel | `scripts/tunnel.sh adopt` (needs the state, so after setup) | A **new** tunnel for this host with a route for the `--api-url` hostname: its `config.yml` with the credentials JSON, or a dashboard token file. Not a config copied from another machine. See [Cloudflare Tunnel ingress](#cloudflare-tunnel-ingress). |
 | MSG91 provider file | `--provider-env` | Mode-0600 file with five keys; see **MSG91 provider file** below. Required on a first install, **except** a member installation that signs in through the association alone (`--central-issuer` given, no `--central-local-code on`): that one needs no SMS provider and stores none. |
-| SMS spending ceilings | `--sms-hourly-ceiling`, `--sms-daily-ceiling` | Codes an hour (`otp_global_hourly_cap`) and MSG91 requests in 24 hours (`otp_daily_provider_attempt_cap`) for the whole facility; whole numbers. A terminal is offered 60 and 300 on a first install (Enter accepts); with no terminal and no option a first install gets 60 and 300. See **SMS spending ceiling** under [Authentication and OTP limits](#authentication-and-otp-limits). |
+| SMS spending ceilings | `--sms-hourly-ceiling`, `--sms-daily-ceiling` | SMS sends an hour (`otp_global_hourly_cap`) and a day (`otp_daily_provider_attempt_cap`, the last 24 hours) for the whole facility; whole numbers. A terminal is offered 60 and 300 on a first install (Enter accepts); with no terminal and no option a first install gets 60 and 300. See **SMS spending ceiling** under [Authentication and OTP limits](#authentication-and-otp-limits). |
 | First administrator | `--admin-phone`, `--admin-name` (both required) | `91` and ten digits, and a display name; see **First administrator** below. |
 | Slack webhook file | `--alert-webhook-file` | Private file with the facility's incoming-webhook URL. `off` only for a non-production install; without the option a terminal is asked and no terminal means setup refuses. See [Setup](#setup). |
 | Sensor Slack webhook file | `--sensor-webhook-file` | Private file with a second, separate incoming-webhook URL for sensor alerts. Required when Slack alerts are on and sensors are on; `off` removes it; leave it out to keep what is stored. See [Setup](#setup). |
@@ -595,9 +595,9 @@ hour after its first request), or raise `otp_source_hourly_sends` or
   -- remove the ceiling
   DELETE FROM warehouse_security.auth_config WHERE key='otp_daily_provider_attempt_cap';
   ```
-- **SMS spending ceiling (a go-live step).** Two figures cap what the facility can spend, for all phones together: the codes an hour
-  (`otp_global_hourly_cap`) and the MSG91 requests in any 24 hours (`otp_daily_provider_attempt_cap`; a code is one request, two when
-  the function repeats it). A new install gets 60 and 300 from `setup.sh` (it asks on a terminal; give `--sms-hourly-ceiling N` and
+- **SMS spending ceiling (a go-live step).** Two figures cap what the facility can spend, for all phones together: the SMS sends an hour
+  (`otp_global_hourly_cap`) and a day (`otp_daily_provider_attempt_cap`, any 24 hours). A send is one MSG91 request; a code costs two
+  when the function repeats the request. A new install gets 60 and 300 from `setup.sh` (it asks on a terminal; give `--sms-hourly-ceiling N` and
   `--sms-daily-ceiling N` for an unattended setup). A rerun of `setup.sh` without the options changes nothing; with them it stores the
   new figures. An installation that already sends codes keeps what it has: **an upgraded installation has no daily ceiling until you
   set it**, with `bash setup.sh --operator <your usual options> --sms-daily-ceiling 300` or the `INSERT` above. Read both back:

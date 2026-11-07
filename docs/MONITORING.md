@@ -90,7 +90,7 @@ An alert fires after two failing runs in a row (10 minutes), except the event al
 | `api_429_rate_high` | More than 2% of the gateway's requests in the last 5 minutes (judged from 50 requests up), or more than 20 of them, were answered 429 (rate limit): a client, or every phone on one Wi-Fi, is being refused |
 | `pdf_renderer_down` | The function runtime cannot reach the PDF renderer |
 | `sms_delivery` | Checked every hour: more than 20% of the last 24 hours' sign-in code requests (judged from 10 requests up), or more than 10, or at least half of the last hour's (from 5 requests up), were not accepted by the SMS provider (at once; see "SMS delivery") |
-| `sms_ceiling_reached` | The SMS spending ceiling is reached: this hour's sign-in codes are at `otp_global_hourly_cap`, or the MSG91 requests of the last 24 hours at `otp_daily_provider_attempt_cap`; code requests are refused until it frees up (at once, then once a day while it lasts) |
+| `sms_ceiling_reached` | The SMS spending ceiling is reached: this hour's SMS sends are at `otp_global_hourly_cap`, or the last 24 hours' SMS sends at `otp_daily_provider_attempt_cap`; code requests are refused until it frees up (at once, then once a day while it lasts) |
 | `break_glass_used` | A break-glass administrator code was made or used in the last 24 hours (at once; see "Break-glass sign-in") |
 | `audit_write_failed` | An audit row could not be written in the last 24 hours; the save went through (once a day while it lasts; see "audit_write_failed") |
 | `clock_unsynced` | `timedatectl` says the clock is not synchronised, or the host clock is more than 10 s from the clock of the public address's Cloudflare edge |

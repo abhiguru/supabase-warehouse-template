@@ -1086,7 +1086,7 @@ export function checkAuditWrites(ctx) {
     { repeatHours: 24 })];
 }
 
-// The SMS spending ceilings (docs/OPERATOR_INSTALL.md, "SMS spending ceiling"; WH-119): the facility-wide hourly ceiling on sign-in codes
+// The SMS spending ceilings (docs/OPERATOR_INSTALL.md, "SMS spending ceiling"; WH-119): the facility-wide hourly ceiling on SMS sends
 // (auth_config `otp_global_hourly_cap`, 300 when unset) and the ceiling on provider requests in any 24 hours
 // (`otp_daily_provider_attempt_cap`, none when unset). While either is reached, every code request is refused (429) until older
 // requests leave the window, so the operator is told once a day (repeatHours 24, at once the first time). Read-only; the counters
@@ -1109,7 +1109,7 @@ export function checkSmsCeiling(ctx) {
   const dayCap = /^[0-9]{1,7}$/.test(dayCapText) ? Number(dayCapText) : null;       // no ceiling when unset or not a whole number
   const hourHit = hourUsed >= hourCap;
   const dayHit = dayCap !== null && dayUsed >= dayCap;
-  const which = [hourHit && `${hourUsed} of ${hourCap} sign-in codes this hour`, dayHit && `${dayUsed} of ${dayCap} SMS provider requests in 24 hours`].filter(Boolean);
+  const which = [hourHit && `${hourUsed} of ${hourCap} SMS sends this hour`, dayHit && `${dayUsed} of ${dayCap} SMS sends in 24 hours`].filter(Boolean);
   return [result('sms_ceiling', 'sms_ceiling_reached', !(hourHit || dayHit),
     which.length ? `The SMS spending ceiling is reached: ${which.join('; ')}. Sign-in code requests are refused until it frees up.`
       : 'The SMS spending ceilings are not reached',

@@ -78,16 +78,16 @@ for numbering in grn dispatch invoice; do
     NUMBERING_VARS+=(-v "${numbering}_numbering=$rule")
   fi
 done
-# The SMS spending ceilings (WH-119): codes an hour and MSG91 requests a day for the whole facility. Offered 60 and 300 on a new install
+# The SMS spending ceilings (WH-119): SMS sends an hour and a day (MSG91 requests) for the whole facility. Offered 60 and 300 on a new install
 # (Enter accepts each); with no terminal, or with the option given, nothing is asked. A rerun or upgrade asks nothing and keeps what is
 # stored (scripts/configure-sms-ceiling.sql decides what is stored; a value given here always replaces the stored one).
 if [[ ! -d "$STATE/config" && ( -z "$SMS_HOURLY" || -z "$SMS_DAILY" ) && -t 0 && -t 1 ]]; then
   if [[ -z "$SMS_HOURLY" ]]; then
-    read -r -p 'SMS codes this facility may send in one hour (Enter for 60): ' SMS_HOURLY || true
+    read -r -p 'SMS sends this facility may make in one hour (Enter for 60): ' SMS_HOURLY || true
     SMS_HOURLY="${SMS_HOURLY:-60}"
   fi
   if [[ -z "$SMS_DAILY" ]]; then
-    read -r -p 'SMS requests this facility may make in 24 hours (Enter for 300): ' SMS_DAILY || true
+    read -r -p 'SMS sends this facility may make in one day, 24 hours (Enter for 300): ' SMS_DAILY || true
     SMS_DAILY="${SMS_DAILY:-300}"
   fi
 fi
