@@ -562,6 +562,8 @@ test_files=(
   "$ROOT/tests/invoice_kept_lines_143.sql"
   "$ROOT/tests/invoice_kept_long_numbers_149.sql"
   "$ROOT/tests/print_range_request_id_151.sql"
+  "$ROOT/tests/signin_access_154.sql" "$ROOT/tests/audit_log_insert_only_155.sql" "$ROOT/tests/dispatch_delete_other_lines_156.sql"
+  "$ROOT/tests/grn_one_rule_and_limits_160.sql" "$ROOT/tests/orders_deleted_row_161.sql"
   "$ROOT/tests/item_word_144.sql"
   "$ROOT/tests/invoice_delete_146.sql"
   "$ROOT/tests/staff_deactivated_customer_148.sql"
@@ -693,6 +695,38 @@ op_after=$(op_stamp)
 sleep 1
 op_psql -v company='Test Company' < "$ROOT/scripts/configure-operator.sql" >/dev/null
 [[ "$(op_stamp)" = "$op_after" ]] || { echo 'configure-operator.sql changed the row on a rerun.' >&2; exit 1; }
+# WH-119, scripts/configure-sms-ceiling.sql: the facility-wide SMS ceilings. A given value is stored (and replaces the stored one); a value not
+# given is stored as the default (60 an hour, 300 a day) only when the key is absent AND the database never made a sign-in code; a rerun changes
+# nothing; a value that is not a whole number in range is refused before anything is written.
+sc_psql() { docker exec -i -e PGPASSWORD=disposable-test-database-only "$container" psql -X -qAt -U supabase_admin -d postgres -v ON_ERROR_STOP=1 "$@"; }
+sc_run() { sc_psql -v sms_hourly="$1" -v sms_daily="$2" < "$ROOT/scripts/configure-sms-ceiling.sql" >/dev/null; }
+sc_values() { sc_psql -c "SELECT COALESCE(max(value) FILTER (WHERE key='otp_global_hourly_cap'),'-') || '/' || COALESCE(max(value) FILTER (WHERE key='otp_daily_provider_attempt_cap'),'-') FROM warehouse_security.auth_config WHERE key IN ('otp_global_hourly_cap','otp_daily_provider_attempt_cap')"; }
+sc_expect() { [[ "$(sc_values)" == "$1" ]] || { echo "SMS ceilings: $2 (got $(sc_values), wanted $1)." >&2; exit 1; }; }
+sc_psql -c "DELETE FROM warehouse_security.auth_config WHERE key IN ('otp_global_hourly_cap','otp_daily_provider_attempt_cap'); DELETE FROM public.otp_verifications" >/dev/null
+sc_run '' ''
+sc_expect '60/300' 'a new install (no code ever made) gets the defaults'
+sc_run '' ''
+sc_expect '60/300' 'a rerun changes nothing'
+sc_run 120 ''
+sc_expect '120/300' 'a given hourly value is stored and the daily one is kept'
+sc_run '' 1000
+sc_expect '120/1000' 'a given daily value is stored and the hourly one is kept'
+sc_run 120 1000
+sc_expect '120/1000' 'the same values again change nothing'
+for bad in '0|' 'abc|' '1000000|' '|0' '|abc' '|10000000' '1.5|'; do
+  hourly="${bad%%|*}"; daily="${bad##*|}"
+  if err=$(sc_psql -v sms_hourly="$hourly" -v sms_daily="$daily" < "$ROOT/scripts/configure-sms-ceiling.sql" 2>&1 >/dev/null); then echo "SMS ceilings: '$bad' was accepted." >&2; exit 1; fi
+  [[ "$err" == *'must be a whole number'* ]] || { echo "SMS ceilings: no clear message for '$bad': $err" >&2; exit 1; }
+  sc_expect '120/1000' "a refused value ('$bad') changed nothing"
+done
+# An existing facility (it has made a code) keeps what it has, also when the keys are absent.
+sc_psql -c "DELETE FROM warehouse_security.auth_config WHERE key IN ('otp_global_hourly_cap','otp_daily_provider_attempt_cap'); INSERT INTO public.otp_verifications(phone_number, purpose) VALUES ('919000000999', 'login')" >/dev/null
+sc_run '' ''
+sc_expect '-/-' 'a facility that has sent codes is not given defaults'
+sc_run 90 ''
+sc_expect '90/-' 'a given value is stored there too, the other stays absent'
+sc_psql -c "DELETE FROM warehouse_security.auth_config WHERE key IN ('otp_global_hourly_cap','otp_daily_provider_attempt_cap'); DELETE FROM public.otp_verifications" >/dev/null
+echo 'SMS ceilings (scripts/configure-sms-ceiling.sql) passed: defaults only for a new install, given values stored, bad values refused, reruns change nothing.'
 # TW-BE-003 (migration 92, scripts/configure-auth.sql): the JWT signing secret is not a database setting.
 # Every role reads a database-level setting through current_setting(), so that is checked as anon in a new
 # session. SET ROLE does not apply a role's own settings, so those are read from pg_db_role_setting.

@@ -398,9 +398,9 @@ SELECT pg_temp.cl_assert(pg_temp.cl_exchange('central-user-0003','919000000103',
 -- clear_user_central_identity
 -- ---------------------------------------------------------------------------
 SELECT pg_temp.cl_assert(NOT has_function_privilege('anon','public.clear_user_central_identity(uuid)','EXECUTE')
- AND NOT has_function_privilege('service_role','public.clear_user_central_identity(uuid)','EXECUTE')
+ AND has_function_privilege('service_role','public.clear_user_central_identity(uuid)','EXECUTE') -- migration 154
  AND has_function_privilege('authenticated','public.clear_user_central_identity(uuid)','EXECUTE'),
- 'unlinking is granted to signed-in users only');
+ 'unlinking is granted to signed-in users and the service role (migration 154), not anon');
 SELECT pg_temp.cl_assert(pg_temp.cl_sessions('919000000103')=1,'the linked profile holds a session');
 SELECT set_config('request.jwt.claims',:'supervisor_claims',true);
 SET LOCAL ROLE authenticated;
@@ -416,8 +416,9 @@ SELECT set_config('request.jwt.claims','{"role":"authenticated"}',true);
 SELECT pg_temp.cl_assert(pg_temp.cl_outcome(format('SELECT public.clear_user_central_identity(%L)',:'earlier_profile'))='refused','a caller without a session is refused');
 SELECT set_config('request.jwt.claims','{"role":"service_role"}',true);
 RESET ROLE;
--- Even where the function were reachable with the service key, it is a signed-in administrator's action.
-SELECT pg_temp.cl_assert(pg_temp.cl_outcome(format('SELECT public.clear_user_central_identity(%L)',:'earlier_profile'))='refused','the service key is refused');
+-- Only the service role (migration 154) and a signed-in administrator may clear a link.
+SELECT set_config('request.jwt.claims','{"role":"anon"}',true);
+SELECT pg_temp.cl_assert(pg_temp.cl_outcome(format('SELECT public.clear_user_central_identity(%L)',:'earlier_profile'))='refused','a caller with role anon is refused (the service role may clear a link since migration 154: tests/signin_access_154.sql)');
 SELECT pg_temp.cl_assert((SELECT central_subject='central-user-0003' FROM public.user_profiles WHERE id=:'earlier_profile'::uuid)
  AND pg_temp.cl_sessions('919000000103')=1,'a refused unlink changes nothing');
 
@@ -473,12 +474,12 @@ SELECT pg_temp.cl_assert(:'ask_first'::jsonb = '{"success":false,"code":"link_re
  AND :'ask_second'::jsonb = '{"success":false,"code":"link_required"}'::jsonb
  AND pg_temp.cl_sessions('919000000101')=:'linked_person_sessions'::bigint,
  'a linked profile answers link_required without a code, every time, and gets no session: '||:'ask_first'||' '||:'ask_second');
--- An unlinked, approved profile (found by phone) is linked and asked.
+-- An unlinked, approved profile (found by phone) is asked and stays unlinked until a correct code (migration 154).
 SELECT pg_temp.cl_exchange('central-user-0109','919000000109','token-id-0000000000000403') AS ask_unlinked \gset
 SELECT pg_temp.cl_assert(:'ask_unlinked'::jsonb = '{"success":false,"code":"link_required"}'::jsonb
- AND (SELECT central_subject='central-user-0109' FROM public.user_profiles WHERE mobile='919000000109')
+ AND (SELECT central_subject IS NULL FROM public.user_profiles WHERE mobile='919000000109') -- migration 154: not linked before the code
  AND pg_temp.cl_sessions('919000000109')=0,
- 'an unlinked approved profile is linked and answers link_required, with no session: '||:'ask_unlinked');
+ 'an unlinked approved profile answers link_required, stays unlinked and has no session: '||:'ask_unlinked');
 -- A wrong code, counted as a wrong SMS code is; a code of another number is wrong too.
 SELECT pg_temp.cl_code('919000000109') AS local_code \gset
 SELECT CASE WHEN :'local_code'='000000' THEN '111111' ELSE '000000' END AS wrong_code \gset

@@ -56,7 +56,7 @@ sleep 1
 edit=$(psql_exec -At -v claims="$claims" -v grn="$grn_id" <<'SQL'
 SELECT set_config('request.jwt.claims',:'claims',false);
 SET ROLE authenticated;
-SELECT public.update_grn(p_grn_id=>:'grn'::uuid,p_note=>'lock order')->>'success';
+SELECT public.update_grn(p_grn_id=>:'grn'::uuid,p_note=>'lock order',p_items=>(SELECT jsonb_agg(jsonb_build_object('id',t.id,'item_id',t.item_id,'item_name',t.item_name,'packaging',t.packaging,'qty',t.qty,'weight',t.weight)) FROM public.goodsreceived_trl t WHERE t.gr_id=:'grn'::uuid))->>'success';
 SQL
 )
 wait "$holder"

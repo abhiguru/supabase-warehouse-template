@@ -1,10 +1,10 @@
--- Slimming round 2 (migration 123, S3): intended behaviour (owner decision 2026-10-21): deleting a dispatch made from an order returns every
--- line of that order to pending with 0 fulfilled and reopens the order, including out-of-stock and cancelled lines. That is what
--- trg_restore_stock_on_dispatch_delete (BEFORE DELETE ON public.dispatch) does, so the trigger stays (migration 123 does not drop it).
+-- Slimming round 2 (migration 123, S3), as changed by migration 156 (WH-129): deleting a dispatch made from an order gives its stock and its
+-- share of the order lines back and reopens the order; the lines of the order that it did not serve are left as they were (the earlier blanket
+-- reset of every line to pending was not intended, owner 2026-11-07). trg_restore_stock_on_dispatch_delete (BEFORE DELETE ON public.dispatch) stays.
 -- delete_dispatch_with_order_cleanup, the only delete path, gives the stock and the cart quantities back itself and removes the dispatch
 -- lines first, so the trigger's stock half finds nothing to do; its other half is the order reset above. The scenario below runs with the
 -- trigger on and with it off (each run is undone); stock, movements, order status and the answer are equal, and the lines differ exactly
--- as pinned at the end: with the trigger an out_of_stock or cancelled line becomes pending again, without it the line keeps its state.
+-- as pinned at the end: (superseded by migration 156, WH-129: the trigger no longer resets the lines, so both runs now give the same lines).
 -- Fictional data; runs only in migrations.sh's disposable, network-disabled database.
 \set ON_ERROR_STOP on
 BEGIN;
@@ -131,10 +131,10 @@ SELECT pg_temp.ddt_assert(:'cart_without'::jsonb->'order'='{"status":"OPEN","del
  'the source order is open: ' || (:'cart_without'::jsonb->'order')::text);
 SELECT pg_temp.ddt_assert(:'cart_without'::jsonb->'lines'='["A 10/0 pending","B 3/0 pending","C 10/0 out_of_stock","D 10/0 cancelled","E 7/0 pending"]'::jsonb,
  'the cart lines without the trigger: ' || (:'cart_without'::jsonb->'lines')::text);
--- With the trigger: the same, except that every line of the source order is pending again.
-SELECT pg_temp.ddt_assert(:'cart_with'::jsonb->'lines'='["A 10/0 pending","B 3/0 pending","C 10/0 pending","D 10/0 pending","E 7/0 pending"]'::jsonb,
+-- With the trigger: the same lines (migration 156: the trigger no longer resets the order's lines).
+SELECT pg_temp.ddt_assert(:'cart_with'::jsonb->'lines'='["A 10/0 pending","B 3/0 pending","C 10/0 out_of_stock","D 10/0 cancelled","E 7/0 pending"]'::jsonb,
  'the cart lines with the trigger: ' || (:'cart_with'::jsonb->'lines')::text);
-SELECT pg_temp.ddt_assert((:'cart_with'::jsonb - 'lines') = (:'cart_without'::jsonb - 'lines'),
+SELECT pg_temp.ddt_assert(:'cart_with'::jsonb = :'cart_without'::jsonb,
  'everything but the lines is equal: ' || :'cart_with' || ' / ' || :'cart_without');
 SELECT pg_temp.ddt_assert(:'cart_with'::jsonb->'movements'='["dispatch -4 10>6 (dispatch)","return 4 6>10 (dispatch_delete)","dispatch -5 5>0 (dispatch)","return 5 0>5 (dispatch_delete)"]'::jsonb,
  'one dispatch and one return movement per lot: ' || (:'cart_with'::jsonb->'movements')::text);

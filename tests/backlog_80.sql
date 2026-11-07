@@ -177,7 +177,7 @@ SELECT jsonb_build_array(
 SELECT set_config('request.jwt.claims',:'admin_claims',true);
 SET LOCAL ROLE authenticated;
 SELECT pg_temp.bl_call(format('SELECT public.update_grn(p_grn_id=>%L::uuid,p_supervisor_id=>%L::uuid,p_items=>%L::jsonb)',:'grn_id',:'sync_id',:'lines')) AS update_sa \gset
-SELECT public.update_grn(p_grn_id=>gen_random_uuid(),p_supervisor_id=>:'sync_id'::uuid) AS update_missing \gset
+SELECT public.update_grn(p_grn_id=>gen_random_uuid(),p_supervisor_id=>:'sync_id'::uuid,p_items=>jsonb_build_array(jsonb_build_object('item_name','x','qty',1))) AS update_missing \gset
 RESET ROLE;
 SELECT pg_temp.bl_assert(:'update_sa'::jsonb->>'raised'='Supervisor must be a person, not a service account' AND :'update_sa'::jsonb->>'state'='P0001'
  AND (SELECT supervisor_id=:'person_id'::uuid FROM public.goodsreceived WHERE id=:'grn_id'::uuid),'update_grn: a person naming a service account is refused, supervisor kept: '||:'update_sa');

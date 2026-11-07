@@ -66,19 +66,23 @@ SELECT id AS grn_3 FROM public.goodsreceived WHERE gr_no='G84D1' \gset
 UPDATE public.customers SET active=false WHERE id=:'cust_d'::uuid;
 
 -- 1. admin and staff: moving a GRN of active A onto deactivated D is refused with the exact text; customer unchanged
+-- WH-111: an edit sends the GRN's whole line list.
+SELECT (SELECT jsonb_agg(jsonb_build_object('id',t.id,'item_id',t.item_id,'item_name',t.item_name,'packaging',t.packaging,'qty',t.qty,'weight',t.weight) ORDER BY t.id) FROM public.goodsreceived_trl t WHERE t.gr_id=:'grn_1'::uuid) AS lines_grn_1 \gset
+SELECT (SELECT jsonb_agg(jsonb_build_object('id',t.id,'item_id',t.item_id,'item_name',t.item_name,'packaging',t.packaging,'qty',t.qty,'weight',t.weight) ORDER BY t.id) FROM public.goodsreceived_trl t WHERE t.gr_id=:'grn_2'::uuid) AS lines_grn_2 \gset
+SELECT (SELECT jsonb_agg(jsonb_build_object('id',t.id,'item_id',t.item_id,'item_name',t.item_name,'packaging',t.packaging,'qty',t.qty,'weight',t.weight) ORDER BY t.id) FROM public.goodsreceived_trl t WHERE t.gr_id=:'grn_3'::uuid) AS lines_grn_3 \gset
 SELECT set_config('request.jwt.claims',:'admin_claims',true);
 SET LOCAL ROLE authenticated;
-SELECT pg_temp.g84_call(format('SELECT public.update_grn(p_grn_id=>%L::uuid,p_customer_id=>%L::uuid)',:'grn_1',:'cust_d')) AS refuse_admin \gset
+SELECT pg_temp.g84_call(format('SELECT public.update_grn(p_grn_id=>%L::uuid,p_customer_id=>%L::uuid,p_items=>%L::jsonb)',:'grn_1',:'cust_d',:'lines_grn_1')) AS refuse_admin \gset
 RESET ROLE;
 SELECT customer_id=:'cust_a'::uuid AS kept_admin FROM public.goodsreceived WHERE id=:'grn_1'::uuid \gset
 SELECT set_config('request.jwt.claims',:'staff_claims',true);
 SET LOCAL ROLE authenticated;
-SELECT pg_temp.g84_call(format('SELECT public.update_grn(p_grn_id=>%L::uuid,p_customer_id=>%L::uuid)',:'grn_1',:'cust_d')) AS refuse_staff \gset
+SELECT pg_temp.g84_call(format('SELECT public.update_grn(p_grn_id=>%L::uuid,p_customer_id=>%L::uuid,p_items=>%L::jsonb)',:'grn_1',:'cust_d',:'lines_grn_1')) AS refuse_staff \gset
 RESET ROLE;
 SELECT customer_id=:'cust_a'::uuid AS kept_staff FROM public.goodsreceived WHERE id=:'grn_1'::uuid \gset
 SELECT set_config('request.jwt.claims',:'supervisor_claims',true);
 SET LOCAL ROLE authenticated;
-SELECT pg_temp.g84_call(format('SELECT public.update_grn(p_grn_id=>%L::uuid,p_customer_id=>%L::uuid)',:'grn_1',:'cust_d')) AS refuse_supervisor \gset
+SELECT pg_temp.g84_call(format('SELECT public.update_grn(p_grn_id=>%L::uuid,p_customer_id=>%L::uuid,p_items=>%L::jsonb)',:'grn_1',:'cust_d',:'lines_grn_1')) AS refuse_supervisor \gset
 RESET ROLE;
 SELECT customer_id=:'cust_a'::uuid AS kept_supervisor FROM public.goodsreceived WHERE id=:'grn_1'::uuid \gset
 SELECT pg_temp.g84_assert(
@@ -94,7 +98,7 @@ SELECT pg_temp.g84_assert(
 -- 2. editing the GRN that already belongs to deactivated D still works
 SELECT set_config('request.jwt.claims',:'admin_claims',true);
 SET LOCAL ROLE authenticated;
-SELECT pg_temp.g84_call(format('SELECT public.update_grn(p_grn_id=>%L::uuid,p_customer_id=>%L::uuid,p_note=>%L,p_registration=>%L)',:'grn_3',:'cust_d','edited 84','GJ84REG')) AS edit_d \gset
+SELECT pg_temp.g84_call(format('SELECT public.update_grn(p_grn_id=>%L::uuid,p_customer_id=>%L::uuid,p_note=>%L,p_registration=>%L,p_items=>%L::jsonb)',:'grn_3',:'cust_d','edited 84','GJ84REG',:'lines_grn_3')) AS edit_d \gset
 RESET ROLE;
 SELECT pg_temp.g84_assert(:'edit_d'::jsonb->>'raised' IS NULL AND (:'edit_d'::jsonb->>'success')='true'
  AND (SELECT note='edited 84' AND registration='GJ84REG' AND customer_id=:'cust_d'::uuid FROM public.goodsreceived WHERE id=:'grn_3'::uuid),
@@ -103,7 +107,7 @@ SELECT pg_temp.g84_assert(:'edit_d'::jsonb->>'raised' IS NULL AND (:'edit_d'::js
 -- 2b. the call shape FAS sync uses (it never passes a customer): editing a GRN of a deactivated business is allowed
 SELECT set_config('request.jwt.claims',:'admin_claims',true);
 SET LOCAL ROLE authenticated;
-SELECT pg_temp.g84_call(format('SELECT public.update_grn(p_grn_id=>%L::uuid,p_customer_id=>NULL,p_note=>%L)',:'grn_3','edited by sync 84')) AS edit_null \gset
+SELECT pg_temp.g84_call(format('SELECT public.update_grn(p_grn_id=>%L::uuid,p_customer_id=>NULL,p_note=>%L,p_items=>%L::jsonb)',:'grn_3','edited by sync 84',:'lines_grn_3')) AS edit_null \gset
 RESET ROLE;
 SELECT pg_temp.g84_assert(:'edit_null'::jsonb->>'raised' IS NULL AND (:'edit_null'::jsonb->>'success')='true'
  AND (SELECT note='edited by sync 84' AND customer_id=:'cust_d'::uuid FROM public.goodsreceived WHERE id=:'grn_3'::uuid),
@@ -112,7 +116,7 @@ SELECT pg_temp.g84_assert(:'edit_null'::jsonb->>'raised' IS NULL AND (:'edit_nul
 -- 3. a move onto an active business still works
 SELECT set_config('request.jwt.claims',:'admin_claims',true);
 SET LOCAL ROLE authenticated;
-SELECT pg_temp.g84_call(format('SELECT public.update_grn(p_grn_id=>%L::uuid,p_customer_id=>%L::uuid)',:'grn_2',:'cust_b')) AS move_b \gset
+SELECT pg_temp.g84_call(format('SELECT public.update_grn(p_grn_id=>%L::uuid,p_customer_id=>%L::uuid,p_items=>%L::jsonb)',:'grn_2',:'cust_b',:'lines_grn_2')) AS move_b \gset
 RESET ROLE;
 SELECT pg_temp.g84_assert(:'move_b'::jsonb->>'raised' IS NULL AND (:'move_b'::jsonb->>'success')='true'
  AND (SELECT customer_id=:'cust_b'::uuid FROM public.goodsreceived WHERE id=:'grn_2'::uuid),
@@ -121,7 +125,7 @@ SELECT pg_temp.g84_assert(:'move_b'::jsonb->>'raised' IS NULL AND (:'move_b'::js
 -- 4. a move onto a deleted business keeps 'Business is not active'
 SELECT set_config('request.jwt.claims',:'admin_claims',true);
 SET LOCAL ROLE authenticated;
-SELECT pg_temp.g84_call(format('SELECT public.update_grn(p_grn_id=>%L::uuid,p_customer_id=>%L::uuid)',:'grn_1',:'cust_x')) AS move_x \gset
+SELECT pg_temp.g84_call(format('SELECT public.update_grn(p_grn_id=>%L::uuid,p_customer_id=>%L::uuid,p_items=>%L::jsonb)',:'grn_1',:'cust_x',:'lines_grn_1')) AS move_x \gset
 RESET ROLE;
 SELECT pg_temp.g84_assert(:'move_x'::jsonb->>'raised'='Business is not active' AND :'move_x'::jsonb->>'state'='P0001'
  AND (SELECT customer_id=:'cust_a'::uuid FROM public.goodsreceived WHERE id=:'grn_1'::uuid),
@@ -131,7 +135,7 @@ SELECT pg_temp.g84_assert(:'move_x'::jsonb->>'raised'='Business is not active' A
 SELECT set_config('request.jwt.claims',:'admin_claims',true);
 SET LOCAL ROLE authenticated;
 SELECT public.set_customer_active(:'cust_d'::uuid,true) AS reactivate \gset
-SELECT pg_temp.g84_call(format('SELECT public.update_grn(p_grn_id=>%L::uuid,p_customer_id=>%L::uuid)',:'grn_1',:'cust_d')) AS move_d \gset
+SELECT pg_temp.g84_call(format('SELECT public.update_grn(p_grn_id=>%L::uuid,p_customer_id=>%L::uuid,p_items=>%L::jsonb)',:'grn_1',:'cust_d',:'lines_grn_1')) AS move_d \gset
 RESET ROLE;
 SELECT pg_temp.g84_assert((:'reactivate'::jsonb->>'success')='true' AND :'move_d'::jsonb->>'raised' IS NULL AND (:'move_d'::jsonb->>'success')='true'
  AND (SELECT customer_id=:'cust_d'::uuid FROM public.goodsreceived WHERE id=:'grn_1'::uuid),

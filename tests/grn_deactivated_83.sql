@@ -76,9 +76,11 @@ SELECT pg_temp.g83_assert(
  'a deactivated business gets no new GRN (admin, staff): '||:'refuse_admin'||:'refuse_staff');
 
 -- update_grn of the existing GRN of the deactivated business (same customer) still works
+-- WH-111: an edit sends the GRN's whole line list.
+SELECT (SELECT jsonb_agg(jsonb_build_object('id',t.id,'item_id',t.item_id,'item_name',t.item_name,'packaging',t.packaging,'qty',t.qty,'weight',t.weight) ORDER BY t.id) FROM public.goodsreceived_trl t WHERE t.gr_id=:'grn_b'::uuid) AS lines_grn_b \gset
 SELECT set_config('request.jwt.claims',:'admin_claims',true);
 SET LOCAL ROLE authenticated;
-SELECT pg_temp.g83_call(format('SELECT public.update_grn(p_grn_id=>%L::uuid,p_customer_id=>%L::uuid,p_note=>%L)',:'grn_b',:'cust_b','edited 83')) AS edit_b \gset
+SELECT pg_temp.g83_call(format('SELECT public.update_grn(p_grn_id=>%L::uuid,p_customer_id=>%L::uuid,p_note=>%L,p_items=>%L::jsonb)',:'grn_b',:'cust_b','edited 83',:'lines_grn_b')) AS edit_b \gset
 RESET ROLE;
 SELECT pg_temp.g83_assert(:'edit_b'::jsonb->>'raised' IS NULL AND (:'edit_b'::jsonb->>'success')='true'
  AND (SELECT note='edited 83' AND customer_id=:'cust_b'::uuid FROM public.goodsreceived WHERE id=:'grn_b'::uuid),
