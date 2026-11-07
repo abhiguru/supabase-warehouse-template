@@ -2,10 +2,14 @@ import { validatePrintAccess, createAuthErrorResponse } from '../_shared/auth-he
 import { printerStatusFromReply } from '../_shared/ipp-validate.ts'
 import { printerStatusFailure } from '../_shared/printer-name.ts'
 import { ippPrinter } from '../_shared/ipp-client.ts'
-import { configuredPrinterName } from '../_shared/print-transport.ts'
-import { bridgeBaseUrl, cupsQueueUrl, printTransportName } from '../_shared/print-config.ts'
+import { bridgeBaseUrl, cupsQueueUrl, printTransportName, printerName } from '../_shared/print-config.ts'
 
 const json = { 'Content-Type': 'application/json' };
+
+// A configuration error is answered here, not thrown: createAuthErrorResponse replaces the text of every 5xx, and the app should show
+// this one (an administrator can act on it). Same shape as the bridge's "not configured" answer: status 'error', the text in `error`.
+const configError = (message: string, printer_name?: string): Response =>
+  new Response(JSON.stringify({ success: false, status: 'error', code: 'PRINT_CONFIG', error: message, ...(printer_name ? { printer_name } : {}), timestamp: new Date().toISOString() }, null, 2), { headers: json, status: 503 });
 
 // Bridge mode: the bridge is a Windows service that reports no queue state of the CUPS kind. What can be asked is
 // GET ${PRINTBRIDGE_URL}/health with X-Print-Token and X-Printer (scripts/windows/print-bridge.ps1). It answers
@@ -62,10 +66,12 @@ Deno.serve(async (req) => {
     const userProfile = await validatePrintAccess(req);
 
     // The printer is the facility's one configured printer; a printer_name in the request is ignored.
-    const printer_name = configuredPrinterName();
     const transport = printTransportName(name => Deno.env.get(name));
-    if (transport === null) {
-      throw { status: 503, message: 'PRINT_TRANSPORT must be cups or bridge' };
+    if (transport === null) return configError('PRINT_TRANSPORT must be cups or bridge');
+    // A set but invalid PRINTER_NAME is reported, never replaced by the default queue (which would report another printer's state).
+    const printer_name = printerName(name => Deno.env.get(name), transport);
+    if (printer_name === null) {
+      return configError(transport === 'bridge' ? 'PRINTER_NAME is not a valid printer name' : 'PRINTER_NAME is not a valid CUPS queue name');
     }
 
     console.log(`get-printer-status: User ${userProfile.name} checking printer (${transport})`);
@@ -73,7 +79,7 @@ Deno.serve(async (req) => {
     if (transport === 'bridge') return await bridgeStatus(printer_name);
 
     const queueUrl = cupsQueueUrl(name => Deno.env.get(name));
-    if (queueUrl === null) throw { status: 503, message: 'PRINTER_NAME is not a valid CUPS queue name' };
+    if (queueUrl === null) return configError('PRINTER_NAME is not a valid CUPS queue name', printer_name);
     const printer = ippPrinter(queueUrl);
 
     const msg = {
