@@ -60,19 +60,10 @@ RESET ROLE;
 SELECT warehouse_maintenance.run_database_retention('2035-03-15T10:00:00Z', true) AS retention \gset
 SELECT pg_temp.al_assert((:'retention'::jsonb->>'applied')::boolean, 'the retention job ran: ' || left(:'retention', 200));
 SELECT pg_temp.al_assert((SELECT count(*) >= 4 FROM pg_inherits i WHERE i.inhparent = 'public.audit_log'::regclass AND i.inhrelid::regclass::text LIKE '%2035%'), 'partitions for 2035 were created');
--- KNOWN PRODUCT BUG, not asserted (reported to Development): new public tables get ALL for service_role from the default privileges of
--- supabase_admin (baseline: ALTER DEFAULT PRIVILEGES ... GRANT ALL ON TABLES TO service_role), and run_database_retention only GRANTs SELECT, INSERT
--- on the partitions it creates, it never revokes; so a partition made by the job lets the service role UPDATE and DELETE (migration 155, section 4).
--- This block says so when it is still the case, and passes silently once the job revokes first.
-SELECT (SELECT bool_and(pg_temp.al_privileges(i.inhrelid, 'service_role') = 'INSERT,SELECT') FROM pg_inherits i
-    WHERE i.inhparent = 'public.audit_log'::regclass AND i.inhrelid::regclass::text LIKE '%2035%') AS new_partitions_insert_only \gset
-SELECT COALESCE(string_agg(DISTINCT pg_temp.al_privileges(i.inhrelid, 'service_role'), ' | '), '') AS new_partition_privileges FROM pg_inherits i
-    WHERE i.inhparent = 'public.audit_log'::regclass AND i.inhrelid::regclass::text LIKE '%2035%' \gset
-\if :new_partitions_insert_only
-  \echo 'a partition the job creates is SELECT and INSERT for the service role: ok'
-\else
-  \echo 'KNOWN PRODUCT BUG (migration 155, section 4): a partition made by run_database_retention gives the service role: ' :new_partition_privileges
-\endif
+-- A partition that run_database_retention creates is SELECT and INSERT only for the service role: the job revokes what the default
+-- privileges of supabase_admin would give (baseline: ALTER DEFAULT PRIVILEGES ... GRANT ALL ON TABLES TO service_role).
+SELECT pg_temp.al_assert((SELECT bool_and(pg_temp.al_privileges(i.inhrelid, 'service_role') = 'INSERT,SELECT') FROM pg_inherits i
+    WHERE i.inhparent = 'public.audit_log'::regclass AND i.inhrelid::regclass::text LIKE '%2035%'), 'a partition the job creates is SELECT and INSERT only for the service role');
 SELECT pg_temp.al_assert((SELECT bool_and(pg_temp.al_privileges(i.inhrelid, r) = '') FROM pg_inherits i, unnest(ARRAY['anon', 'authenticated', 'PUBLIC']) r
     WHERE i.inhparent = 'public.audit_log'::regclass AND i.inhrelid::regclass::text LIKE '%2035%'), 'and nothing for anon, authenticated or PUBLIC');
 
