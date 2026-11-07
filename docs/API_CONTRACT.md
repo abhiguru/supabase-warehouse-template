@@ -604,6 +604,24 @@ From `create_dispatch_with_stock_check` (`dispatch_disp_no_key`, checked over al
 financial year; an invoice that keeps its own number is not refused). The invoice answers of the three-argument path also carry
 `function_version`. `save_grn` already refuses a duplicate GRN number by name and is unchanged. The answer has no `holder`.
 
+### Charging rule (migration 164, WH-137)
+
+The rule is `{step_days, minimum_days, days_counted, rounding}`: `step_days` 15, 30 or 1; `minimum_days` 0 (one step), 15, 30, 60 or 90,
+not between 0 and `step_days`; `days_counted` `legacy` or `standard`; `rounding` `up`, `nearest` or `none`. Default `{15, 30, legacy, up}`.
+The figures are in [INVOICE_RULES.md](INVOICE_RULES.md), "Charging rule".
+
+- `get_charging_rule()`: administrators (`Administrator required`, 42501, for anyone else). `{success:true, rule:{step_days, minimum_days, days_counted, rounding, updated_at, updated_by, updated_by_name}}`.
+- `set_charging_rule(p_rule jsonb)`: administrators. All four fields are required; a missing or wrong one, or a minimum shorter than
+  one step, is raised as SQLSTATE `22023` with a sentence. Answers `{success:true, changed, rule, previous_rule}`; the same rule again
+  changes and records nothing. Invoices already saved keep their rule.
+- `generate_invoice_data_for_grn_with_pricing(p_gr_id)` answers `charging` (the facility's rule) and `storage_amount` on each item;
+  `totals` follow the rule's rounding. `p_duration_mode` now defaults to NULL: the rule's `days_counted`.
+- `save_invoice(p_invoice_id, p_invoice_data, p_invoice_items)`: `p_invoice_data.charging` is the rule the form showed. When it is
+  not the facility's rule now the save is refused with `{success:false, error_code:'WH409', reason:'CHARGING_CHANGED', charging, sent, error, message}`
+  and nothing is saved. Without the key there is no check.
+- `get_invoice_detail` (`invoice.charging`, `items[].storage_amount`) and `get_invoice_data` (`data.header.charging`,
+  `data.items[].storage_amount`) answer the invoice's stored rule and each line's storage under it (null for a line with no quantity).
+
 ### Document numbering (migration 127, 2026-10-27)
 
 Each facility has one numbering rule per document type (`warehouse_security.document_numbering`, no direct grant: only these RPCs read or write it;

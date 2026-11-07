@@ -21,6 +21,9 @@ BEGIN
         'discount', i.discount, 'one_time_charge', i.one_time_charge,
         'is_auto_generated', i.is_auto_generated, 'pricing_mode', i.pricing_mode,
         'duration_mode', COALESCE(i.duration_mode, 'legacy'),
+        -- Migration 164: the charging rule the invoice was made with (before 164: half-month steps, 1 month minimum, rounded up).
+        'charging', jsonb_build_object('step_days', i.charge_step_days, 'minimum_days', i.charge_minimum_days,
+                                       'days_counted', COALESCE(i.duration_mode, 'legacy'), 'rounding', i.total_rounding),
         'notes', i.notes, 'created_by', i.created_by,
         'updated_at', i.updated_at,
         'cancelled_at', i.cancelled_at, 'cancel_reason', i.cancel_reason,
@@ -66,6 +69,11 @@ BEGIN
             'charge', x.charge,
             'tax', x.tax,
             'labour_rate', x.labour_rate,
+            -- Migration 164: the line's storage under the invoice's rule (null when the line has no quantity left to read).
+            'storage_amount', CASE WHEN x.qty IS NULL THEN NULL
+                                   WHEN v_invoice_header->>'grn_pricing_mode' = 'ONE_TIME' THEN round(COALESCE(x.charge, 0) * x.qty, 2)
+                                   ELSE warehouse_security.invoice_storage_amount(x.invoice_id, COALESCE(x.charge, 0), x.qty,
+                                                                                  COALESCE(x.duration, 1), x.no_of_days) END,
             'item_name', x.item_name,
             'packaging', x.packaging,
             'grn_item_id', x.grn_item_id,

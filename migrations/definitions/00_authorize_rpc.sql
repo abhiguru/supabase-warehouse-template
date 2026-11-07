@@ -20,8 +20,9 @@ BEGIN
     RETURN;
   END IF;
   -- Central identity (migration 49), sensor settings (migration 74), service accounts
-  -- (migration 78) and the numbering rules (migration 127): administrators only.
-  IF rpc IN ('clear_user_central_identity','update_sensor_device','set_service_account','set_document_numbering') THEN
+  -- (migration 78), the numbering rules (migration 127) and the charging rule (migration 164): administrators only.
+  IF rpc IN ('clear_user_central_identity','update_sensor_device','set_service_account','set_document_numbering',
+             'get_charging_rule','set_charging_rule') THEN
     IF role_name <> 'admin' THEN RAISE EXCEPTION 'Administrator required' USING ERRCODE = '42501'; END IF;
     RETURN;
   END IF;

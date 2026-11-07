@@ -53,6 +53,9 @@ BEGIN
             i.is_auto_generated,
             i.pricing_mode,
             COALESCE(i.duration_mode, 'legacy') as duration_mode,
+            i.charge_step_days,
+            i.charge_minimum_days,
+            i.total_rounding,
             i.notes,
             i.created_by,
             i.updated_at as invoice_updated_at,
@@ -184,6 +187,12 @@ BEGIN
                 'charge', v_item_record.charge,
                 'tax', v_item_record.tax,
                 'labour_rate', v_item_record.labour_rate,
+                -- Migration 164: the line's storage under the invoice's rule (null when the line has no quantity left to read).
+                'storage_amount', CASE WHEN v_item_record.dispatch_quantity IS NULL THEN NULL
+                                       WHEN v_invoice_header.grn_pricing_mode = 'ONE_TIME'
+                                       THEN round(COALESCE(v_item_record.charge, 0) * v_item_record.dispatch_quantity, 2)
+                                       ELSE warehouse_security.invoice_storage_amount(p_invoice_id, COALESCE(v_item_record.charge, 0),
+                                            v_item_record.dispatch_quantity, COALESCE(v_item_record.duration, 1), v_item_record.no_of_days) END,
 
                 'dispatch', jsonb_build_object(
                     'id', v_item_record.dispatch_item_id,
@@ -244,6 +253,11 @@ BEGIN
                     'is_auto_generated', v_invoice_header.is_auto_generated,
                     'pricing_mode', v_invoice_header.pricing_mode,
                     'duration_mode', v_invoice_header.duration_mode,
+                    -- Migration 164: the charging rule the invoice was made with.
+                    'charging', jsonb_build_object('step_days', v_invoice_header.charge_step_days,
+                                                   'minimum_days', v_invoice_header.charge_minimum_days,
+                                                   'days_counted', v_invoice_header.duration_mode,
+                                                   'rounding', v_invoice_header.total_rounding),
                     'notes', v_invoice_header.notes,
                     'created_by', v_invoice_header.created_by,
                     'updated_at', v_invoice_header.invoice_updated_at,

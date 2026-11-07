@@ -41,9 +41,33 @@ the GRN's own rate whose weight band holds the line's weight (the narrowest band
 item's rate. Once the invoice is saved its figures win; if the invoice is deleted, the GRN's own
 rate applies again.
 
+## Charging rule (migration 164)
+
+Each facility has one charging rule (`warehouse_security.charging_rule`, read with `get_charging_rule()` and changed with
+`set_charging_rule(p_rule)`, administrators only; each change writes one `audit_log` row). It starts as the rule above:
+
+| Field | Values | Default (the rule above) |
+|---|---|---|
+| `step_days` | 15 (half a month), 30 (a month), 1 (a day) | 15 |
+| `minimum_days` | 0 (one step), 15, 30, 60, 90; never between 0 and the step | 30 |
+| `days_counted` | `legacy` (dispatch date minus receipt date), `standard` (plus the day of receipt) | `legacy` |
+| `rounding` | `up` (ceiling), `nearest` (50 paise up), `none` (to paise) | `up` |
+
+Duration in months is `max(minimum_days, ceil(billable_days / step_days) × step_days) / 30`, billable days never below one; a month
+is 30 days for every step. With the default this is the formula above, value for value (`warehouse_security.charge_duration` uses
+that expression for it). With steps of a day the stored duration has two decimals (40 days: 1.33) and the line's storage is worked out
+from the days: quantity × rate × days / 30, rounded to paise. `rounding` applies to the header tax and the grand total (where the
+ceilings below are); line figures stay rounded to paise. ONE_TIME lines have no duration; only the rounding applies to them.
+
+A new invoice takes the facility's rule when it is saved and stores it (`invoice.charge_step_days`, `charge_minimum_days`,
+`total_rounding`, and `duration_mode`); an edit, the header recalculation, the readers and the prints use the stored rule. Every
+invoice saved before migration 164 is stored as the default rule. A `duration_mode` sent with a save still wins over `days_counted`.
+The invoice form's preview answers the facility's rule as `charging`; the form sends it back as `charging` in the invoice data, and a
+save whose rule is no longer the facility's is refused with `CHARGING_CHANGED` (WH409, nothing saved; no `charging` key: no check).
+
 ## Header rounding and save contract
 
-Preview subtotal sums line bases. Header tax is the ceiling of the sum of
+(With a charging rule other than the default, "ceiling" below reads as the invoice's `rounding`.) Preview subtotal sums line bases. Header tax is the ceiling of the sum of
 **unrounded** line tax bases; grand total is the ceiling of subtotal plus header
 tax. Consequently the sum of displayed line totals can differ from the header.
 
