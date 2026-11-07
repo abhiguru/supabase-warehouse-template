@@ -65,19 +65,20 @@ case "$command" in
     cp -p "$live" "$previous"
     mv -f "$staged" "$live"
     # gateway-lan, and the function runtime, whose environment now carries the address that get-config offers to signed-in phones.
-    if ! compose --profile lan up -d --no-deps --wait --wait-timeout 180 gateway-lan functions; then
+    if ! compose --profile lan up -d --no-deps --wait --wait-timeout 180 lan-signer gateway-lan functions; then
       node "$ROOT/scripts/service-diagnostics.mjs" gateway-lan || true
+      node "$ROOT/scripts/service-diagnostics.mjs" lan-signer || true
       mv -f "$previous" "$live"
       if grep -qx 'LAN_ENABLED=true' "$live"; then
         # The fallback was on, with the settings of the file now back in place: a failed rerun (a new port, a new range) must not take a
         # working fallback away. Start it again with them (the function runtime too: the failed run gave it the new address).
-        if compose --profile lan up -d --no-deps --wait --wait-timeout 180 gateway-lan functions >/dev/null 2>&1; then
+        if compose --profile lan up -d --no-deps --wait --wait-timeout 180 lan-signer gateway-lan functions >/dev/null 2>&1; then
           echo 'The gateway-lan service did not become healthy with the new settings (see above). The LAN fallback keeps its earlier settings: config/compose.env is as it was and the service runs with them again.' >&2
         else
           echo 'The gateway-lan service did not become healthy with the new settings (see above), and it did not start again with the earlier ones either. config/compose.env is as it was. Check: bash scripts/lan.sh status' >&2
         fi
       else
-        compose --profile lan rm -sf gateway-lan >/dev/null 2>&1 || true
+        compose --profile lan rm -sf gateway-lan lan-signer >/dev/null 2>&1 || true
         compose up -d --no-deps --wait --wait-timeout 180 functions >/dev/null 2>&1 || true
         echo 'The gateway-lan service did not become healthy (see above). The LAN fallback was not turned on and config/compose.env is as it was.' >&2
       fi
@@ -100,8 +101,9 @@ case "$command" in
       echo "Warning: ${reason} The public services are not affected." >&2
       exit 0
     fi
-    if ! compose --profile lan up -d --no-deps --wait --wait-timeout 60 gateway-lan; then
+    if ! compose --profile lan up -d --no-deps --wait --wait-timeout 60 lan-signer gateway-lan; then
       node "$ROOT/scripts/service-diagnostics.mjs" gateway-lan || true
+      node "$ROOT/scripts/service-diagnostics.mjs" lan-signer || true
       echo 'Warning: the LAN fallback (the gateway-lan service) did not start or did not become healthy (message above). The public services are not affected. Check: bash scripts/lan.sh status, then node scripts/doctor.mjs --lan' >&2
     fi
     exit 0
@@ -109,7 +111,7 @@ case "$command" in
   off)
     node "$ROOT/scripts/lan.mjs" stage "$live" "$staged" off
     mv -f "$staged" "$live"
-    compose --profile lan rm -sf gateway-lan >/dev/null
+    compose --profile lan rm -sf gateway-lan lan-signer >/dev/null
     # The function runtime stops offering the address. Not started if the stack is stopped: it picks the change up at the next start.
     if service_running functions; then compose up -d --no-deps --wait --wait-timeout 180 functions; fi
     echo 'The LAN fallback is off: the gateway-lan service is removed and the variables are reset. Phones that saved the address stop using it and keep working over the internet.'

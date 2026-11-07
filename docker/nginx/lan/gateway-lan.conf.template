@@ -6,12 +6,24 @@
 #
 # Owner decision of 2026-10-26: plain http, no certificate. The container publishes only on the host's own private address
 # (LAN_BIND_IP) and this server answers only the warehouse network. Access tokens cross the Wi-Fi unencrypted while this path is in
-# use (docs/CONTAINER_SECURITY.md, "LAN fallback").
+# use, but since WH-133 nothing on it can be changed unnoticed: every request is signed by the phone and every answer by the server
+# (docs/CONTAINER_SECURITY.md, "LAN fallback (gateway-lan)"; docs/API_CONTRACT.md, "Signing on the LAN path").
 #
-# Trust boundary: the client address is the address of the connection. Nothing in this server trusts a header for it (no real-IP
-# module setting, unlike the public server), so a phone cannot choose the address the limits and the sign-in functions see:
-# api-locations.conf sets CF-Connecting-IP from the connection on every route that passes one on, and the limits in api-http.conf are
-# kept per phone. The same key check, body limits and rate limits apply as on the public path (one shared file).
+# Two servers (WH-133):
+#  - the OUTER server (:8080, published): the Host pin, the allow list and the body limit, and nothing else. It passes every request
+#    to the LAN signer (docker/lan-signer, service lan-signer), which refuses (403) whatever is not signed with a live session's key,
+#    and signs every answer. The outer server sends the signer the client address and the request target exactly as the phone wrote
+#    them, replacing anything the phone sent under those names.
+#  - the INNER server (:8081): the routes of api-locations.conf, as before. It listens only on this container's address on the
+#    internal lan-hop network (the name gateway-lan-back, docker-compose.yml), which only the signer shares, so nothing on the
+#    warehouse network and no other container reaches it, and only there is the signer's X-Lan-Client-Addr taken as the client
+#    address.
+#
+# Trust boundary: the client address is the address of the phone's connection to the outer server. The outer server trusts no header
+# for it and overwrites X-Lan-Client-Addr; the inner server takes that header (real-IP module) because only the signer can connect
+# to it, so a phone cannot choose the address the limits and the sign-in functions see: api-locations.conf sets CF-Connecting-IP from
+# it on every route that passes one on, and the limits in api-http.conf are kept per phone. The same key check, body limits and rate
+# limits apply as on the public path (one shared file).
 
 # The Host header must be this host's own LAN address (LAN_BIND_IP, with or without LAN_HTTP_PORT; compose.env, checked by
 # docker-entrypoint.d/18-require-env.sh). A phone writes exactly that, because the app addresses the server by its IP address. A web
@@ -28,18 +40,77 @@ map $http_host $lan_host_ok {
     "localhost:8080"                     1;
 }
 
+# The LAN signer (docker-compose.yml, service lan-signer), looked up by name every 5 s like the other upstreams (api-http.conf).
+upstream lan_signer_up {
+    zone lan_signer_up 64k;
+    server lan-signer:9000 resolve;
+    keepalive 16;
+    keepalive_requests 10000;
+    keepalive_timeout 15s;
+}
+
+# A bucket per phone in front of the signer, so that requests with made-up keys cannot make it look keys up without limit. The same
+# rate as the REST route of the inner server (api-http.conf), which every real phone already stays within.
+limit_req_zone $binary_remote_addr zone=lan_front:10m rate=30r/s;
+
+# --- The outer server ----------------------------------------------------------------------------------------------------
 server {
     listen 8080;
     server_name _;
 
-    # Which path an answer came by. The app reads it (cors-headers.conf puts it on every API answer).
+    # Which path an answer came by. The app reads it; the outer server puts it on every answer, its own refusals included.
     set $warehouse_path lan;
 
     # The warehouse network only; the value is LAN_CIDR of compose.env, checked by docker-entrypoint.d/18-require-env.sh. This
-    # is the second control after the bind address. It runs after the rewrite-phase answers of api-locations.conf (the 401 of the
-    # key check, the 404 of an unknown path), which show nothing a client outside the range could use.
+    # is the second control after the bind address.
     allow ${LAN_CIDR};
     deny all;
+
+    # The outer server's own refusals: JSON, with X-Warehouse-Path, never signed (no key is involved). The signer's answers pass as
+    # they are.
+    error_page 403 @lan_403;
+    error_page 404 @lan_404;
+    error_page 413 @lan_413;
+    error_page 429 @lan_429;
+    error_page 502 @lan_502;
+    error_page 504 @lan_504;
+    location @lan_403 {
+        types { }
+        default_type "application/json; charset=utf-8";
+        add_header X-Warehouse-Path lan always;
+        return 403 '{"message":"This address may not use the warehouse network listener","code":"lan_address"}';
+    }
+    location @lan_404 {
+        types { }
+        default_type "application/json; charset=utf-8";
+        add_header X-Warehouse-Path lan always;
+        return 404 '{"message":"no Route matched with those values"}';
+    }
+    location @lan_413 {
+        types { }
+        default_type "application/json; charset=utf-8";
+        add_header X-Warehouse-Path lan always;
+        return 413 '{"message":"Request size limit exceeded"}';
+    }
+    location @lan_429 {
+        types { }
+        default_type "application/json; charset=utf-8";
+        add_header Retry-After 1 always;
+        add_header X-Warehouse-Path lan always;
+        return 429 '{"message":"API rate limit exceeded"}';
+    }
+    location @lan_502 {
+        types { }
+        default_type "application/json; charset=utf-8";
+        add_header X-Warehouse-Path lan always;
+        return 502 '{"message":"The warehouse network signer does not answer","code":"lan_signer_down"}';
+    }
+    location @lan_504 {
+        types { }
+        default_type "application/json; charset=utf-8";
+        add_header X-Warehouse-Path lan always;
+        return 504 '{"message":"The upstream server is timing out"}';
+    }
 
     # The container's health check (docker-compose.yml), as in the public server: only the container itself may ask (the check
     # comes from 127.0.0.1 inside the container; `return` is answered before the allow list is looked at).
@@ -50,11 +121,56 @@ server {
         return 200 "ok\n";
     }
 
-    include /etc/nginx/api-locations.conf;
+    location / {
+        limit_req zone=lan_front burst=1800 nodelay;
+        # The largest route limit of api-locations.conf (Storage, 50 MB); the inner server applies each route's own.
+        client_max_body_size 50m;
+        client_body_timeout 20s;
+        proxy_http_version 1.1;
+        proxy_set_header Connection "";
+        proxy_set_header Host lan-signer;
+        # Overwritten here, whatever the phone sent: the address of its connection and the request target exactly as it wrote it.
+        proxy_set_header X-Lan-Client-Addr $remote_addr;
+        proxy_set_header X-Lan-Request-Uri $request_uri;
+        proxy_set_header CF-Connecting-IP "";
+        proxy_set_header X-Real-IP "";
+        proxy_set_header X-Forwarded-For "";
+        proxy_connect_timeout 5s;
+        # The signer waits up to 180 s for the inner server, then answers 504 itself.
+        proxy_read_timeout 200s;
+        proxy_send_timeout 60s;
+        # The signer sends an answer only once it has all of it (it signs the whole body); it is passed on as it comes, through one
+        # buffer, never to a file (the Storage route of api-locations.conf says why).
+        proxy_buffering off;
+        proxy_buffer_size 64k;
+        proxy_buffers 4 64k;
+        proxy_redirect off;
+        proxy_hide_header X-Warehouse-Path;
+        add_header X-Warehouse-Path lan always;
+        proxy_pass http://lan_signer_up;
+    }
 
-    # The Host pin (map above). Placed after the include on purpose: the routes file sets $cors_expose at the top of the server,
-    # and this answer, the 404 of the routes (error_page in api-locations.conf), uses it. A rewrite-phase answer of the server, so
-    # it comes before the location is chosen, before the allow list, before a rate-limit bucket is touched and before anything
-    # reaches an upstream.
+    # The Host pin (map above): a rewrite-phase answer of the server, so it comes before the location is chosen, before the allow list,
+    # before a rate-limit bucket is touched and before anything reaches the signer.
     if ($lan_host_ok = 0) { return 404; }
+}
+
+# --- The inner server ----------------------------------------------------------------------------------------------------
+server {
+    # This container's address on the lan-hop network only (looked up once at start). The signer is the only other member.
+    listen gateway-lan-back:8081;
+    server_name _;
+
+    set $warehouse_path lan;
+
+    # The client address the signer passes on (the outer server's $remote_addr). Every connection here comes from the signer, so the
+    # header is taken from any address; without it the address would be the signer's, which the allow list below refuses.
+    set_real_ip_from 0.0.0.0/0;
+    real_ip_header X-Lan-Client-Addr;
+
+    # The same allow list, on the phone's address, as a second check.
+    allow ${LAN_CIDR};
+    deny all;
+
+    include /etc/nginx/api-locations.conf;
 }

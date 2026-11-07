@@ -22,8 +22,8 @@ export function redactServiceLog(text, env) {
     .replace(/((?:postgres(?:ql)?|ecto):\/\/[^:\s/@]+:)[^@\s]+@/g, '$1[REDACTED]@');
 }
 
-const SERVICES = ['supavisor', 'gateway', 'gateway-lan', 'functions', 'rest'];
-const profileOf = service => (service === 'supavisor' ? ['--profile', 'pooler'] : service === 'gateway-lan' ? ['--profile', 'lan'] : []);
+const SERVICES = ['supavisor', 'gateway', 'gateway-lan', 'lan-signer', 'functions', 'rest'];
+const profileOf = service => (service === 'supavisor' ? ['--profile', 'pooler'] : service === 'gateway-lan' || service === 'lan-signer' ? ['--profile', 'lan'] : []);
 
 export function diagnoseService(service, {
   run = (command, args) => spawnSync(command, args, { encoding: 'utf8', timeout: 15000 }),
