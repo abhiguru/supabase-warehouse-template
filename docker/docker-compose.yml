@@ -522,9 +522,10 @@ services:
       PRINTER_NAME: ${PRINTER_NAME:-LQ1310_RAW}
       PRINTER_URI: ${PRINTER_URI:-}
       PRINTER_DRIVER: raw
-    # Healthy only while the queue exists and is not disabled (a CUPS that answers without the queue is not a working printer).
+    # Healthy only while the queue exists and is enabled: lpstat's FIRST line says "... enabled since" or "... disabled since" (a paused
+    # queue is disabled; the reason, e.g. "Paused", is a second line that must not be matched). (A CUPS that answers without the queue is not a working printer).
     healthcheck:
-      test: ["CMD-SHELL", "lpstat -p \"$$PRINTER_NAME\" 2>/dev/null | grep -qv disabled"]
+      test: ["CMD-SHELL", "lpstat -p \"$$PRINTER_NAME\" 2>/dev/null | head -n 1 | grep -q ' enabled since'"]
       timeout: 10s
       interval: 30s
       retries: 3

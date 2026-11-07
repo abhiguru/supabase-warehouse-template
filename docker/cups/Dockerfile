@@ -29,7 +29,7 @@ COPY entrypoint.sh /entrypoint.sh
 RUN chmod +x /entrypoint.sh
 
 HEALTHCHECK --interval=30s --timeout=10s --start-period=40s --retries=3 \
-    CMD lpstat -p "${PRINTER_NAME:-LQ1310_RAW}" 2>/dev/null | grep -qv disabled || exit 1
+    CMD lpstat -p "${PRINTER_NAME:-LQ1310_RAW}" 2>/dev/null | head -n 1 | grep -q ' enabled since' || exit 1
 
 ENTRYPOINT ["/entrypoint.sh"]
 CMD ["/usr/sbin/cupsd", "-f"]
