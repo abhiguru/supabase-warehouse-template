@@ -30,9 +30,17 @@ file used to carry for earlier installations are in git: `git show b45ae0b:CHANG
 
 - **Sign-in access gaps (WH-114, migration 154).** (1) With the facility's own code on, a central sign-in no longer links an unlinked profile found by phone number until a correct facility code is given (`link_required` first; with the setting off nothing changes). (2) A correct SMS code is marked used only when a session or an access-request answer is given: a pending-limited, rejected, disabled or deactivated person is refused as before, and the code stays usable until it expires or its attempts run out. (3) `operator_finish_otp`, `operator_sms_config`, `operator_enrollment_status`, `operator_enrollment_signout`, `operator_break_glass_open` and `operator_review_enrollment` answer `unavailable` (the break-glass check answers false) when `auth_mode` is not `operator`. (4) The service role can call `clear_user_central_identity` (its body let only a signed-in administrator through); `authenticated` keeps its grant. Not applied anywhere yet.
 
+- **A GRN counts as invoiced only when it has a live invoice (WH-112, migration 160).** A live invoice is one that is not deleted and not cancelled: the GRN list filter, the rates step and the invoice move now agree, and migration 160 corrects the stored flags.
+
+- **The first order of a business whose order row was soft-deleted no longer fails (WH-113, migration 161).** It restarts empty; adding a line by order id refuses a deleted business.
+
 ### Added
 
 - **SMS spending ceilings are set at setup (WH-119).** `setup.sh` offers 60 SMS sends an hour and 300 SMS sends a day for the whole facility on a terminal (Enter accepts), or takes `--sms-hourly-ceiling N` and `--sms-daily-ceiling N`; a new install without either gets 60 and 300 (`otp_global_hourly_cap`, `otp_daily_provider_attempt_cap`, stored by `scripts/configure-sms-ceiling.sql`). Both count sends as MSG91 requests (a code costs one, two when repeated). The monitor posts `sms_ceiling_reached` once a day while a ceiling is reached. No migration (the number reserved for it is not used). **Operator action on upgrade:** an installation that already sent codes keeps its stored figures and has no daily ceiling until it sets one: `bash setup.sh --operator <your usual options> --sms-daily-ceiling 300` (and `--sms-hourly-ceiling 60` to lower the hourly one from its default of 300). [OPERATOR_INSTALL.md](docs/OPERATOR_INSTALL.md), "SMS spending ceiling".
+
+- **Monitoring: per-sensor alerts (WH-118).** Temperature outside limits for 15 minutes, or silent for 30 minutes (settings `WAREHOUSE_SENSOR_OUT_OF_RANGE_MINUTES` and `WAREHOUSE_SENSOR_SILENT_MINUTES`), and a daily alert when the sensor bridge dropped readings.
+
+- **Release images are signed (WH-116).** Keyless cosign, GitHub OIDC. `setup.sh` installs a pinned, checksum-verified cosign into the state; an upgrade to a signed release refuses on a host without it (the message says how to install, or pass `--unsigned`, which is logged), a bad signature is always refused, and older unsigned releases are unchanged. The operator guide states what a backup contains and the ten-year key lifetime with the rotation steps.
 
 ### Changed
 
@@ -43,6 +51,7 @@ file used to carry for earlier installations are in git: `git show b45ae0b:CHANG
 - **Migration 151 also** reads the dispatch print range in natural order.
 
 - Release images: the db and pdf-renderer base digests move to the current builds of the same tags (postgres 18.6-trixie, node 24-trixie-slim) so the images carry apt and libapt-pkg7.0 3.0.4 (CVE-2026-109518, WH-128).
+- **Docs match the code (WH-117, WH-47).** Pooler off, alert retry, break-glass for all workers, 8-year audit retention, and `get_items` access corrected.
 
 ## v0.8.0 (2026-11-07)
 
