@@ -115,6 +115,11 @@ case "$command" in
     exit 0
     ;;
   off)
+    # WH-146: in a local-only facility the warehouse network listener is the only address; turning it off would leave nothing to reach.
+    if grep -qx 'INGRESS=local-only' "$live"; then
+      echo 'This facility is local-only: the warehouse network listener is its only address and cannot be turned off.' >&2
+      exit 1
+    fi
     node "$ROOT/scripts/lan.mjs" stage "$live" "$staged" off
     mv -f "$staged" "$live"
     compose --profile lan rm -sf gateway-lan lan-signer >/dev/null

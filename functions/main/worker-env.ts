@@ -21,12 +21,15 @@ export const workerEnvNames: Record<string, readonly string[]> = {
   'get-public-config': ['APP_ENV', 'AUTH_MODE', 'SUPABASE_URL', 'SUPABASE_ANON_KEY', 'SUPABASE_PUBLIC_URL', 'INSTANCE_MANIFEST_JSON',
     'RELEASE_JSON', 'APP_COMPAT_JSON',
     'CENTRAL_ISSUER', 'CENTRAL_JWKS_URL', 'CENTRAL_JWKS_FILE', 'CENTRAL_LOCAL_CODE', 'SUPABASE_REST_URL', ...storageApi],
-  'operator-otp': ['APP_ENV', 'AUTH_MODE', 'SUPABASE_URL', 'SUPABASE_SERVICE_ROLE_KEY', 'SUPABASE_REST_URL'],
+  'operator-otp': ['APP_ENV', 'AUTH_MODE', 'INGRESS', 'SUPABASE_URL', 'SUPABASE_SERVICE_ROLE_KEY', 'SUPABASE_REST_URL'],
+  // WH-146: a local-only facility signs in with pairing codes; only these two functions know INGRESS. app-download reads the APK from the public directory.
+  'pairing-redeem': ['INGRESS', 'SUPABASE_URL', 'SUPABASE_SERVICE_ROLE_KEY', 'SUPABASE_REST_URL'],
+  'app-download': ['INGRESS', 'PUBLIC_DIR'],
   // Central sign-in: the trusted issuer, its public keys (an address, or a
   // file whose text the router passes as CENTRAL_JWKS_JSON, which is not in
   // the container environment), and this facility's origin (the audience a
   // token must name).
-  'central-exchange': ['APP_ENV', 'AUTH_MODE', 'SUPABASE_URL', 'SUPABASE_SERVICE_ROLE_KEY', 'SUPABASE_PUBLIC_URL', 'CENTRAL_ISSUER', 'CENTRAL_JWKS_URL',
+  'central-exchange': ['APP_ENV', 'AUTH_MODE', 'INGRESS', 'SUPABASE_URL', 'SUPABASE_SERVICE_ROLE_KEY', 'SUPABASE_PUBLIC_URL', 'CENTRAL_ISSUER', 'CENTRAL_JWKS_URL',
     'CENTRAL_JWKS_FILE', 'CENTRAL_JWKS_JSON', 'SUPABASE_REST_URL'],
   // Sensor bridge batches: the RPC is called with the server key; the bridge's
   // ingest key is checked by the database, not here.

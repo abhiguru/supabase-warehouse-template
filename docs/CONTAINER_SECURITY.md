@@ -236,6 +236,18 @@ client address and has no hourly window**. Since the gateway became nginx (2026-
 `tests/gateway-config.test.mjs` pins the table above, the arithmetic and this wording; `tests/gateway-nginx.test.mjs` runs the
 real image against stand-in upstreams and checks that a burst of 1800 is passed and the next request is refused (the request that opens the bucket makes it 1801), and that another address is not affected.
 
+## Ingress modes (WH-146)
+
+Three modes (`INGRESS` in compose.env). **cloudflare-tunnel** is the one described above and the default: a state without the line is this. **trusted-proxy** renders
+`docker/nginx/templates-proxy/gateway.conf.template` in place of the public server: `set_real_ip_from <TRUSTED_PROXY_ADDRESS>` and `real_ip_header <TRUSTED_PROXY_HEADER>`, nothing else trusted
+(neither loopback nor the private ranges the tunnel mode trusts). The trust lives in that public server only; `api-locations.conf`, shared with the LAN server, stays free of any
+header trust, and the LAN server still takes the connection's own address. Both values are validated by `18-require-env.sh` before rendering (an IPv4 address or /16-/32 range; a header name of
+letters, digits and dashes), and `scripts/ingress.mjs` refuses headers that carry something else on this API (Host, Authorization, apikey, ...). **local-only** keeps the public server of the tunnel mode
+bound to loopback (no tunnel runs, nothing public is published), makes `gateway-lan` mandatory (`lan.sh off` is refused) and refuses to install without the `lan-signer` (WH-133), so the only
+way in is signed. The unsigned calls in that mode are the pairing exchange, `GET /app`, `GET /app/warehouse.apk` and the LAN signer's existing exemptions. The pairing secret is held in
+`warehouse_security.pairing_codes` (no API grant) for at most 10 minutes and erased when used; the code cannot be guessed in the window (30^8 codes, 10 tries per address per 10 minutes, one live
+code per person), and what the server sends back is encrypted under a key derived from the secret. The server hands the encrypted session to anyone who redeems a live code, so a phone that has only the typed 8 characters, without the secret, cannot read it: the secret (in the QR) is needed.
+
 ## LAN fallback (gateway-lan)
 
 **Owner decision of 2026-10-26: cleartext to a private LAN address, fallback only.** This amends the rule of the app's decision log

@@ -1,0 +1,38 @@
+# The public server for a trusted reverse proxy (WH-146): the only listener of the gateway container, published on the host's loopback only
+# (docker-compose.yml) for the Cloudflare Tunnel connector, which is the only ingress.
+server {
+    listen 8000;
+    http2 on;
+    server_name _;
+
+    # TRUSTED PROXY (WH-146, setup.sh --ingress trusted-proxy): your own reverse proxy on this host reaches the loopback-published gateway,
+    # and the client address is the one it puts in one named header. The header is believed from ONE address only (TRUSTED_PROXY_ADDRESS:
+    # one IPv4 address or a range of /16 to /32; for a proxy on this host, the address Docker presents its connection from, the Compose
+    # network's gateway address). A request that carries the header from any other address is counted under its own address. Unlike
+    # templates/gateway.conf.template, no private range and no loopback is trusted. Recursion stays off, so a forged chain is ignored.
+    # Both values are checked by docker-entrypoint.d/18-require-env.sh before this file is rendered. The trust stays in this public server:
+    # api-locations.conf (shared with the LAN server) stays free of any header trust. Keep the rest of this server the same as
+    # templates/gateway.conf.template.
+    set_real_ip_from ${TRUSTED_PROXY_ADDRESS};
+    real_ip_header ${TRUSTED_PROXY_HEADER};
+    real_ip_recursive off;
+
+    # Which path an answer came by: the app reads X-Warehouse-Path (cors-headers.conf puts it on every API answer). The LAN server
+    # (lan/gateway-lan.conf.template) says `lan`.
+    set $warehouse_path public;
+
+    # The container's health check (docker-compose.yml). Not in api-locations.conf, which is shared with servers that
+    # have no use for it, and not logged: it runs every ten seconds. Only the container itself may ask: the check comes from
+    # 127.0.0.1 inside the container; a request through the tunnel carries its client's address (real_ip_header above; Cloudflare
+    # sets that header itself, so a client cannot choose it) and is answered like any path that has no route; that refusal is
+    # logged (the answer is made in @json_404, which has the access log), the container's own check is not. (Not `allow` and
+    # `deny`: those run after `return`, which would answer first.)
+    location = /health {
+        if ($remote_addr != "127.0.0.1") { return 404; }
+        access_log off;
+        default_type text/plain;
+        return 200 "ok\n";
+    }
+
+    include /etc/nginx/api-locations.conf;
+}

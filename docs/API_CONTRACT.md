@@ -1747,6 +1747,35 @@ error:'Upload already confirmed', image_id, storage_path}` (confirmed; nothing i
 code:'NOT_FOUND', error:'Pending upload not found'}` (no such row, or not the caller's to see). The app removes
 the stored file only after `success:true`.
 
+## Local-only facility: pairing and server alerts (WH-146)
+
+Only in a facility set up with `--ingress local-only` (docs/OPERATOR_INSTALL.md, "Local-only facility"). `get-public-config` is unchanged; the origin it
+returns is a placeholder (`https://wh-<12 hex>.local-only.invalid`), so identify the facility by `instanceId`. `operator-otp` `request` and `verify` answer
+403 `{ success: false, code: "local_only" }` and `central-exchange` answers `central_unavailable`; `break-glass`, `status` and `signout` work as before.
+
+**Making a code (administrators only).** `POST /rest/v1/rpc/make_pairing_code { "p_profile_id": "<user_profiles.id>" }` answers
+`{ success: true, data: { pairing_id, code, secret, expires_at, user: { id, name, role } } }`. `code` is 8 characters from `23456789ABCDEFGHJKMNPQRSTVWXYZ`; `secret` is 64 hex
+characters; `expires_at` is 10 minutes after the call. An earlier unused code of that person stops working. Refusals: 42501 for a person who is inactive, not approved, a service account
+or not in this facility, and for a facility that is not local-only. The QR text is JSON: `{"v":1,"addr":"http://<lan address>:<port>","instance_id":"<uuid>","code":"XXXXXXXX","secret":"<64 hex>"}`;
+the app builds it from its own server address, `instanceId`, and this answer (`scripts/pairing-code.sh` builds the same text on the host).
+
+**Redeeming (unsigned, no token).** `POST <lan>/functions/v1/pairing-redeem` with `{ "code": "XXXXXXXX", "nonce": "<64 hex, 32 fresh random bytes>" }` (at most 1024 bytes). Answers:
+- 200 `{ success: true, data: { proof, iv, ciphertext } }`, all hex. Check `proof` **first**, in constant time:
+  `proof = HMAC-SHA256(secret, "WH-PAIR-PROOF-1\n" + code + "\n" + nonce)`. A wrong proof means another device answered: stop, send nothing else.
+  Then `key = HKDF-SHA256(ikm = secret, salt = the 32 nonce bytes, info = "WH-PAIR-KEY-1")` (32 bytes) and decrypt `ciphertext` (AES-256-GCM, 12-byte `iv`, the 16-byte tag at the end,
+  additional data = `"WH-PAIR-1\n" + code + "\n" + nonce`). The plaintext is the JSON of a sign-in answer's session: `access_token`, `refresh_token`, `lan_key_id`, `lan_key` and the rest of `issue_session`.
+  Keep the key with that facility's tokens and sign every later request with it (WH-133).
+- 409 `{ success: false, code: "PAIRING_CODE_INVALID" }`: unknown, used, replaced or expired. The app says "This code was used or has expired. Ask for a new one."
+- 429 `rate_limited` (more than 10 tries from one address in 10 minutes), 400 for a malformed body, 404 when the facility is not local-only, 503 when the database cannot be reached.
+A code works once: its first good redeem spends it, and the secret is erased. **The signer must let this one call through unsigned** (docker/lan-signer exempt list; see the hand-over note of WH-146).
+
+**Server alerts (administrators only).** `POST /rest/v1/rpc/get_server_alerts {}` answers `{ success: true, data: [ { id, summary, detail, since } ] }`, oldest first: the alerts firing now
+(`summary` is the banner line "Server alert: <summary>"; **Details** shows `since` and `detail`, which says what to do). Empty when nothing fires. Staff, customers and supervisors get 42501.
+Poll it when Home opens and about every minute while it is open.
+
+**The download page.** `GET <lan>/app` (HTML, English and Gujarati) and `GET <lan>/app/warehouse.apk` (`application/vnd.android.package-archive`, header `X-Apk-Sha256`): the warehouse network listener only,
+no sign-in, 404 anywhere else. The app's "Update app" opens `<lan>/app`.
+
 ## Sensors
 
 History: migrations 74 and 111.

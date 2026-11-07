@@ -21,9 +21,10 @@ BEGIN
   END IF;
   -- Central identity (migration 49), sensor settings (migration 74), service accounts
   -- (migration 78), the numbering rules (migration 127), the charging rule (migration 164) and the Record payments switch
-  -- (migration 172): administrators only.
+  -- (migration 172), and the pairing codes and server alerts of a local-only facility (migration 170): administrators only.
   IF rpc IN ('clear_user_central_identity','update_sensor_device','set_service_account','set_document_numbering',
-             'get_charging_rule','set_charging_rule','set_record_payments') THEN
+             'get_charging_rule','set_charging_rule','set_record_payments',
+             'make_pairing_code','get_server_alerts') THEN
     IF role_name <> 'admin' THEN RAISE EXCEPTION 'Administrator required' USING ERRCODE = '42501'; END IF;
     RETURN;
   END IF;

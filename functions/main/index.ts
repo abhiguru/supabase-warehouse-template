@@ -5,7 +5,10 @@ import { workerEnv } from './worker-env.ts';
 import { letterheadReader } from './letterhead-reader.ts';
 
 // ingest-sensor-readings is called by the sensor bridge with its own ingest key, not a user token.
-const publicFunctions = new Set(['hello', 'get-public-config', 'operator-otp', 'central-exchange', 'ingest-sensor-readings']);
+const publicFunctions = new Set(['hello', 'get-public-config', 'operator-otp', 'central-exchange', 'ingest-sensor-readings',
+  // WH-146 (local-only facility): the pairing code is redeemed before the phone has any key or session, and the app download page is for anyone on the Wi-Fi.
+  // Both answer 404 unless INGRESS=local-only.
+  'pairing-redeem', 'app-download']);
 const printFunctions = new Set(['get-printer-status', 'print-via-ipp', 'print-grn-preprinted', 'print-dispatch-preprinted', 'print-invoice-preprinted']);
 // Not behind a user's sign-in: they check for the service-role key themselves (scripts/watch.mjs calls sweep-print-jobs).
 const serviceFunctions = new Set(['sweep-print-jobs']);

@@ -1,0 +1,7 @@
+# Sourced by the image's entrypoint after 18-require-env.sh and before the envsubst of the templates (WH-146). A gateway that was told
+# INGRESS=trusted-proxy renders the trusted-proxy server (templates-proxy/) instead of the Cloudflare one (templates/); every other value, and
+# a container that was given none, or that names its own template directory (the gateway-lan container does), keeps the directory it has.
+if [ "${INGRESS:-}" = trusted-proxy ] && [ -z "${NGINX_ENVSUBST_TEMPLATE_DIR:-}" ]; then
+  NGINX_ENVSUBST_TEMPLATE_DIR=/etc/nginx/templates-proxy
+  export NGINX_ENVSUBST_TEMPLATE_DIR
+fi

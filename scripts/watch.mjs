@@ -748,12 +748,16 @@ export async function checkApiLocal(ctx) {
   try { await getJson(ctx, `http://127.0.0.1:${port}/functions/v1/get-public-config`); return [result('api_local', 'api_down', true, 'API gateway answers')]; }
   catch (error) { return [result('api_local', 'api_down', false, 'API gateway is not answering on this host', error.message)]; }
 }
+// WH-146: a local-only facility (INGRESS=local-only in compose.env) has no public address, tunnel, Slack or internet time: those checks do not
+// run for it (a result list of [] clears an alert left over from before), and its alerts are written to the database for the app's banner.
+export const isLocalOnly = ctx => ctx.env_().INGRESS === 'local-only';
 const publicManifest = ctx => {
   const manifest = JSON.parse(ctx.readText(join(ctx.state, 'public/instance.json')) ?? 'null');
   if (!manifest?.canonicalOrigin) throw new Error('public/instance.json has no canonicalOrigin');
   return manifest;
 };
 export async function checkApiPublic(ctx) {
+  if (isLocalOnly(ctx)) return [];
   const manifest = publicManifest(ctx);
   try {
     const json = await getJson(ctx, `${manifest.canonicalOrigin}/functions/v1/get-public-config`);
@@ -1153,14 +1157,16 @@ export async function checkClock(ctx) {
   const ntp = ctx.run('timedatectl', ['show', '-p', 'NTPSynchronized', '--value'], { timeoutMs: 10000 });
   if (ntp.status === 0 && ntp.stdout.trim() === 'no') problems.push('the system clock is not synchronised with a time server (timedatectl: NTPSynchronized=no)');
   let offset = null;
-  try { offset = await publicClockOffset(ctx, publicManifest(ctx).canonicalOrigin); } catch { /* no manifest: the public check reports it */ }
+  // Nothing outside to compare with in a local-only facility: only whether a time source set the clock (docs/OPERATOR_INSTALL.md, "Local-only facility").
+  if (!isLocalOnly(ctx)) try { offset = await publicClockOffset(ctx, publicManifest(ctx).canonicalOrigin); } catch { /* no manifest: the public check reports it */ }
   if (offset !== null && Math.abs(offset) > LIMITS.clockOffsetMs) {
     problems.push(`the host clock is ${Math.round(Math.abs(offset) / 1000)} s ${offset < 0 ? 'behind' : 'ahead of'} the public address's clock`);
   }
   const state = [ntp.status === 0 ? `NTPSynchronized=${ntp.stdout.trim()}` : 'NTP status unknown', offset === null ? 'no offset reading' : `offset ${(offset / 1000).toFixed(1)} s`].join(', ');
   return [result('clock', 'clock_unsynced', problems.length === 0,
     problems.length ? `The host clock may be wrong: ${problems.join('; ')}` : `Host clock fine (${state})`,
-    'Central sign-in refuses tokens when the clock is over 30 s off. Fix: timedatectl set-ntp true (docs/TROUBLESHOOTING.md, "Monitoring and Slack alerts").')];
+    isLocalOnly(ctx) ? 'Invoice, GRN and dispatch dates come from this clock. Point chrony or systemd-timesyncd at a time server on your network and check timedatectl (docs/OPERATOR_INSTALL.md, "Local-only facility", clock).'
+      : 'Central sign-in refuses tokens when the clock is over 30 s off. Fix: timedatectl set-ntp true (docs/TROUBLESHOOTING.md, "Monitoring and Slack alerts").')];
 }
 
 // ---------------------------------------------------------------- host drift: cloudflared, Node.js, root-installed copies
@@ -1213,6 +1219,7 @@ function cloudflaredRestartDue(ctx) {
   return null;
 }
 export function checkCloudflared(ctx) {
+  if (isLocalOnly(ctx)) return [];
   const now = ctx.now();
   const version = ctx.run(ctx.cloudflared ?? '/usr/bin/cloudflared', ['--version'], { timeoutMs: 10000 });
   if (version.status !== 0) return [result('cloudflared', 'cloudflared_old', true, 'cloudflared is not installed here')];   // another host runs the tunnel, or none
@@ -1639,6 +1646,28 @@ export function evaluate(data, results, ran, now) {
 function recover(data, id, a) {
   if (a.firingSince && a.lastSent !== null) { a.clearPending = true; a.failingRuns = 0; a.firingSince = null; }
   else delete data.alerts[id];
+}
+
+// WH-146: the alerts a local-only facility shows administrators in the app (a banner on Home). Every run writes the alerts that are firing now
+// and not muted to the database (warehouse_security.sync_server_alerts, migration 170): one that is no longer in the list is cleared there.
+// Text goes through redact() like every outgoing alert. A failure is written to stderr and never stops the run.
+export const SYNC_ALERTS_SQL = 'SELECT warehouse_security.sync_server_alerts(:\'alerts\'::jsonb)';
+export function serverAlertList(ctx, now) {
+  const env = ctx.env_();
+  const secrets = ctx.secrets();
+  const text = (value, n) => clip(redact(value ?? '', env, secrets), n);
+  return Object.entries(ctx.data.alerts)
+    .filter(([id, a]) => a.firingSince && !a.clearPending && !isMuted(ctx.data, id, now))
+    .map(([id, a]) => ({ id: clip(id, 100), summary: text(a.summary, 200), detail: text(a.detail, 300), since: new Date(a.firingSince).toISOString() }));
+}
+export function syncServerAlerts(ctx, now) {
+  if (!isLocalOnly(ctx) || !databaseReady(ctx)) return;
+  try {
+    const list = serverAlertList(ctx, now);
+    const r = ctx.compose(['exec', '-T', '-e', 'PGOPTIONS=-c statement_timeout=10000', 'db', 'psql', '-X', '-q', '-v', 'ON_ERROR_STOP=1',
+      '-U', 'supabase_admin', '-d', 'postgres', '-v', `alerts=${JSON.stringify(list)}`], { timeoutMs: 30000, input: `${SYNC_ALERTS_SQL};\n` });
+    if (r.status !== 0) (ctx.log ?? stderrLog)(`could not write the server alerts for the app: ${clip(redact(r.stderr.trim(), ctx.env_(), ctx.secrets()), 200)}`);
+  } catch (error) { (ctx.log ?? stderrLog)(`could not write the server alerts for the app: ${error.message}`); }
 }
 
 export function describe(ctx) {
@@ -2175,6 +2204,7 @@ export async function runOnce(deps, { checks = CHECKS, heal = selfHeal } = {}) {
   data.lastRunAt = now;
   noteHostBoot(ctx);
   const plan = evaluate(data, results, ran, now);
+  syncServerAlerts(ctx, now);
   await notify(ctx, plan);
   await heartbeat(ctx);
   saveState(deps.state, data, deps.fsApi);

@@ -267,6 +267,8 @@ CENTRAL_LOCAL_CODE_VALUE="$(sed -n 's/^CENTRAL_LOCAL_CODE=//p' "$STATE/config/co
 CENTRAL_ADMIN_TRUST_VALUE="$(sed -n 's/^CENTRAL_ADMIN_TRUST=//p' "$STATE/config/compose.env" | head -n 1)"
 bash "$ROOT/scripts/compose.sh" exec -T db psql -X -q -U supabase_admin -d postgres -v ON_ERROR_STOP=1 -v central_issuer="$CENTRAL_ISSUER_VALUE" -v central_local_code="$CENTRAL_LOCAL_CODE_VALUE" -v central_admin_trust="$CENTRAL_ADMIN_TRUST_VALUE" < "$ROOT/scripts/configure-central.sql"
 bash "$ROOT/scripts/compose.sh" exec -T db psql -X -q -U supabase_admin -d postgres -v ON_ERROR_STOP=1 < "$ROOT/scripts/configure-sms.sql"
+# The way requests reach this installation (WH-146), for the pairing functions of migration 170.
+bash "$ROOT/scripts/compose.sh" exec -T db psql -X -q -U supabase_admin -d postgres -v ON_ERROR_STOP=1 -v ingress_mode="$INGRESS_NOW" < "$ROOT/scripts/configure-ingress.sql"
 # The SMS spending ceilings: a given value is stored; a new install without one gets 60 an hour and 300 a day; a facility that already
 # sent codes keeps what it has (scripts/configure-sms-ceiling.sql).
 bash "$ROOT/scripts/compose.sh" exec -T db psql -X -q -U supabase_admin -d postgres -v ON_ERROR_STOP=1 -v sms_hourly="$SMS_HOURLY" -v sms_daily="$SMS_DAILY" < "$ROOT/scripts/configure-sms-ceiling.sql"
@@ -302,6 +304,21 @@ fi
 # Optional services (printing, sensors, pooler) are not part of that start; the LAN fallback was started by lan.sh above.
 # Replace the running ones whose image or configuration changed.
 bash "$ROOT/scripts/build-images.sh" --replace-optional || echo 'Warning: a running optional service was not replaced (message above). The core services are up.' >&2
+# The neutral Android app from the offline bundle (WH-146) goes where the facility's own download page serves it (GET /app on the warehouse network).
+if [[ -n "${WAREHOUSE_OFFLINE_BUNDLE:-}" && -n "$LOCAL_ONLY" ]]; then
+  apk="$(bash "$ROOT/scripts/offline-bundle.sh" field "$WAREHOUSE_OFFLINE_BUNDLE" apk)"
+  if [[ -n "$apk" ]]; then
+    mkdir -p -- "$STATE/public/app"
+    cp -- "$WAREHOUSE_OFFLINE_BUNDLE/$apk" "$STATE/public/app/neutral.apk.tmp"
+    chmod 0644 -- "$STATE/public/app/neutral.apk.tmp"
+    ( cd "$STATE/public/app" && sha256sum neutral.apk.tmp | sed 's/neutral.apk.tmp/neutral.apk/' > neutral.apk.sha256.tmp && chmod 0644 neutral.apk.sha256.tmp \
+      && mv -f neutral.apk.tmp neutral.apk && mv -f neutral.apk.sha256.tmp neutral.apk.sha256 )
+    chmod 0755 -- "$STATE/public/app"
+    echo "The neutral app is served at /app on the warehouse network."
+  else
+    echo 'Note: the bundle has no neutral app, so the facility download page at /app has no file.' >&2
+  fi
+fi
 # The edge functions (functions/, including functions/_shared/) are bind-mounted into the functions container and the edge
 # runtime keeps the modules it has loaded, so a new checkout reaches neither through the `up` above (it recreates a container
 # only when its definition changed) nor through the image: new SQL would run under old function code. Recreate the container on

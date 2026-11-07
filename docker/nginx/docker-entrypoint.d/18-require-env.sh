@@ -32,6 +32,22 @@ case "${WAREHOUSE_MAINTENANCE:-}" in
   *) fail "WAREHOUSE_MAINTENANCE must be off or upgrading" ;;
 esac
 
+# How requests reach the gateway (WH-146; docker-compose.yml passes INGRESS and the two proxy values). cloudflare-tunnel and local-only render the
+# public server of templates/ (local-only publishes nothing but the loopback port); trusted-proxy renders templates-proxy/, which writes the two
+# proxy values into set_real_ip_from and real_ip_header, so each is checked here like the values above: an IPv4 address (or a /16 to /32
+# range) and a header name of letters, digits and dashes.
+case "${INGRESS:-cloudflare-tunnel}" in
+  cloudflare-tunnel|local-only) ;;
+  trusted-proxy)
+    octet='[0-9]{1,3}'
+    printf '%s\n' "${TRUSTED_PROXY_ADDRESS:-}" | grep -Eq "^$octet\.$octet\.$octet\.$octet(/(1[6-9]|2[0-9]|3[0-2]))?\$" \
+      || fail "TRUSTED_PROXY_ADDRESS must be one IPv4 address such as 172.18.0.1 (or a range /16 to /32); the gateway does not start with '${TRUSTED_PROXY_ADDRESS:-}'"
+    printf '%s\n' "${TRUSTED_PROXY_HEADER:-}" | grep -Eq '^[A-Za-z][A-Za-z0-9-]{1,62}$' \
+      || fail "TRUSTED_PROXY_HEADER must be a header name of letters, digits and dashes; the gateway does not start with '${TRUSTED_PROXY_HEADER:-}'"
+    ;;
+  *) fail "INGRESS must be cloudflare-tunnel, trusted-proxy or local-only" ;;
+esac
+
 # The LAN container (docker-compose.yml, service gateway-lan, profile `lan`) also writes three more values into its server: LAN_CIDR
 # as the allow list, and LAN_BIND_IP and LAN_HTTP_PORT as the Host the server answers to (the Host pin). An empty or odd one would
 # leave the server answering nobody or, written carelessly, everybody, so each is refused here: LAN_CIDR is one IPv4 range in CIDR

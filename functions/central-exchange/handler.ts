@@ -241,7 +241,8 @@ export async function handle(req: Request, overrides: Partial<HandlerDeps> = {})
   // router) or from an address; with a file nothing is ever fetched.
   const jwksFile = deps.env('CENTRAL_JWKS_FILE') || '';
   const jwksAddress = deps.env('CENTRAL_JWKS_URL') || '';
-  if (deps.env('AUTH_MODE') !== 'operator' || deps.env('APP_ENV') !== 'production' || !issuer || !(jwksFile || jwksAddress)) {
+  // WH-146: a local-only facility has no association sign-in, whatever else is set.
+  if (deps.env('INGRESS') === 'local-only' || deps.env('AUTH_MODE') !== 'operator' || deps.env('APP_ENV') !== 'production' || !issuer || !(jwksFile || jwksAddress)) {
     return failure('central_unavailable');
   }
   let body: Record<string, unknown>;

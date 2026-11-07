@@ -16,6 +16,8 @@ Sections: [host prerequisites](#host-prerequisites),
 [authentication and OTP limits](#authentication-and-otp-limits),
 [central sign-in](#central-sign-in),
 [Cloudflare Tunnel ingress](#cloudflare-tunnel-ingress),
+[ingress choices](#ingress-choices-wh-146),
+[local-only facility](#local-only-facility-no-domain-no-internet),
 [LAN fallback](#lan-fallback-plain-http-on-the-warehouse-network),
 [external doctor](#external-doctor), [first-use checks](#first-use-checks),
 [ordinary operation](#ordinary-operation), [retention](#retention),
@@ -1107,6 +1109,81 @@ zone, by someone who never touches the warehouse server, is enough.
   is healthy while `node scripts/doctor.mjs` fails, and
   `curl -sI https://warehouse-api.example.com/functions/v1/get-public-config` answers with a `cf-mitigated: challenge` header
   or a 403 page instead of JSON. Undo the setting; nothing on the host needs to change.
+
+## Ingress choices (WH-146)
+
+`setup.sh --ingress cloudflare-tunnel|trusted-proxy|local-only` says how requests reach this installation. It is chosen at the first setup and
+stored in `config/compose.env` (`INGRESS`); an installation made before has no line and is `cloudflare-tunnel`. Converting one later is refused.
+
+| Mode | For | What changes |
+|---|---|---|
+| `cloudflare-tunnel` (default) | Today's install | Nothing. |
+| `trusted-proxy` | Your own reverse proxy (nginx, Caddy, Traefik) on this host instead of the tunnel | The client address is read from one header, and only from one address: `--proxy-address <ip> --proxy-header <name>`. |
+| `local-only` | No domain and no internet: [Local-only facility](#local-only-facility-no-domain-no-internet) | No tunnel, no public address, no SMS, no Slack. |
+
+**trusted-proxy.** Run your proxy on this host and point it at `http://127.0.0.1:<gateway port>` (`GATEWAY_HTTP_PORT`). The gateway sees the
+connection from Docker's bridge, not from `127.0.0.1`: give `--proxy-address` the **Compose network's gateway address** (for example
+`docker network inspect <project>_default --format '{{(index .IPAM.Config 0).Gateway}}'`), or the network's `/16` to `/24` range if you prefer a
+range. Give `--proxy-header` the header your proxy sets to the client's address, for example `X-Real-IP`; set it with the proxy's own
+`proxy_set_header`, never pass a client's. Only a request from that address is believed: a request that carries the header from any other
+address is counted under its own address, so a stranger cannot choose the address the rate limits and the sign-in limits use. Unlike the
+tunnel mode, no other private range and not loopback is trusted. The proxy must also terminate https: the gateway speaks plain http on
+loopback only. Example: `bash setup.sh --operator ... --ingress trusted-proxy --proxy-address 172.18.0.1 --proxy-header X-Real-IP`.
+Changing the address or header later: rerun setup with the new values.
+
+## Local-only facility: no domain, no internet
+
+A cold storage that works only on its own Wi-Fi. The server, the phones and the backups need no internet, and a stranger on the Wi-Fi cannot
+change records. Product's spec: WH-146. **Needs the signed warehouse network (WH-133, the `lan-signer` service)**: `setup.sh --ingress local-only`
+refuses on a release without it.
+
+**What it is.** `--ingress local-only` publishes no public listener and runs no tunnel. The warehouse network listener (`gateway-lan`, see
+[LAN fallback](#lan-fallback-plain-http-on-the-warehouse-network)) is the facility's only address; setup turns it on (`scripts/lan.sh on auto`) and
+`lan.sh off` is refused. Every request and answer on it is signed (WH-133). Setup asks for no SMS provider, no Slack webhook and no domain:
+`--api-url`, `--provider-env`, `--central-*`, `--sms-*`, `--alert-webhook-file` and the heartbeat and sensor webhooks are refused. The facility's
+identity is its `instanceId`; the origin in `public/instance.json` is a placeholder (`https://wh-<12 hex>.local-only.invalid`) that can never resolve.
+
+**What you need.** The host; a router that gives it a fixed address (**reserve the address in the router**: phones keep the address they
+were paired with; if it changes, a new pairing code carries the new one); a **time source** for the clock (below); a USB drive for backups
+([USB backup](#backup-and-restore)); Docker 29 or newer (its containerd image store keeps the image digests across `docker save` and `docker load`).
+Android phones only: the app comes as the neutral APK.
+
+**Install from the offline bundle.** On a machine with internet, download the release's bundle `warehouse-bundle-vX.Y.Z.tar` and carry it on a USB drive.
+(A maintainer makes it with `bash scripts/offline-bundle.sh make --tag vX.Y.Z --release-images release-images.json --signing-key <release key> --out warehouse-bundle-vX.Y.Z.tar [--apk neutral.apk]`;
+it holds every image by digest, the tagged source as a git bundle, the neutral APK, `SHA256SUMS` and a signature of that list made with the release key.)
+
+1. Check the signature **before** you trust the file, with the key fingerprint published in the README (Security): `tar -xf warehouse-bundle-vX.Y.Z.tar SHA256SUMS SHA256SUMS.sig`, then
+   `ssh-keygen -Y verify -f <a file with: release namespaces="warehouse-offline-bundle" <the public key line>> -I release -n warehouse-offline-bundle -s SHA256SUMS.sig < SHA256SUMS`.
+2. Unpack the source: `tar -xf warehouse-bundle-vX.Y.Z.tar source.bundle && git clone --branch vX.Y.Z source.bundle warehouse && cd warehouse`.
+3. `bash setup.sh --operator --state-dir /srv/warehouse/<name> --admin-phone 91XXXXXXXXXX --admin-name NAME --company "NAME" --ingress local-only --from-bundle /path/warehouse-bundle-vX.Y.Z.tar`.
+   Setup opens the bundle (file names, every checksum, the signature against `.github/allowed_signers`), refuses a checkout that is not the bundle's commit, loads the images
+   with `docker load`, and goes on as an online setup does. The neutral app is copied to `<state>/public/app/`.
+4. `node scripts/doctor.mjs --local` checks the services and the warehouse network listener. It does not look for a public address, a tunnel, Slack or SMS.
+
+**Upgrade with no internet.** `bash upgrade.sh --from-bundle /path/warehouse-bundle-vX.Y.Z.tar` (add `--dry-run` first). It checks the bundle against the keys of **this** checkout, not the
+bundle's own copy, takes the tag from the bundle's source, then does what an online upgrade does: the tag's signature check, a refusal to go backward, the maintenance window, a pre-upgrade backup
+that is proved to restore, the images from the bundle, setup of the new release. An older bundle than the installed release is refused.
+
+**Signing in: pairing codes.** There is no SMS. An administrator opens Users, the person, **Make sign-in code**; the first administrator gets a code from the host:
+`bash scripts/pairing-code.sh <10-digit mobile>` (a terminal QR when `qrencode` is installed, always the text). The code is 8 characters and a secret, valid for 10 minutes, once, for that person only
+(a new code replaces the earlier one; a person needs the person's profile first, and a customer is added by an administrator in person). The phone sends the code over the Wi-Fi; the server proves
+it knows the secret, then sends the session and its warehouse network key encrypted under a key derived from the secret, so neither crosses the Wi-Fi readable. Break-glass codes still work for workers.
+Sessions last as normal sessions do (30 days idle, 90 in all); then the person needs a new code.
+
+**The app on the Wi-Fi.** `http://<address>:<port>/app` (the address `bash scripts/lan.sh status` prints) is a download page with the neutral APK and its SHA-256, on the warehouse network only.
+It needs no sign-in (the phone has nothing to sign with before it has the app).
+
+**Alerts.** There is no Slack. The checker writes the alerts that are firing to the database; administrators read them with `get_server_alerts` (the banner at the top of Home). An alert disappears when its
+condition clears; a muted alert is not listed. `node scripts/watch.mjs status` shows them on the host too.
+
+**Backups.** USB only, as described under [backup and restore](#backup-and-restore); the "no copy off this host" alert is answered by the USB copy. The off-site option is for online facilities.
+
+**The clock.** Invoice, GRN and dispatch dates come from the host's clock, and with no internet nothing corrects it. `timedatectl` must say `System clock synchronized: yes` with a time source on your network
+(chrony or systemd-timesyncd pointed at your router or a host that has internet time) or a battery-backed hardware clock you set by hand and check. `doctor` and the checker (`clock_unsynced`) warn
+when `NTPSynchronized` is `no`. Signing is not affected (the server's time is used), but documents would carry the wrong dates.
+
+**What it exposes, plainly.** Everyone on the Wi-Fi can **read** the traffic (plain http); nobody can **change** a request or an answer, because each is signed with the key of a signed-in session. A stranger who
+joins the Wi-Fi cannot sign in without a code. Use WPA2 or WPA3, and, if you can, a separate network for the server and the staff phones. The pairing exchange and the download page are the only unsigned calls.
 
 ## LAN fallback (plain http on the warehouse network)
 

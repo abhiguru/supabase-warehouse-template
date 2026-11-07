@@ -73,6 +73,11 @@ export async function handle(req: Request, overrides: Partial<HandlerDeps> = {})
   }
   const operation = new URL(req.url).pathname.split('/').filter(Boolean).at(-1);
   if (!['request', 'verify', 'break-glass', 'status', 'signout'].includes(operation || '')) return respond({ success: false, error: 'Not found' }, 404);
+  // WH-146: a local-only facility sends no SMS and takes no SMS code; people sign in with a pairing code (pairing-redeem), the operator with a
+  // break-glass code (still allowed, as are status and signout).
+  if (deps.env('INGRESS') === 'local-only' && (operation === 'request' || operation === 'verify')) {
+    return respond({ success: false, code: 'local_only', error: 'This facility signs in with a code from its administrator. Ask for a sign-in code.' }, 403);
+  }
   let body: Record<string, unknown>;
   try {
     body = await readBoundedJson(req);
