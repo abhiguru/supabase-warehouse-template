@@ -31,32 +31,9 @@ bash "$ROOT/scripts/lan.sh" start || echo 'Warning: the LAN fallback was not sta
 # Replace the running ones whose image or configuration changed.
 bash "$ROOT/scripts/build-images.sh" --replace-optional || echo 'Warning: a running optional service was not replaced (message above). The core services are up.' >&2
 # The Windows print bridge (PRINT_TRANSPORT=bridge): scripts/compose.sh works out its address (the WSL2 default gateway) at every
-# start. Say what it is, or that it could not be worked out; printing is not needed for the start, so this never stops it.
-if grep -Eq '^PRINT_TRANSPORT=bridge[[:space:]]*$' "$STATE/config/compose.env"; then
-  if grep -Eq '^PRINTBRIDGE_URL=.' "$STATE/config/compose.env"; then
-    echo 'Print bridge: the address set in compose.env (PRINTBRIDGE_URL).'
-  else
-    bridge_url="$(bash "$ROOT/scripts/print-bridge-url.sh" "$(sed -n 's/^PRINTBRIDGE_PORT=//p' "$STATE/config/compose.env" | head -n 1)" || true)"
-    if [[ -n "$bridge_url" ]]; then
-      echo "Print bridge: $bridge_url (the Windows host, worked out at this start)."
-      # PRINTBRIDGE_URL is fixed when the functions container is created, and the gateway can change at a Windows restart: the running
-      # container must carry the address worked out now. `up -d functions` recreates it only when its configuration differs.
-      functions_id="$(bash "$ROOT/scripts/compose.sh" ps -q functions 2>/dev/null | head -n 1 || true)"
-      if [[ -n "$functions_id" ]]; then
-        running_url="$(docker inspect --format '{{range .Config.Env}}{{println .}}{{end}}' "$functions_id" 2>/dev/null | sed -n 's/^PRINTBRIDGE_URL=//p' | head -n 1 || true)"
-        if [[ "$running_url" != "$bridge_url" ]]; then
-          echo "Print bridge: the functions container has '${running_url:-nothing}'; recreating it with $bridge_url."
-          WAREHOUSE_COMPOSE_WITHOUT_LAN=1 bash "$ROOT/scripts/compose.sh" up -d functions || echo 'Warning: the functions container could not be recreated with the new bridge address (message above); printing may fail.' >&2
-        fi
-      fi
-    else echo 'Warning: the Windows host address for the print bridge could not be worked out (no default route); printing will fail until it can.' >&2; fi
-  fi
-  # Mirrored networking has no vEthernet (WSL) adapter on Windows, so the bridge cannot bind its address and the gateway is not the
-  # Windows host. Said when wslinfo can tell; without it nothing is said.
-  if command -v wslinfo >/dev/null 2>&1 && [[ "$(wslinfo --networking-mode 2>/dev/null || true)" == mirrored ]]; then
-    echo 'Warning: WSL uses mirrored networking; the print bridge needs NAT mode (docs/PRINTING.md). Set networkingMode=nat in %UserProfile%\.wslconfig and run wsl --shutdown, or give -ListenAddress and PRINTBRIDGE_URL explicitly.' >&2
-  fi
-fi
+# command. Say what it is, and recreate the functions container when it carries another one (scripts/print-bridge-sync.sh, which the
+# boot unit and the monitoring checker run too). Printing is not needed for the start, so this never stops it.
+bash "$ROOT/scripts/print-bridge-sync.sh" || true
 node "$ROOT/scripts/doctor.mjs" --local
 # The monitoring checker runs from a systemd timer that start.sh cannot install (it needs sudo): print the command
 # when the timer is missing.

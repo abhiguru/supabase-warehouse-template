@@ -1387,6 +1387,8 @@ export function selfHeal(ctx) {
       } else if (idle) {
         const r = ctx.compose(act.args, { timeoutMs: 180000 });
         h.lastAt = now; h.unhealthyRuns = 0; h.actions.push(now);
+        // functions holds PRINTBRIDGE_URL from its creation: after a restart, put the current bridge address in (a no-op unless PRINT_TRANSPORT=bridge).
+        if (r.status === 0 && name === 'functions') ctx.run('bash', [join(ctx.root, 'scripts/print-bridge-sync.sh'), '--quiet'], { timeoutMs: 180000 });
         h.lastAction = r.status === 0 ? `${act.what}; the checker ${act.did}`
           : `${act.what}; the checker could not do it: ${clip(redact(String(r.stderr ?? '').trim(), ctx.env_()), 200)}`;
       }
