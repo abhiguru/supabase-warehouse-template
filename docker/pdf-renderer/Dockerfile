@@ -5,7 +5,7 @@
 # To use another Chrome for Testing build, pass both CHS_VERSION and CHS_SHA256 (see README.md).
 
 # One literal FROM, so Dependabot sees the digest; the other stages start from it.
-FROM node:24-trixie-slim@sha256:43b9ba1142b8dcf33fa8f922ca1be85714adc444e0586c7cf7726daaeabc1bea AS base
+FROM node:24-trixie-slim@sha256:0820eaa85e07d0490446dd01d14707e17e6108a36988cf374899cd057eb3812d AS base
 
 # ---- chrome-headless-shell, downloaded and checked against a pinned SHA-256 -------------------------------
 FROM base AS chs

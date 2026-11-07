@@ -25,6 +25,8 @@ file used to carry for earlier installations are in git: `git show b45ae0b:CHANG
 - **ESC/P2 output fixes** for the GRN, dispatch and invoice forms: bare DC4, page length, one form feed per slip, non-ASCII text printed as ASCII or `?`.
 - **Migration 151 also** reads the dispatch print range in natural order.
 
+- Release images: the db and pdf-renderer base digests move to the current builds of the same tags (postgres 18.6-trixie, node 24-trixie-slim) so the images carry apt and libapt-pkg7.0 3.0.4 (CVE-2026-109518, WH-128).
+
 ## v0.8.0 (2026-11-07)
 
 **Migrations 128 to 149: invoice cancel and delete, each item's own packaging word, items added by staff, signed-in devices, and a safer
