@@ -434,6 +434,39 @@ bash setup.sh --operator <your usual options> --grn-numbering 'year,prefix=GRN/'
   the rule's whether the check is on or off.
 - **Slips.** Numbers of up to 20 characters are possible; the pre-printed GRN and dispatch slips print the number in a field made for 8, so check a long number on paper once before you use one.
 
+## Import customers, items and rates
+
+An optional step after setup, for a new facility whose owner has the customer list, the items and the rates in a spreadsheet. It runs on the host, once, by the technician; there is no import screen in the app.
+
+```
+bash scripts/import.sh --customers customers.csv --items items.csv --rates rates.csv           # dry run: checks, saves nothing
+bash scripts/import.sh --customers customers.csv --items items.csv --rates rates.csv --apply   # saves
+```
+
+Any one, two or all three files; `WAREHOUSE_STATE_DIR` must be set and the stack running (`bash start.sh`). The command takes the operator lock. Always run the dry run first and read it.
+
+**Files.** Start from the templates in `scripts/import-templates/` (`customers.csv`, `items.csv`, `rates.csv`): a header row, then your rows (each template has one made-up example row to delete). Save from Excel or Google Sheets as **CSV UTF-8** (a file in another encoding stops with "Save the file as CSV UTF-8 and try again."). Gujarati names are fine. Columns are found by header name, in any order; an unknown header is an error, and so is a missing required one. Blank lines are ignored. A cell that holds a comma goes in quotes (spreadsheets do this for you). Dates are `DD/MM/YYYY`; amounts are plain numbers (`12.50`, no ₹ sign, no thousands comma).
+
+| File | Columns (required in bold) |
+| --- | --- |
+| `customers.csv` | **Customer name**, **Mobile number** (10 digits), Email, Full address, City, State, Pincode (6 digits), GST number (15 characters), PAN (10 characters), Contact name, Contact mobile, Contact email |
+| `items.csv` | **Item name**, **Packaging** (Bag, Box, Crate or the item's own word), Description |
+| `rates.csv` | **Item name**, **Packaging**, Customer name (empty = the item's default rate), **Price type** (`Monthly` or `One-time`), **Start date**, **From (kg)**, **Up to (kg)**, **Rent (₹)**, **Labour (₹)**, **Tax (%)** |
+
+The labels are those of the app's customer, item and rate forms. In `rates.csv` one row is one weight band; the rows with the same item, customer, price type and start date make one rate. Rent, labour and tax are all required (0 is allowed, empty is not). A default rate's bands must start at 0 kg and follow on without a gap. A rate may name an item or customer from the `items.csv` or `customers.csv` of the same run.
+
+**What is checked.** Every row, by the same rules the app's saves use (required fields, lengths, mobile, GST and PAN shapes, weight bands, amounts, dates), and then against what the facility already holds:
+
+- A customer whose name matches an existing one (case and spaces ignored) is skipped when every field is the same, and is a **conflict** otherwise.
+- An item is matched by name **and** packaging word, the same way: two items may share a name when their packaging words differ.
+- A rate is matched by item, customer, price type, start date and bands: skipped when the same, a conflict when different. The import only adds rates to an item and customer that have none; rates the facility already has are never ended or replaced. (An item made by the same run is given the facility's standard rate when it is created; a default rate in the file for that item replaces it.)
+- The same customer (name or mobile number), item or rate twice in one file is an **error**.
+- Nothing existing is ever updated or overwritten.
+
+**The answer.** One summary line per file (rows read, would add, skip, conflicts, errors), then one line per problem as `file line N, column X: reason` (a conflict ends with "(conflict)"). The exit status is 1 when there is any error, so a script can stop. The dry run really runs the import in the database and rolls it back, so it meets exactly what `--apply` would meet. Format errors (a bad date, a missing column) are listed first, and the database checks run once the files have none.
+
+**`--apply`** saves only when there are no errors, in one transaction, in the order customers, items, rates: it is all or nothing, and a failure leaves nothing behind. Conflicts do not stop it; they are skipped and listed again. Running the same files again adds nothing (everything is skipped). The records are written through the same server functions the app uses, as a service account named `import` (kept switched off between runs; the Users list shows it), so the audit log and the price history read "import". Take a backup first (`bash scripts/backup.sh`) when the facility already holds data.
+
 ## Several facilities on one host
 
 One installation serves one facility: its own state directory, its own Compose
