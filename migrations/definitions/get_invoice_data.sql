@@ -37,6 +37,8 @@ BEGIN
         SELECT
             i.id as invoice_id,
             i.inv_no as invoice_number,
+            i.inv_prefix,
+            warehouse_security.invoice_label(i.inv_prefix, i.inv_no) as invoice_label,
             i.inv_date as invoice_date,
             i.inv_fin_year,
             i.inv_fin_year || '-' || (i.inv_fin_year + 1) as financial_year,
@@ -237,6 +239,8 @@ BEGIN
                 'header', jsonb_build_object(
                     'invoice_id', v_invoice_header.invoice_id,
                     'invoice_number', v_invoice_header.invoice_number,
+                    'inv_prefix', v_invoice_header.inv_prefix,
+                    'invoice_label', v_invoice_header.invoice_label,
                     'invoice_date', v_invoice_header.invoice_date,
                     'inv_fin_year', v_invoice_header.inv_fin_year,
                     'financial_year', v_invoice_header.financial_year,

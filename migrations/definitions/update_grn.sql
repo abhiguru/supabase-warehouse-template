@@ -317,7 +317,8 @@ BEGIN
            AND warehouse_security.business_date(p_date) IS DISTINCT FROM warehouse_security.business_date(v_stored_date) THEN
             RETURN warehouse_security.refuse('GRN_DATE_LOCKED', 'This GRN is invoiced. Delete or edit the invoice first.',
                 jsonb_build_object('gr_no', v_stored_gr_no, 'date', to_char(warehouse_security.business_date(p_date), 'YYYY-MM-DD'),
-                                   'invoice_no', v_inv_no, 'inv_fin_year', v_inv_year));
+                                   'invoice_no', v_inv_no, 'inv_fin_year', v_inv_year,
+                                   'invoice_label', warehouse_security.invoice_label(warehouse_security.invoice_prefix_for_year(v_inv_year), v_inv_no)));
         END IF;
 
         -- D3 (IST days): a GRN date that changes may not move after the first dispatch from the GRN.
@@ -346,9 +347,10 @@ BEGIN
             RETURN warehouse_security.refuse('GRN_INVOICED',
                 CASE WHEN v_inv_no IS NULL
                      THEN format('GRN %s is invoiced. A line can''t be added. Delete the invoice first.', v_stored_gr_no)
-                     ELSE format('GRN %s is on invoice %s. A line can''t be added. Delete the invoice first.', v_stored_gr_no, v_inv_no)
+                     ELSE format('GRN %s is on invoice %s. A line can''t be added. Delete the invoice first.', v_stored_gr_no, warehouse_security.invoice_label(warehouse_security.invoice_prefix_for_year(v_inv_year), v_inv_no))
                 END,
-                jsonb_build_object('gr_no', v_stored_gr_no, 'invoice_no', v_inv_no, 'inv_fin_year', v_inv_year));
+                jsonb_build_object('gr_no', v_stored_gr_no, 'invoice_no', v_inv_no, 'inv_fin_year', v_inv_year,
+                                   'invoice_label', warehouse_security.invoice_label(warehouse_security.invoice_prefix_for_year(v_inv_year), v_inv_no)));
         END IF;
 
         -- D2: per listed line, only where a value really differs from the stored one. An invoiced lot keeps its item, packing
@@ -383,9 +385,9 @@ BEGIN
                     IF v_chk.weight_changed THEN v_changed_fields := v_changed_fields || to_jsonb('weight'::text); END IF;
                     RETURN warehouse_security.refuse('LOT_INVOICED',
                         format('%s is on invoice %s. Item, packing and weight can''t be changed. Delete or edit the invoice first.',
-                               v_chk.stored_name, v_inv_no2),
+                               v_chk.stored_name, warehouse_security.invoice_label(warehouse_security.invoice_prefix_for_year(v_inv_year2), v_inv_no2)),
                         jsonb_build_object('line_id', v_chk.line_id, 'item_name', v_chk.stored_name,
-                                           'invoice_no', v_inv_no2, 'inv_fin_year', v_inv_year2, 'fields', v_changed_fields));
+                                           'invoice_no', v_inv_no2, 'invoice_label', warehouse_security.invoice_label(warehouse_security.invoice_prefix_for_year(v_inv_year2), v_inv_no2), 'inv_fin_year', v_inv_year2, 'fields', v_changed_fields));
                 END IF;
 
                 IF v_chk.dispatched AND (v_chk.item_changed OR v_chk.packaging_changed) THEN

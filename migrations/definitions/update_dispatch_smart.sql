@@ -306,8 +306,9 @@ BEGIN
             IF v_no_changed THEN v_changed_fields := v_changed_fields || to_jsonb('disp_no'::text); END IF;
             RETURN warehouse_security.refuse('DISPATCH_INVOICED',
                 format('Dispatch %s is on invoice %s. Its date and number can''t be changed. Delete or edit the invoice first.',
-                       v_stored_disp_no, v_inv_no),
+                       v_stored_disp_no, warehouse_security.invoice_label(warehouse_security.invoice_prefix_for_year(v_inv_year), v_inv_no)),
                 jsonb_build_object('dispatch_no', v_stored_disp_no, 'invoice_no', v_inv_no,
+                                   'invoice_label', warehouse_security.invoice_label(warehouse_security.invoice_prefix_for_year(v_inv_year), v_inv_no),
                                    'inv_fin_year', v_inv_year, 'fields', v_changed_fields));
         END IF;
     END IF;

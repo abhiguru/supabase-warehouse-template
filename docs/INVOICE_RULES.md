@@ -412,6 +412,16 @@ not replayed (migration 120), so entering the same document again creates it. `I
 or dispatch number is compared as it is stored. (A soft-deleted invoice row (`deleted_at` set), which only the service key or an operator makes, still
 reserves its number, as above; a deleted invoice's row is gone and `unique_inv_no_per_year` still refuses a second invoice with a number a live or cancelled invoice holds.)
 
+### Optional prefix (migration 175, WH-139)
+
+An administrator may set a prefix of up to 8 characters (`A-Z`, `0-9`, `/`, `-`; lowercase is turned into capitals) with `set_document_numbering('invoice', {scheme, start, prefix})`; empty (the default) means none. A rule that leaves `prefix` out keeps the stored one. The number stays a whole number: counting, the suggestion and uniqueness per financial year read the digits only. The full number is prefix + digits with no space (at most 8 + 8 = 16 characters), for example `SRT/12`.
+
+- The prefix cannot change while any invoice row (live, cancelled or soft-deleted) exists in the current financial year: `{success:false, error_code:'WH409', reason:'NUMBERING_PREFIX_MID_YEAR'}`. From 1 April until the first invoice of the year it can change.
+- Each invoice stores the prefix it was saved with (`invoice.inv_prefix`, set on insert from the prefix the invoice's financial year already holds, else the rule's) and keeps it. All invoices of a financial year carry one prefix.
+- Reads add `inv_prefix` and `invoice_label` (the full number) beside the unchanged `inv_no` / `invoice_number` digits: invoice list items, `get_invoice_detail` and the `get_invoice_data` header (and their `linked_invoice`), the answers of save (also each of `documents`), update, cancel, delete and `delete_invoice_pair` (and their refusals), the `invoice` object of `record_payment`, `update_payment` and `delete_payment`, the print range, and `suggest_document_number('invoice')` (`prefix`). The GRN, dispatch and customer reads and the reports carry `invoice_label` too (`invoice_labels` beside `invoice_numbers`), and every message that names an invoice uses the full number. `get_invoices_list` searches the full number (`SRT/12` and `12` both match, any case).
+- Both documents of a two-document GST save carry the same prefix (they are in one financial year).
+- The PDF prints the full number; the pre-printed form never cuts it: a number longer than the 12-character field moves the GSTIN right (one space after the number), and an invoice whose GSTIN would then run into the state is printed on plain paper instead (WH-151's fit check).
+
 ## Invoices only when the goods are out, and the total the user confirmed (migration 121, owner decisions D9, D18, D23)
 
 - **No invoice while stock remains (D9).** `save_invoice` and `update_invoice` refuse, before writing, a GRN that has

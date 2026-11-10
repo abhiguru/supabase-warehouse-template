@@ -48,7 +48,7 @@ export const documentPdf = (kind: Kind) => async (req: Request): Promise<Respons
       }
       const result = await query.single();
       if (result.error || !result.data) throw { status: 404, message: 'Document unavailable' };
-      header = result.data; number = String(value); date = header.date || header.disp_date || header.inv_date;
+      header = result.data; number = kind === 'invoice' ? `${header.inv_prefix ?? ''}${value}` : String(value); date = header.date || header.disp_date || header.inv_date;
       if (kind === 'invoice') {
         // Only a cancelled invoice gets the line; an invoice that is not cancelled prints as it always did.
         const cancel = await reader.from('invoice').select(invoiceCancelColumns).eq('id',header.id).single();

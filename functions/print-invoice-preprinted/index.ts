@@ -212,15 +212,18 @@ function generateInvoicePage(
 
   // Invoice Number at position 9 (2cm)
   headerLine = padRight('', LAYOUT.INVOICE_NO_OFFSET);  // Start with spaces to position 9
-  headerLine += invoice.inv_no;
+  // WH-139: the full number (prefix + digits, at most 16 characters). The field up to the GSTIN holds 12; a longer number is never cut:
+  // the GSTIN starts one space after it instead. headerFit (invoice-print-fit.ts) applies the same rule and refuses the invoice when the
+  // GSTIN would then run into the state, so the state below is never cut either.
+  headerLine += invoice.invoice_label ?? invoice.inv_no;
 
   // GSTIN at position 25 (5.3cm) - use absolute positioning
   const currentLength = headerLine.length;
   if (currentLength < LAYOUT.GSTIN_OFFSET) {
     headerLine += ' '.repeat(LAYOUT.GSTIN_OFFSET - currentLength);
   } else {
-    // If invoice number is too long, ensure at least 1 space separator
-    headerLine = headerLine.substring(0, LAYOUT.GSTIN_OFFSET - 1) + ' ';
+    // Number past the field: keep all of it and one space separator
+    headerLine += ' ';
   }
   headerLine += truncateString(invoice.gstin || '', 25);
 
@@ -563,7 +566,7 @@ Deno.serve(async (req) => {
     let printContent = '';
     results.forEach((invoice: any) => {
       const label = invoice.invoice_label ?? invoice.inv_no;
-      const base = { inv_no: invoice.inv_no, inv_fin_year: invoice.inv_fin_year, invoice_id: invoice.id };
+      const base = { inv_no: invoice.inv_no, invoice_label: String(label), inv_fin_year: invoice.inv_fin_year, invoice_id: invoice.id };
       if (preprintedRefusal(invoice) === 'igst') {
         skipped.push({ ...base, reason: 'igst', message: `Invoice ${label}: ${IGST_PLAIN_PAPER}` });
         return;
@@ -590,7 +593,7 @@ Deno.serve(async (req) => {
 
     if (results.length === 0) {
       throw new Error(skipped.length > 0
-        ? `All ${skipped.length} Invoices in the range are cancelled and were skipped (${skipped.map((item: any) => item.inv_no).join(', ')})`
+        ? `All ${skipped.length} Invoices in the range are cancelled and were skipped (${skipped.map((item: any) => item.invoice_label ?? item.inv_no).join(', ')})`
         : 'No Invoices found in specified range');
     }
 

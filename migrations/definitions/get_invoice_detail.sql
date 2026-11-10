@@ -15,6 +15,7 @@ BEGIN
   PERFORM warehouse_security.authorize_rpc('get_invoice_detail',jsonb_build_object('p_invoice_id',p_invoice_id));
     SELECT jsonb_build_object(
         'id', i.id, 'inv_fin_year', i.inv_fin_year, 'inv_no', i.inv_no,
+        'inv_prefix', i.inv_prefix, 'invoice_label', warehouse_security.invoice_label(i.inv_prefix, i.inv_no),
         'gr_id', i.gr_id, 'gr_no', i.gr_no, 'customer_id', i.customer_id,
         'customer_name', i.customer_name, 'inv_date', i.inv_date,
         'labour', i.labour, 'tax_amount', i.tax_amount, 'total', i.total,

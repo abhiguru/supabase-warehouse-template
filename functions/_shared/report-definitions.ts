@@ -72,6 +72,11 @@ interface Definition {
   all: Level;
 }
 
+// An invoice number as the reports have always shown it (invoice_number), unless the invoice carries a prefix (WH-139): then the full
+// number (invoice_label, prefix + digits).
+const shownInvoiceNumber = (row: Row | undefined): unknown =>
+  typeof row?.inv_prefix === 'string' && row.inv_prefix !== '' && typeof row.invoice_label === 'string' ? row.invoice_label : row?.invoice_number;
+
 const list = (value: unknown): Row[] => Array.isArray(value) ? value.filter(row => row && typeof row === 'object') : [];
 const num = (value: unknown): number | null => {
   if (typeof value === 'number' && Number.isFinite(value)) return value;
@@ -174,7 +179,7 @@ export const reportDefinitions: Record<ReportName, Definition> = {
         items: grn.total_items,
         quantity: grn.total_qty,
         stock: (grn.dispatch_summary as Row | undefined)?.current_stock,
-        invoice: (grn.invoice_status as Row | undefined)?.invoice_number ?? '',
+        invoice: shownInvoiceNumber(grn.invoice_status as Row | undefined) ?? '',
         invoiced: Boolean((grn.invoice_status as Row | undefined)?.is_invoiced),
         // WH-138 (migration 165): the GRN's state; a backend without it, and every GRN with no live invoice, falls back to
         // is_invoiced (with the setting off the two agree).
@@ -276,7 +281,7 @@ export const reportDefinitions: Record<ReportName, Definition> = {
       // of its summary, and its amount and tax cells are empty, so the totals row and the summary add nothing for it). A Paid / Pending
       // choice lists only the invoices of that status, so it never lists a cancelled one.
       rows: (body, request) => list(body.invoices).map(invoice => isCancelledInvoice(invoice) ? {
-        invoice_no: invoice.invoice_number,
+        invoice_no: shownInvoiceNumber(invoice),
         date: invoice.invoice_date,
         grn: invoice.grn_ref,
         amount: null,
@@ -285,7 +290,7 @@ export const reportDefinitions: Record<ReportName, Definition> = {
         received: 0,
         balance: 0,
       } : {
-        invoice_no: invoice.invoice_number,
+        invoice_no: shownInvoiceNumber(invoice),
         date: invoice.invoice_date,
         grn: invoice.grn_ref,
         amount: invoice.total,

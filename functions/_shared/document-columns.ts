@@ -6,7 +6,7 @@
 // header names what the document prints and nothing else. A field added to the
 // invoice document is added here; tests/document-columns.test.mjs compares the
 // list with the fields document-pdf.ts uses.
-export const invoiceHeaderColumns = 'id,customer_name,inv_date,inv_fin_year,labour,tax_amount,discount,total';
+export const invoiceHeaderColumns = 'id,customer_name,inv_date,inv_fin_year,inv_prefix,labour,tax_amount,discount,total';
 
 // A cancelled invoice prints one more line (migration 134). Its two columns are read apart from the header, so the header list above stays
 // the fields every invoice prints.

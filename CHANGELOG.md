@@ -54,6 +54,8 @@ file used to carry for earlier installations are in git: `git show b45ae0b:CHANG
 
 ### Changed
 
+- **Optional invoice number prefix, up to 8 characters (migration 175, WH-139).** An administrator can set a prefix (for example `SRT/`) in the invoice numbering rule; the number stays whole underneath, so counting, the suggestion and uniqueness are unchanged, and a facility that sets none keeps plain numbers. The prefix cannot change while the current financial year has an invoice (`NUMBERING_PREFIX_MID_YEAR`). Each invoice stores its prefix (`invoice.inv_prefix`); reads (invoices, both documents of a GST save, payments, GRN, dispatch, customer reads and reports) add `inv_prefix` and `invoice_label`; the PDF and the pre-printed form print the full number (at most 16 characters). Upgrade the app in the same window. [INVOICE_RULES.md](docs/INVOICE_RULES.md).
+
 - **Staff may print** (owner decision, 2026-11-07), and print refusals carry a `code` (`PRINTING_OFF`, `PRINT_FORBIDDEN`, `PRINTER_FAILED`, `PRINT_UNCONFIRMED`). A printer failure now answers 502 `PRINTER_FAILED` (it was 500).
 - **The print routes are served** and answer 503 `PRINTING_OFF` only while the `printing` capability is off.
 - **CUPS container** creates the right raw queue or fails with a reason, and accepts jobs from the compose networks only.
