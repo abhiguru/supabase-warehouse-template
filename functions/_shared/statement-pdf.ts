@@ -29,6 +29,8 @@ export interface Statement {
   record_payments: boolean;
   figures: { invoices_amount: number | string; not_invoiced_left: number | string; not_invoiced_in_store: number | string };
   lots_without_rate: number;
+  /** Payments that name no invoice (Record payments on); null otherwise. Shown, added to nothing. */
+  unlinked_paid_amount?: number | string | null;
   left: StatementLeft[] | null;
   in_store: StatementStore[] | null;
   invoices: StatementInvoice[] | null;
@@ -98,6 +100,7 @@ export function statementHtml(statement: Statement, company: string): string {
     </head><body><h1>${escapeHtml(company)}</h1><h2>Statement</h2>
     <p class="meta"><strong>${escapeHtml(statement.customer.name)}</strong>${statement.customer.active === false ? ' (Deactivated)' : ''}<br>As of ${escapeHtml(asOfText(statement.as_of))}</p>
     <dl class="figures">${figures.map(([key, value]) => `<div class="figure"><dt>${escapeHtml(key)}</dt><dd>${escapeHtml(value)}</dd></div>`).join('')}</dl>
+    ${Number(statement.unlinked_paid_amount ?? 0) > 0 ? `<p class="meta">Paid, not matched to an invoice: ${escapeHtml(money(statement.unlinked_paid_amount))}</p>` : ''}
     <p class="note">Estimate if the goods left today. The invoice may differ.</p>
     ${statement.lots_without_rate > 0 ? `<p class="warn">${escapeHtml(bags(statement.lots_without_rate))} lots have no rate and are not counted.</p>` : ''}
     <h3>Not yet invoiced: goods that have left</h3>

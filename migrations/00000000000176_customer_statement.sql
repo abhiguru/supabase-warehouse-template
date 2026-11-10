@@ -29,14 +29,17 @@
 --     invoices_basis ('due' | 'invoiced'), figures {invoices_amount, not_invoiced_left, not_invoiced_in_store}, lots_without_rate,
 --     unlinked_paid_amount (payments on, else null), left [{gr_id, gr_no, bags, amount}], in_store [{gr_id, gr_no, grn_date, days_in_store,
 --     bags, amount, lots [{grn_item_id, item_name, packaging, bags, has_rate, amount (null without a rate)}]}], invoices [{id, inv_no,
---     inv_fin_year, inv_prefix, invoice_label, inv_date, gr_no, doc_type, total, payment_status, paid_amount, due_amount}]}. A lot's amount
---     is the review step's total for that lot alone, so the lots of a GRN can add up to a little more than the GRN's figure when the rule
---     rounds totals up. Invoices: the live ones of the current financial year, and with payments on also any older one with an amount
+--     inv_fin_year, inv_prefix, invoice_label, inv_date, gr_no, doc_type, total, payment_status, paid_amount, due_amount}]}. A GRN's amount
+--     is the full invoice total, rounded as an invoice is; a lot's amount is its line before that rounding: base + tax at the line's tax %,
+--     taken down to the paisa. So a GRN's lots add up to its amount or less (never more) under the rules 'up' and 'none'; under 'up' the
+--     gap is less than 2.00 (the tax and the total are each rounded up), under 'none' a few paise; under 'nearest' the total can round
+--     down, and the lots can then be up to 1.00 above it. unlinked_paid_amount (Record payments on; else null): the customer's payments
+--     that name no invoice, all years; shown beside the figures, added to nothing. Invoices: the live ones of the current financial year, and with payments on also any older one with an amount
 --     due; newest first; the payment fields are null with payments off. An unknown or deleted customer: {success:false, error:'Customer not
 --     found'}.
 --   * get_customer_dues(): administrators and supervisors only. {success, as_of, today, record_payments, invoices_basis, totals
 --     {invoices_amount, not_invoiced_left, not_invoiced_in_store}, lots_without_rate, customers [{customer_id, name, active,
---     invoices_amount, not_invoiced_left, not_invoiced_in_store, lots_without_rate}]}: every customer (deactivated included, deleted not)
+--     invoices_amount, not_invoiced_left, not_invoiced_in_store, lots_without_rate, unlinked_paid_amount}]}: every customer (deactivated included, deleted not)
 --     with any of the three figures above 0, ordered by invoices_amount + not_invoiced_left (largest first), then not_invoiced_in_store
 --     (largest first), then the name. The totals and lots_without_rate are the facility's.
 -- Amounts are numeric with 2 decimals. Nothing is stored; every read works the figures out again.
@@ -55,6 +58,10 @@
 --      is Invoiced and the figure is 10000.00 when the invoice is of this financial year.
 --   E. Mixed GRN (migration 173 example D: Jeera taxable 217.50 + tax, potatoes exempt 190.00), GST details saved, customer with a GSTIN:
 --      tax invoice 229.00 + bill of supply 190.00 = 419.00; customer without one: one invoice-cum-bill of supply of 419.00.
+--   G. Lots (rule up): one GRN of two monthly lots at 12.50, labour 3.00, tax 5 %, 40 days (1.5 months): 10 bags -> base 217.50, tax
+--      10.875 -> lot 228.37; 7 bags -> base 131.25 + 21.00 = 152.25, tax 7.6125 -> lot 159.86. GRN: subtotal 369.75, tax ceil(18.4875)
+--      = 19, total ceil(388.75) = 389.00. Lots add up to 388.23, 0.77 under. One-time lots (A): 40500.00 for the one lot, the same as the
+--      GRN (no tax, whole rupees). A lot of base 100.01 at 5 %: lot 105.01, GRN ceil(100.01 + ceil(5.0005)) = 107.00, 1.99 under.
 --   F. Dues order: P (due 1000.00, left 0, store 50.00), Q (due 0, left 1000.00, store 500.00), R (due 200.00, left 0, store 9000.00),
 --      S (all 0): Q, P, R; S is not listed.
 --
@@ -332,14 +339,14 @@ BEGIN
         v_store := jsonb_build_object(
           'bags', (SELECT sum((l->>'qty')::numeric) FROM jsonb_array_elements(v_lines) l),
           'amount', (SELECT COALESCE(sum((d->>'total')::numeric), 0) FROM jsonb_array_elements(v_docs) d)::numeric(14,2),
-          -- Each lot: the review step's total for that lot alone; no amount without a rate.
+          -- Each lot: its line before the total's rounding, the line's base (storage and labour, as the review step adds it) and its
+          -- tax at the line's tax %, taken down to the paisa, so the lots never add up to more than the GRN's total. No amount without
+          -- a rate.
           'lots', (SELECT jsonb_agg(jsonb_build_object(
                      'grn_item_id', l->'lot_id', 'item_name', l->'item_name', 'packaging', l->'packaging', 'bags', l->'qty',
                      'has_rate', l->'has_rate',
-                     'amount', CASE WHEN (l->>'has_rate')::boolean THEN (
-                       SELECT COALESCE(sum((d->>'total')::numeric), 0)::numeric(14,2)
-                         FROM jsonb_array_elements(COALESCE(NULLIF(warehouse_security.form_documents(jsonb_build_array(l), v_grn.customer_id,
-                                NULL::public.invoice, v_rounding)->'documents', 'null'::jsonb), '[]'::jsonb)) d) END)
+                     'amount', CASE WHEN (l->>'has_rate')::boolean THEN
+                       ((l->>'base')::numeric + floor((l->>'base')::numeric * (l->>'tax_percent')::numeric) / 100.0)::numeric(14,2) END)
                      ORDER BY l->>'item_name', l->>'lot_id')
                    FROM jsonb_array_elements(v_lines) l));
         v_no_rate := v_no_rate || (SELECT COALESCE(jsonb_agg(DISTINCT l->'lot_id'), '[]'::jsonb)
@@ -499,7 +506,9 @@ BEGIN
        OR (v_fig->>'not_invoiced_in_store')::numeric > 0 THEN
       v_rows := v_rows || jsonb_build_array(jsonb_build_object('customer_id', v_c.id, 'name', v_c.name, 'active', v_c.active,
         'invoices_amount', v_fig->'invoices_amount', 'not_invoiced_left', v_fig->'not_invoiced_left',
-        'not_invoiced_in_store', v_fig->'not_invoiced_in_store', 'lots_without_rate', jsonb_array_length(v_fig->'no_rate_lot_ids')));
+        'not_invoiced_in_store', v_fig->'not_invoiced_in_store', 'lots_without_rate', jsonb_array_length(v_fig->'no_rate_lot_ids'),
+        -- Shown beside the three figures; it changes no order and is added to nothing.
+        'unlinked_paid_amount', CASE WHEN v_payments THEN warehouse_security.unlinked_payments_total(v_c.id, NULL, NULL)::numeric(14,2) END));
     END IF;
   END LOOP;
 
