@@ -67,7 +67,8 @@ save whose rule is no longer the facility's is refused with `CHARGING_CHANGED` (
 
 ## Invoicing goods as they leave (migration 165)
 
-The charging rule's `invoice_as_goods_leave` (default false; `set_charging_rule` takes it as an optional key) lets a facility invoice
+The charging rule's `invoice_as_goods_leave` (default true since migration 174, which also turned it on where no administrator had
+changed it; `set_charging_rule` takes it as an optional key) lets a facility invoice
 dispatch lines while other lots of the GRN are still in store. With it off every rule of this page holds as written. With it on:
 the D9 stock check (`GRN_HAS_STOCK`) is not made, a GRN may have several live invoices, and a dispatch line is on one live invoice at
 most (`A dispatch line is already on another invoice`, WH409). The invoice form offers only the dispatch lines on no live invoice, and
@@ -77,6 +78,8 @@ means invoiced). `goodsreceived.invoiced` is the cache of `invoiced`. A partly i
 own rates stay live until it is invoiced. Each invoice rounds its own header, so a GRN invoiced in parts can total up to the rounding
 of each invoice more than one invoice would. Turning the setting off is refused while a GRN with stock has a live invoice
 (`PARTIAL_INVOICES_OPEN`, with the count and up to five GRN numbers).
+`get_grn_details` answers `can_create_invoice` in its invoice summary (migration 174): the GRN is not deleted, `get_invoiceable_grns` would
+list it (both use `warehouse_security.grn_invoiceable`), and it has a dispatch line on no live invoice.
 
 
 (With a charging rule other than the default, "ceiling" below reads as the invoice's `rounding`.) Preview subtotal sums line bases. Header tax is the ceiling of the sum of

@@ -683,6 +683,8 @@ The figures are in [INVOICE_RULES.md](INVOICE_RULES.md), "Charging rule".
 - `get_grn_list`: each GRN has `invoice_state` (`not_invoiced`, `partly_invoiced`, `invoiced`); the filter `invoiced` also takes
   `'partly_invoiced'`. `get_grn_details`: the invoice summary has `invoice_state` and `invoices` [{id, inv_no, inv_fin_year, inv_date, total}].
   `get_customer_grn_activity`: the invoice status has `invoiced_amount` (all live invoices of the GRN) and `invoice_state`.
+- Migration 174 (WH-162): the setting defaults to true (turned on by the upgrade where no administrator changed it). `get_grn_details`'s
+  invoice summary has `can_create_invoice` (boolean): not deleted, listed by `get_invoiceable_grns`' rule, and a dispatch line on no live invoice.
 
 ### Document numbering (migration 127, 2026-10-27)
 
