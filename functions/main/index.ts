@@ -14,7 +14,8 @@ const printFunctions = new Set(['get-printer-status', 'print-via-ipp', 'print-gr
 const serviceFunctions = new Set(['sweep-print-jobs']);
 // cancel-print-job is not in printFunctions: a job already on its way can still be stopped while printing is turned off.
 const allowed = new Set([...publicFunctions, ...serviceFunctions, 'get-config', ...printFunctions, 'cancel-print-job',
-  'generate-grn-pdf', 'generate-dispatch-pdf', 'generate-invoice-pdf', 'generate-customer-stock-pdf', 'generate-report-pdf']);
+  'generate-grn-pdf', 'generate-dispatch-pdf', 'generate-invoice-pdf', 'generate-customer-stock-pdf', 'generate-report-pdf',
+  'generate-statement-pdf']);
 
 // The four document PDFs print the optional letterhead image (setup.sh --letterhead-file); the report PDFs do not.
 const letterheadFunctions = new Set(['generate-grn-pdf', 'generate-dispatch-pdf', 'generate-invoice-pdf', 'generate-customer-stock-pdf']);

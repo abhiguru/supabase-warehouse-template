@@ -1,6 +1,6 @@
 # PDF generation
 
-The operator branch implements four mobile endpoints:
+The operator branch implements five mobile endpoints:
 
 | Endpoint | POST body |
 | --- | --- |
@@ -8,6 +8,7 @@ The operator branch implements four mobile endpoints:
 | generate-dispatch-pdf | `{ "disp_no": "..." }` |
 | generate-invoice-pdf | `{ "inv_no": 1, "fin_year": 2026 }` |
 | generate-customer-stock-pdf | `{ "customer_id": "<uuid>" }` |
+| generate-statement-pdf | `{ "customer_id": "<uuid>" }` (migration 176: `get_customer_statement` with the caller's token; staff refused, 403) |
 
 Each requires a valid, active custom user session and returns
 `{ success, pdf_url, expires_in, document }`. Customer access follows assignment

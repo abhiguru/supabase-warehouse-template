@@ -34,6 +34,14 @@ BEGIN
     IF role_name <> 'admin' THEN RAISE EXCEPTION 'Administrator required' USING ERRCODE = '42501'; END IF;
     RETURN;
   END IF;
+  -- What every customer owes (migration 176): administrators and supervisors only. A customer's statement (migration 176):
+  -- administrators, supervisors and a customer account for its own customers (the get_customer_% rule below); staff never.
+  IF rpc = 'get_customer_dues' AND role_name NOT IN ('admin','supervisor') THEN
+    RAISE EXCEPTION 'Administrator or supervisor required' USING ERRCODE = '42501';
+  END IF;
+  IF rpc = 'get_customer_statement' AND role_name NOT IN ('admin','supervisor','customer') THEN
+    RAISE EXCEPTION 'Customer access denied' USING ERRCODE = '42501';
+  END IF;
   -- Administrators and supervisors: every other RPC, among them cancel_invoice (migration 134; keeps the invoice on record) and
   -- delete_invoice (migration 146; removes it, administrators and supervisors only), record_payment, update_payment and
   -- delete_payment (migration 172), set_rack_presets (migration 131) and the rest of the management RPCs. Staff and

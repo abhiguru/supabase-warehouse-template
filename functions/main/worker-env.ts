@@ -43,6 +43,9 @@ export const workerEnvNames: Record<string, readonly string[]> = {
   // Report PDFs read like the document PDFs: caller token for the data, the
   // server key for the warehouse name and the upload.
   'generate-report-pdf': documentPdf,
+  // The customer statement (migration 176) reads like a report PDF: the caller's token for get_customer_statement, the server key
+  // for the warehouse name and the upload; no letterhead.
+  'generate-statement-pdf': documentPdf,
   // The print functions: the signed-in set, and where the bytes go (functions/_shared/print-config.ts). PRINTBRIDGE_TOKEN is the
   // bridge's shared secret; it reaches only these workers. The three preprinted functions also use the REST client (storageApi).
   'get-printer-status': [...signedIn, ...printing],
