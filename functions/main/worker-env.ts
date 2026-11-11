@@ -40,6 +40,8 @@ export const workerEnvNames: Record<string, readonly string[]> = {
   'generate-dispatch-pdf': documentLetterhead,
   'generate-invoice-pdf': documentLetterhead,
   'generate-customer-stock-pdf': documentLetterhead,
+  // The temperature report (WH-157): the caller's token for get_temperature_report, the server key for the name and the upload, and the letterhead.
+  'generate-temperature-report-pdf': documentLetterhead,
   // Report PDFs read like the document PDFs: caller token for the data, the
   // server key for the warehouse name and the upload.
   'generate-report-pdf': documentPdf,
