@@ -274,7 +274,7 @@ test('refusals change nothing: no backup, no checkout, no log line, no record', 
     refused(['main'], /not a release tag/);
     refused([before], /not a release tag/);
     refused(['v0.2.0', 'v0.1.1'], /Give one release tag/);
-    refused(['v0.2.0', '--ref', 'main'], /not both/);
+    refused(['v0.2.0', '--ref', 'main'], /not several and not none/); // WH-146: a tag, --from-bundle or --ref
     refused(['v9.9.9'], /origin has no tag v9\.9\.9/);
     refused(['v0.2.0', '--', '--state-dir', '/x'], /set by upgrade\.sh/);
     refused(['v0.2.0', '--admin-phone', '123'], /go together/);
@@ -726,7 +726,7 @@ test('upgrade.sh parses the line the real backup.sh prints, and the record forma
 test('doctor, watch status, the timer status and hint, and start.sh report an interrupted upgrade', () => {
   const read = name => readFileSync(join(root, name), 'utf8');
   assert.match(read('scripts/doctor.mjs'), /import \{ interruptedUpgradeWarning \} from '\.\/upgrade-record\.mjs';/);
-  assert.match(read('scripts/doctor.mjs'), /const note = \[upgradeWarning, usb, \.\.\.checker\]/);
+  assert.match(read('scripts/doctor.mjs'), /const note = \[upgradeWarning, usb, \.\.\.checker, clockText\]/);
   assert.match(read('scripts/doctor.mjs'), /health check failed[^\n]*upgradeWarning/);
   assert.match(read('scripts/watch.mjs'), /lines\.push\(`Upgrade: \$\{interruptedUpgrade\}`\)/);
   assert.equal((read('scripts/watch-timer.sh').match(/^\s+upgrade_interrupted "\$state"$/gm) ?? []).length, 2, 'status and hint');

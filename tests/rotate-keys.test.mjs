@@ -136,7 +136,7 @@ test('rotation recreates the LAN fallback with the new keys whenever a container
     assert.equal(result.status, 0, `${result.stdout}\n${result.stderr}`);
     const calls = readFileSync(f.log, 'utf8');
     // gateway-lan holds the keys in its configuration (the map of the apikey header), so it is recreated; it is a profile service, hence the explicit profile.
-    assert.match(calls, /--profile lan up -d --force-recreate --no-deps --wait --wait-timeout 180 gateway-lan\n/);
+    assert.match(calls, /--profile lan up -d --force-recreate --no-deps --wait --wait-timeout 180 lan-signer gateway-lan\n/);
     assert.match(calls, /--profile lan ps -a -q gateway-lan\n/, 'looked up whatever COMPOSE_PROFILES says, and also when it is not running');
     assert.ok(calls.indexOf('--profile * up -d --force-recreate') < calls.indexOf('--profile lan up -d --force-recreate'), 'after the others');
     assert.ok(calls.indexOf('--profile lan up -d --force-recreate') < calls.indexOf('pg_isready'), 'the doctor runs after it');
@@ -160,7 +160,7 @@ test('without a gateway-lan container nothing of the fallback is touched; one th
     // A fault of the fallback does not undo or fail a rotation that has been applied to the database and to compose.env.
     assert.equal(result.status, 0, `${result.stdout}\n${result.stderr}`);
     assert.notEqual(readEnv(g.envPath).ANON_KEY, before.ANON_KEY, 'the new keys are in compose.env');
-    assert.match(result.stderr, /Warning: the LAN fallback \(gateway-lan\) was not recreated and still holds the OLD keys: every REST request over the LAN path is refused until it is\. The rotation itself is complete\. Repair: bash scripts\/lan\.sh on auto/);
+    assert.match(result.stderr, /Warning: the LAN fallback \(gateway-lan and lan-signer\) was not recreated and still holds the OLD keys: every request over the LAN path is refused until it is\. The rotation itself is complete\. Repair: bash scripts\/lan\.sh on auto/);
     assert.match(result.stdout, /Signing keys rotated/);
     const calls = readFileSync(g.log, 'utf8');
     assert.ok(calls.indexOf('--profile lan up -d --force-recreate') < calls.indexOf('pg_isready'), 'the doctor still runs');

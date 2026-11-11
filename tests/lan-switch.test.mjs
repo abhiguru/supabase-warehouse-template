@@ -11,7 +11,7 @@ import { configure } from '../scripts/configure.mjs';
 import { readEnv } from '../scripts/doctor-common.mjs';
 import {
   autoInterface, cidrSize, cidrsOverlap, defaultRouteInterface, dockerUserExample, firewallNote, inCidr, ipv4Addresses, isPrivateIPv4, lanAddressLine,
-  lanAddressValue, lanCidrValue, lanOffText, lanOnText, lanPortValue, normalizeCidr, parseIPv4, probeLanKeys,
+  lanAddressValue, lanCidrValue, lanOffText, lanOnText, lanPortValue, normalizeCidr, parseIPv4, probeLanKeys, probeLanSigner,
 } from '../scripts/lan-common.mjs';
 import { addressFree, announceLines, dockerSourceWarnings, guardProfiles, lanChecks, lanPublishers, planOn, smallRangeWarning, statusLines } from '../scripts/lan.mjs';
 
@@ -217,7 +217,11 @@ const MANIFEST_ID = '11111111-2222-3333-4444-555555555555';
 const lanEnv = { LAN_ENABLED: 'true', LAN_BIND_IP: '192.168.1.52', LAN_HTTP_PORT: '8080', LAN_CIDR: '192.168.1.0/24', COMPOSE_PROFILES: 'lan', WAREHOUSE_PROJECT_NAME: 'warehouse-test', ANON_KEY: 'unit.anon.key' };
 const answering = { ok: true, status: 200, headers: new Headers({ 'x-warehouse-path': 'lan' }), json: async () => ({ success: true, data: { instanceId: MANIFEST_ID } }) };
 const runPorts = ports => () => ({ ok: true, output: `${ports}\n` });
-const check = (env, options = {}) => lanChecks(env, { instanceId: MANIFEST_ID, interfaces: HOST, run: runPorts('192.168.1.52:8080->8080/tcp'), fetchImpl: async () => answering, readText: () => '', ...options });
+// WH-133: the listener also answers the identity check of the signer (the nil key id, a fixed challenge) with the signer's own refusal, 403
+// lan_key_unknown, when it can read the keys. lanSigned wraps a fake listener with that answer; { raw: true } leaves it out.
+const signerKnown = { ok: false, status: 403, headers: new Headers(), json: async () => ({ code: 'lan_key_unknown' }) };
+const lanSigned = inner => async (url, options) => (options?.headers?.['x-lan-key-id'] ? signerKnown : inner(url, options));
+const check = (env, { raw = false, fetchImpl = async () => answering, ...options } = {}) => lanChecks(env, { instanceId: MANIFEST_ID, interfaces: HOST, run: runPorts('192.168.1.52:8080->8080/tcp'), fetchImpl: raw ? fetchImpl : lanSigned(fetchImpl), readText: () => '', ...options });
 const levels = checks => checks.map(item => item.level);
 
 test('doctor checks: silent while off; nothing to report when the listener answers as this installation', async () => {
@@ -225,11 +229,14 @@ test('doctor checks: silent while off; nothing to report when the listener answe
   assert.deepEqual(await check({}), []);
   assert.deepEqual(await check(lanEnv), []);
   const asked = [];
-  await check(lanEnv, { fetchImpl: async (url, options) => { asked.push([url, options.redirect, options.headers?.apikey]); return answering; } });
+  await check(lanEnv, { raw: true, fetchImpl: lanSigned(async (url, options) => { asked.push([url, options.redirect, options.headers?.apikey, options.headers?.['x-lan-key-id']]); return answering; }) });
   assert.deepEqual(asked, [
-    ['http://192.168.1.52:8080/functions/v1/get-public-config', 'error', undefined],
-    ['http://192.168.1.52:8080/rest/v1/', 'error', 'unit.anon.key'],
+    ['http://192.168.1.52:8080/functions/v1/get-public-config', 'error', undefined, undefined],
+    ['http://192.168.1.52:8080/rest/v1/', 'error', 'unit.anon.key', undefined],
   ], 'the public configuration (no key check), then a REST request with the anon key of compose.env (the key check)');
+  const signed = [];
+  assert.deepEqual(await check(lanEnv, { raw: true, fetchImpl: async (url, options) => { signed.push([String(url), options.headers?.['x-lan-key-id'], options.headers?.['x-lan-challenge']?.length]); return options.headers?.['x-lan-key-id'] ? signerKnown : answering; } }), []);
+  assert.deepEqual(signed.at(-1), ['http://192.168.1.52:8080/functions/v1/get-public-config', '00000000-0000-0000-0000-000000000000', 64], 'then the identity check of the signer, with a key id no session has');
 });
 
 test('doctor checks: the key check of the LAN listener is exercised, so a container that holds the keys from before a rotation is a failure', async () => {
@@ -254,6 +261,24 @@ test('doctor checks: the key check of the LAN listener is exercised, so a contai
   assert.deepEqual(await probeLanKeys(lan, 'k', keyed(200)), { ok: true });
   assert.equal((await probeLanKeys(lan, 'k', keyed(401))).ok, false);
   assert.match((await probeLanKeys(lan, 'k', async () => { throw Object.assign(new Error('fetch failed'), { cause: { code: 'ECONNREFUSED' } }); })).text, /does not answer from this host \(ECONNREFUSED\)/);
+});
+
+test('doctor checks: the signer is exercised, so a listener that does not sign, a signer that cannot read keys and a signer that is down are failures', async () => {
+  const signer = (status, code) => async (url, options) => (options?.headers?.['x-lan-key-id'] ? { ok: false, status, headers: new Headers(), json: async () => (code ? { code } : {}) } : answering);
+  const unsigned = await check(lanEnv, { raw: true, fetchImpl: async () => answering });
+  assert.deepEqual(levels(unsigned), ['fail']);
+  assert.match(unsigned[0].text, /answered HTTP 200 to the identity check instead of the signer's 403 lan_key_unknown: the listener does not check signatures as this release does\. Recreate it: bash scripts\/compose\.sh --profile lan up -d --force-recreate --no-deps lan-signer gateway-lan/);
+  const lookup = await check(lanEnv, { raw: true, fetchImpl: signer(503, 'lan_key_lookup') });
+  assert.deepEqual(levels(lookup), ['fail']);
+  assert.match(lookup[0].text, /the LAN signer \(lan-signer\) cannot read the warehouse network keys, usually because it holds the service key from before a key rotation/);
+  const down = await check(lanEnv, { raw: true, fetchImpl: signer(502) });
+  assert.deepEqual(levels(down), ['fail']);
+  assert.match(down[0].text, /the LAN signer \(lan-signer\) does not answer behind http:\/\/192\.168\.1\.52:8080 \(HTTP 502\)/);
+  // The probe by itself, as the checker (scripts/watch.mjs) and lan.sh use it.
+  const lan = { ip: '192.168.1.52', port: '8080' };
+  assert.deepEqual(await probeLanSigner(lan, async () => signerKnown), { ok: true });
+  assert.equal((await probeLanSigner(lan, async () => answering)).ok, false);
+  assert.match((await probeLanSigner(lan, async () => { throw Object.assign(new Error('fetch failed'), { cause: { code: 'ECONNREFUSED' } }); })).text, /does not answer the identity check from this host \(ECONNREFUSED\)/);
 });
 
 test('doctor checks: a range that no phone can be in, and what Docker does with the source address, are warnings', async () => {
@@ -359,7 +384,7 @@ case "$1" in
   compose)
     case "$*" in
       *' ps -q gateway'|*' ps -q functions') if [ "\${FAKE_STOPPED:-}" = yes ]; then exit 0; fi; echo abcabcabcabc; exit 0 ;;
-      *'ps --all --format'*gateway-lan) echo 'running healthy'; exit 0 ;;
+      *'ps --all --format'*gateway-lan|*'ps --all --format'*lan-signer) echo 'running healthy'; exit 0 ;;
       *' up -d --no-deps --wait'*gateway-lan*)
         if [ "\${FAKE_FAIL_UP:-}" = yes ]; then echo 'fake: gateway-lan unhealthy' >&2; exit 1; fi
         if [ "\${FAKE_FAIL_UP_ONCE:-}" = yes ] && [ ! -e "$FAKE_DOCKER_LOG.once" ]; then : > "$FAKE_DOCKER_LOG.once"; echo 'fake: gateway-lan unhealthy (once)' >&2; exit 1; fi
@@ -369,8 +394,10 @@ case "$1" in
 esac
 `;
 // The fetch of the doctor step: an answer of this installation, from the LAN listener (replaces fetch in the child Node process).
-const fetchStub = `globalThis.fetch = async url => {
+const fetchStub = `globalThis.fetch = async (url, options) => {
   (await import('node:fs')).appendFileSync(process.env.FAKE_FETCH_LOG, url + '\\n');
+  // The identity check of the signer (WH-133): the signer's own refusal for a key id no session has.
+  if (options?.headers?.['x-lan-key-id']) return { ok: false, status: 403, headers: new Headers(), json: async () => ({ code: 'lan_key_unknown' }) };
   return { ok: true, status: 200, headers: new Headers({ 'x-warehouse-path': 'lan' }), json: async () => ({ success: true, data: { instanceId: process.env.FAKE_INSTANCE_ID } }) };
 };
 `;
@@ -420,7 +447,7 @@ test('lan.sh on auto: writes the values, starts gateway-lan and the function run
     assert.equal(existsSync(`${f.envPath}.lan`) || existsSync(`${f.envPath}.lan-previous`), false, 'no staging file is left');
     // Everything else in the file is as it was.
     assert.equal(f.env().replace(/^LAN_[A-Z_]+=.*\n/gm, '').replace(/^COMPOSE_PROFILES=.*\n/m, ''), before.replace(/^LAN_[A-Z_]+=.*\n/gm, ''));
-    assert.match(f.calls(), / --profile lan up -d --no-deps --wait --wait-timeout 180 gateway-lan functions$/m);
+    assert.match(f.calls(), / --profile lan up -d --no-deps --wait --wait-timeout 180 lan-signer gateway-lan functions$/m);
     // The answer: what an operator reads.
     const lines = run.stdout.split('\n');
     assert.ok(lines.includes('LAN fallback: 192.168.77.5:8080 on ens33, allowing 192.168.77.0/24'), run.stdout);
@@ -431,7 +458,7 @@ test('lan.sh on auto: writes the values, starts gateway-lan and the function run
     assert.match(run.stdout, /bind address \(the container is published on 192\.168\.77\.5 only\) and the allow-list of the LAN server \(192\.168\.77\.0\/24 only\).*DOCKER-USER chain/);
     assert.match(run.stdout, /DHCP reservation/);
     // The doctor step probed the address with the fake fetch: the public configuration, then the key check on the REST route.
-    assert.equal(f.fetched(), 'http://192.168.77.5:8080/functions/v1/get-public-config\nhttp://192.168.77.5:8080/rest/v1/');
+    assert.equal(f.fetched(), 'http://192.168.77.5:8080/functions/v1/get-public-config\nhttp://192.168.77.5:8080/rest/v1/\nhttp://192.168.77.5:8080/functions/v1/get-public-config');
     assert.match(run.stdout, /The LAN fallback answers from this host as this installation\./);
     // Safe to repeat, and nothing grows.
     const again = f.lan(['on']);
@@ -441,7 +468,7 @@ test('lan.sh on auto: writes the values, starts gateway-lan and the function run
     // status: the same address line, the interface, the container.
     const status = f.lan(['status']);
     assert.equal(status.status, 0, status.stderr);
-    assert.equal(status.stdout, 'LAN address for the app: http://192.168.77.5:8080\nAllowed clients: 192.168.77.0/24; published on 192.168.77.5:8080 only.\nInterface: ens33 has 192.168.77.5.\nContainer gateway-lan: running healthy\n');
+    assert.equal(status.stdout, 'LAN address for the app: http://192.168.77.5:8080\nAllowed clients: 192.168.77.0/24; published on 192.168.77.5:8080 only.\nInterface: ens33 has 192.168.77.5.\nContainer gateway-lan: running healthy\nContainer lan-signer: running healthy\n');
   } finally { clean(f); }
 });
 
@@ -463,7 +490,7 @@ test('lan.sh on with an address, a range and a port; other profiles in COMPOSE_P
     assert.equal(off.status, 0, off.stderr);
     const after = readEnv(f.envPath);
     assert.deepEqual([after.LAN_ENABLED, after.LAN_BIND_IP, after.LAN_HTTP_PORT, after.LAN_CIDR, after.COMPOSE_PROFILES], ['false', '127.0.0.1', '8080', '', 'printing']);
-    assert.match(f.calls(), / --profile lan rm -sf gateway-lan$/m);
+    assert.match(f.calls(), / --profile lan rm -sf gateway-lan lan-signer$/m);
     assert.match(f.calls(), / up -d --no-deps --wait --wait-timeout 180 functions$/m, 'the function runtime stops offering the address');
     assert.match(off.stdout, /The LAN fallback is off.*Phones that saved the address stop using it and keep working over the internet\./);
     assert.deepEqual(f.lan(['status']).stdout.trim().split('\n'), ['LAN fallback is off. Turn it on with: bash scripts/lan.sh on auto']);
@@ -481,7 +508,7 @@ test('lan.sh off with nothing else in COMPOSE_PROFILES removes the line, and doe
     assert.match(f.env(), /^LAN_ENABLED=false$/m);
     // The calls of the off step: remove the container; no `up` of functions while it is stopped.
     const calls = f.calls().split('\n');
-    const afterOn = calls.slice(calls.findIndex(line => / rm -sf gateway-lan$/.test(line)));
+    const afterOn = calls.slice(calls.findIndex(line => / rm -sf gateway-lan lan-signer$/.test(line)));
     assert.equal(afterOn.some(line => / up -d .*functions$/.test(line)), false);
   } finally { clean(f); }
 });
@@ -520,7 +547,7 @@ test('lan.sh on: a gateway-lan that does not become healthy leaves compose.env a
     assert.equal(run.status, 1);
     assert.match(run.stderr, /The LAN fallback was not turned on and config\/compose\.env is as it was\./);
     assert.equal(f.env(), before);
-    assert.match(f.calls(), / --profile lan rm -sf gateway-lan$/m);
+    assert.match(f.calls(), / --profile lan rm -sf gateway-lan lan-signer$/m);
     assert.equal(existsSync(`${f.envPath}.lan-previous`), false);
   } finally { clean(f); }
 });
@@ -608,10 +635,10 @@ test('lan.sh on: a failed RERUN (a new port) puts the earlier settings back and 
     assert.match(run.stderr, /did not become healthy with the new settings \(see above\)\. The LAN fallback keeps its earlier settings: config\/compose\.env is as it was and the service runs with them again\./);
     assert.doesNotMatch(run.stderr, /was not turned on/);
     const calls = f.calls().split('\n');
-    const failedUp = calls.findIndex((line, i) => i > 0 && / --profile lan up -d --no-deps --wait --wait-timeout 180 gateway-lan functions$/.test(line) && calls.slice(0, i).some(earlier => / --profile lan up -d --no-deps --wait --wait-timeout 180 gateway-lan functions$/.test(earlier)));
+    const failedUp = calls.findIndex((line, i) => i > 0 && / --profile lan up -d --no-deps --wait --wait-timeout 180 lan-signer gateway-lan functions$/.test(line) && calls.slice(0, i).some(earlier => / --profile lan up -d --no-deps --wait --wait-timeout 180 lan-signer gateway-lan functions$/.test(earlier)));
     assert.ok(failedUp > 0, 'the second `up` (the rerun) happened');
-    assert.ok(calls.slice(failedUp + 1).some(line => / --profile lan up -d --no-deps --wait --wait-timeout 180 gateway-lan functions$/.test(line)), 'and the service was started again with the earlier settings');
-    assert.equal(calls.some(line => / --profile lan rm -sf gateway-lan$/.test(line)), false, 'the container was never removed');
+    assert.ok(calls.slice(failedUp + 1).some(line => / --profile lan up -d --no-deps --wait --wait-timeout 180 lan-signer gateway-lan functions$/.test(line)), 'and the service was started again with the earlier settings');
+    assert.equal(calls.some(line => / --profile lan rm -sf gateway-lan lan-signer$/.test(line)), false, 'the container was never removed');
     // If it does not start again either, it says so and keeps the earlier file.
     const f2 = fixture();
     try {
@@ -646,7 +673,7 @@ test('lan.sh start: does nothing while the fallback is off, starts gateway-lan (
     const ok = f.lan(['start']);
     assert.equal(ok.status, 0, ok.stderr);
     assert.equal(ok.stderr, '');
-    assert.match(f.calls(), / --profile lan up -d --no-deps --wait --wait-timeout 60 gateway-lan$/m);
+    assert.match(f.calls(), / --profile lan up -d --no-deps --wait --wait-timeout 60 lan-signer gateway-lan$/m);
     assert.doesNotMatch(f.calls().split('\n').slice(before).join('\n'), /functions/, 'the function runtime is not touched by a start');
     // The container does not become healthy: a warning on stderr, exit 0.
     const sick = f.lan(['start'], { FAKE_FAIL_UP: 'yes' });
@@ -670,7 +697,14 @@ test('start.sh, setup.sh and restore.sh wait for the public services only and st
     const at = lines.indexOf(up);
     assert.ok(at > 0, `${name}: the wait leaves the LAN fallback out`);
     // Right after it, the fallback is started on its own, and the step cannot fail the script: under `set -e` a bare failure would stop it.
-    assert.match(lines[at + 1], /^bash "\$ROOT\/scripts\/lan\.sh" start \|\| echo 'Warning: the LAN fallback was not started \(message above\)\. The public services are up\.' >&2$/, name);
+    const warn = /^(\s*)bash "\$ROOT\/scripts\/lan\.sh" start \|\| echo 'Warning: the LAN fallback was not started \(message above\)\. The public services are up\.' >&2$/;
+    if (name === 'setup.sh') {
+      // WH-146: a local-only facility has no other address, so for it the listener is turned on (or started) and a fault is a failure; every
+      // other facility starts it as a warning at most, in the else branch.
+      assert.equal(lines[at + 1], 'if [[ -n "$LOCAL_ONLY" ]]; then', name);
+      assert.ok(lines.slice(at + 2, at + 12).some(line => /^\s+bash "\$ROOT\/scripts\/lan\.sh" on auto \|\| \{ echo 'The warehouse network listener could not be turned on/.test(line)), 'local-only: turning it on is a failure when it fails');
+      assert.ok(lines.slice(at + 2, at + 12).some(line => warn.test(line)), 'otherwise the fallback is a warning at most');
+    } else assert.match(lines[at + 1], warn, name);
     // No other wait in the script includes gateway-lan: every `up ... --wait` of start/setup/restore is either this one or names its services.
     for (const [i, line] of lines.entries()) {
       if (/\bup -d\b.*--wait\b/.test(line) && !line.startsWith('#') && i !== at) assert.match(line, /(?: db| storage| functions| --force-recreate --no-deps)\b|--wait-timeout 180 db$/, `${name} line ${i + 1}: ${line}`);
@@ -728,10 +762,11 @@ test('with real Compose: COMPOSE_PROFILES=lan in compose.env starts gateway-lan 
     assert.deepEqual([...guarded].sort(), services({ WAREHOUSE_COMPOSE_WITHOUT_LAN: '1' }).sort(), 'the same project as the start step\'s');
     // The start step's override: the same services as a state with no fallback at all.
     assert.equal(withLan(services({ WAREHOUSE_COMPOSE_WITHOUT_LAN: '1' })), false);
-    assert.deepEqual([...services({ WAREHOUSE_COMPOSE_WITHOUT_LAN: '1' }), 'gateway-lan'].sort(), services().sort());
+    assert.deepEqual([...services({ WAREHOUSE_COMPOSE_WITHOUT_LAN: '1' }), 'gateway-lan', 'lan-signer'].sort(), services().sort()); // the signer (WH-133) is in the same profile
     // An explicit profile on the command line wins over the override (lan.sh, build-images.sh and rotate-keys.sh rely on it).
     const explicit = f.compose(['--profile', 'lan', 'config', '--services'], { ...real, WAREHOUSE_COMPOSE_WITHOUT_LAN: '1' });
     assert.equal(explicit.status, 0, explicit.stderr);
     assert.ok(explicit.stdout.split('\n').includes('gateway-lan'));
+    assert.ok(explicit.stdout.split('\n').includes('lan-signer'));
   } finally { clean(f); }
 });

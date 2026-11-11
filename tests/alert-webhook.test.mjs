@@ -393,7 +393,8 @@ test('setup.sh asks after the host checks and the lock, hands the URL over throu
   assert.ok(gate < setup.indexOf('scripts/configure.mjs'), 'and before configure.mjs');
   assert.match(setup, /mktemp "\$\{TMPDIR:-\/tmp\}\/warehouse-slack-webhook\.XXXXXX"/);
   assert.match(setup, /\(umask 077; mktemp/);
-  assert.match(setup, /trap 'rm -f "\$WEBHOOK_TMP" "\$LETTERHEAD_TMP"' EXIT/);
+  // The offline bundle directory (WH-146) is removed by the same trap.
+  assert.match(setup, /trap 'rm -f "\$WEBHOOK_TMP" "\$LETTERHEAD_TMP"; \[\[ -z "\$BUNDLE_DIR" \]\] \|\| rm -rf -- "\$BUNDLE_DIR"' EXIT/);
   assert.match(setup, /CONFIG_ARGS\+=\(--alert-webhook-file "\$WEBHOOK_TMP"\)/);
   assert.match(setup, /\[\[ "\$2" != ask \]\]/, '`ask` is for the gate; configure.mjs never sees it');
   assert.doesNotMatch(setup, /curl|wget/, 'no URL on a shell command line');

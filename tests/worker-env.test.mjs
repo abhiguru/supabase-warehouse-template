@@ -17,14 +17,16 @@ function namesRead(entry) {
     if (seen.has(file)) return;
     seen.add(file);
     // operator-otp and central-exchange wrap the lookup for their unit tests and read through deps.env('NAME').
-    let source = readFileSync(file, 'utf8').replace('env: name => Deno.env.get(name)', '');
+    let source = readFileSync(file, 'utf8').replace('env: name => Deno.env.get(name)', '')
+      // pairing-redeem and app-download (WH-146) take the lookup as a parameter whose default is the adapter, and read through env('NAME').
+      .replace(/env: \(name: string\) => string \| undefined = name => Deno\.env\.get\(name\)/g, '');
     // The print modules take the environment as a function (print-config.ts: `get('PRINT_TRANSPORT')`). The adapter
     // `name => Deno.env.get(name)` is allowed only as the argument of those functions, and the names they read are the ones
     // print-config.ts spells out, counted below as read by every file that imports it.
     const adapter = /\b(?:printTransportName|bridgeBaseUrl|cupsQueueUrl|cancelCupsJob|printerName)\(((?:[^()]|\([^()]*\))*?,\s*)?name => Deno\.env\.get\(name\)(?:,\s*\w+)?\)/g;
     source = source.replace(adapter, '').replace('const get: EnvGet = name => Deno.env.get(name);', '');
     assert.doesNotMatch(source, /Deno\.env\.(?:toObject|get\((?!['"][A-Z0-9_]+['"]\)))/, `${file} reads the environment by a computed name`);
-    for (const match of source.matchAll(/(?:Deno\.env\.get|deps\.env)\(\s*['"]([A-Z0-9_]+)['"]\s*\)/g)) names.add(match[1]);
+    for (const match of source.matchAll(/(?:Deno\.env\.get|deps\.env|(?<![.\w])env)\(\s*['"]([A-Z0-9_]+)['"]\s*\)/g)) names.add(match[1]);
     // print-config.ts functions read the environment through the function they are given; the names each one asks for:
     if (!file.endsWith('/_shared/print-config.ts') && /from\s+['"]\.\/print-config\.ts['"]|from\s+['"]\.\.\/_shared\/print-config\.ts['"]/.test(source)) {
       if (/\b(?:printTransportName|printerName)\b/.test(source)) names.add('PRINT_TRANSPORT');
@@ -66,7 +68,8 @@ test('every function the router can start has a list, and the router passes only
   // bridge's endpoint with its own ingest key: they are in the router's public set.
   const publicSet = /const publicFunctions = new Set\(\[([^\]]+)\]\)/.exec(router)[1];
   assert.deepEqual([...publicSet.matchAll(/'([a-z-]+)'/g)].map(match => match[1]),
-    ['hello', 'get-public-config', 'operator-otp', 'central-exchange', 'ingest-sensor-readings']);
+    ['hello', 'get-public-config', 'operator-otp', 'central-exchange', 'ingest-sensor-readings', 'pairing-redeem', 'app-download']);
+  // pairing-redeem and app-download (WH-146) are reached before the phone has a key or a session; both answer 404 unless INGRESS is local-only.
   assert.match(router, /const allowed = new Set\(\[\.\.\.publicFunctions, \.\.\.serviceFunctions, /);
   // Print routes (refused with PRINTING_OFF while the capability is off), the service-key route, and cancel-print-job, which stays
   // open while printing is off.

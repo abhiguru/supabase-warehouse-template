@@ -43,9 +43,10 @@ Only the gateway publishes a host port, on loopback; while the LAN fallback is o
 
 | Network | Attached services | Purpose |
 |---|---|---|
-| `default` | gateway, gateway-lan, rest, storage, functions, cups, sensor-bridge | The gateway and everything it or a function calls; the sensor bridge's calls to the gateway |
+| `default` | gateway, gateway-lan, lan-signer, rest, storage, functions, cups, sensor-bridge | The gateway and everything it or a function calls; the sensor bridge's calls to the gateway |
 | `database` | db, rest, storage, supavisor (only while the pooler is on) | Connections to PostgreSQL |
 | `renderer` | functions, pdf-renderer | The PDF renderer. The network is `internal`: Docker gives it no route to the host, the internet or any other network, so the renderer cannot reach the database or the gateway, and only the function runtime can reach it |
+| `lan-hop` | gateway-lan, lan-signer | The LAN fallback (profile `lan`): the signer sits between the outer server and the inner server of gateway-lan. The network is `internal` (no route out): only the signer can reach the inner server (docs/CONTAINER_SECURITY.md, "LAN fallback (gateway-lan)") |
 
 The gateway, gateway-lan, CUPS and the sensor bridge are on `default` only; the function runtime is on `default` and `renderer`; the PDF
 renderer is on `renderer` only. None of them can open a connection to PostgreSQL. There is no web dashboard for the

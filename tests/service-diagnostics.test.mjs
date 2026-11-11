@@ -93,7 +93,7 @@ test('saveLogs writes each allowed service log, redacted, in a private pre-<labe
   try {
     saveLogs({ label: 'upgrade', stateDir: state, run: okRun(calls), env: () => ({ JWT_SECRET: SECRET }), now: () => new Date('2026-11-01T10:20:30.123Z'), report: line => said.push(line) });
     const dir = join(state, 'diagnostics', 'pre-upgrade-20261101T102030Z');
-    assert.deepEqual(readdirSync(dir).sort(), ['functions.log', 'gateway-lan.log', 'gateway.log', 'rest.log', 'supavisor.log']);
+    assert.deepEqual(readdirSync(dir).sort(), ['functions.log', 'gateway-lan.log', 'gateway.log', 'lan-signer.log', 'rest.log', 'supavisor.log']);
     assert.equal(modeOf(join(state, 'diagnostics')), 0o700);
     assert.equal(modeOf(dir), 0o700);
     for (const name of readdirSync(dir)) {
@@ -168,7 +168,7 @@ test('saveLogs keeps what it could read when one service fails, and leaves a sym
     const said = [];
     saveLogs({ label: 'partial', stateDir: state, run: (command, args) => (args.includes('functions') ? { status: 1, stdout: '', stderr: 'boom' } : { status: 0, stdout: '2026-11-01T09:00:00Z ok\n', stderr: '' }),
       env: () => ({}), now: () => new Date('2026-11-01T10:00:00Z'), report: line => said.push(line) });
-    assert.deepEqual(readdirSync(join(state, 'diagnostics', 'pre-partial-20261101T100000Z')).sort(), ['gateway-lan.log', 'gateway.log', 'rest.log', 'supavisor.log']);
+    assert.deepEqual(readdirSync(join(state, 'diagnostics', 'pre-partial-20261101T100000Z')).sort(), ['gateway-lan.log', 'gateway.log', 'lan-signer.log', 'rest.log', 'supavisor.log']);
     const elsewhere = freshState(), linked = freshState();
     symlinkSync(elsewhere, join(linked, 'diagnostics'));
     saveLogs({ label: 'link', stateDir: linked, run: okRun([]), env: () => ({}), report: line => said.push(line) });

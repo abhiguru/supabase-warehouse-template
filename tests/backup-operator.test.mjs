@@ -888,7 +888,7 @@ case "$*" in
   *' ps -q gateway-lan') printf '%s\\n' "$*" >> "$FAKE_DOCKER_LOG"; echo dddddddddddd; exit 0 ;;
   # Where the backup had got when the LAN fallback was started again: the manifest of the stored files is made after the services are back, and
   # the finished backup is moved into place last.
-  *' up -d --no-deps --wait --wait-timeout 60 gateway-lan') m=before-manifest; ls "$FAKE_STAGE_PARENT"/.warehouse-backup-staging.*/storage.manifest >/dev/null 2>&1 && m=after-manifest; [ -e "$FAKE_DEST/metadata.txt" ] && m=backup-finished; printf 'LAN-UP %s\\n' "$m" >> "$FAKE_DOCKER_LOG" ;;
+  *' up -d --no-deps --wait --wait-timeout 60 lan-signer gateway-lan') m=before-manifest; ls "$FAKE_STAGE_PARENT"/.warehouse-backup-staging.*/storage.manifest >/dev/null 2>&1 && m=after-manifest; [ -e "$FAKE_DEST/metadata.txt" ] && m=backup-finished; printf 'LAN-UP %s\\n' "$m" >> "$FAKE_DOCKER_LOG" ;;
 esac
 exec "${join(bin, 'docker')}" "$@"
 `, { mode: 0o700 });
@@ -909,7 +909,7 @@ const gatewayDownDocker = (w) => `#!/bin/sh
 case "$*" in
   *' ps -q gateway') exit 0 ;;
   *' ps -q gateway-lan') printf '%s\\n' "$*" >> "$FAKE_DOCKER_LOG"; echo dddddddddddd; exit 0 ;;
-  *' up -d --no-deps --wait --wait-timeout 60 gateway-lan') m=before-manifest; ls "$FAKE_STAGE_PARENT"/.warehouse-backup-staging.*/storage.manifest >/dev/null 2>&1 && m=after-manifest; [ -e "$FAKE_DEST/metadata.txt" ] && m=backup-finished; printf 'LAN-UP %s\\n' "$m" >> "$FAKE_DOCKER_LOG" ;;
+  *' up -d --no-deps --wait --wait-timeout 60 lan-signer gateway-lan') m=before-manifest; ls "$FAKE_STAGE_PARENT"/.warehouse-backup-staging.*/storage.manifest >/dev/null 2>&1 && m=after-manifest; [ -e "$FAKE_DEST/metadata.txt" ] && m=backup-finished; printf 'LAN-UP %s\\n' "$m" >> "$FAKE_DOCKER_LOG" ;;
 esac
 exec "${join(w.scratch, 'bin/docker')}" "$@"
 `;
@@ -969,7 +969,7 @@ test('with the gateway not running the backup stops gateway-lan before the other
     const serviceStop = w.at(/ stop storage$/);
     const dump = w.at(/pg_dump/);
     const back = w.at(/up -d --no-recreate --no-deps --wait --wait-timeout 180 storage$/);
-    const lanStart = w.at(/--profile lan up -d --no-deps --wait --wait-timeout 60 gateway-lan$/);
+    const lanStart = w.at(/--profile lan up -d --no-deps --wait --wait-timeout 60 lan-signer gateway-lan$/);
     assert.ok(lanStop >= 0 && serviceStop >= 0 && dump >= 0 && back >= 0 && lanStart >= 0, w.lines().join('\n'));
     assert.ok(lanStop < serviceStop, 'the LAN ingress is stopped first');
     assert.ok(serviceStop < dump, 'both are stopped before the dump');
@@ -982,7 +982,7 @@ test('with the gateway not running the backup stops gateway-lan before the other
     const failed = w.run({ FAKE_DOCKER_FAIL: 'yes' }, join(w.scratch, 'failed-backup'));
     assert.notEqual(failed.status, 0);
     assert.ok(w.at(/--profile lan stop gateway-lan$/) < w.at(/pg_dump/));
-    assert.ok(w.at(/up -d --no-recreate --no-deps --wait --wait-timeout 180 storage$/) < w.at(/--profile lan up -d --no-deps --wait --wait-timeout 60 gateway-lan$/), 'started again after a failure');
+    assert.ok(w.at(/up -d --no-recreate --no-deps --wait --wait-timeout 180 storage$/) < w.at(/--profile lan up -d --no-deps --wait --wait-timeout 60 lan-signer gateway-lan$/), 'started again after a failure');
     assert.deepEqual(w.lines().filter(line => line.startsWith('LAN-UP')), ['LAN-UP before-manifest']);
   } finally { w.done(); }
 });

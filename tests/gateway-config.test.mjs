@@ -68,7 +68,8 @@ test('the gateway is nginx from docker/nginx: no Kong file, entrypoint override 
 });
 
 test('the public templates hold exactly four variables, the LAN server three more, the image puts in only those, and no key or origin can add to the configuration', () => {
-  assert.deepEqual([...filter].sort(), ['ANON_KEY', 'CORS_ALLOWED_ORIGIN', 'LAN_BIND_IP', 'LAN_CIDR', 'LAN_HTTP_PORT', 'SERVICE_ROLE_KEY', 'WAREHOUSE_MAINTENANCE']);
+  // TRUSTED_PROXY_ADDRESS and TRUSTED_PROXY_HEADER (WH-146) are written into the trusted-proxy server (templates-proxy/) only.
+  assert.deepEqual([...filter].sort(), ['ANON_KEY', 'CORS_ALLOWED_ORIGIN', 'LAN_BIND_IP', 'LAN_CIDR', 'LAN_HTTP_PORT', 'SERVICE_ROLE_KEY', 'TRUSTED_PROXY_ADDRESS', 'TRUSTED_PROXY_HEADER', 'WAREHOUSE_MAINTENANCE']);
   const used = new Set();
   for (const [name, text] of Object.entries({ http: FILES.httpTemplate, gateway: FILES.gatewayTemplate })) {
     for (const match of text.matchAll(/\$\{([A-Za-z_][A-Za-z0-9_]*)\}/g)) used.add(match[1]);
@@ -80,9 +81,10 @@ test('the public templates hold exactly four variables, the LAN server three mor
     assert.doesNotMatch(code(text), /\$(?:ANON_KEY|SERVICE_ROLE_KEY|CORS_ALLOWED_ORIGIN|WAREHOUSE_MAINTENANCE)\b/, `${name}: a variable without braces`);
   }
   assert.deepEqual([...used].sort(), ['ANON_KEY', 'CORS_ALLOWED_ORIGIN', 'SERVICE_ROLE_KEY', 'WAREHOUSE_MAINTENANCE'], 'the public templates have no LAN variable');
-  // The LAN server holds LAN_CIDR (the allow list) once and LAN_BIND_IP and LAN_HTTP_PORT (the Host pin), and writes none of them in a comment (the
+  // The LAN template holds LAN_CIDR (the allow list) twice and LAN_BIND_IP and LAN_HTTP_PORT (the Host pin), and writes none of them in a comment (the
   // entrypoint would put the value into the comment too).
-  assert.deepEqual([...FILES.lanTemplate.matchAll(/\$\{([A-Za-z_][A-Za-z0-9_]*)\}/g)].map(match => match[1]), ['LAN_BIND_IP', 'LAN_BIND_IP', 'LAN_HTTP_PORT', 'LAN_CIDR']);
+  assert.deepEqual([...FILES.lanTemplate.matchAll(/\$\{([A-Za-z_][A-Za-z0-9_]*)\}/g)].map(match => match[1]), ['LAN_BIND_IP', 'LAN_BIND_IP', 'LAN_HTTP_PORT', 'LAN_CIDR', 'LAN_CIDR']);
+  // The allow list (LAN_CIDR) is in both servers of the LAN template: the outer one (phones) and the inner one (behind the signer).
   assert.doesNotMatch(FILES.lanTemplate.split('\n').filter(line => line.trim().startsWith('#')).join('\n'), /\$\{?LAN_|\$\{/);
   assert.doesNotMatch(code(FILES.lanTemplate), /\$LAN_[A-Z_]+\b/, 'the braced form only');
   // The values are put in as they are: the rendered templates have none left, and keep every nginx variable.
@@ -111,7 +113,7 @@ test('the public templates hold exactly four variables, the LAN server three mor
   assert.match(dockerfile, /^COPY lan\/ \/etc\/nginx\/templates-lan\/$/m);
   assert.match(dockerfile, /^COPY templates\/http\.conf\.template \/etc\/nginx\/templates-lan\/http\.conf\.template$/m);
   // The compose environment names exactly those four and requires each of the three that are not a switch; the switch has the default `off` in both gateway services.
-  for (const name of filter.filter(name => !name.startsWith('LAN_') && name !== 'WAREHOUSE_MAINTENANCE')) assert.match(compose, new RegExp(`\\n      ${name}: \\$\\{${name}:\\?[^}]+\\}\\n`), `${name} is required by Compose`);
+  for (const name of filter.filter(name => !name.startsWith('LAN_') && !name.startsWith('TRUSTED_PROXY_') && name !== 'WAREHOUSE_MAINTENANCE')) assert.match(compose, new RegExp(`\\n      ${name}: \\$\\{${name}:\\?[^}]+\\}\\n`), `${name} is required by Compose`);
   assert.equal((compose.match(/\n      WAREHOUSE_MAINTENANCE: \$\{WAREHOUSE_MAINTENANCE:-off\}\n/g) || []).length, 2, 'both gateway services take the switch, off by default');
   // The LAN names are for gateway-lan only and may be empty in Compose (the entrypoint refuses an empty one); the public gateway is not given them.
   for (const name of ['LAN_CIDR', 'LAN_BIND_IP', 'LAN_HTTP_PORT']) assert.equal((compose.match(new RegExp(`\\n      ${name}: \\$\\{${name}:-\\}\\n`, 'g')) || []).length, name === 'LAN_CIDR' ? 1 : 2, name);
@@ -140,7 +142,10 @@ test('gateway takes the client address from the tunnel hop only, in the public s
   assert.match(route('/rest/v1/'), /^\s*limit_req zone=rest burst=1800 nodelay;$/m);
   assert.match(route('/functions/v1/'), /^\s*limit_req zone=functions burst=100 nodelay;$/m);
   assert.doesNotMatch(route('/storage/v1/'), /limit_req/, 'storage has no rate limit (docs/CONTAINER_SECURITY.md)');
-  assert.deepEqual(CODE.locations.match(/^\s*limit_req .*$/gm).length, 2);
+  // Two more in the download page of a local-only facility (WH-146): /app and /app/warehouse.apk, on the functions zone, on the LAN path only.
+  assert.deepEqual(CODE.locations.match(/^\s*limit_req .*$/gm).length, 4);
+  assert.match(route('= /app'), /^\s*limit_req zone=functions burst=20 nodelay;$/m);
+  assert.match(route('= /app/warehouse.apk'), /^\s*limit_req zone=functions burst=5 nodelay;$/m);
 });
 
 test('request bodies are limited to 10 MB for REST and functions and 50 MB for storage, and are never written to a file', () => {
@@ -278,8 +283,9 @@ test('each route strips its prefix as Kong did, to the same upstream, and keeps 
   // The route set is pinned: the locations of the routes file are exactly these, and three of them proxy (a fourth `proxy_pass`, or a
   // proxying location of another name, would be a route nobody reviewed, with no key check, limit or CORS handling).
   assert.deepEqual([...CODE.locations.matchAll(/^location (\S+ )?(\S+) \{/gm)].map(match => `${match[1] ?? ''}${match[2]}`),
-    ['@json_401', '@json_404', '@json_413', '@json_429', '@json_502', '@json_503', '@json_504', '/', '= /rest/v1', '= /storage/v1', '= /functions/v1', '/rest/v1/', '/storage/v1/', '/functions/v1/']);
-  assert.deepEqual([...CODE.locations.matchAll(/^\s*proxy_pass (\S+);$/gm)].map(match => match[1]), ['http://rest_up$rest_path', 'http://storage_up$storage_path', 'http://functions_up$functions_path']);
+    ['@json_401', '@json_404', '@json_413', '@json_429', '@json_502', '@json_503', '@json_504', '/', '= /rest/v1', '= /storage/v1', '= /functions/v1', '/rest/v1/', '/storage/v1/', '= /app', '= /app/warehouse.apk', '/functions/v1/']);
+  // The two download locations (WH-146) go to the function runtime's app-download function with fixed paths; both answer 404 off the LAN path.
+  assert.deepEqual([...CODE.locations.matchAll(/^\s*proxy_pass (\S+);$/gm)].map(match => match[1]), ['http://rest_up$rest_path', 'http://storage_up$storage_path', 'http://functions_up/app-download', 'http://functions_up/app-download/apk', 'http://functions_up$functions_path']);
   assert.doesNotMatch(CODE.locations, /\b(?:fastcgi_pass|uwsgi_pass|scgi_pass|grpc_pass|proxy_cache|mirror|auth_request)\b/);
   assert.doesNotMatch(CODE.gatewayTemplate, /proxy_pass/, 'the public server proxies nothing of its own');
   // The exact prefix without its slash and every other path have no route (nginx would redirect the first).
@@ -391,7 +397,7 @@ test('the gateway service publishes one loopback port, is read-only with no capa
   assert.match(service, /- \/etc\/nginx\/conf\.d:uid=101,gid=101,mode=0755,size=1m\n/);
 });
 
-test('the rendered Compose gateway has the hardening, the limits, the port and the four variables', { skip: !composeAvailable() && !process.env.CI ? 'docker compose is not installed' : false }, () => {
+test('the rendered Compose gateway has the hardening, the limits, the port and the seven variables', { skip: !composeAvailable() && !process.env.CI ? 'docker compose is not installed' : false }, () => {
   const { services } = renderedCompose();
   const gateway = services.gateway;
   assert.equal(services.kong, undefined, 'there is no Kong service');
@@ -407,7 +413,9 @@ test('the rendered Compose gateway has the hardening, the limits, the port and t
   assert.equal(Number(gateway.deploy.resources.limits.cpus), 0.5);
   assert.deepEqual(gateway.ports.map(({ host_ip, target, protocol }) => [host_ip, target, protocol]), [['127.0.0.1', 8000, 'tcp']]);
   assert.match(String(gateway.ports[0].published), /^\d{4,5}$/);
-  assert.deepEqual(Object.keys(gateway.environment).sort(), ['ANON_KEY', 'CORS_ALLOWED_ORIGIN', 'SERVICE_ROLE_KEY', 'WAREHOUSE_MAINTENANCE']);
+  // INGRESS and the two proxy values are WH-146's: absent in compose.env means the Cloudflare tunnel, as before.
+  assert.deepEqual(Object.keys(gateway.environment).sort(), ['ANON_KEY', 'CORS_ALLOWED_ORIGIN', 'INGRESS', 'SERVICE_ROLE_KEY', 'TRUSTED_PROXY_ADDRESS', 'TRUSTED_PROXY_HEADER', 'WAREHOUSE_MAINTENANCE']);
+  assert.deepEqual([gateway.environment.INGRESS, gateway.environment.TRUSTED_PROXY_ADDRESS, gateway.environment.TRUSTED_PROXY_HEADER], ['cloudflare-tunnel', '', '']);
   assert.equal(gateway.environment.WAREHOUSE_MAINTENANCE, 'off', 'a state without the marker is not in maintenance mode');
   assert.ok(gateway.environment.ANON_KEY.length > 20 && gateway.environment.SERVICE_ROLE_KEY.length > 20);
   for (const key of Object.keys(gateway.environment)) assert.doesNotMatch(gateway.environment[key], /[\s"'$;{}]/, `${key} holds nothing the configuration could not hold`);
@@ -557,30 +565,49 @@ test('publisher images are pinned by digest, the gateway base too, and the notic
 });
 
 // ---- the LAN fallback: a second server in a second container (docs/OPERATOR_INSTALL.md, "LAN fallback") ---------------------------
-test('the LAN server: plain http on 8080 only, the same routes, no trust in a client address, an allow list, and it names its path', () => {
-  const server = CODE.lanTemplate;
-  assert.equal((server.match(/^\s*server\s*\{/gm) || []).length, 1);
-  assert.deepEqual(server.match(/^\s*listen\s.*$/gm).map(line => line.trim()), ['listen 8080;'], 'one plain listener: no ssl, no http2, no other port');
-  assert.doesNotMatch(server, /\bssl\b|http2|ssl_certificate/);
-  // Owner decision of 2026-10-26: plain http. No real-IP setting of any kind: the address of the connection is the client's.
+test('the LAN server: plain http on 8080 only, every request through the signer, an inner server only the signer reaches, an allow list, and it names its path', () => {
+  const template = CODE.lanTemplate;
+  // Two servers (WH-133): the outer one answers the phones on 8080 and passes every request to lan-signer; the inner one listens on the
+  // lan-hop address (gateway-lan-back:8081), serves the routes and is reached by the signer only.
+  assert.equal((template.match(/^\s*server\s*\{/gm) || []).length, 2);
+  assert.deepEqual(template.match(/^\s*listen\s.*$/gm).map(line => line.trim()), ['listen 8080;', 'listen gateway-lan-back:8081;'], 'one plain listener for phones: no ssl, no http2, no other port; the inner one on the lan-hop name');
+  assert.doesNotMatch(template, /\bssl\b|http2|ssl_certificate/);
+  const inner = template.slice(template.indexOf('listen gateway-lan-back:8081;'));
+  const server = template.slice(0, template.indexOf('listen gateway-lan-back:8081;'));
+  // Owner decision of 2026-10-26: plain http. The outer server has no real-IP setting of any kind: the address of the connection is the client's.
   assert.doesNotMatch(server, /set_real_ip_from|real_ip_header|real_ip_recursive/);
   assert.doesNotMatch(server, /\$http_cf_connecting_ip|\$http_x_forwarded_for|\$http_x_real_ip/);
-  assert.equal((server.match(/^\s*include \/etc\/nginx\/api-locations\.conf;$/gm) || []).length, 1, 'the same routes file as the public server');
+  // The inner server believes one header, X-Lan-Client-Addr, which only the signer sends: nothing else is on the internal lan-hop network, and the
+  // outer server overwrites the header with the connection's address before it passes a request on.
+  assert.deepEqual([...inner.matchAll(/^\s*(set_real_ip_from|real_ip_header) (\S+);$/gm)].map(match => match[1] + ' ' + match[2]), ['set_real_ip_from 0.0.0.0/0', 'real_ip_header X-Lan-Client-Addr']);
+  assert.match(server, /^\s*proxy_set_header X-Lan-Client-Addr \$remote_addr;$/m);
+  for (const name of ['CF-Connecting-IP', 'X-Real-IP', 'X-Forwarded-For']) assert.match(server, new RegExp(`^\\s*proxy_set_header ${name} "";$`, 'm'), `${name} of a phone is not passed on`);
+  assert.equal((template.match(/^\s*include \/etc\/nginx\/api-locations\.conf;$/gm) || []).length, 1, 'the same routes file as the public server, in the inner server');
+  assert.ok(inner.includes('include /etc/nginx/api-locations.conf;') && !server.includes('api-locations'), 'the routes are behind the signer only');
+  assert.deepEqual([...template.matchAll(/^\s*(allow|deny) (\S+);$/gm)].map(match => match[1] + ' ' + match[2]), ['allow ${LAN_CIDR}', 'deny all', 'allow ${LAN_CIDR}', 'deny all'], 'in each server one allowed range, then everyone else is denied');
   assert.match(server, /^\s*allow \$\{LAN_CIDR\};$\n^\s*deny all;$/m);
-  assert.deepEqual([...server.matchAll(/^\s*(allow|deny) (\S+);$/gm)].map(match => match[1] + ' ' + match[2]), ['allow ${LAN_CIDR}', 'deny all'], 'one allowed range, then everyone else is denied');
+  assert.match(inner, /^\s*allow \$\{LAN_CIDR\};$\n^\s*deny all;$/m);
   assert.match(server, /^\s*set \$warehouse_path lan;$/m);
+  assert.match(inner, /^\s*set \$warehouse_path lan;$/m);
   assert.match(CODE.gatewayTemplate, /^\s*set \$warehouse_path public;$/m);
-  // Every API answer carries the header: cors-headers.conf is included by every route, the preflight and every error answer.
+  // Every API answer carries the header: cors-headers.conf is included by every route, the preflight and every error answer; the outer
+  // server's own answers and the signer's say it too.
   assert.match(CODE.cors, /^add_header X-Warehouse-Path \$warehouse_path always;$/m);
-  // The Host pin: the header must be LAN_BIND_IP (with or without LAN_HTTP_PORT), or the container's own health check; anything else is a 404 answered in
-  // the rewrite phase of the server, after the routes file (which sets what the 404 uses) and before the location, the allow list and any limit.
+  assert.match(server, /^\s*proxy_hide_header X-Warehouse-Path;\n\s*add_header X-Warehouse-Path lan always;$/m);
+  // Everything the outer server does not refuse goes to the signer, with nothing else in between.
+  assert.deepEqual([...server.matchAll(/^\s*proxy_pass (\S+);$/gm)].map(match => match[1]), ['http://lan_signer_up']);
+  assert.match(server, /^upstream lan_signer_up \{[^}]*server lan-signer:9000 resolve;/m);
+  assert.match(server, /error_page 502 @lan_502;/);
+  assert.match(server, /"code":"lan_signer_down"/, 'a signer that does not answer is said, not a bare 502');
+  // The Host pin: the header must be LAN_BIND_IP (with or without LAN_HTTP_PORT), or the container's own health check; anything else is a 404 answered by the
+  // outer server before anything is passed on.
   assert.match(server, /^map \$http_host \$lan_host_ok \{\n\s+default\s+0;\n\s+"\$\{LAN_BIND_IP\}"\s+1;\n\s+"\$\{LAN_BIND_IP\}:\$\{LAN_HTTP_PORT\}"\s+1;\n\s+"127\.0\.0\.1:8080"\s+1;\n\s+"localhost:8080"\s+1;\n\}$/m);
   assert.match(server, /^\s*if \(\$lan_host_ok = 0\) \{ return 404; \}$/m);
-  assert.ok(server.indexOf('include /etc/nginx/api-locations.conf;') < server.indexOf('if ($lan_host_ok = 0)'), 'the pin follows the include (the 404 uses what the routes file sets)');
   assert.doesNotMatch(CODE.gatewayTemplate, /lan_host_ok|\$http_host/, 'the public server has no Host pin');
   // /health for the container only, as in the public server.
   assert.match(server, /location = \/health \{\n\s+if \(\$remote_addr != "127\.0\.0\.1"\) \{ return 404; \}\n\s+access_log off;\n\s+default_type text\/plain;\n\s+return 200 "ok\\n";\n\s+\}/);
-  // The per-client keys the sign-in functions and the limits use are the connection's address on the routes that pass one on.
+  // The per-client keys the sign-in functions and the limits use are the connection's address on the routes that pass one on (behind the signer: the
+  // address the outer server saw, through X-Lan-Client-Addr).
   for (const name of ['/rest/v1/', '/functions/v1/']) assert.match(route(name), /^\s*proxy_set_header CF-Connecting-IP \$remote_addr;$/m, `${name} sets the address from the connection`);
   assert.match(route('/storage/v1/'), /^\s*proxy_set_header CF-Connecting-IP "";$/m, 'storage is still not sent one');
   // The public template does not get the LAN server's lines.
@@ -588,7 +615,7 @@ test('the LAN server: plain http on 8080 only, the same routes, no trust in a cl
 });
 
 test('the gateway-lan service: profile lan, the gateway\'s own image (no build of its own), published on LAN_BIND_IP only (loopback by default), on the default network', () => {
-  const service = compose.slice(compose.indexOf('\n  gateway-lan:\n'), compose.indexOf('\n  rest:\n'));
+  const service = compose.slice(compose.indexOf('\n  gateway-lan:\n'), compose.indexOf('\n  lan-signer:\n'));
   assert.ok(service.length > 300, 'the gateway-lan service was read');
   assert.match(service, /\n    profiles: \["lan"\]\n/);
   // One image: the tag Compose gives the gateway's build, never a second build of the same recipe (a second build could be another version).
@@ -605,7 +632,8 @@ test('the gateway-lan service: profile lan, the gateway\'s own image (no build o
   assert.match(service, /test: \["CMD", "wget", "-q", "-T", "5", "-O", "\/dev\/null", "http:\/\/127\.0\.0\.1:8080\/health"\]/);
   assert.match(service, /\n    logging: \*gateway-logging\n/);
   assert.match(service, /\n    depends_on:\n      db:\n        condition: service_healthy\n/);
-  assert.doesNotMatch(service, /\n    networks:/, 'the default network only');
+  // The default network for the upstreams, and lan-hop (internal) under the name the signer calls the inner server by (WH-133).
+  assert.match(service, /\n    networks:\n      default:\n      lan-hop:\n        aliases: \[gateway-lan-back\]\n/);
   assert.match(service, /- \/tmp:size=4m\n/);
   assert.match(service, /- \/etc\/nginx\/conf\.d:uid=101,gid=101,mode=0755,size=1m\n/);
   // Its server replaces the public one in this container only: the image's entrypoint reads the LAN template directory.
@@ -631,7 +659,7 @@ test('the rendered Compose project: the LAN port is loopback until lan.sh gives 
   assert.match(fresh.ports.gateway[0], /^127\.0\.0\.1:\d{4,5}->8000$/);
   assert.deepEqual(Object.keys(fresh.ports).sort(), ['gateway', 'gateway-lan']);
   assert.deepEqual(fresh.services['gateway-lan'].profiles, ['lan']);
-  assert.deepEqual(fresh.services['gateway-lan'].networks, { default: null });
+  assert.deepEqual(fresh.services['gateway-lan'].networks, { default: null, 'lan-hop': { aliases: ['gateway-lan-back'] } });
   // One image: gateway-lan runs the tag Compose gives the gateway's build (<project>-gateway), and has no build of its own.
   assert.equal(fresh.services['gateway-lan'].image, `${fresh.name}-gateway`);
   assert.equal(fresh.services['gateway-lan'].pull_policy, 'never');

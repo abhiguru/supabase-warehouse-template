@@ -147,7 +147,7 @@ test('the command line takes --letterhead-file, prints one confirmation, and the
     const refused = run(['--letterhead-file', join(scratch, 'nope')]);
     assert.equal(refused.status, 1); assert.match(refused.stderr, /Configure: --letterhead-file must be a readable regular file/);
     const setup = readFileSync(new URL('../setup.sh', import.meta.url), 'utf8');
-    assert.match(setup, /--letterhead-file\|--gateway-port\|--db-memory\)/);
+    assert.match(setup, /--letterhead-file\|--gateway-port\|--db-memory\|--ingress\|--proxy-address\|--proxy-header\|--from-bundle\)/);
   } finally { rmSync(scratch, { recursive: true, force: true }); }
 });
 
@@ -448,7 +448,7 @@ test('setup.sh asks after the Slack webhook question and the lock, before config
   assert.match(setup, /--letterhead-file\) LETTERHEAD_ARG="\$2"; if \[\[ "\$2" != ask \]\]; then CONFIG_ARGS\+=\("\$1" "\$2"\); fi ;;/, '`ask` is for the gate; configure.mjs never sees it');
   assert.match(setup, /--given "\$LETTERHEAD_ARG" --out "\$LETTERHEAD_TMP" \|\| exit 1/, 'a refusal ends setup');
   assert.match(setup, /CONFIG_ARGS\+=\(--letterhead-file "\$\(<"\$LETTERHEAD_TMP"\)"\)/);
-  assert.match(setup, /trap 'rm -f "\$WEBHOOK_TMP" "\$LETTERHEAD_TMP"' EXIT/);
+  assert.match(setup, /trap 'rm -f "\$WEBHOOK_TMP" "\$LETTERHEAD_TMP"; \[\[ -z "\$BUNDLE_DIR" \]\] \|\| rm -rf -- "\$BUNDLE_DIR"' EXIT/);
   // The operator-install job; the operator-upgrade job installs an earlier release and passes the option only if that release knows it.
   const ci = readFileSync(new URL('../.github/workflows/ci.yml', import.meta.url), 'utf8');
   const install = ci.slice(ci.indexOf('\n  operator-install:\n') + 1).split(/\n  [a-z-]+:\n/)[0];

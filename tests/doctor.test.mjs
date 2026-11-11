@@ -596,7 +596,10 @@ import { lanDoctor, lanReport } from '../scripts/doctor.mjs';
 const LAN_HOST = [{ name: 'ens33', address: '192.168.1.52', prefix: 24, cidr: '192.168.1.0/24', defaultRoute: true }];
 const LAN_ENV = { LAN_ENABLED: 'true', LAN_BIND_IP: '192.168.1.52', LAN_HTTP_PORT: '8080', LAN_CIDR: '192.168.1.0/24', COMPOSE_PROFILES: 'lan', WAREHOUSE_PROJECT_NAME: 'warehouse-test', ANON_KEY: 'unit.anon.key' };
 const LAN_ANSWER = { ok: true, status: 200, headers: new Headers({ 'x-warehouse-path': 'lan' }), json: async () => ({ success: true, data: { instanceId: 'iid-1' } }) };
-const lanOptions = (over = {}) => ({ interfaces: LAN_HOST, run: () => ({ ok: true, output: '192.168.1.52:8080->8080/tcp\n' }), fetchImpl: async () => LAN_ANSWER, readText: () => '', ...over });
+// WH-133: besides the listener's own answers, the signer's refusal of the identity check (403 lan_key_unknown) is part of a healthy listener.
+const LAN_SIGNER_ANSWER = { ok: false, status: 403, headers: new Headers(), json: async () => ({ code: 'lan_key_unknown' }) };
+const lanSigned = inner => async (url, options) => (options?.headers?.['x-lan-key-id'] ? LAN_SIGNER_ANSWER : inner(url, options));
+const lanOptions = ({ fetchImpl = async () => LAN_ANSWER, ...over } = {}) => ({ interfaces: LAN_HOST, run: () => ({ ok: true, output: '192.168.1.52:8080->8080/tcp\n' }), fetchImpl: lanSigned(fetchImpl), readText: () => '', ...over });
 
 test('doctor LAN report: nothing while off; the address line while it works; the failures and warnings when it does not', async () => {
   assert.deepEqual(await lanReport({ ...LAN_ENV, LAN_ENABLED: 'false' }, 'iid-1', lanOptions()), { failures: [], warnings: [], address: '' });
@@ -609,6 +612,13 @@ test('doctor LAN report: nothing while off; the address line while it works; the
   assert.match(silent.failures[0], /does not answer from this host \(boom\)/);
   const wrongPublisher = await lanReport(LAN_ENV, 'iid-1', lanOptions({ run: () => ({ ok: true, output: '0.0.0.0:8080->8080/tcp\n' }) }));
   assert.match(wrongPublisher.failures[0], /not only on 192\.168\.1\.52:8080/);
+  // A listener that does not sign (a container from before the signer), and a signer that cannot read the keys, are failures.
+  const unsigned = await lanReport(LAN_ENV, 'iid-1', lanOptions({ fetchImpl: async () => LAN_ANSWER, run: () => ({ ok: true, output: '192.168.1.52:8080->8080/tcp\n' }) }));
+  assert.deepEqual(unsigned, { failures: [], warnings: [], address: 'LAN address for the app: http://192.168.1.52:8080' });
+  const unsignedRaw = await lanReport(LAN_ENV, 'iid-1', { ...lanOptions(), fetchImpl: async () => LAN_ANSWER });
+  assert.match(unsignedRaw.failures[0], /answered HTTP 200 to the identity check instead of the signer's 403 lan_key_unknown/);
+  const lookup = await lanReport(LAN_ENV, 'iid-1', { ...lanOptions(), fetchImpl: async (url, options) => (options?.headers?.['x-lan-key-id'] ? { ok: false, status: 503, headers: new Headers(), json: async () => ({ code: 'lan_key_lookup' }) } : LAN_ANSWER) });
+  assert.match(lookup.failures[0], /the LAN signer \(lan-signer\) cannot read the warehouse network keys/);
   const noDocker = await lanReport(LAN_ENV, 'iid-1', lanOptions({ run: () => ({ ok: false, output: '' }) }));
   assert.deepEqual([noDocker.failures.length, noDocker.warnings.length], [0, 1]);
 });
@@ -938,6 +948,9 @@ test('doctor warns when no external heartbeat is stored, unless the decision is 
     assert.deepEqual(checkerWarnings(none.state, up), [], 'a valid URL after a comment line');
     chmodSync(url, 0o644);
     assert.deepEqual(checkerWarnings(none.state, up), [NO_HEARTBEAT_WARNING], 'a loose mode: the checker would not send it');
+    // A local-only facility (WH-146) has no outside alert channel: neither the Slack webhook nor the heartbeat is advised.
+    const localOnlyWarnings = checkerWarnings(none.state, { ...up, localOnly: true });
+    assert.ok(!localOnlyWarnings.includes(NO_WEBHOOK_WARNING) && !localOnlyWarnings.includes(NO_HEARTBEAT_WARNING), 'local-only: no webhook or heartbeat advice');
   } finally { rmSync(none.base, { recursive: true, force: true }); }
 });
 
@@ -946,6 +959,6 @@ test('the release note is a Note line, never a Warning, and a failing lookup add
   assert.equal(await releaseNote('/s', async () => null), '');
   assert.equal(await releaseNote('/s', async () => { throw new Error('boom'); }), '');
   const source = readFileSync(new URL('../scripts/doctor.mjs', import.meta.url), 'utf8');
-  assert.match(source, /const releaseText = local \? await releaseNote\(state\) : ''/, 'only --local looks');
+  assert.match(source, /const releaseText = local && !localOnly \? await releaseNote\(state\) : ''/, 'only --local looks, and not a local-only facility (it has no internet to ask)');
   assert.match(source, /\(numbering \? `\\n\$\{numbering\}` : ''\) \+ releaseText;/, 'it is the last line of the note, after every warning');
 });
