@@ -1822,6 +1822,16 @@ What the app reads:
   2 years back), `DEVICE_NOT_FOUND` and `NO_READINGS`. The answer's shape is in the header of migration 187.
 - `get_sensor_report_devices()` (migration 187; same four roles): `{success:true, data:[{id, name, location, active, first_reading_at,
   last_reading_at}]}`, the sensors with readings, by name. Nothing else of a sensor; customers stay refused on the other sensor reads.
+- `submit_connection_notes(p_notes jsonb)` (migration 188, WH-177; any signed-in account, for its own device): a phone hands over its
+  connection gap notes, an array of at most 500 `{id uuid, age_s, length_s, saves_tried, lost_answers}` (`age_s`: seconds since the
+  stretch began by the phone's monotonic clock; `length_s` 0 is a save that ended offline with no gap open). Idempotent per `(caller, id)`:
+  a note handed over again adds nothing. A note holds times, counts and the caller's session user agent, nothing of a customer, document,
+  amount or place. `{success:true, data:{done:[ids]}}` lists every id the server holds or refused as malformed, so the phone drops them.
+  A 200 `{success:false, error_code}` for `AUTH_REQUIRED` and `INVALID_INPUT` (not an array, or more than 500). Notes are kept 90 days.
+- `get_connection_history()` (migration 188; administrators only): `{success:true, data:{days:[{day 'YYYY-MM-DD', gaps, longest_s, total_s,
+  phones, saves_tried, lost_answers}]}}`, 30 rows, today (India day) first; a day without notes has zeros. A note's day is the server's
+  India day at hand-over minus the note's age. `phones` counts distinct person-and-device pairs with a gap. Staff, supervisors and customer
+  accounts are refused (42501).
 - `get_sensor_device(p_device_id)` (new; administrator, supervisor and staff):
   one device's status, its first reading and its hub. `data` also carries the
   keys of a `devices[]` entry of `get_sensor_polling_data`, so the app reads it
