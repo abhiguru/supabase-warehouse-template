@@ -138,16 +138,20 @@ SELECT pg_temp.idr_assert((SELECT bool_and(inv_date = '2026-05-12T12:00:00Z'::ti
   'either document moves both, and the numbers stay');
 -- Across the financial year: either document is refused, both stay as they were.
 SET LOCAL ROLE authenticated;
-SELECT pg_temp.update_invoice_doc(:'inv_a'::uuid, :'header_a'::jsonb || '{"inv_date":"2026-03-30T12:00:00Z"}') AS cross_a \gset
-SELECT pg_temp.update_invoice_doc(:'inv_b'::uuid, :'header_b'::jsonb || '{"inv_date":"2026-03-30T12:00:00Z"}') AS cross_b \gset
+SELECT pg_temp.update_invoice_doc(:'inv_a'::uuid, (:'header_a'::jsonb - 'inv_fin_year') || '{"inv_date":"2026-03-30T12:00:00Z"}') AS cross_a \gset
+SELECT pg_temp.update_invoice_doc(:'inv_b'::uuid, (:'header_b'::jsonb - 'inv_fin_year') || '{"inv_date":"2026-03-30T12:00:00Z"}') AS cross_b \gset
+-- With inv_fin_year sent, the older generic financial-year check answers first (WH422); the move is refused all the same.
+SELECT pg_temp.update_invoice_doc(:'inv_a'::uuid, :'header_a'::jsonb || '{"inv_date":"2026-03-30T12:00:00Z"}') AS cross_dated \gset
 SELECT pg_temp.update_invoice_doc(:'inv_a'::uuid, :'header_a'::jsonb || '{"inv_fin_year":2025}') AS cross_year \gset
 RESET ROLE;
 SELECT pg_temp.idr_assert(:'cross_a'::jsonb->>'success' = 'false' AND :'cross_a'::jsonb->>'reason' = 'INVOICE_PAIR_OTHER_YEAR' AND :'cross_a'::jsonb->>'error_code' = 'WH409'
   AND :'cross_a'::jsonb->>'first' = '20270401' AND :'cross_a'::jsonb->>'second' = '20270402' AND (:'cross_a'::jsonb->>'fin_year')::int = 2026,
   'a date in the previous financial year is refused for the first document: ' || :'cross_a');
 SELECT pg_temp.idr_assert(:'cross_b'::jsonb->>'reason' = 'INVOICE_PAIR_OTHER_YEAR', 'and for the second document: ' || :'cross_b');
-SELECT pg_temp.idr_assert(:'cross_year'::jsonb->>'reason' = 'INVOICE_PAIR_OTHER_YEAR' AND (:'cross_year'::jsonb->>'new_fin_year')::int = 2025,
-  'a different inv_fin_year is refused too: ' || :'cross_year');
+SELECT pg_temp.idr_assert(:'cross_dated'::jsonb->>'success' = 'false' AND :'cross_dated'::jsonb->>'error_code' = 'WH422' AND :'cross_dated'::jsonb->>'error' LIKE 'The invoice date belongs to financial year%',
+  'with inv_fin_year sent, a date in the previous financial year gets the generic refusal: ' || :'cross_dated');
+SELECT pg_temp.idr_assert(:'cross_year'::jsonb->>'success' = 'false' AND :'cross_year'::jsonb->>'error_code' = 'WH422',
+  'a different inv_fin_year is refused too (generic refusal while the date stays): ' || :'cross_year');
 SELECT pg_temp.idr_assert((SELECT bool_and(inv_date = '2026-05-12T12:00:00Z'::timestamptz AND inv_fin_year = 2026) FROM public.invoice WHERE id IN (:'inv_a'::uuid, :'inv_b'::uuid)),
   'the refusals wrote nothing');
 
