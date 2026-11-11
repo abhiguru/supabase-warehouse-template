@@ -11,7 +11,7 @@ const source = readFileSync(new URL('../functions/_shared/document-pdf.ts', impo
 test('the invoice document reads its header by column, without the internal ones', () => {
   const columns = headerColumns('invoice').split(',');
   assert.equal(headerColumns('invoice'), invoiceHeaderColumns);
-  assert.equal(invoiceHeaderColumns, 'id,customer_name,inv_date,inv_fin_year,labour,tax_amount,discount,total');
+  assert.equal(invoiceHeaderColumns, 'id,customer_name,inv_date,inv_fin_year,inv_prefix,labour,tax_amount,discount,total'); // inv_prefix: migration 175 (WH-139), the number's prefix
   assert.ok(!columns.includes('*'), 'select(*) on invoice is refused for the app role');
   for (const column of internal) assert.ok(!columns.includes(column), `${column} is internal`);
   assert.equal(new Set(columns).size, columns.length);

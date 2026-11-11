@@ -50,7 +50,7 @@ SELECT pg_temp.lr_assert(to_regprocedure('public.get_all_grn_items(timestamptz,t
 SELECT pg_temp.lr_assert(to_regprocedure('public.get_dispatch_list_with_items(uuid,jsonb,text,text,integer,integer,boolean)') IS NOT NULL, 'the Dispatches list function exists');
 SELECT pg_temp.lr_assert((SELECT count(*) = 1 AND bool_and(p.prosecdef AND has_function_privilege('authenticated', p.oid, 'EXECUTE') AND NOT has_function_privilege('anon', p.oid, 'EXECUTE'))
    FROM pg_proc p WHERE p.pronamespace = 'public'::regnamespace AND p.proname = 'get_invoices_list'), 'get_invoices_list: one function, SECURITY DEFINER, for signed-in callers only');
-SELECT pg_temp.lr_assert(NOT (SELECT prosrc FROM pg_proc WHERE oid = 'public.get_invoices_list(integer,integer,uuid,integer,text,text,text,text,integer,integer,text,timestamptz,timestamptz,uuid[])'::regprocedure) ~* 'mv_',
+SELECT pg_temp.lr_assert(NOT (SELECT prosrc FROM pg_proc WHERE oid = 'public.get_invoices_list(integer,integer,uuid,integer,text,text,text,text,integer,integer,text,timestamptz,timestamptz,uuid[],text,text)'::regprocedure) ~* 'mv_',
   'get_invoices_list reads no mv_* relation');
 SELECT pg_temp.lr_assert((SELECT bool_and(prosrc !~* 'mv_(invoice|dispatch|grn|customer|orders)_|mv_refresh|refresh_dirty|list_refresh|REFRESH\s+MATERIALIZED')
    FROM pg_proc WHERE pronamespace IN ('public'::regnamespace, 'warehouse_security'::regnamespace)), 'a function still names a dropped list');

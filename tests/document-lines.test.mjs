@@ -164,7 +164,7 @@ test('each kind lists its lines in its screen order: a GRN and the stock by id, 
 
 test('the four documents read their lines through readDocumentLines with their kind, and the renderer is asked to run a long one alone', () => {
   const source = readFileSync(new URL('../functions/_shared/document-pdf.ts', import.meta.url), 'utf8');
-  assert.equal(source.match(/readDocumentLines\(reader,kind,'/g).length, 4);
+  assert.equal(source.match(/readDocumentLines\(reader,kind,'/g).length, 5); // the invoice is read twice: the GST layouts read their lines with the tax columns (WH-151)
   assert.doesNotMatch(source, /limit\(1001\)|starter limit/);
   assert.match(source, /renderDocumentPdf\(html,\{ solo: pages > SOLO_PDF_PAGES, requestId: requestId\(req\) \}\)/);
   assert.match(source, /if \(pages > MAX_PDF_PAGES\) throw \{ status: 400/);
