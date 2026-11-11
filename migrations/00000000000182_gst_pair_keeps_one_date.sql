@@ -1,8 +1,11 @@
 -- Migration 182 (WH-174 item 1): the two documents of a GST pair keep one date.
 -- A pair (migration 173) is the tax invoice and the bill of supply of one save: two invoice rows linked both ways by
 -- invoice.linked_invoice_id (the tax invoice names the bill of supply and the bill of supply names the tax invoice), numbers n and n + 1 of
--- one financial year. A document is "of a pair" when its linked_invoice_id names an invoice that is not deleted, the rule delete_invoice
--- uses for INVOICE_PAIR (a cancelled other document still counts, as it does there).
+-- one financial year. For a date change a document is "of a pair" when its linked_invoice_id names an invoice that is neither deleted nor
+-- cancelled. A cancelled document is never re-dated (WH-174, Product): it keeps showing what it showed when it was live. So when the other
+-- document is cancelled, the live one is treated as unpaired: the cancelled partner gets no copy of the date, no INVOICE_PAIR_OTHER_YEAR
+-- refusal is raised on its account, and the prefix rule of migration 175 applies as for any single invoice. (delete_invoice's INVOICE_PAIR
+-- rule differs: it counts a cancelled partner, because delete removes both.)
 -- Before: update_invoice re-dated only the document it was given, so the two documents could hold different dates, and a date in another
 -- financial year moved one document into another year's number series.
 --  1. An edit of one document of a pair that sends a different inv_date gives the other document the same inv_date in the same
@@ -66,7 +69,7 @@ BEGIN$m$,
 $m$            USING ERRCODE = 'WH422';
     END IF;
 
-    -- Migration 182 (WH-174): the other document of a GST pair (migration 173), locked (lock 71040 is held, so this order is safe).
+    -- Migration 182 (WH-174): the other, live document of a GST pair (migration 173; a cancelled partner is not a pair here), locked (lock 71040 is held, so this order is safe).
     -- A paired document's date may not leave its financial year; nothing is written before this.
     SELECT l.id,
            CASE WHEN own.inv_no <= l.inv_no THEN warehouse_security.invoice_label(own.inv_prefix, own.inv_no)
@@ -74,7 +77,7 @@ $m$            USING ERRCODE = 'WH422';
            CASE WHEN own.inv_no <= l.inv_no THEN warehouse_security.invoice_label(l.inv_prefix, l.inv_no)
                 ELSE warehouse_security.invoice_label(own.inv_prefix, own.inv_no) END
       INTO v_pair_id, v_pair_first, v_pair_second
-      FROM invoice own JOIN invoice l ON l.id = own.linked_invoice_id AND l.deleted_at IS NULL
+      FROM invoice own JOIN invoice l ON l.id = own.linked_invoice_id AND l.deleted_at IS NULL AND l.cancelled_at IS NULL
      WHERE own.id = p_invoice_id
        FOR UPDATE OF l;
     v_new_inv_date := NULLIF(p_invoice_data->>'inv_date', '')::timestamptz;
