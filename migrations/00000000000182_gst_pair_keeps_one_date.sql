@@ -13,8 +13,8 @@
 --     everything else of the other document stay as they are. The other document's own date rules are checked as for the edited one
 --     (check_invoice_dates, migration 129: INVOICE_BEFORE_DISPATCH names the other document's latest dispatch).
 --  2. A paired document whose new date (or inv_fin_year) is in another financial year is refused before anything is written:
---     {success:false, error_code:'WH409', reason:'INVOICE_PAIR_OTHER_YEAR', error and message: "This bill has two documents, SRT/12 and
---     SRT/13. Their date can't move to another financial year. Delete both and make the bill again.", first, second (the two full
+--     {success:false, error_code:'WH409', reason:'INVOICE_PAIR_OTHER_YEAR', error and message: "This invoice has two documents, SRT/12 and
+--     SRT/13. Their date can't move to another financial year. Delete both and make the invoice again.", first, second (the two full
 --     numbers, lower number first), invoice_id, linked_invoice_id, fin_year (the pair's), new_fin_year}. Nothing changes.
 --  3. An unpaired invoice is edited exactly as before, including the prefix rule of migration 175 (WH-172 item 3: an invoice moved to
 --     another financial year takes that year's prefix).
@@ -86,7 +86,7 @@ $m$            USING ERRCODE = 'WH422';
         IF v_new_fin_year IS DISTINCT FROM v_stored_fin_year
            OR COALESCE((p_invoice_data->>'inv_fin_year')::integer, v_stored_fin_year) IS DISTINCT FROM v_stored_fin_year THEN
             RETURN warehouse_security.refuse('INVOICE_PAIR_OTHER_YEAR',
-                format('This bill has two documents, %s and %s. Their date can''t move to another financial year. Delete both and make the bill again.',
+                format('This invoice has two documents, %s and %s. Their date can''t move to another financial year. Delete both and make the invoice again.',
                        v_pair_first, v_pair_second),
                 jsonb_build_object('first', v_pair_first, 'second', v_pair_second, 'invoice_id', p_invoice_id,
                                    'linked_invoice_id', v_pair_id, 'fin_year', v_stored_fin_year,
