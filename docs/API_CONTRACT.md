@@ -1815,6 +1815,13 @@ What the app reads:
   temperature or humidity that no reading of the hour carried is `null`. Hours without readings have no row. A 200
   `{success:false, error, error_code}` for `INVALID_RANGE` (a null bound, or `p_to` not after `p_from`), `RANGE_TOO_LARGE` (more
   than 400 days) and `DEVICE_NOT_FOUND`.
+- `get_temperature_report(p_device_id uuid, p_from date, p_to date)` (migration 187, WH-157; administrator, supervisor, staff and
+  customer accounts, every sensor): everything the temperature report PDF prints, read by `generate-temperature-report-pdf` with the
+  caller's token. India dates; the period is `p_from` 00:00 to `p_to` + 1 00:00 India time, cut at now when `p_to` is today. A 200
+  `{success:false, error, error_code}` for `INVALID_PERIOD`, `PERIOD_TOO_LONG` (more than 12 months), `PERIOD_TOO_OLD` (starts more than
+  2 years back), `DEVICE_NOT_FOUND` and `NO_READINGS`. The answer's shape is in the header of migration 187.
+- `get_sensor_report_devices()` (migration 187; same four roles): `{success:true, data:[{id, name, location, active, first_reading_at,
+  last_reading_at}]}`, the sensors with readings, by name. Nothing else of a sensor; customers stay refused on the other sensor reads.
 - `get_sensor_device(p_device_id)` (new; administrator, supervisor and staff):
   one device's status, its first reading and its hub. `data` also carries the
   keys of a `devices[]` entry of `get_sensor_polling_data`, so the app reads it
