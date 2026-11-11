@@ -74,7 +74,7 @@ SET LOCAL session_replication_role = replica;
 UPDATE warehouse_security.sensor_limit_changes SET changed_at = now() - interval '1 hour' WHERE device_id = '00000000-0000-4000-8000-0000000187d1' AND source = 'change';
 SET LOCAL session_replication_role = origin;
 SET LOCAL ROLE authenticated;
-SELECT public.get_temperature_report('00000000-0000-4000-8000-0000000187d1', current_date - 3, current_date) AS r \gset
+SELECT public.get_temperature_report('00000000-0000-4000-8000-0000000187d1', (now() AT TIME ZONE 'Asia/Kolkata')::date - 3, (now() AT TIME ZONE 'Asia/Kolkata')::date) AS r \gset
 RESET ROLE;
 SELECT pg_temp.tr_assert(jsonb_array_length(:'r'::jsonb #> '{data,limits,changes}') = 1 AND jsonb_array_length(:'r'::jsonb #> '{data,chart,limit_steps}') = 2
   AND :'r'::jsonb #> '{data,limits,not_recorded_before}' = 'null'::jsonb, 'a change in the period; no not-recorded line after the upgrade');
