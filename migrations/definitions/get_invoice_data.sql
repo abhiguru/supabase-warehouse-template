@@ -166,7 +166,10 @@ BEGIN
 
                 items.id as catalog_id,
                 CASE WHEN it.details_kept_at IS NOT NULL THEN it.kept_item_name ELSE items.name END as catalog_name,
-                CASE WHEN it.details_kept_at IS NOT NULL THEN it.kept_packaging ELSE items.packaging END as catalog_packaging,
+                -- WH-88 (migration 177): a cancelled line keeps the item's own word as it was at the cancel; lines kept before 177 keep the lot's word.
+                CASE WHEN it.details_kept_at IS NOT NULL
+                     THEN CASE WHEN it.kept_catalog_word_set THEN it.kept_catalog_packaging ELSE it.kept_packaging END
+                     ELSE warehouse_security.line_catalog_packaging(grt.item_id) END as catalog_packaging,
                 items.description as catalog_description,
                 items.active as catalog_active
 
