@@ -741,6 +741,10 @@ SELECT pg_temp.gr_assert(:'undo_far'::jsonb->>'error_code'='INVALID_DATE','two y
 -- the data; the count check below fails if the fixtures ever stop producing dispatched lines.
 SELECT pg_temp.gr_assert((SELECT count(DISTINCT dt.id)>=3 FROM public.dispatch_trl dt JOIN public.goodsreceived_trl g ON g.id=dt.gr_trl_id),
  'the fixtures hold dispatched lines for the parity check');
+-- The parity of the form and the recalculation is the rule of a facility that has invoicing goods as they leave off (the default before migration
+-- 174, WH-162): with it on, the form leaves out a dispatch line that is already on a live invoice and the recalculation does not
+-- (tests/invoice_as_goods_leave.sql).
+UPDATE warehouse_security.charging_rule SET invoice_as_goods_leave = false WHERE id;
 DO $parity$
 DECLARE
   g record; m text; form jsonb; recalc jsonb; stripped jsonb; compared integer := 0; line_count integer := 0;
@@ -760,7 +764,11 @@ BEGIN
       SELECT COALESCE(jsonb_agg((SELECT jsonb_object_agg(k, l.line->k) FROM unnest(keys) k WHERE l.line ? k)
                                 ORDER BY l.ord), '[]')
         INTO stripped FROM jsonb_array_elements(recalc->'rows') WITH ORDINALITY AS l(line, ord);
-      IF stripped::text IS DISTINCT FROM (form->'items')::text THEN
+      -- Each form line also answers its storage_amount (migration 164, WH-137), which the recalculation rows do not carry: it is compared apart.
+      IF EXISTS (SELECT 1 FROM jsonb_array_elements(form->'items') l WHERE NOT l ? 'storage_amount') THEN
+        RAISE EXCEPTION 'grn rates: parity % %: a form line has no storage_amount', g.gr_no, m;
+      END IF;
+      IF (SELECT COALESCE(jsonb_agg(l - 'storage_amount' ORDER BY o), '[]') FROM jsonb_array_elements(form->'items') WITH ORDINALITY t(l,o))::text IS DISTINCT FROM stripped::text THEN
         RAISE EXCEPTION 'grn rates: parity % %: lines differ. form %, recalculation %', g.gr_no, m, left((form->'items')::text,400), left(stripped::text,400);
       END IF;
       IF (form->'totals')::text IS DISTINCT FROM (SELECT jsonb_build_object('subtotal',recalc#>'{totals,subtotal}','tax',recalc#>'{totals,tax}',

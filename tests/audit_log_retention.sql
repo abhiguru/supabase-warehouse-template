@@ -27,6 +27,9 @@ ROLLBACK;
 
 -- 1. Creation ahead; a row of a coming month sitting in the default partition is moved; nothing older than 8 years survives.
 BEGIN;
+-- Rows the migrations wrote (migration 174 writes one audit_log row on a database that never changed invoicing goods as they leave) sit in the
+-- partition of the day the database was built and are counted too; the fixture below is added to them.
+SELECT count(*) AS pre_rows FROM public.audit_log \gset
 CREATE FUNCTION pg_temp.ar_assert(ok boolean, label text) RETURNS void LANGUAGE plpgsql AS $$
 BEGIN IF NOT COALESCE(ok, false) THEN RAISE EXCEPTION 'audit_log retention: %', label; END IF; END $$;
 CREATE FUNCTION pg_temp.ar_parts() RETURNS text LANGUAGE sql AS $$
@@ -55,7 +58,7 @@ SELECT pg_temp.ar_assert((:'preview'::jsonb->>'applied')::boolean = false
   AND jsonb_array_length(:'preview'::jsonb#>'{audit_log,partitions_dropped}') = 13
   AND :'preview'::jsonb#>>'{audit_log,partitions_dropped,0}' = 'audit_log_2025_12' AND :'preview'::jsonb#>>'{audit_log,partitions_dropped,12}' = 'audit_log_2026_12'
   AND (:'preview'::jsonb#>>'{audit_log,default_rows_moved}')::int = 3 AND (:'preview'::jsonb#>>'{audit_log,default_rows_deleted}')::int = 1
-  AND (:'preview'::jsonb#>>'{rows,audit_log}')::int = 3 + 1,
+  AND (:'preview'::jsonb#>>'{rows,audit_log}')::int = 3 + 1 + :pre_rows,
  'preview: creates 4, drops 13, moves 3, deletes 1, counts 4 rows: ' || :'preview');
 SELECT pg_temp.ar_assert(to_regclass('public.audit_log_2035_03') IS NULL AND to_regclass('public.audit_log_2026_12') IS NOT NULL
   AND (SELECT count(*) = 5 FROM public.audit_log_default WHERE table_name = 'ar_test')
@@ -91,7 +94,7 @@ SELECT pg_temp.ar_assert((:'applied'::jsonb->>'applied')::boolean
   AND :'applied'::jsonb#>'{audit_log,partitions_created}' = :'preview'::jsonb#>'{audit_log,partitions_created}'
   AND :'applied'::jsonb#>'{audit_log,partitions_dropped}' = :'preview'::jsonb#>'{audit_log,partitions_dropped}'
   AND (:'applied'::jsonb#>>'{audit_log,default_rows_moved}')::int = 3 AND (:'applied'::jsonb#>>'{audit_log,default_rows_deleted}')::int = 1
-  AND (:'applied'::jsonb#>>'{rows,audit_log}')::int = 4, 'apply reports what the preview promised: ' || :'applied');
+  AND (:'applied'::jsonb#>>'{rows,audit_log}')::int = 4 + :pre_rows, 'apply reports what the preview promised: ' || :'applied');
 SELECT pg_temp.ar_assert(pg_temp.ar_parts() = 'audit_log_2035_03,audit_log_2035_04,audit_log_2035_05,audit_log_2035_06,audit_log_default',
   'the partitions are now 2035_03 to 2035_06 and the default: ' || pg_temp.ar_parts());
 SELECT pg_temp.ar_assert((SELECT count(*) = 2 FROM public.audit_log_2035_03 WHERE id IN ('00000000-0000-4000-8000-0000000000d1', '00000000-0000-4000-8000-0000000000d2'))

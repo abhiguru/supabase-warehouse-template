@@ -118,7 +118,10 @@ SELECT pg_temp.g_assert((SELECT business_date_ok FROM (SELECT date::date = '2026
 -- the other places that read the rule are patched in the stored functions
 SELECT pg_temp.g_assert(position('i.cancelled_at IS NULL AND i.id <> p_invoice_id' IN pg_get_functiondef('public.update_invoice(uuid, jsonb, jsonb[])'::regprocedure)) > 0,
   'update_invoice clears the old GRN''s flag counting live invoices only');
-SELECT pg_temp.g_assert(position('li.cancelled_at IS NULL' IN pg_get_functiondef('warehouse_security.apply_grn_rates(uuid, jsonb)'::regprocedure)) > 0,
+-- Since migration 165 (WH-138) apply_grn_rates asks warehouse_security.grn_invoice_state, which holds the one live-invoice rule (neither deleted nor
+-- cancelled; with the setting off a live invoice means invoiced).
+SELECT pg_temp.g_assert(position('warehouse_security.grn_invoice_state(g.id) = ''invoiced''' IN pg_get_functiondef('warehouse_security.apply_grn_rates(uuid, jsonb)'::regprocedure)) > 0
+  AND position('i.deleted_at IS NULL AND i.cancelled_at IS NULL' IN pg_get_functiondef('warehouse_security.grn_invoice_state(uuid)'::regprocedure)) > 0,
   'apply_grn_rates reads the live-invoice rule');
 
 -- ===== WH-111: update_grn needs a line list =====

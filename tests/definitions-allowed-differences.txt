@@ -5,6 +5,12 @@
 # The table that records the definitions exists only in B.
 B \|warehouse_migrations\.definitions\|
 #
+# Migration 174 (2026-11-11, WH-162) turns invoicing goods as they leave on in a database that never changed it; the change writes one
+# audit_log row whose old and new row hold now() (updated_at), so the row of two databases built at different moments differs. The
+# row is on both sides; only its content (a timestamp) differs.
+A ^seed\|public\.audit_log\|
+B ^seed\|public\.audit_log\|
+#
 # A function whose definition file was changed on purpose after migration 126 differs from the one the chain leaves: a fix, or a
 # feature that migration 127 (the first one) carries in definition files, not in numbered files. List its two lines here, with the
 # reason and the date, in the same commit as the change (<schema> is public or warehouse_security). The line also takes the

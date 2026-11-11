@@ -100,16 +100,16 @@ SELECT pg_temp.sa_assert(:'marked_again'::jsonb->>'message'='Unchanged' AND :'no
  AND :'unknown_user'::jsonb->>'error_code'='NOT_FOUND' AND :'myself'::jsonb->>'error_code'='SELF_EDIT_FORBIDDEN'
  AND NOT (SELECT is_service_account FROM public.user_profiles WHERE id=:'admin_id'::uuid),'repeat, missing input, unknown user and yourself: '||:'marked_again'||:'no_user'||:'no_flag'||:'unknown_user'||:'myself');
 
--- List and details now show it; other rows stay false.
+-- Details show it; the list leaves service accounts out (migration 171, product decision of 2026-11-07), so it drops from 7 rows to 6.
 SELECT set_config('request.jwt.claims',:'admin_claims',true);
 SET LOCAL ROLE authenticated;
 SELECT public.get_users_list('Service Test',NULL,NULL,100,0) AS list_after, public.get_user_details(:'sync_id'::uuid) AS details_after,
        public.get_user_details(:'person_id'::uuid) AS details_person \gset
 RESET ROLE;
-SELECT pg_temp.sa_assert((SELECT count(*) FILTER (WHERE (u->>'is_service_account')::boolean)=1 AND count(*)=7 AND bool_or(u->>'id'=:'sync_id' AND (u->>'is_service_account')::boolean)
+SELECT pg_temp.sa_assert((SELECT count(*) FILTER (WHERE (u->>'is_service_account')::boolean)=0 AND count(*)=6 AND NOT bool_or(u->>'id'=:'sync_id')
     FROM jsonb_array_elements(:'list_after'::jsonb->'users') u)
  AND :'details_after'::jsonb#>'{user,is_service_account}'='true'::jsonb AND :'details_person'::jsonb#>'{user,is_service_account}'='false'::jsonb,
- 'the list marks exactly the sync profile; details agree');
+ 'the list leaves the sync profile out; details agree');
 
 -- Role, status and deletion are refused for it; a person is still changeable.
 SELECT set_config('request.jwt.claims',:'admin_claims',true);

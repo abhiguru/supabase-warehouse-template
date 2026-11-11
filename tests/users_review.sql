@@ -168,7 +168,7 @@ SELECT public.get_users_list('Deleted',NULL,NULL,100,0) AS list_del, public.get_
 RESET ROLE;
 SELECT pg_temp.ur_assert((:'list_del'::jsonb#>>'{pagination,total_count}')::int=0 AND (:'list_del'::jsonb#>>'{pagination,total_with_deleted}')::int>=1
  AND (SELECT bool_and(u->'is_deleted'='true'::jsonb AND u->'mobile'='null'::jsonb) AND count(*)>=1 FROM jsonb_array_elements(:'list_del'::jsonb->'users') u),'deleted rows: no phone, not counted: '||:'list_del');
-SELECT pg_temp.ur_assert((:'list_live'::jsonb#>>'{pagination,total_count}')::int = (SELECT count(*) FROM public.user_profiles WHERE name ILIKE '%Review%' AND deleted_at IS NULL)
+SELECT pg_temp.ur_assert((:'list_live'::jsonb#>>'{pagination,total_count}')::int = (SELECT count(*) FROM public.user_profiles WHERE name ILIKE '%Review%' AND deleted_at IS NULL AND NOT is_service_account) -- service accounts are not listed (migration 171)
  AND (SELECT bool_and(u->'is_deleted'='false'::jsonb) FROM jsonb_array_elements(:'list_live'::jsonb->'users') u),'live total_count');
 SELECT pg_temp.ur_assert(:'det_del'::jsonb#>'{user,is_deleted}'='true'::jsonb AND :'det_del'::jsonb#>'{user,mobile}'='null'::jsonb
  AND :'st_del'::jsonb->>'error_code'='ACCOUNT_DELETED' AND :'role_del'::jsonb->>'error_code'='ACCOUNT_DELETED' AND :'again_del'::jsonb->>'error_code'='ACCOUNT_DELETED','changes on a deleted account refused');
@@ -182,8 +182,8 @@ SET LOCAL ROLE authenticated;
 SELECT public.get_users_list('',NULL,NULL,100,0) AS mix_all, public.get_users_list('',NULL,NULL,1,0) AS mix_p1,
        public.get_users_list('DEL0123456789ab',NULL,NULL,100,0) AS mix_phone \gset
 RESET ROLE;
-SELECT pg_temp.ur_assert((:'mix_all'::jsonb#>>'{pagination,total_with_deleted}')::int = (SELECT count(*) FROM public.user_profiles)
- AND (:'mix_all'::jsonb#>>'{pagination,total_count}')::int = (SELECT count(*) FROM public.user_profiles WHERE deleted_at IS NULL)
+SELECT pg_temp.ur_assert((:'mix_all'::jsonb#>>'{pagination,total_with_deleted}')::int = (SELECT count(*) FROM public.user_profiles WHERE NOT is_service_account)
+ AND (:'mix_all'::jsonb#>>'{pagination,total_count}')::int = (SELECT count(*) FROM public.user_profiles WHERE deleted_at IS NULL AND NOT is_service_account)
  AND (SELECT bool_and(u->'is_deleted'='false'::jsonb) FROM (SELECT u FROM jsonb_array_elements(:'mix_all'::jsonb->'users') WITH ORDINALITY t(u,o)
        WHERE o <= (:'mix_all'::jsonb#>>'{pagination,total_count}')::int) x)
  AND (SELECT bool_and(u->'is_deleted'='true'::jsonb) FROM (SELECT u FROM jsonb_array_elements(:'mix_all'::jsonb->'users') WITH ORDINALITY t(u,o)

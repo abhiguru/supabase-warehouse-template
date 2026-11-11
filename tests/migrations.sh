@@ -143,7 +143,9 @@ same_catalogs "$chain_container" chain_psql "$container" mig_psql "$ROOT/tests/d
 upgrade_pass=$(plan_of "$ROOT" | chain_psql 2>&1) || { echo "$upgrade_pass" | tail -20 >&2; echo 'The definitions did not apply to a database that had the numbered files.' >&2; exit 1; }
 [[ "$(grep -c '^Applying definition: ' <<< "$upgrade_pass")" == "$definition_count" && "$upgrade_pass" != *'Applying: '* ]] || { echo "The upgrade pass did not apply exactly the definitions: $upgrade_pass" >&2; exit 1; }
 [[ "$(definition_rows)" == "$(chain_psql -At -c 'SELECT string_agg(name || $$:$$ || checksum, $$,$$ ORDER BY name COLLATE "C") FROM warehouse_migrations.definitions')" ]] || { echo 'The upgraded database recorded other definitions.' >&2; exit 1; }
-printf '# no differences expected\n' > "$chainroot/none.txt"
+# No differences expected, except the audit_log row migration 174 (WH-162) writes when it turns invoicing goods as they leave on: its old
+# and new row hold now(), so the row of two databases built at different moments differs in its timestamps only.
+printf '# no differences expected\nA ^seed\\|public\\.audit_log\\|\nB ^seed\\|public\\.audit_log\\|\n' > "$chainroot/none.txt"
 same_catalogs "$chain_container" chain_psql "$container" mig_psql "$chainroot/none.txt" || { echo 'A facility that ran the numbered files differs from a new one after the definitions.' >&2; exit 1; }
 
 # The documented way to fix a function (CONTRIBUTING.md): change its definition file and add its lines to tests/definitions-allowed-differences.txt.
@@ -499,9 +501,12 @@ mig_psql -c "ALTER DATABASE postgres SET storage.allow_delete_query = 'true'"
 # dispatch rules are free text; a suite that reads a suggestion puts a rule back inside its own transaction, and
 # tests/document_numbering.sql proves the rules themselves.
 mig_psql -c "SELECT warehouse_security.apply_document_numbering('grn', '{\"scheme\":\"free\"}', NULL), warehouse_security.apply_document_numbering('dispatch', '{\"scheme\":\"free\"}', NULL)" >/dev/null
+# Migration 174 (WH-162): invoicing goods as they leave is on by default where it was never changed. The suites below predate the setting and
+# check the rule of a facility that has it off (a GRN is invoiced once, as a whole); tests/invoice_as_goods_leave.sql proves it on.
+mig_psql -c "UPDATE warehouse_security.charging_rule SET invoice_as_goods_leave = false WHERE id" >/dev/null
 test_files=(
   "$ROOT/tests/baseline_roles.sql" "$ROOT/tests/baseline_owners.sql" "$ROOT/tests/security_baseline.sql" "$ROOT/tests/operator_auth.sql"
-  "$ROOT/tests/invoice_duration.sql" "$ROOT/tests/core_pilot.sql"
+  "$ROOT/tests/invoice_duration.sql" "$ROOT/tests/core_pilot.sql" "$ROOT/tests/charging_rule.sql" "$ROOT/tests/invoice_as_goods_leave.sql" "$ROOT/tests/payments_record.sql" "$ROOT/tests/invoice_prefix.sql" "$ROOT/tests/customer_statement.sql"
   "$ROOT/scripts/configure-storage.sql" "$ROOT/scripts/configure-storage.sql" "$ROOT/tests/storage_policy_deps.sql"
   "$ROOT/tests/staff_grn_access.sql" "$ROOT/tests/staff_dispatch_invoice_access.sql"
   "$ROOT/tests/storage_delete_rules.sql"
