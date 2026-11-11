@@ -148,6 +148,7 @@ BEGIN
 
                 CASE WHEN it.details_kept_at IS NOT NULL THEN it.kept_disp_no ELSE d.disp_no END as dispatch_no,
                 CASE WHEN it.details_kept_at IS NOT NULL THEN it.kept_disp_date ELSE d.disp_date END as dispatch_date,
+                it.kept_pricing_mode as kept_pricing_mode, -- WH-98 (migration 178): the GRN's mode when the invoice was cancelled
 
                 grt.id as grn_item_id,
                 grt.gr_id as grn_item_gr_id,
@@ -194,7 +195,7 @@ BEGIN
                 'labour_rate', v_item_record.labour_rate,
                 -- Migration 164: the line's storage under the invoice's rule (null when the line has no quantity left to read).
                 'storage_amount', CASE WHEN v_item_record.dispatch_quantity IS NULL THEN NULL
-                                       WHEN v_invoice_header.grn_pricing_mode = 'ONE_TIME'
+                                       WHEN COALESCE(v_item_record.kept_pricing_mode, v_invoice_header.grn_pricing_mode) = 'ONE_TIME'
                                        THEN round(COALESCE(v_item_record.charge, 0) * v_item_record.dispatch_quantity, 2)
                                        ELSE warehouse_security.invoice_storage_amount(p_invoice_id, COALESCE(v_item_record.charge, 0),
                                             v_item_record.dispatch_quantity, COALESCE(v_item_record.duration, 1), v_item_record.no_of_days) END,
