@@ -69,6 +69,10 @@ SELECT pg_temp.tr_assert(EXISTS (SELECT 1 FROM jsonb_array_elements(:'r'::jsonb 
   AND (s->>'before_upgrade')::boolean AND s->'alert'->>'reason' = 'not_recorded'), 'the gap before the raw readings is a not-recorded stretch');
 -- A limit change inside the period is listed with its author's name and is a limit step.
 UPDATE public.sensor_devices SET alert_config = '{"temperature_min": 2, "temperature_max": 6}' WHERE id = '00000000-0000-4000-8000-0000000187d1';
+-- A transaction's now() does not move: the change is dated the same instant as the period's end (now), which the report counts as after the period. Date it an hour back.
+SET LOCAL session_replication_role = replica;
+UPDATE warehouse_security.sensor_limit_changes SET changed_at = now() - interval '1 hour' WHERE device_id = '00000000-0000-4000-8000-0000000187d1' AND source = 'change';
+SET LOCAL session_replication_role = origin;
 SET LOCAL ROLE authenticated;
 SELECT public.get_temperature_report('00000000-0000-4000-8000-0000000187d1', current_date - 3, current_date) AS r \gset
 RESET ROLE;
