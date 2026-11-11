@@ -54,10 +54,11 @@ BEGIN
 END $$;
 
 SELECT pg_temp.patch_function('public.cancel_invoice(uuid, text, timestamp with time zone)'::regprocedure, ARRAY[
-$m$kept_grn_no = gr.gr_no, kept_grn_date = gr.date, details_kept_at = v_cancelled_at$m$
+$m$kept_grn_date = gr.date, details_kept_at = v_cancelled_at$m$
 ], ARRAY[
-$m$kept_grn_no = gr.gr_no, kept_grn_date = gr.date, details_kept_at = v_cancelled_at,
-      kept_catalog_packaging = warehouse_security.line_catalog_packaging(gt.item_id), kept_catalog_word_set = true$m$
+$m$kept_grn_date = gr.date,
+      kept_catalog_packaging = warehouse_security.line_catalog_packaging(gt.item_id), kept_catalog_word_set = true,
+      details_kept_at = v_cancelled_at$m$
 ]);
 
 SELECT pg_temp.patch_function('public.get_invoice_items_detailed(uuid)'::regprocedure, ARRAY[
