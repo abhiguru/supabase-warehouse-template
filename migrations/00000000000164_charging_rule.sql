@@ -316,6 +316,7 @@ REVOKE ALL ON FUNCTION public.set_charging_rule(jsonb) FROM PUBLIC, anon, authen
 GRANT EXECUTE ON FUNCTION public.set_charging_rule(jsonb) TO authenticated, service_role;
 
 -- Section 5: the invoice functions
+DROP FUNCTION IF EXISTS pg_temp.patch_function(regprocedure, text[], text[]);
 CREATE FUNCTION pg_temp.patch_function(p_function regprocedure, p_old text[], p_new text[]) RETURNS void
     LANGUAGE plpgsql AS $$
 DECLARE

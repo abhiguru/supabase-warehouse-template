@@ -231,6 +231,8 @@ BEGIN
     RAISE EXCEPTION 'invoice_as_goods_leave must be true or false' USING ERRCODE = '22023';
   END IF;
 
+  -- The list-refresh lock comes before any row lock (migration 46): this function rewrites goodsreceived.invoiced below.
+  PERFORM pg_advisory_xact_lock(71040);
   SELECT r.* INTO v_old FROM warehouse_security.charging_rule r WHERE r.id FOR UPDATE;
   v_leave := COALESCE((p_rule->>'invoice_as_goods_leave')::boolean, v_old.invoice_as_goods_leave);
 

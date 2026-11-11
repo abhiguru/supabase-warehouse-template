@@ -432,6 +432,7 @@ export async function doctor({ hostPreflight = false, preflight = false, local =
   // Maintenance mode (scripts/maintenance.sh; an upgrade is under way or stopped half way): the LAN listener answers 503 "upgrading" like the public
   // gateway, on purpose, so it is not probed; the health check above said so as a warning.
   const maintenance = maintenanceMarked(state);
+  const localOnly = (env.INGRESS || DEFAULT_INGRESS) === 'local-only';
   // A local-only facility (WH-146) has no public address: the warehouse network listener is its only one, so it must be on and healthy,
   // and there is no tunnel, public address, outside release lookup or Slack to check.
   if (localOnly && !lanSettings(env).enabled) throw new Error('This facility is local-only and the warehouse network listener is off, so nothing can reach it. Turn it on with: bash scripts/lan.sh on auto');
@@ -440,7 +441,6 @@ export async function doctor({ hostPreflight = false, preflight = false, local =
   const usb = usbBackupWarning(state);
   // The monitoring checker (scripts/watch.mjs) is run by a systemd timer that an operator installs with sudo
   // (scripts/watch-timer.sh); doctor warns when it is missing, silent, or has nowhere to post.
-  const localOnly = (env.INGRESS || DEFAULT_INGRESS) === 'local-only';
   const checker = checkerWarnings(state, { skipSensorWebhookAdvice: process.env.WAREHOUSE_SETUP_SENSOR_NOTICE === 'yes', localOnly });
   // The numbering rules the facility's GRN, dispatch and invoice numbers follow (docs/OPERATOR_INSTALL.md, "Document numbers"); information only.
   const inDb = args => probe('bash', [resolve(root, 'scripts/compose.sh'), 'exec', '-T', 'db', ...args]);

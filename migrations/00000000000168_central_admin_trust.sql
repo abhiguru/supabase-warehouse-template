@@ -11,6 +11,7 @@
 -- The function is patched as stored: each marker must occur exactly once, and a function that already carries the WH-148 tag is
 -- refused, so a second run fails instead of patching again. CREATE OR REPLACE keeps owner, search_path and grants.
 
+DROP FUNCTION IF EXISTS pg_temp.patch_function(regprocedure, text[], text[]);
 CREATE FUNCTION pg_temp.patch_function(p_function regprocedure, p_old text[], p_new text[]) RETURNS void
     LANGUAGE plpgsql AS $$
 DECLARE
@@ -54,3 +55,5 @@ $m$  IF COALESCE((SELECT value FROM warehouse_security.auth_config WHERE key='ce
          AND COALESCE((SELECT value FROM warehouse_security.auth_config WHERE key='central_admin_trust'),'yes') = 'no') THEN
     IF p_otp_code IS NULL THEN$m$
 ]);
+
+DROP FUNCTION pg_temp.patch_function(regprocedure, text[], text[]);
