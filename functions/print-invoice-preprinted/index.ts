@@ -313,8 +313,9 @@ function generateInvoicePage(
 
       // GRN No at the end
       const grnRef = `${item.grns_gr_no}/${item.grn_items_quantity || 0}`;
-      // WH-151: a long reference keeps its end (GRN number and quantity), cut at the front with "...".
-      headerLine += padRight(keepEnd(grnRef, w.GRN_NO), w.GRN_NO);
+      // WH-151: with GST details saved, a long reference keeps its end (GRN number and quantity), cut at the front with "...". An invoice
+      // made before them cuts the end, as before (WH-172).
+      headerLine += padRight(madeWithGstDetails(invoice) ? keepEnd(grnRef, w.GRN_NO) : truncateString(grnRef, w.GRN_NO), w.GRN_NO);
 
       output += headerLine + '\n';
       return;

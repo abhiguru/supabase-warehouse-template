@@ -288,7 +288,7 @@ facility's legal name, address, GSTIN and state, the customer's name, address ("
 of supply and "Whether tax is payable on reverse charge: No" (tax documents), each line with its SAC, quantity, months (or One-time), rate,
 labour rate, taxable value and CGST/SGST or IGST, the totals by head, "Exempt supply, no GST charged" on a bill of supply, and "For <legal
 name>, Authorised signatory". The pre-printed form prints no title, and in its state field the facility's state the invoice was made with (GUJARAT, as before, for an
-`invoice` or a bill of an unregistered facility); a GRN reference longer than its 10 characters keeps its end and starts with "...". It prints half the tax in SGST and CGST for an `invoice` (as always), the stored
+`invoice` or a bill of an unregistered facility); on a document made with the GST details saved, a GRN reference longer than its 10 characters keeps its end and starts with "..." (an `invoice` cuts its end, as before). It prints half the tax in SGST and CGST for an `invoice` (as always), the stored
 CGST and SGST for a tax invoice or invoice-cum-bill of supply, and blank SGST, CGST and tax total for a bill or bill of supply. An IGST
 invoice is not printed on the form ("IGST invoices print on plain paper."). On a document made with the GST details saved (any type but
 `invoice`), a value longer than its field on the form (an amount, quantity, the state, weight, rate or months, the address, the amount in
