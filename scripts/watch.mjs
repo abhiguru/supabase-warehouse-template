@@ -59,7 +59,7 @@ import { redactServiceLog } from './service-diagnostics.mjs';
 import { MIN_VHDX_DRIVE_FREE_BYTES, MIN_VHDX_DRIVE_FREE_PERCENT, driveSpace, isWsl, statfsWithTimeout, vhdxDrive } from './wsl-host.mjs';
 import { usbBackupWarning, usbRotationNote } from './usb-backup-status.mjs';
 import { ageText, sensorCheck, sensorLimitSeconds } from './sensors-check.mjs';
-import { SENSOR_ALERTS_SQL, droppedFromLog, droppedSummary, sensorAlertMinutes, sensorAlerts } from './sensor-alerts.mjs';
+import { RECORD_ALERT_POSTS_SQL, SENSOR_ALERTS_SQL, droppedFromLog, droppedSummary, refreshStretchesSql, sensorAlertMinutes, sensorAlerts, stretchAlertPosts } from './sensor-alerts.mjs';
 import { HEARTBEAT_URL_PATTERN, firstUrlLine, postSlackMessage, sensorTestMessage, testMessage } from './alert-webhook.mjs';
 import { fetchGithubJson, releaseLine } from './release-check.mjs';
 import { buildReport, closingLink, readLast, readLog, readSupportLink, removeClosing, sendReport, serialize, statusLine as supportStatusLine } from './support-link.mjs';
@@ -1363,14 +1363,38 @@ export function checkSensorAlerts(ctx) {
   if (manifest?.capabilities?.sensors !== true) return [];
   if (!databaseReady(ctx)) return null;
   const env = ctx.env_();
+  const { outMinutes, silentMinutes } = sensorAlertMinutes(env);
+  refreshStretches(ctx, { silentMinutes, outMinutes });
   const r = ctx.compose(['exec', '-T', '-e', 'PGOPTIONS=-c statement_timeout=10000', 'db', 'psql', '-X', '-qAt', '-v', 'ON_ERROR_STOP=1', '-U', 'supabase_admin', '-d', 'postgres', '-c', SENSOR_ALERTS_SQL]);
   if (r.status !== 0) return null;   // sensors_stale already says the sensor tables could not be read
   let devices;
   try { devices = JSON.parse(String(r.stdout ?? '').trim()); } catch { return null; }
   if (!Array.isArray(devices)) return null;
-  const { outMinutes, silentMinutes } = sensorAlertMinutes(env);
   return sensorAlerts({ devices, nowMs: ctx.now(), outMinutes, silentMinutes, limitSeconds: sensorLimitSeconds(env) })
     .map(a => result('sensor_alerts', a.id, false, a.summary, a.detail, { immediate: true, repeatHours: a.repeatHours }));
+}
+
+// WH-157 (migration 186): the out-of-range and no-reading stretches the temperature report lists are brought up to date before the
+// alerts are judged, so a stretch exists when its alert's posting time is written (recordStretchAlerts). The first run after the upgrade
+// derives every stored reading, hence the longer limit. A failure is written to stderr and never stops the check.
+export function refreshStretches(ctx, minutes) {
+  try {
+    const r = ctx.compose(['exec', '-T', '-e', 'PGOPTIONS=-c statement_timeout=300000', 'db', 'psql', '-X', '-qAt', '-v', 'ON_ERROR_STOP=1',
+      '-U', 'supabase_admin', '-d', 'postgres', '-c', refreshStretchesSql(minutes)], { timeoutMs: 330000 });
+    if (r.status !== 0) (ctx.log ?? stderrLog)(`could not refresh the sensor stretches: ${clip(redact(String(r.stderr ?? '').trim(), ctx.env_(), ctx.secrets()), 200)}`);
+  } catch (error) { (ctx.log ?? stderrLog)(`could not refresh the sensor stretches: ${error.message}`); }
+}
+
+// WH-157: writes onto the stretches what became of a sensor alert's start: posted (with the audience), 'failed' (no target took it) or
+// 'no_channel' (the audience has no target). Only sensor_range, sensor_silent and sensors_stale count. Never throws.
+export function recordStretchAlerts(ctx, alerts, outcome) {
+  const posts = stretchAlertPosts(alerts.map(a => a.id), ctx.data.alerts, { at: ctx.now(), ...outcome });
+  if (!posts.length) return;
+  try {
+    const r = ctx.compose(['exec', '-T', '-e', 'PGOPTIONS=-c statement_timeout=30000', 'db', 'psql', '-X', '-q', '-v', 'ON_ERROR_STOP=1',
+      '-U', 'supabase_admin', '-d', 'postgres', '-v', `posts=${JSON.stringify(posts)}`], { timeoutMs: 60000, input: `${RECORD_ALERT_POSTS_SQL};\n` });
+    if (r.status !== 0) (ctx.log ?? stderrLog)(`could not record the sensor alert posts: ${clip(redact(String(r.stderr ?? '').trim(), ctx.env_(), ctx.secrets()), 200)}`);
+  } catch (error) { (ctx.log ?? stderrLog)(`could not record the sensor alert posts: ${error.message}`); }
 }
 
 // Readings the sensor bridge dropped in the last 24 hours (it logs each drop with its reason): one alert, repeated daily while
@@ -1839,6 +1863,7 @@ async function postThenKeep(ctx, list, message, apply, undo) {
   if (!results.some(r => r.ok)) undo();
   for (const r of results) deliveryOf(ctx.data, r.target).lastError = r.ok ? null : { at: now, message: r.error };
   if (results.some(r => !r.ok)) await saveOrWarn(ctx);
+  return results;
 }
 
 // Sensor alerts (start, repeat and clear) go to the sensors audience when it has a target, everything else to the
@@ -1858,19 +1883,22 @@ async function notify(ctx, plan) {
 async function notifyTo(ctx, plan, audience) {
   const { start, repeat, clear } = plan;
   const list = targetsOf(ctx.targets(), audience);
-  if ((!start.length && !repeat.length && !clear.length) || !list.length) return;
+  if (!start.length && !repeat.length && !clear.length) return;
+  // No target for this audience: nothing is posted; a sensor alert's stretch says "no alert channel set up" (WH-157).
+  if (!list.length) { recordStretchAlerts(ctx, start, { state: 'no_channel' }); return; }
   const { data } = ctx;
   const now = ctx.now();
   const message = formatAlerts(plan, describe(ctx), ctx.env_(), ctx.secrets(), audience);
   const sent = [...start, ...repeat].map(a => [a.id, data.alerts[a.id].lastSent, data.alerts[a.id].via]);
   const cleared = clear.map(a => [a.id, data.alerts[a.id]]);
-  await postThenKeep(ctx, list, message, () => {
+  const results = await postThenKeep(ctx, list, message, () => {
     for (const [id] of sent) { data.alerts[id].lastSent = now; data.alerts[id].via = audience; }
     for (const [id] of cleared) delete data.alerts[id];
   }, () => {
     for (const [id, before, viaBefore] of sent) if (data.alerts[id]) { data.alerts[id].lastSent = before; if (viaBefore === undefined) delete data.alerts[id].via; else data.alerts[id].via = viaBefore; }
     for (const [id, entry] of cleared) data.alerts[id] = entry;
   });
+  recordStretchAlerts(ctx, start, { state: results.some(r => r.ok) ? 'posted' : 'failed', via: audience });
 }
 
 // A restart of the host (the kernel's boot id changed since the previous run) is remembered once and said once in the daily status
