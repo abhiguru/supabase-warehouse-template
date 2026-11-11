@@ -514,12 +514,10 @@ export function configure(root, { stateDir, apiUrl, appUrl, company, providerEnv
     }
     if (readdirSync(state).length) throw new Error('State directory is partially initialized; inspect it before retrying.');
   }
-  // A member installation that signs in through the association (--central-issuer) needs no SMS provider: it stores none.
   centralNeedsProvider(central, null, Boolean(providerEnv));
-  const centralOnly = !providerEnv && Boolean(central?.values.CENTRAL_ISSUER);
   // A local-only facility needs only a company name: its identity is the instanceId and its origin a placeholder that cannot resolve.
   if (localOnly) { if (!company) throw new Error('Fresh setup requires --company.'); }
-  else if (!apiUrl || !company || (!providerEnv && !centralOnly)) throw new Error('Fresh setup requires --api-url, --company and --provider-env (or --central-issuer with its keys, for an installation that uses the association\'s sign-in alone).');
+  else if (!apiUrl || !company || !providerEnv) throw new Error('Fresh setup requires --api-url, --company and --provider-env.');
   if (!localOnly) {
     centralLocalCodeValues(centralLocalCode, central, null, Boolean(providerEnv));
     centralAdminTrustValues(centralAdminTrust, central, null, Boolean(providerEnv));
@@ -528,7 +526,7 @@ export function configure(root, { stateDir, apiUrl, appUrl, company, providerEnv
   const canonical = localOnly ? localOnlyOrigin(instanceId) : canonicalOrigin(apiUrl, '--api-url');
   const application = appUrl ? canonicalOrigin(appUrl, '--app-url') : canonical;
   if (company.length > 120 || !/^[^\u0000-\u001f\u007f-\u009f\u2028\u2029]+$/.test(company)) throw new Error('--company must be a printable name of at most 120 characters.');
-  const provider = centralOnly || localOnly ? NO_PROVIDER : providerValues(providerEnv, checkout, canonical);
+  const provider = localOnly ? NO_PROVIDER : providerValues(providerEnv, checkout, canonical);
   if (port !== null && !portFree(port)) throw new Error(`127.0.0.1:${port} is already in use; choose another --gateway-port.`);
   const manifest = { schemaVersion: 1, instanceId, displayName: company, companyName: company,
     canonicalOrigin: canonical, supportedApiVersions: ['1'], minimumClientVersion: '0.1.0',
