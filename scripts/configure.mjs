@@ -215,6 +215,8 @@ function removeOtherLetterheads(publicDir, keep) {
   return removed;
 }
 
+// What a local-only installation stores: empty lines (docker-compose.yml, doctor.mjs and configure-sms.sql read them as "no provider").
+const NO_PROVIDER = { SMS_PROVIDER: '', MSG91_AUTH_KEY: '', MSG91_TEMPLATE_ID: '', MSG91_PE_ID: '', MSG91_SENDER_ID: '' };
 
 function providerValues(path, checkout, apiUrl) {
   if (!isAbsolute(path) || resolve(path).startsWith(checkout + sep) || realpathSync(path).startsWith(checkout + sep)) throw new Error('--provider-env must be an absolute file outside the checkout.');
