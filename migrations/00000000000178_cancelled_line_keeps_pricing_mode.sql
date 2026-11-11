@@ -8,8 +8,9 @@
 --     The amounts themselves are not stored: they stay worked out by the one rule (invoice_storage_amount, migration 164).
 --  2. Readers: get_invoice_items_detailed (here), get_invoice_data and get_invoice_detail (definition files, which the PDF and the screen
 --     read) use the line's kept mode when it has one, otherwise the GRN's mode as before. A live line has none, so no live amount changes.
---  Still read live for a cancelled invoice: nothing that feeds an amount. Not kept and not an amount input: the header key
---  get_invoice_data.items[].grn_item.pricing_mode / header grn.pricing_mode still show the GRN's current mode (informational).
+--     The mode keys follow the kept mode too (WH-183), so the GST PDF labels the lines as charged: get_invoice_detail's
+--     invoice.grn_pricing_mode, get_invoice_data's grn.pricing_mode and items[].grn_item.pricing_mode return the kept mode when a line
+--     has one, otherwise the GRN's current mode.
 --  3. Lines kept by migration 143: kept_pricing_mode is filled only where the GRN has not been updated since the cancel
 --     (goodsreceived.updated_at <= invoice.cancelled_at; a trigger sets updated_at on every UPDATE of the GRN, and the mode cannot change
 --     while a live invoice exists, so the GRN's mode now is the mode at the cancel). A GRN updated since the cancel is left: its mode at the

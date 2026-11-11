@@ -104,7 +104,9 @@ BEGIN
             gr.updated_by as grn_updated_by,
             gr.created_at as grn_created_at,
             gr.updated_at as grn_updated_at,
-            gr.pricing_mode as grn_pricing_mode,
+            -- WH-183: the effective mode: the mode a cancelled invoice's lines kept (migration 178) when set, else the GRN's current one.
+            COALESCE((SELECT k.kept_pricing_mode FROM invoice_trl k
+                       WHERE k.invoice_id = i.id AND k.kept_pricing_mode IS NOT NULL LIMIT 1), gr.pricing_mode) as grn_pricing_mode,
 
             cb.name as created_by_name,
             cb.display_name as created_by_display_name,
@@ -163,7 +165,7 @@ BEGIN
                 CASE WHEN it.details_kept_at IS NOT NULL THEN it.kept_grn_no ELSE gr.gr_no END as grn_item_gr_no,
                 CASE WHEN it.details_kept_at IS NOT NULL THEN it.kept_grn_date ELSE gr.date END as grn_item_gr_date,
                 grt.trl_img_url as grn_item_image_url,
-                gr.pricing_mode as grn_item_pricing_mode,
+                COALESCE(it.kept_pricing_mode, gr.pricing_mode) as grn_item_pricing_mode, -- WH-183: the kept mode when set
 
                 items.id as catalog_id,
                 CASE WHEN it.details_kept_at IS NOT NULL THEN it.kept_item_name ELSE items.name END as catalog_name,

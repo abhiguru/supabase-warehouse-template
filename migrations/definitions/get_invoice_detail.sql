@@ -28,7 +28,11 @@ BEGIN
         'notes', i.notes, 'created_by', i.created_by,
         'updated_at', i.updated_at,
         'cancelled_at', i.cancelled_at, 'cancel_reason', i.cancel_reason,
-        'grn_pricing_mode', (SELECT gr.pricing_mode FROM goodsreceived gr WHERE gr.id = i.gr_id)
+        -- WH-183: the effective mode. A cancelled invoice's lines keep the GRN's mode at the cancel (kept_pricing_mode, migration 178);
+        -- when kept, that mode is returned instead of the GRN's current one, so the GST PDF and the app label the lines as charged.
+        'grn_pricing_mode', COALESCE((SELECT k.kept_pricing_mode FROM invoice_trl k
+                                       WHERE k.invoice_id = i.id AND k.kept_pricing_mode IS NOT NULL LIMIT 1),
+                                     (SELECT gr.pricing_mode FROM goodsreceived gr WHERE gr.id = i.gr_id))
     ) || CASE WHEN auth.jwt()->>'role' = 'service_role'
                 OR warehouse_security.active_role() IN ('admin','supervisor','staff')
         THEN jsonb_build_object(
