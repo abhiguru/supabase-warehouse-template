@@ -3,16 +3,18 @@
 -- an invoice re-dated after a payment it already has. Since migration 182 the live other document of a GST pair takes the new date too,
 -- so the same hole applied to it.
 --  1. An edit that changes the invoice day (India day, as INVOICE_DATE_FUTURE does) to a day after the earliest payment day on this
---     invoice, or on the live other document of its pair, is refused before anything is written:
+--     invoice is refused before anything is written. So is an edit whose date migration 182 copies onto the live other document of
+--     its pair when that changes the partner's day to one after the partner's earliest payment day (WH-183: a pair split before 182
+--     can hold two days, so the partner's day can change while this document's day stays). The answer:
 --     {success:false, error_code:'WH409', reason:'INVOICE_AFTER_PAYMENT', error and message: "This invoice has a payment dated
 --     2026-05-01. The invoice date can't be after it.", date (the earliest payment day, YYYY-MM-DD), invoice_date (the day asked for),
 --     invoice_id, payment_invoice_id (the document that holds that payment: the edited one or its pair partner)}.
 --     A new reason, because PAYMENT_BEFORE_INVOICE reads from the payment's side ("A payment can't be dated before the invoice") and its
 --     fields name the invoice day, not the payment day.
 --  2. Payments with paid_on NULL (rows from the old accounting link, migration 172) are ignored: they never block an edit. Only rows
---     recorded in the app (paid_on set) count. An edit that does not change the invoice day is never refused by this rule, so an invoice
+--     recorded in the app (paid_on set) count. A document whose day does not change is never checked by this rule, so an invoice
 --     already stored with a day after a payment stays editable (as with INVOICE_DATE_FUTURE and INVOICE_BEFORE_DISPATCH).
---  3. A cancelled partner is not part of the pair (migration 182), so its payments do not count.
+--  3. A cancelled partner, or one in another financial year, is not part of the pair (migration 182), so its payments do not count.
 -- Written against update_invoice as migration 182 left it. Marker-count patch: each before-text is found once.
 
 -- Migration 181 drops its helper; this guards against an earlier file that left one behind.
@@ -48,15 +50,23 @@ $m$    -- Migration 182 (WH-174): the other document of a pair takes the new dat
 $m$    v_new_fin_year integer;
     v_pay_day date;
     v_pay_invoice_id uuid;
+    v_own_day_changes boolean;
+    v_pair_day_changes boolean;
 BEGIN$m$,
-$m$    -- Migration 184 (WH-178): the new invoice day may not be after a payment on this invoice or on the live other document of its pair.
-    -- Rows with paid_on NULL (old accounting link) are ignored. Checked only when the invoice day changes; nothing is written before this.
-    IF v_new_inv_date IS NOT NULL
-       AND warehouse_security.business_date(v_new_inv_date)
-           IS DISTINCT FROM (SELECT warehouse_security.business_date(i.inv_date) FROM invoice i WHERE i.id = p_invoice_id) THEN
+$m$    -- Migration 184 (WH-178): the new invoice day may not be after a payment on this invoice, nor (WH-183) on the live other document
+    -- of its pair when the copy below changes that document's day (same condition as the copy). Rows with paid_on NULL (old accounting
+    -- link) are ignored. Each document is checked only when its own day changes; nothing is written before this.
+    v_own_day_changes := v_new_inv_date IS NOT NULL
+        AND warehouse_security.business_date(v_new_inv_date)
+            IS DISTINCT FROM (SELECT warehouse_security.business_date(i.inv_date) FROM invoice i WHERE i.id = p_invoice_id);
+    v_pair_day_changes := v_pair_id IS NOT NULL AND v_new_inv_date IS NOT NULL
+        AND warehouse_security.business_date(v_new_inv_date)
+            IS DISTINCT FROM (SELECT warehouse_security.business_date(i.inv_date) FROM invoice i WHERE i.id = v_pair_id);
+    IF v_own_day_changes OR v_pair_day_changes THEN
         SELECT p.paid_on, p.invoice_id INTO v_pay_day, v_pay_invoice_id
           FROM payments p
-         WHERE p.paid_on IS NOT NULL AND (p.invoice_id = p_invoice_id OR p.invoice_id = v_pair_id)
+         WHERE p.paid_on IS NOT NULL
+           AND ((v_own_day_changes AND p.invoice_id = p_invoice_id) OR (v_pair_day_changes AND p.invoice_id = v_pair_id))
          ORDER BY p.paid_on, p.payment_no LIMIT 1;
         IF v_pay_day IS NOT NULL AND warehouse_security.business_date(v_new_inv_date) > v_pay_day THEN
             RETURN warehouse_security.refuse('INVOICE_AFTER_PAYMENT',
