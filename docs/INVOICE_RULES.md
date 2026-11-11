@@ -81,6 +81,40 @@ of each invoice more than one invoice would. Turning the setting off is refused 
 `get_grn_details` answers `can_create_invoice` in its invoice summary (migration 174): the GRN is not deleted, `get_invoiceable_grns` would
 list it (both use `warehouse_security.grn_invoiceable`), and it has a dispatch line on no live invoice.
 
+### Before the upgrade to migration 174: the GRNs that will read partly_invoiced
+
+Migration 174 turns the setting on where no administrator ever changed it (an installation upgrading from v0.8.0 or earlier always
+qualifies, as the setting does not exist there yet). From then on a GRN with a live invoice reads `partly_invoiced`, and can be invoiced
+again for its free lines, when it still has stock in a lot or has a dispatch line (dispatch not deleted) on no live invoice, for example
+after an edit removed a line from its invoice. The migration prints only how many GRN flags it changed. To see those GRNs before
+upgrading, run this read-only query on the current database (it reads only tables that exist since v0.8.0 and changes nothing):
+
+```bash
+bash scripts/compose.sh exec -T db psql -X -U supabase_admin -d postgres <<'SQL'
+BEGIN TRANSACTION READ ONLY;
+SELECT x.gr_no, x.grn_date, x.customer, x.stock_left, x.lines_on_no_live_invoice
+  FROM (SELECT g.gr_no, g.date::date AS grn_date, c.name AS customer,
+               (SELECT COALESCE(sum(t.stock), 0) FROM public.goodsreceived_trl t WHERE t.gr_id = g.id) AS stock_left,
+               (SELECT count(*) FROM public.dispatch_trl dt
+                  JOIN public.dispatch d ON d.id = dt.disp_id AND d.deleted_at IS NULL
+                 WHERE dt.gr_id = g.id
+                   AND NOT EXISTS (SELECT 1 FROM public.invoice_trl it JOIN public.invoice iv ON iv.id = it.invoice_id
+                                    WHERE it.disp_trl_id = dt.id AND iv.deleted_at IS NULL AND iv.cancelled_at IS NULL))
+                 AS lines_on_no_live_invoice
+          FROM public.goodsreceived g
+          LEFT JOIN public.customers c ON c.id = g.customer_id
+         WHERE g.deleted_at IS NULL
+           AND EXISTS (SELECT 1 FROM public.invoice i WHERE i.gr_id = g.id AND i.deleted_at IS NULL AND i.cancelled_at IS NULL)) x
+ WHERE x.stock_left > 0 OR x.lines_on_no_live_invoice > 0
+ ORDER BY x.gr_no;
+ROLLBACK;
+SQL
+```
+
+Each row is a GRN that will read `partly_invoiced`: `stock_left` bags still in store, `lines_on_no_live_invoice` dispatch lines that a
+new invoice may now take. No rows: no GRN changes state. Where an administrator already changed the setting, migration 174 leaves it
+as it is and this list does not apply.
+
 
 (With a charging rule other than the default, "ceiling" below reads as the invoice's `rounding`.) Preview subtotal sums line bases. Header tax is the ceiling of the sum of
 **unrounded** line tax bases; grand total is the ceiling of subtotal plus header
