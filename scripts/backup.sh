@@ -74,8 +74,11 @@ lan_back() {
 # Maintenance mode for the time the services are stopped. api_closed: this run turned it on and has not turned it off yet (the cleanup
 # does, also after a failure half way); api_open_failed: turning it off failed, which fails the backup after it is complete.
 maintenance_marker="$state/config/maintenance"
-# Written next to the marker while this run owns maintenance mode: "backup <pid> <start time>". If the run is killed (SIGKILL, OOM, power loss)
-# the marker stays closed with this file beside it, and scripts/watch.mjs raises an alert because no upgrade is recorded and nobody holds the lock.
+# Written next to the marker while this run owns maintenance mode: "backup <pid> <start time> <boot id>" (the kernel's boot id, so that a pid
+# reused after a reboot is not taken for this run). If the run is killed (SIGKILL, OOM, power loss) the marker stays closed with this file beside
+# it; scripts/watch.mjs reopens the API by itself once it can tell this run is gone (another boot, or no backup.sh with this pid), no upgrade is
+# recorded, nobody holds the lock and the services are up, and alerts otherwise. `maintenance.sh on` removes the file, so a marker that a person or
+# an upgrade set is never taken for a backup's.
 maintenance_owner="$state/config/maintenance-owner"
 api_closed=no
 api_open_failed=no
@@ -344,7 +347,10 @@ if [[ "$gateway_running" == yes ]]; then
       echo 'Refusing: the API could not be put in maintenance mode (message above). Nothing was stopped.' >&2
       exit 1
     fi
-    printf 'backup %s %s\n' "$$" "$(date -u +%Y-%m-%dT%H:%M:%SZ)" > "$maintenance_owner" || true
+    boot_id="$(tr -d '[:space:]' < /proc/sys/kernel/random/boot_id 2>/dev/null || true)"
+    [[ "$boot_id" =~ ^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$ ]] || boot_id=''
+    # Without a boot id the tag still names the backup, but the checker cannot tell that it is gone and leaves the API closed (an alert).
+    printf 'backup %s %s%s\n' "$$" "$(date -u +%Y-%m-%dT%H:%M:%SZ)" "${boot_id:+ $boot_id}" > "$maintenance_owner" || true
   fi
 else
   lan_id=$(compose --profile lan ps -q gateway-lan)
