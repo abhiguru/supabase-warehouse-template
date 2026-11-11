@@ -5,7 +5,8 @@
 -- cancelled. A cancelled document is never re-dated (WH-174, Product): it keeps showing what it showed when it was live. So when the other
 -- document is cancelled, the live one is treated as unpaired: the cancelled partner gets no copy of the date, no INVOICE_PAIR_OTHER_YEAR
 -- refusal is raised on its account, and the prefix rule of migration 175 applies as for any single invoice. (delete_invoice's INVOICE_PAIR
--- rule differs: it counts a cancelled partner, because delete removes both.)
+-- rule differs: it counts a cancelled partner, because delete removes both.) Likewise a partner whose stored inv_fin_year differs from the
+-- edited document's stored year (a pair split across years before this migration) is not a pair here: no copy, no refusal, as before 182.
 -- Before: update_invoice re-dated only the document it was given, so the two documents could hold different dates, and a date in another
 -- financial year moved one document into another year's number series.
 --  1. An edit of one document of a pair that sends a different inv_date gives the other document the same inv_date in the same
@@ -78,6 +79,8 @@ $m$            USING ERRCODE = 'WH422';
                 ELSE warehouse_security.invoice_label(own.inv_prefix, own.inv_no) END
       INTO v_pair_id, v_pair_first, v_pair_second
       FROM invoice own JOIN invoice l ON l.id = own.linked_invoice_id AND l.deleted_at IS NULL AND l.cancelled_at IS NULL
+                                     -- WH-183: a partner in another year was split before 182; refusing would block every later edit (the app always sends inv_date), so skip.
+                                     AND l.inv_fin_year = own.inv_fin_year
      WHERE own.id = p_invoice_id
        FOR UPDATE OF l;
     v_new_inv_date := NULLIF(p_invoice_data->>'inv_date', '')::timestamptz;
