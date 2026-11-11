@@ -169,15 +169,19 @@ BEGIN
 END $$;
 
 SELECT pg_temp.patch_function('warehouse_maintenance.run_database_retention(timestamptz, boolean)'::regprocedure, ARRAY[
-$m$    GET DIAGNOSTICS affected = ROW_COUNT; result := result || jsonb_build_object('sensor_stretches', affected);$m$,
-$m$      'sensor_stretches', (SELECT count(*) FROM warehouse_security.sensor_stretches s$m$
+$m$    GET DIAGNOSTICS affected = ROW_COUNT; result := result || jsonb_build_object('sensor_stretches', affected);
+    PERFORM set_config('warehouse.sensor_job', '', true);$m$,
+$m$key = 'sensor_reading_changes')),
+      'sensor_stretches', (SELECT count(*) FROM warehouse_security.sensor_stretches s$m$
 ], ARRAY[
 $m$    GET DIAGNOSTICS affected = ROW_COUNT; result := result || jsonb_build_object('sensor_stretches', affected);
     -- Migration 188 (WH-177): connection gap notes past their retention.
     DELETE FROM warehouse_security.connection_gap_notes c
      WHERE c.received_at < (SELECT p_now - make_interval(days => days) FROM warehouse_maintenance.retention_policy WHERE key = 'connection_gap_notes');
-    GET DIAGNOSTICS affected = ROW_COUNT; result := result || jsonb_build_object('connection_gap_notes', affected);$m$,
-$m$      'connection_gap_notes', (SELECT count(*) FROM warehouse_security.connection_gap_notes c
+    GET DIAGNOSTICS affected = ROW_COUNT; result := result || jsonb_build_object('connection_gap_notes', affected);
+    PERFORM set_config('warehouse.sensor_job', '', true);$m$,
+$m$key = 'sensor_reading_changes')),
+      'connection_gap_notes', (SELECT count(*) FROM warehouse_security.connection_gap_notes c
         WHERE c.received_at < (SELECT p_now - make_interval(days => days) FROM warehouse_maintenance.retention_policy WHERE key = 'connection_gap_notes')),
       'sensor_stretches', (SELECT count(*) FROM warehouse_security.sensor_stretches s$m$
 ]);
