@@ -62,6 +62,7 @@ import { ageText, sensorCheck, sensorLimitSeconds } from './sensors-check.mjs';
 import { SENSOR_ALERTS_SQL, droppedFromLog, droppedSummary, sensorAlertMinutes, sensorAlerts } from './sensor-alerts.mjs';
 import { HEARTBEAT_URL_PATTERN, firstUrlLine, postSlackMessage, sensorTestMessage, testMessage } from './alert-webhook.mjs';
 import { fetchGithubJson, releaseLine } from './release-check.mjs';
+import { buildReport, closingLink, readLast, readLog, readSupportLink, removeClosing, sendReport, serialize, statusLine as supportStatusLine } from './support-link.mjs';
 import { ADAPTERS, AUDIENCES, TARGET_IDS, audienceOf, ALERT_LOG, createAlertLog, deliver, historyLine, loadTargets, pickAudience, readAlertLog, secretsOf, targetsOf } from './notify.mjs';
 
 const MIN = 60 * 1000;
@@ -2254,6 +2255,61 @@ export async function pingExternalHeartbeat(ctx) {
   }
 }
 
+// ---------------------------------------------------------------- support link (WH-159)
+// After each run, when config/support-link-url exists, one health report goes outward (scripts/support-link.mjs says what it holds). It is built
+// only from what the checker already knows, never blocks the run past a short timeout and never raises an alert at the store.
+const readJson = (ctx, path) => { try { return JSON.parse(ctx.readText(join(ctx.state, path)) ?? 'null'); } catch { return null; } };
+// 'upgrade', 'backup' or 'operator_command' while a command that stops services on purpose runs (its markers: the operator lock, config/upgrade-in-progress,
+// and the maintenance owner tag a live backup.sh writes); null otherwise or when the lock is stuck.
+export function plannedStop(ctx, { stuck = false, passHolds = false } = {}) {
+  if (stuck) return null;
+  if (lockIsHeld(ctx)) return upgradeRecordExists(ctx.state) ? 'upgrade' : passHolds || dailyPassRunning(ctx.data, ctx.now()) ? 'backup' : 'operator_command';
+  if (maintenanceMarked(ctx.state) && !upgradeRecordExists(ctx.state) && backupProcess(ctx, readBackupOwner(ctx.state)) === 'running') return 'backup';
+  return null;
+}
+const freePercent = (ctx, path) => { try { const s = ctx.statfs(path); return 100 * Number(s.bavail) / Number(s.blocks); } catch { return null; } };
+export function supportFacts(ctx, { planned = null, switchedOff = false } = {}) {
+  const status = fieldsOf(ctx.readText(backupStatusPath(ctx.state, 'backup')));
+  const usb = fieldsOf(ctx.readText(join(ctx.state, 'config/usb-backup.last')));
+  const manifest = readJson(ctx, 'public/instance.json') ?? {};
+  const release = readJson(ctx, 'public/release.json') ?? {};
+  const compat = readJson(ctx, 'public/app-compat.json') ?? {};
+  const verified = readVerifiedList(ctx.state).at(-1);
+  const last = readLast(ctx.state);
+  const lastSent = Date.parse(last.sentAt ?? '');
+  const secs = value => ((Number(value) || 0) * 1000);
+  return {
+    instanceId: manifest.instanceId, facility: manifest.companyName, release: release.backendRelease, schemaHead: release.schemaHead, now: ctx.now(),
+    hostRestarted: Boolean(ctx.data.hostRestart) && Number.isFinite(lastSent) && ctx.data.hostRestart.at > lastSent,
+    lastBackupMs: Math.max(secs(status.last_success_epoch), newestBackupMs(ctx.state)) || null,
+    lastVerifiedMs: verified ? verified.epoch * 1000 : null,
+    offBoxMs: usb.result === 'ok' || usb.last_success_epoch ? secs(usb.last_success_epoch) || null : null,
+    diskSystem: freePercent(ctx, '/'), diskData: freePercent(ctx, join(ctx.state, 'data')),
+    alerts: Object.entries(ctx.data.alerts).filter(([, a]) => a.firingSince).map(([id, a]) => ({ id, since: a.firingSince })),
+    alertChannelSet: targetsOf(ctx.targets(), 'facility').length > 0,
+    minAppVersion: compat.minimumClientVersion, planned, switchedOff,
+  };
+}
+export const supportReport = (ctx, options) => buildReport(supportFacts(ctx, options));
+// Never throws and never alerts: a failed send is only in config/support-link.last, the log and `watch status`.
+export async function sendSupportReport(ctx, { planned = null } = {}) {
+  const log = ctx.log ?? stderrLog;
+  try {
+    const link = readSupportLink(ctx.state);
+    if (link.problem) { log(`support link not sent: ${link.problem}`); return; }
+    if (link.on) {
+      removeClosing(ctx.state);   // switched on again: a leftover last-report address is stale
+      await sendReport({ state: ctx.state, urls: link.urls, report: supportReport(ctx, { planned }), fetch: ctx.fetch, now: ctx.now(), log, timeoutMs: ctx.supportTimeoutMs });
+      return;
+    }
+    // Switched off by setup: one last report saying so, then nothing (tried for a day; then the address is dropped).
+    const closing = closingLink(ctx.state, ctx.now());
+    if (!closing) return;
+    const done = !closing.expired && await sendReport({ state: ctx.state, urls: closing.urls, report: supportReport(ctx, { switchedOff: true }), fetch: ctx.fetch, now: ctx.now(), log, timeoutMs: ctx.supportTimeoutMs });
+    if (done || closing.expired) removeClosing(ctx.state);
+  } catch (error) { log(`support link not sent: ${clip(redact(String(error?.message ?? error), ctx.env_()), 120)}`); }
+}
+
 // ---------------------------------------------------------------- the run
 // The checks that need none of the services the backup stops (the gateway, functions, rest, storage, the pooler): while the daily pass
 // holds the operator lock these keep running. The others would only report the stop.
@@ -2284,6 +2340,7 @@ export async function runOnce(deps, { checks = CHECKS, heal = selfHeal, reopen =
     else if (!passHolds) {
       saveState(deps.state, data, deps.fsApi);
       await pingExternalHeartbeat(ctx);   // the checker is alive; it is the operator command that is busy
+      await sendSupportReport(ctx, { planned: plannedStop(ctx) });
       return { skipped: 'operator lock is held', data };
     }
   } else {
@@ -2319,6 +2376,7 @@ export async function runOnce(deps, { checks = CHECKS, heal = selfHeal, reopen =
   saveState(deps.state, data, deps.fsApi);
   ctx.alertLog().ensure();   // the record exists after the first run, whether or not a channel is set
   await pingExternalHeartbeat(ctx);
+  await sendSupportReport(ctx, { planned: plannedStop(ctx, { stuck, passHolds }) });
   // The old unit's pass, as it always ran (the old unit allows it 4 hours): after the checks, the alert and the ping, so none
   // of them waits for it and a crash of the pass loses nothing already saved.
   if (legacy && !stuck && !passHolds) {
@@ -2344,13 +2402,15 @@ export async function runDailyCommand(deps, { checks = DAILY_GATE_CHECKS, daily 
 }
 
 // ---------------------------------------------------------------- commands
-const USAGE = `Usage: node scripts/watch.mjs run | daily | health [--wait SECONDS] | test-message [sensors] | history [--days N] | status | mute MINUTES ["ALERT ID"] | unmute ["ALERT ID"]
+const USAGE = `Usage: node scripts/watch.mjs run | daily | health [--wait SECONDS] | test-message [sensors] | history [--days N] | status | support-report | support-log [--days N] | mute MINUTES ["ALERT ID"] | unmute ["ALERT ID"]
   run           one pass of the checks (the systemd timer runs this every 5 minutes); it makes no backup, except under an old checker unit that sets WAREHOUSE_WATCH_DAILY_AT (daily_timer_legacy)
   daily         the daily backup, verification, pruning and retention, inside the window after --daily-at (its own timer runs this)
   health        the operator health check now: services, database, gateway, get_public_config RPC probe, PDF renderer (exit 1 on a fault; --wait: seconds to wait for the gateway, default 90)
   test-message  post a test message to the facility's alert channel (test-message sensors: to the separate sensor-alert channel)
   history       the local record of alert deliveries (logs/alerts.jsonl, 12 months): when, which alerts, which channel, delivered or failed; --days N (default 30)
   status        failing alerts, mutes, the daily jobs and the time zone
+  support-report   print the exact report the support link would send now (nothing is sent)
+  support-log   the reports the support link sent (logs/support-link.jsonl, 12 months); --days N (default 30)
   mute          silence all alerts (or one alert id, quoted when it has spaces) for MINUTES; backup_missing, backup_failed, offhost_copy_missing, daily_timer_legacy and upgrade_interrupted are never muted
   unmute        end the mute (all, or one alert id)
 Mute before a deliberate stop.sh (or any planned stop): a stopped service is an alert like any other.
@@ -2372,6 +2432,7 @@ function statusLines(ctx, now) {
   let external;
   try { external = readHeartbeatUrl(ctx.state); } catch { external = { problem: 'cannot be read' }; }
   lines.push(`External heartbeat: ${external.problem ? `not sent (${external.problem})` : external.url ? 'configured (pinged at the end of each run)' : 'none (config/heartbeat-url)'}`);
+  lines.push(supportStatusLine(ctx.state, now));
   lines.push(`Time zone: ${Intl.DateTimeFormat().resolvedOptions().timeZone} (daily jobs start at ${ctx.dailyAt} in this zone)`);
   if (stoppedByOperator(ctx.state)) lines.push('Stack: stopped by the operator (config/stopped-by-operator); nothing restarts it at boot or by self-healing. Run start.sh to bring it back.');
   const interruptedUpgrade = interruptedUpgradeWarning(ctx.state);
@@ -2479,6 +2540,21 @@ export async function main(argv, deps = defaultDeps(), out = text => console.log
   }
   const data = ctx.data;
   if (command === 'status') { out(statusLines(ctx, now).join('\n')); return 0; }
+  if (command === 'support-report') {
+    // The exact body the next run would send (the open alerts are those of the last run; the time is now).
+    out(serialize(supportReport(ctx, { planned: plannedStop(ctx) })).trimEnd());
+    return 0;
+  }
+  if (command === 'support-log') {
+    if (args.length && !(args.length === 2 && args[0] === '--days' && /^\d{1,4}$/.test(args[1]))) { out('support-log takes only --days N.'); return 1; }
+    const entries = readLog(ctx.state, { days: args.length ? Number(args[1]) : 30, now });
+    if (!entries.length) out('No support-link reports in that time.');
+    for (const e of entries) {
+      out(`${e.t}  ${e.state}  ${e.ok ? `sent to the ${e.address} address (HTTP ${e.status})` : `NOT SENT (${e.error})`}  ${e.bytes} bytes`);
+      if (e.report) out(JSON.stringify(e.report, null, 2).split('\n').map(l => `    ${l}`).join('\n'));
+    }
+    return 0;
+  }
   if (command === 'mute') {
     const minutes = Number(args[0]);
     if (!Number.isFinite(minutes) || minutes <= 0 || minutes > 60 * 24 * 14) { out('mute needs MINUTES (1 to 20160).'); return 1; }

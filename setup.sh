@@ -18,6 +18,7 @@ ADMIN_PHONE=''
 ADMIN_NAME=''
 COMPANY_ARG=''
 ALERT_ARG=''
+SUPPORT_ARG=''
 LETTERHEAD_ARG=''
 CENTRAL_ISSUER_ARG=''
 CENTRAL_TRUST_ARG=''
@@ -28,7 +29,7 @@ INGRESS_ARG=''
 BUNDLE_FILE=''
 while (($#)); do
   case "$1" in
-    --state-dir|--api-url|--app-url|--company|--provider-env|--admin-phone|--admin-name|--central-issuer|--central-jwks-url|--central-jwks-file|--central-local-code|--central-admin-trust|--alert-webhook-file|--sensor-webhook-file|--heartbeat-url-file|--letterhead-file|--gateway-port|--db-memory|--ingress|--proxy-address|--proxy-header|--from-bundle)
+    --state-dir|--api-url|--app-url|--company|--provider-env|--admin-phone|--admin-name|--central-issuer|--central-jwks-url|--central-jwks-file|--central-local-code|--central-admin-trust|--alert-webhook-file|--sensor-webhook-file|--heartbeat-url-file|--support-link-file|--letterhead-file|--gateway-port|--db-memory|--ingress|--proxy-address|--proxy-header|--from-bundle)
       if (($# < 2)); then echo "Missing value for $1" >&2; exit 1; fi
       case "$1" in
         --state-dir) STATE="$2"; CONFIG_ARGS+=("$1" "$2") ;;
@@ -40,6 +41,7 @@ while (($#)); do
         --ingress) INGRESS_ARG="$2"; CONFIG_ARGS+=("$1" "$2") ;;
         --company) COMPANY_ARG="$2"; CONFIG_ARGS+=("$1" "$2") ;;
         --alert-webhook-file) ALERT_ARG="$2"; if [[ "$2" != ask ]]; then CONFIG_ARGS+=("$1" "$2"); fi ;;
+        --support-link-file) SUPPORT_ARG="$2" ;;   # WH-159: file, ask or off; the gate below decides what configure gets
         --letterhead-file) LETTERHEAD_ARG="$2"; if [[ "$2" != ask ]]; then CONFIG_ARGS+=("$1" "$2"); fi ;;
         *) CONFIG_ARGS+=("$1" "$2") ;;
       esac
@@ -200,13 +202,27 @@ fi
 if [[ -s "$WEBHOOK_TMP" ]]; then
   CONFIG_ARGS+=(--alert-webhook-file "$WEBHOOK_TMP")
 fi
+# The support link (WH-159, docs/MONITORING.md, "The support link"): asked on a terminal when no answer is recorded yet (Enter means no; nothing is
+# switched on without being asked), or with --support-link-file ask; --support-link-file <file> or off answers without asking. A local-only facility has no way out.
+SUPPORT_TMP="$(umask 077; mktemp "${TMPDIR:-/tmp}/warehouse-support-link.XXXXXX")"
+trap 'rm -f "$WEBHOOK_TMP" "$SUPPORT_TMP"; [[ -z "$BUNDLE_DIR" ]] || rm -rf -- "$BUNDLE_DIR"' EXIT
+if [[ -z "$LOCAL_ONLY" ]]; then
+  SUPPORT_RESULT="$(node "$ROOT/scripts/support-link.mjs" gate --state-dir "$STATE" --given "$SUPPORT_ARG" --out "$SUPPORT_TMP")" || exit 1
+  case "$SUPPORT_RESULT" in
+    given) CONFIG_ARGS+=(--support-link-file "$SUPPORT_ARG") ;;
+    file) CONFIG_ARGS+=(--support-link-file "$SUPPORT_TMP") ;;
+    off) CONFIG_ARGS+=(--support-link-file off) ;;
+  esac
+elif [[ -n "$SUPPORT_ARG" && "$SUPPORT_ARG" != off ]]; then
+  echo 'Refusing: a local-only facility has no way out for a support link; leave out --support-link-file.' >&2; exit 1
+fi
 # The PDF letterhead (docs/OPERATOR_INSTALL.md, "Letterhead image (optional)"). Without --letterhead-file, a terminal is
 # asked for the path of a JPEG or PNG (Enter means plain PDFs) on a fresh install; with no terminal setup refuses, so
 # whoever runs it for the installer has to ask. A rerun without the option asks nothing and keeps what is there
 # (`--letterhead-file ask` asks anyway). It runs after the webhook question, so after the host checks and the lock of an existing state, for the same reason.
 # scripts/letterhead.mjs decides (and prints the refusal); the answer reaches configure.mjs through a temporary file.
 LETTERHEAD_TMP="$(umask 077; mktemp "${TMPDIR:-/tmp}/warehouse-letterhead.XXXXXX")"
-trap 'rm -f "$WEBHOOK_TMP" "$LETTERHEAD_TMP"; [[ -z "$BUNDLE_DIR" ]] || rm -rf -- "$BUNDLE_DIR"' EXIT
+trap 'rm -f "$WEBHOOK_TMP" "$SUPPORT_TMP" "$LETTERHEAD_TMP"; [[ -z "$BUNDLE_DIR" ]] || rm -rf -- "$BUNDLE_DIR"' EXIT
 node "$ROOT/scripts/letterhead.mjs" gate --state-dir "$STATE" --company "${PROMPT_COMPANY:-this facility}" --given "$LETTERHEAD_ARG" --out "$LETTERHEAD_TMP" || exit 1
 if [[ -s "$LETTERHEAD_TMP" ]]; then
   CONFIG_ARGS+=(--letterhead-file "$(<"$LETTERHEAD_TMP")")

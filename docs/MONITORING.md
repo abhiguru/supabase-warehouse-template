@@ -426,6 +426,57 @@ is never an alert, because Slack may be what is down. The URL is a secret (anyon
 backups, and has to be put back after `db:restore-host`. The daily "Monitoring is alive" Slack line stays: it covers a
 checker that runs but cannot reach Slack the other way round.
 
+## The support link
+
+An optional, outward-only health report for the GCSA support desk, so that support sees a problem before the owner does. It is **off unless the
+facility says yes**: setup asks on a terminal (Enter means no) and records the answer in `config/support-link-answer`; nothing is switched on
+silently, and the facility's own Slack alerts and heartbeat do not depend on it. Nothing listens on the facility and no port is opened.
+
+**How it works.** The support desk makes one check per facility on an outside heartbeat service (healthchecks.io or any service with a "success"
+and a "fail" address and a readable last body) and gives the facility its address. After every 5-minute run the checker sends one `POST` to it:
+the success address when all is well, the fail address (`<address>/fail`, or the second line of the file) when the state is `attention`. The send
+has a 3 second limit, follows no redirect, never delays the run beyond that, and a failure is **never an alert at the facility**: it shows only
+in `node scripts/watch.mjs status` ("Support link: on, not sent since ...") and the log. The address is a secret (whoever holds it can only send
+reports, not read any), is stored as `config/support-link-url` (mode 0600) and is not in a backup.
+
+```bash
+bash setup.sh --operator ... --support-link-file /secure/support-link-url.txt    # one or two https lines: success address, optional fail address
+bash setup.sh --operator ... --support-link-file ask                              # ask the question again
+bash setup.sh --operator ... --support-link-file off                              # switch off
+```
+
+**What is sent** (JSON, `format` `warehouse-support-report-1`, at most 8 KiB, typically about 0.6 KiB; the receiving service keeps far more):
+
+| Field | Meaning |
+|---|---|
+| `state` | `ok`, `attention`, `planned_stop` or `switched_off`; `note` says "switched off by the store" for the last one |
+| `plannedStop` | `backup`, `upgrade` or `operator_command` while a command that stops services on purpose runs, else null |
+| `instanceId`, `facility` | the server identity number and the facility's display name |
+| `release`, `schemaHead` | the server release and database version |
+| `reportedAt`, `hostRestartedSinceLastReport` | the time of the report; whether the machine restarted since the last good send |
+| `lastBackupAt`, `lastVerifiedBackupAt`, `offBoxCopyAt` | times of the last backup, of the last backup proved by a restore check, and of the last good copy kept away from the machine (null: none, or not set up) |
+| `diskFreePercent` | `system` (/) and `data` (the state's data directory), percent free |
+| `openAlerts` | for each open alert its `kind` and `since`, nothing else (`service_down:gateway` is sent as `service_down`) |
+| `alertChannelSet` | whether the facility's own Slack alert channel is set up |
+| `minAppVersion` | the oldest app version this server accepts |
+
+**Never sent:** customer, user or item names; any number or amount of receipts, dispatches, invoices, payments or stock; phone numbers; sensor names
+or readings; the details of an alert; addresses on the facility's network.
+
+**The state.** `attention` when any of these is open: `backup_missing`, `backup_failed`, `offhost_copy_missing`, `disk_root_low`, `disk_low`,
+`disk_vhdx_drive_low`, `postgres_down`, `service_down`, `api_down`, `public_https_down`, `upgrade_interrupted`, or the facility's alert channel is not
+set up. Other alerts are listed and change nothing. While the nightly backup, an upgrade or another operator command holds the operator lock (or a live
+backup owns maintenance mode), the services it stopped are left out of the report and the state is `planned_stop`, sent to the success address.
+No report for 15 minutes is "silent" at the service: set its check to a 5 minute period and 15 minute grace.
+
+**See it.** `node scripts/watch.mjs status` shows `Support link: on, last sent <time>` or `off`. `node scripts/watch.mjs support-report` prints the exact
+report the next run would send (nothing is sent). `node scripts/watch.mjs support-log [--days N]` lists what was sent; the record is
+`logs/support-link.jsonl`, kept 12 months beside `logs/alerts.jsonl` (one line per send; the full body when it differs from the one before).
+
+**Switch off.** `--support-link-file off` removes the address from use and records the answer; the next run sends one last report saying "switched off by the
+store" (tried for a day) and from then on nothing is sent. The support desk then pauses that check and removes it after 30 days. A host that
+is local-only (`--ingress local-only`) has no way out and no support link.
+
 ## A newer release
 
 `node scripts/doctor.mjs --local` prints `Note: vX.Y.Z is available (this facility runs vA.B.C)`, and the daily "Monitoring is alive" message
@@ -443,6 +494,8 @@ sees the facility's public IP address and the checkout's own repository name; no
 Both calls have a 10 second limit, follow no redirects, and never prompt. A host that must not contact GitHub from the facility simply gets no line.
 
 ## An association view with healthchecks
+
+(The support desk's richer view, with health signals in the ping body, is [The support link](#the-support-link); this section describes the plain up-or-down board.)
 
 An association that wants to see which of its member facilities have gone quiet can own one healthchecks.io project (or a
 self-hosted healthchecks) for the purpose:
