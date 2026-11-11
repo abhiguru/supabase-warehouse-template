@@ -55,9 +55,11 @@ BEGIN
 END $$;
 
 SELECT pg_temp.patch_function('public.cancel_invoice(uuid, text, timestamp with time zone)'::regprocedure, ARRAY[
-$m$kept_catalog_word_set = true$m$
+$m$kept_catalog_word_set = true,
+      details_kept_at = v_cancelled_at$m$
 ], ARRAY[
-$m$kept_catalog_word_set = true, kept_pricing_mode = COALESCE(gr.pricing_mode, 'MONTHLY')$m$
+$m$kept_catalog_word_set = true, kept_pricing_mode = COALESCE(gr.pricing_mode, 'MONTHLY'),
+      details_kept_at = v_cancelled_at$m$
 ]);
 
 SELECT pg_temp.patch_function('public.get_invoice_items_detailed(uuid)'::regprocedure, ARRAY[
