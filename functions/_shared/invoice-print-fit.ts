@@ -1,8 +1,9 @@
 // What the pre-printed invoice form (print-invoice-preprinted) may print, and the tax fields it prints (WH-151, migration 173).
 //
-// Nothing is cut: a value longer than its field on the form refuses that invoice, naming the field, and it is printed on plain paper
-// (the PDF) instead. Before WH-151 an amount over 10 characters, the amount in words over 74 and the address over 81 were cut without a
-// word. Text columns of the item table (item name, packaging, GRN reference) are abbreviated by the layout as before.
+// With GST details saved, nothing is cut: a value longer than its field on the form refuses that invoice, naming the field, and it is
+// printed on plain paper (the PDF) instead. An invoice made before the GST details (doc_type 'invoice', or none before migration 173)
+// prints exactly as before WH-151 (WH-172, Product): an amount over 10 characters, the amount in words over 74 and the address over 81
+// are cut, the GSTIN is cut at the state, and nothing is refused for its length. Text columns of the item table (item name, packaging, GRN reference) are abbreviated by the layout as before.
 // The tax fields: an invoice saved before the facility's GST details ('invoice') prints SGST and CGST as half the tax each, exactly as
 // before; a tax invoice or invoice-cum-bill of supply prints the CGST and SGST the database stored; a bill or bill of supply leaves SGST,
 // CGST and the tax total blank. An IGST invoice has no field on the form and is not printed on it.
@@ -27,6 +28,21 @@ export class PrintFitError extends Error {
 export function fitted(value: string, width: number, field: string): string {
   if (value.length > width) throw new PrintFitError(field, value, width);
   return value;
+}
+
+/** Whether the invoice was made with the facility's GST details saved (any document type but 'invoice'): the WH-151 switch. */
+export function madeWithGstDetails(invoice: { doc_type?: unknown }): boolean {
+  return Boolean(invoice.doc_type) && invoice.doc_type !== 'invoice';
+}
+
+/** The value cut to `width` characters, as the form did before WH-151. */
+export function cut(value: string, width: number): string {
+  return value.length > width ? value.substring(0, width) : value;
+}
+
+/** How this invoice's values meet their fields: refused when they do not fit (GST details saved), else cut as before WH-151. */
+export function preprintedFit(invoice: { doc_type?: unknown }): (value: string, width: number, field: string) => string {
+  return madeWithGstDetails(invoice) ? fitted : (value, width) => cut(value, width);
 }
 
 /** Why an invoice is not printed on the form at all, or null. */
@@ -54,11 +70,11 @@ export function preprintedTaxFields(invoice: { doc_type?: unknown; tax_amount?: 
       taxTotal: fitted(formatCurrency(tax), width, 'Tax total'),
     };
   }
-  // 'invoice' (and a database before migration 173): half the tax each, as the form always printed.
+  // 'invoice' (and a database before migration 173): half the tax each, cut to the field, as the form always printed.
   return {
-    sgst: fitted(formatCurrency(tax / 2), width, 'SGST'),
-    cgst: fitted(formatCurrency(tax / 2), width, 'CGST'),
-    taxTotal: fitted(formatCurrency(tax), width, 'Tax total'),
+    sgst: cut(formatCurrency(tax / 2), width),
+    cgst: cut(formatCurrency(tax / 2), width),
+    taxTotal: cut(formatCurrency(tax), width),
   };
 }
 
@@ -82,7 +98,7 @@ export function headerFit(invoice: { invoice_label?: unknown; inv_no?: unknown; 
 /** The state field of the form's first line: the facility's state the invoice was made with (GST details), else GUJARAT as before. */
 export function preprintedState(invoice: { doc_type?: unknown; supplier_state_name?: unknown }): string {
   const name = typeof invoice.supplier_state_name === 'string' ? invoice.supplier_state_name.trim() : '';
-  return invoice.doc_type && invoice.doc_type !== 'invoice' && name ? name.toUpperCase() : 'GUJARAT';
+  return madeWithGstDetails(invoice) && name ? name.toUpperCase() : 'GUJARAT';
 }
 
 /** A reference that keeps its end: longer than `width`, it is cut at the front and starts with "..." (the form's latin1 ellipsis). */

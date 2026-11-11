@@ -7,7 +7,7 @@ import type { InvoicePrintPage } from '../_shared/invoice-print-layout.ts'
 import { lineStorageAmount, cumulativeStorageAmount, resolveInvoiceFinYear, printedMonths } from '../_shared/invoice-print-amounts.ts'
 import { validatePrintAccess, createAuthErrorResponse } from '../_shared/auth-helpers.ts'
 import { sanitizeForPrinter, encodeLatin1 } from '../_shared/printer-text.ts'
-import { fitted, headerFit, keepEnd, preprintedRefusal, preprintedState, preprintedTaxFields, PrintFitError, IGST_PLAIN_PAPER } from '../_shared/invoice-print-fit.ts'
+import { headerFit, keepEnd, madeWithGstDetails, preprintedFit, preprintedRefusal, preprintedState, preprintedTaxFields, PrintFitError, IGST_PLAIN_PAPER } from '../_shared/invoice-print-fit.ts'
 
 // ESC/P Control Codes for Epson LQ 1310
 const ESC = '\x1B';
@@ -192,6 +192,8 @@ function generateInvoicePage(
   isLastPage: boolean
 ): string {
   let output = '';
+  // WH-151/WH-172: with GST details saved a value longer than its field refuses the invoice; an invoice made before them is cut as before.
+  const fitted = preprintedFit(invoice);
 
   // === TOP OFFSET ===
   // Feed from top-of-form down to TOP_OFFSET_MM (ESC J n = n/180", at most 255 per command).
@@ -257,7 +259,7 @@ function generateInvoicePage(
     invoice.city,
     invoice.mobile
   ].filter(part => part).join(', ');
-  // WH-151: an address longer than its field refuses the invoice (it was cut).
+  // WH-151: with GST details saved, an address longer than its field refuses the invoice; before them it is cut, as it always was.
   const fullAddress = fitted(addressParts, LAYOUT.PAGE_WIDTH - LAYOUT.ADDRESS_OFFSET - 5, 'address');
   // End the name line with CR + only the rest of a line, giving back HEADER_DROP_180
   output += ' '.repeat(LAYOUT.ADDRESS_OFFSET) + fullAddress + CR;
@@ -454,7 +456,7 @@ function generateInvoicePage(
     if (!amountInWords.toLowerCase().endsWith('only')) {
       amountInWords = amountInWords + ' only';
     }
-    // WH-151: words longer than the line refuse the invoice (they were cut).
+    // WH-151: with GST details saved, words longer than the line refuse the invoice; before them they are cut, as they always were.
     const truncatedWords = fitted(amountInWords, LAYOUT.PAGE_WIDTH - totalWordsOffset - 5, 'amount in words');
     output += '\n';
     output += createLine(truncatedWords, totalWordsOffset);
@@ -470,8 +472,9 @@ function generateInvoicePage(
 function generatePrePrintedInvoice(invoiceData: any): string {
   const invoice = invoiceData;
   const rawItems = invoice.trl || []; // trl array contains denormalized items
-  // WH-151: the customer's GSTIN must fit between the number and the state (truncateString(gstin, 25) below never cuts then).
-  headerFit(invoice, LAYOUT, 25);
+  // WH-151: with GST details saved, the customer's GSTIN must fit between the number and the state (truncateString(gstin, 25) below never
+  // cuts then). An invoice made before them cuts it as before (WH-172).
+  if (madeWithGstDetails(invoice)) headerFit(invoice, LAYOUT, 25);
 
   // Lines of the same GRN item together (the groups in the order first seen)
   const items: any[] = groupInvoiceLines(rawItems);
