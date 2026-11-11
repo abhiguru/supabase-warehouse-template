@@ -234,9 +234,9 @@ export function normalizeState(raw, now, log = () => {}) {
   take('releaseCheck', v => v === null || (isObj(v) && typeof v.date === 'string' && (v.line === null || typeof v.line === 'string')));   // the day's release lookup (heartbeat)
   take('lastDailyRun', v => isObj(v) && Object.values(v).every(x => isObj(x) && typeof x.date === 'string' && typeof x.result === 'string'));
   if (isObj(raw.alerts)) for (const [id, a] of Object.entries(raw.alerts)) out.alerts[id] = normalizeAlert(id, a, log);
+  else if ('alerts' in raw) log('state field "alerts" had the wrong type and was reset');
   // The alert that was called usb_backup is offhost_copy_missing now: a firing one carries over, so an upgrade posts no false CLEARED.
   if (out.alerts.usb_backup) { out.alerts.offhost_copy_missing ??= out.alerts.usb_backup; delete out.alerts.usb_backup; }
-  else if ('alerts' in raw) log('state field "alerts" had the wrong type and was reset');
   if (isObj(raw.containers)) {
     for (const [service, c] of Object.entries(raw.containers)) { const fixed = normalizeContainer(service, c, log); if (fixed) out.containers[service] = fixed; }
   } else if ('containers' in raw) log('state field "containers" had the wrong type and was reset');
