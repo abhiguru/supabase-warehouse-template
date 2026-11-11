@@ -107,6 +107,22 @@ ROLLBACK;
 BEGIN;
 CREATE FUNCTION pg_temp.st_assert(ok boolean, label text) RETURNS void LANGUAGE plpgsql AS $$
 BEGIN IF NOT COALESCE(ok, false) THEN RAISE EXCEPTION 'stretches 186: %', label; END IF; END $$;
+-- The report reads below run as an administrator signed in through the mocked operator login (as invoice_date_rules_182_184 does).
+INSERT INTO warehouse_security.auth_config(key,value) VALUES
+ ('jwt_secret','isolated-test-secret-not-for-any-deployment-12345'),
+ ('auth_mode','operator'),('demo_auth_enabled','false')
+ ON CONFLICT(key) DO UPDATE SET value=excluded.value;
+UPDATE public.sms_config SET provider='msg91',production_mode=true,msg91_auth_key='isolated-test-key',
+ msg91_template_id='000000000000000000000001',msg91_pe_id='0000000000000000001',msg91_sender_id='CITEST'
+ WHERE id=(SELECT id FROM public.sms_config ORDER BY id DESC LIMIT 1);
+SELECT warehouse_security.bootstrap_first_admin('9888888186','Stretches Administrator') AS admin_user \gset
+SELECT public.operator_prepare_otp('9888888186') AS challenge \gset
+SELECT pg_temp.st_assert(:'challenge'::jsonb->>'success'='true','operator challenge prepared');
+SELECT public.operator_finish_otp((:'challenge'::jsonb#>>'{data,request_id}')::uuid,true,'mock-provider-only');
+SELECT public.operator_verify_otp('9888888186',:'challenge'::jsonb#>>'{data,otp_code}') AS login \gset
+SELECT pg_temp.st_assert(:'login'::jsonb#>>'{data,action}'='login','mocked operator login');
+SELECT set_config('request.jwt.claims',jsonb_build_object('role','authenticated','sub',:'admin_user',
+ 'session_id',(SELECT id FROM warehouse_security.refresh_sessions WHERE user_id=:'admin_user'::uuid LIMIT 1))::text,true);
 DELETE FROM warehouse_security.sensor_stretches;
 UPDATE warehouse_security.sensor_record_settings SET recorded_through = NULL, record_started_at = now() - interval '1 day';
 INSERT INTO public.sensor_devices(id, device_name, alert_config) VALUES ('00000000-0000-4000-8000-0000000186d5', 'Stretch Chamber Five', '{"temperature_min": 2, "temperature_max": 8}');
@@ -122,16 +138,20 @@ SELECT warehouse_maintenance.record_sensor_alert_posts(jsonb_build_array(jsonb_b
   'at', date_trunc('minute', now()) - interval '2 hours' + interval '21 minutes', 'via', 'sensors', 'state', 'posted')));
 SELECT pg_temp.st_assert((SELECT count(*) FROM warehouse_security.sensor_stretches WHERE device_id = '00000000-0000-4000-8000-0000000186d5'
   AND kind = 'too_warm' AND alert_posted_at IS NULL AND alert_state IS NULL) = 1, 'the second stretch has no posting time of its own');
+SET LOCAL ROLE authenticated;
 SELECT public.get_temperature_report('00000000-0000-4000-8000-0000000186d5', (now() AT TIME ZONE 'Asia/Kolkata')::date - 1,
   (now() AT TIME ZONE 'Asia/Kolkata')::date) AS report \gset
+RESET ROLE;
 SELECT pg_temp.st_assert((SELECT count(*) FROM jsonb_array_elements(:'report'::jsonb #> '{data,stretches}') s
   WHERE s->>'kind' = 'too_warm' AND s->'alert'->>'posted_at' IS NULL
     AND (s->>'covering_alert_posted_at')::timestamptz = date_trunc('minute', now()) - interval '2 hours' + interval '21 minutes') = 1,
   'the second line shows the first one''s posting time: ' || (:'report'::jsonb #> '{data,stretches}')::text);
 -- The same with the first alert failed: the second stretch reads 'failed', not covered.
 UPDATE warehouse_security.sensor_stretches SET alert_posted_at = NULL, alert_state = 'failed' WHERE device_id = '00000000-0000-4000-8000-0000000186d5' AND alert_state = 'posted';
+SET LOCAL ROLE authenticated;
 SELECT public.get_temperature_report('00000000-0000-4000-8000-0000000186d5', (now() AT TIME ZONE 'Asia/Kolkata')::date - 1,
   (now() AT TIME ZONE 'Asia/Kolkata')::date) AS report \gset
+RESET ROLE;
 SELECT pg_temp.st_assert((SELECT bool_and(s->'alert'->>'reason' = 'failed' AND s->'covering_alert_posted_at' = 'null'::jsonb)
   FROM jsonb_array_elements(:'report'::jsonb #> '{data,stretches}') s WHERE s->>'kind' = 'too_warm'), 'a failed alert is not "covered"');
 ROLLBACK;

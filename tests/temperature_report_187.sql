@@ -8,6 +8,22 @@ SELECT pg_temp.tr_assert(has_function_privilege('authenticated', 'public.get_tem
   AND has_function_privilege('authenticated', 'public.get_sensor_report_devices()', 'EXECUTE')
   AND (SELECT prosrc ~ 'authorize_rpc\(''get_temperature_report''' FROM pg_proc WHERE oid = 'public.get_temperature_report(uuid,date,date)'::regprocedure)
   AND (SELECT prosrc ~ 'authorize_rpc\(''get_sensor_report_devices''' FROM pg_proc WHERE oid = 'public.get_sensor_report_devices()'::regprocedure), 'grants and guard');
+-- An administrator signed in through the mocked operator login (as invoice_date_rules_182_184 does); the reads below run as that user.
+INSERT INTO warehouse_security.auth_config(key,value) VALUES
+ ('jwt_secret','isolated-test-secret-not-for-any-deployment-12345'),
+ ('auth_mode','operator'),('demo_auth_enabled','false')
+ ON CONFLICT(key) DO UPDATE SET value=excluded.value;
+UPDATE public.sms_config SET provider='msg91',production_mode=true,msg91_auth_key='isolated-test-key',
+ msg91_template_id='000000000000000000000001',msg91_pe_id='0000000000000000001',msg91_sender_id='CITEST'
+ WHERE id=(SELECT id FROM public.sms_config ORDER BY id DESC LIMIT 1);
+SELECT warehouse_security.bootstrap_first_admin('9888888187','Temperature Report Administrator') AS admin_user \gset
+SELECT public.operator_prepare_otp('9888888187') AS challenge \gset
+SELECT pg_temp.tr_assert(:'challenge'::jsonb->>'success'='true','operator challenge prepared');
+SELECT public.operator_finish_otp((:'challenge'::jsonb#>>'{data,request_id}')::uuid,true,'mock-provider-only');
+SELECT public.operator_verify_otp('9888888187',:'challenge'::jsonb#>>'{data,otp_code}') AS login \gset
+SELECT pg_temp.tr_assert(:'login'::jsonb#>>'{data,action}'='login','mocked operator login');
+SELECT set_config('request.jwt.claims',jsonb_build_object('role','authenticated','sub',:'admin_user',
+ 'session_id',(SELECT id FROM warehouse_security.refresh_sessions WHERE user_id=:'admin_user'::uuid LIMIT 1))::text,true);
 -- The upgrade was 10 days ago; the sensor has hourly rows 120 days back and raw readings for the last 5 days.
 DELETE FROM warehouse_security.sensor_stretches;
 UPDATE warehouse_security.sensor_record_settings SET recorded_through = NULL, record_started_at = now() - interval '10 days';
@@ -23,6 +39,7 @@ INSERT INTO public.sensor_readings(device_id, temperature, humidity, measured_at
 SELECT '00000000-0000-4000-8000-0000000187d1', 5, 55, now() - make_interval(mins => 5 * i) FROM generate_series(1, 1400) i;
 SELECT warehouse_maintenance.refresh_sensor_stretches(now(), 30, 15);
 -- Period refusals.
+SET LOCAL ROLE authenticated;
 SELECT pg_temp.tr_assert(public.get_temperature_report('00000000-0000-4000-8000-0000000187d1', current_date, current_date - 1)->>'error_code' = 'INVALID_PERIOD', 'To before From');
 SELECT pg_temp.tr_assert(public.get_temperature_report('00000000-0000-4000-8000-0000000187d1', current_date + 2, current_date + 3)->>'error_code' = 'INVALID_PERIOD', 'To after today');
 SELECT pg_temp.tr_assert(public.get_temperature_report('00000000-0000-4000-8000-0000000187d1', (current_date - interval '13 months')::date, current_date - 1)->>'error_code' = 'PERIOD_TOO_LONG', '13 months');
@@ -31,9 +48,12 @@ SELECT pg_temp.tr_assert(public.get_temperature_report('00000000-0000-4000-8000-
 SELECT pg_temp.tr_assert(public.get_temperature_report('00000000-0000-4000-8000-0000000187d1', (current_date - interval '25 months')::date, (current_date - interval '24 months' - interval '20 days')::date)->>'error_code' = 'PERIOD_TOO_OLD', 'more than 2 years back');
 SELECT pg_temp.tr_assert(public.get_temperature_report('00000000-0000-4000-8000-0000000187d9', current_date - 1, current_date)->>'error_code' = 'DEVICE_NOT_FOUND', 'unknown sensor');
 SELECT pg_temp.tr_assert(public.get_temperature_report('00000000-0000-4000-8000-0000000187d1', current_date - 60, current_date - 50)->>'error_code' = 'NO_READINGS', 'no readings in the period');
+RESET ROLE;
 -- JSON shape and criterion 8: a period reaching back before the upgrade carries both "not recorded" dates; the hourly part is stated.
+SET LOCAL ROLE authenticated;
 SELECT public.get_temperature_report('00000000-0000-4000-8000-0000000187d1', ((now() - interval '121 days') AT TIME ZONE 'Asia/Kolkata')::date,
   (now() AT TIME ZONE 'Asia/Kolkata')::date) AS r \gset
+RESET ROLE;
 SELECT pg_temp.tr_assert((:'r'::jsonb->>'success')::boolean AND (:'r'::jsonb->'data') ?& ARRAY['made_at', 'made_by', 'record_started_at', 'silent_minutes', 'device',
   'period', 'hourly_part', 'limits', 'summary', 'chart', 'stretches', 'changes', 'changes_not_recorded_before'], 'top-level keys: ' || :'r');
 SELECT pg_temp.tr_assert(:'r'::jsonb #>> '{data,limits,not_recorded_before}' = to_char((now() - interval '10 days') AT TIME ZONE 'Asia/Kolkata', 'YYYY-MM-DD')
@@ -49,13 +69,17 @@ SELECT pg_temp.tr_assert(EXISTS (SELECT 1 FROM jsonb_array_elements(:'r'::jsonb 
   AND (s->>'before_upgrade')::boolean AND s->'alert'->>'reason' = 'not_recorded'), 'the gap before the raw readings is a not-recorded stretch');
 -- A limit change inside the period is listed with its author's name and is a limit step.
 UPDATE public.sensor_devices SET alert_config = '{"temperature_min": 2, "temperature_max": 6}' WHERE id = '00000000-0000-4000-8000-0000000187d1';
+SET LOCAL ROLE authenticated;
 SELECT public.get_temperature_report('00000000-0000-4000-8000-0000000187d1', current_date - 3, current_date) AS r \gset
+RESET ROLE;
 SELECT pg_temp.tr_assert(jsonb_array_length(:'r'::jsonb #> '{data,limits,changes}') = 1 AND jsonb_array_length(:'r'::jsonb #> '{data,chart,limit_steps}') = 2
   AND :'r'::jsonb #> '{data,limits,not_recorded_before}' = 'null'::jsonb, 'a change in the period; no not-recorded line after the upgrade');
 -- The chooser.
+SET LOCAL ROLE authenticated;
 SELECT pg_temp.tr_assert(EXISTS (SELECT 1 FROM jsonb_array_elements(public.get_sensor_report_devices()->'data') d
   WHERE d->>'id' = '00000000-0000-4000-8000-0000000187d1' AND d ?& ARRAY['name', 'location', 'active', 'first_reading_at', 'last_reading_at']
     AND NOT d ? 'alert_config'), 'the chooser row');
+RESET ROLE;
 ROLLBACK;
 -- Criterion 9 (with the backlog_80 login helper): for staff, supervisor, administrator and customer claims, under SET LOCAL ROLE authenticated,
 -- get_temperature_report(<sensor>, current_date - 1, current_date) answers success true and get_sensor_report_devices() lists the sensor;
