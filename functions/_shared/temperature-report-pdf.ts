@@ -1,4 +1,4 @@
-// generate-temperature-report-pdf: one sensor's temperature report for a period, as an English PDF (WH-157, migration 186).
+// generate-temperature-report-pdf: one sensor's temperature report for a period, as an English PDF (WH-157, migration 187).
 //
 // The figures are get_temperature_report's, called with the caller's own token, so warehouse_security.authorize_rpc decides access
 // (administrators, supervisors, staff and customer accounts, for every sensor). Nothing is worked out here except the drawing: every
@@ -24,8 +24,9 @@ export interface TemperatureStretch {
   kind: 'too_warm' | 'too_cold' | 'no_readings';
   started_at: string; ended_at: string | null; began_before_period?: boolean;
   worst?: Num; limit?: Num; beyond?: Num; source?: 'raw' | 'hourly'; before_upgrade?: boolean;
-  // `reason` 'failed' (a post was tried and failed) is not in the design's §5 yet: WH-157 open with Development/B3.
   alert?: { posted_at: string | null; reason: null | 'shorter' | 'no_channel' | 'not_recorded' | 'not_posted' | 'failed'; minutes?: number | null };
+  // The posting time of an earlier alert that was posted and still held (not cleared) when this stretch began (migration 187); null otherwise.
+  covering_alert_posted_at?: string | null;
 }
 export interface TemperatureReport {
   made_at: string; made_by: string; record_started_at: string; silent_minutes: number;
@@ -88,6 +89,8 @@ const changeLine = (change: TemperatureReport['changes'][number]) => change.op =
 export function alertText(row: TemperatureStretch): string {
   const alert = row.alert;
   if (alert?.posted_at) return timeText(alert.posted_at);
+  // Product, 2026-11-11: a stretch inside an alert that was really posted and not yet cleared names that alert's posting time.
+  if (row.covering_alert_posted_at) return `Covered by the alert posted at ${timeText(row.covering_alert_posted_at)}.`;
   switch (alert?.reason) {
     case 'shorter': return `No alert: shorter than ${count(alert.minutes)} minutes`;
     case 'no_channel': return 'No alert: no alert channel set up';
