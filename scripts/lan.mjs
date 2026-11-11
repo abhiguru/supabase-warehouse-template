@@ -16,7 +16,7 @@ import { isMain } from './is-main.mjs';
 import { probe, projectPublishesPort, readEnv } from './doctor-common.mjs';
 import {
   LAN_DEFAULT_PORT, autoInterface, cidrSize, cidrsOverlap, describeAddresses, firewallNote, hostHasAddress, inCidr, isPrivateIPv4, lanAddressLine,
-  lanAddressValue, lanCidrValue, lanOffText, lanOnText, lanOrigin, lanPortValue, lanSettings, probeLanKeys, profileList, readHostInterfaces,
+  lanAddressValue, lanCidrValue, lanOffText, lanOnText, lanOrigin, lanPortValue, lanSettings, probeLanKeys, probeLanSigner, profileList, readHostInterfaces,
 } from './lan-common.mjs';
 
 // ---------------------------------------------------------------- turning it on
@@ -209,7 +209,7 @@ export async function lanChecks(env, { instanceId, interfaces = readHostInterfac
   let answers = false;
   try {
     const response = await fetchImpl(`${lanOrigin(lan)}/functions/v1/get-public-config`, { signal: AbortSignal.timeout(15000), redirect: 'error' });
-    if (!response.ok) fail(`${lanOrigin(lan)} answered HTTP ${response.status} to get-public-config${response.status === 403 ? ' (refused by the allow-list: LAN_CIDR does not include the address the host connects from)' : ''}.`);
+    if (!response.ok) fail(`${lanOrigin(lan)} answered HTTP ${response.status} to get-public-config${response.status === 403 ? ' (refused by the allow-list: LAN_CIDR does not include the address the host connects from)' : response.status === 502 ? ' (the LAN signer, lan-signer, does not answer: bash scripts/lan.sh status)' : ''}.`);
     else {
       const json = await response.json();
       if (json.success !== true || (instanceId && json.data?.instanceId !== instanceId)) fail(`${lanOrigin(lan)} answers, but not as this installation (instanceId differs).`);
@@ -225,6 +225,9 @@ export async function lanChecks(env, { instanceId, interfaces = readHostInterfac
   if (answers) {
     const keys = await probeLanKeys(lan, env.ANON_KEY, fetchImpl);
     if (!keys.ok) fail(keys.text);
+    // WH-133: the two probes above need no signature; this one shows that the signer can read keys, which every phone's request needs.
+    const signer = await probeLanSigner(lan, fetchImpl);
+    if (!signer.ok) fail(signer.text);
   }
   return out;
 }

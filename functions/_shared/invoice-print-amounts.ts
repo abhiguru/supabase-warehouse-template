@@ -24,6 +24,18 @@ export function cumulativeStorageAmount(lines: unknown[]): number {
   return lines.reduce((paise: number, line) => paise + Math.round(lineStorageAmount(line) * 100), 0) / 100;
 }
 
+// The months column of the pre-printed form (WH-137). Months that are whole or half (every invoice under the
+// half-month and month steps) print with one decimal exactly as before (1.0, 2.5, 12.0); months with two
+// decimals (steps of a day: 1.33) print both decimals when they fit the column, else one (10.33 -> 10.3).
+// The amount columns carry the exact figures either way.
+export function printedMonths(months: number, width: number): string {
+  if (!Number.isFinite(months)) return '';
+  const oneDecimal = months.toFixed(1);
+  if (Math.round(months * 100) % 10 === 0) return oneDecimal;
+  const twoDecimals = months.toFixed(2);
+  return twoDecimals.length <= width ? twoDecimals : oneDecimal;
+}
+
 // India's financial year at a moment: the year in which the 1 April to 31 March
 // year began, on the Asia/Kolkata calendar (UTC+05:30, no daylight saving). The
 // same rule as warehouse_security.financial_year(warehouse_security.business_date(now())).

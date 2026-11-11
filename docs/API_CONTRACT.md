@@ -157,8 +157,50 @@ See [PRODUCTION_DEPENDENCIES.md](PRODUCTION_DEPENDENCIES.md) for the remaining b
 
 There is no accounting integration (migration 71 removed the unused Tally one, with the dead baseline functions that
 nothing called). Recorded payments remain: the `payments` table and its policies drive Paid and Pending in
-`get_customer_invoice_summary` and `get_customer_activity_detail`. The app does not write payments; only the service role
-or the database owner does. A future accounting integration starts from a new design.
+`get_customer_invoice_summary` and `get_customer_activity_detail`. A future accounting integration starts from a new design.
+
+### Payments (migration 172)
+
+With the facility's Record payments setting on (`set_record_payments(p_enabled)`, administrators; served as
+`capabilities.payments` by get-public-config), administrators and supervisors call
+`record_payment(p_invoice_id, p_paid_on, p_amount, p_mode, p_note, p_request_id)`,
+`update_payment(p_id, p_paid_on, p_amount, p_mode, p_expected_updated_at, p_note, p_request_id)` and
+`delete_payment(p_id, p_expected_updated_at, p_request_id)`. Modes: `cash`, `upi`, `bank_transfer`, `cheque`, `other`; note up to
+200 characters. Refusals (`reason`): `PAYMENTS_OFF`, `PAYMENT_DATE_FUTURE` and `PAYMENT_BEFORE_INVOICE` (error_code WH422),
+`PAYMENT_OVER_DUE` {due}, `INVOICE_CANCELLED`, `INVOICE_NOT_FOUND`, `PAYMENT_NOT_FOUND`, `PAYMENT_NOT_EDITABLE` (rows from the old
+accounting link), `STALE_RECORD`; an amount of 0 or less, a bad mode or a long note raise 22023. `cancel_invoice` and `delete_invoice`
+refuse an invoice with payments (`INVOICE_HAS_PAYMENTS` {inv_no}); `update_invoice` refuses a total below the paid sum
+(`TOTAL_BELOW_PAID` {paid, total}). `get_invoices_list` (filter `p_payment_status`), `get_invoice_detail` (with `payments[]`) and
+`get_invoice_data` answer `paid_amount`, `due_amount` and `payment_status` (`due`, `part_paid`, `paid`) to administrators,
+supervisors and the invoice's customer. The service role and the database owner can still write the table directly.
+
+### GST documents (migration 173)
+
+- **Settings** (administrators): `get_gst_details()` answers `{success, data: {saved, registered, gstin, state_code, state_name,
+  legal_name, address, sac_storage, sac_labour, saved_at, saved_by, saved_by_name, states: [{code, name}]}}`; `saved` false means the
+  details were never saved and every document is made as before. `set_gst_details(p_details)` takes `{registered (boolean, required),
+  gstin (required when registered), address (required, up to 300), legal_name, sac_storage, sac_labour}` (a SAC is 4 to 8 digits, empty =
+  996721 / 996719; `legal_name` left out keeps the stored one, shared with the legal settings) and answers `{success, data}` as the getter.
+  A bad value raises 22023 and changes nothing; each change writes one `audit_log` row (`facility_gst`).
+- **Items**: `items.gst_treatment` (`taxable` default, `exempt_agri`), read from the table; `set_item_gst_treatment(p_item_id,
+  p_gst_treatment)` (administrators and supervisors; audited) answers `{success, data: {item_id, gst_treatment, changed}}`.
+- **Customers**: `customers.state_code` is generated from `customers.state` (the state's name from the list, matched without case or
+  punctuation; NULL when not one state for certain). The customer form's pick list writes the name.
+- **Review step**: `preview_invoice_documents(p_gr_id, p_disp_trl_ids, p_invoice_id default null, p_duration_mode default null)` (staff and
+  above) answers `{success, documents: [{doc_type, disp_trl_ids, item_names, subtotal, tax, total, tax_head, place_of_supply, cgst_amount,
+  sgst_amount, igst_amount}], document_count, current_doc_type, type_changes}`; totals are before any discount (a discount goes on the
+  first document). Refusals: `UNKNOWN_LINE`, `EDIT_NEEDS_TWO_DOCUMENTS` (an edit).
+- **Save and edit**: `save_invoice` answers `doc_type`, `linked_invoice_id` and `documents: [{invoice_id, inv_no, inv_fin_year, doc_type,
+  total}]`; a two-document save uses the number sent and the next one. `expected_total` is the sum of both totals. New refusals:
+  `NUMBER_TAKEN` (with the second number), `NUMBER_OUT_OF_RANGE`, `EDIT_NEEDS_TWO_DOCUMENTS`. `update_invoice` answers `doc_type`.
+- **Delete**: the two documents of a pair are deleted together. `delete_invoice` refuses one of them (`INVOICE_PAIR`, with
+  `linked_invoice {id, inv_no, inv_fin_year, doc_type}`); `delete_invoice_pair(p_invoice_id, p_expected_updated_at, p_linked_expected_updated_at)`
+  (administrators and supervisors) deletes both in one transaction and answers `{success, deleted: 2, invoices: [two delete_invoice answers]}`,
+  or the refusal of either with `deleted: 0` and nothing deleted (`INVOICE_HAS_PAYMENTS`, `STALE_RECORD`, `Invoice not found`); `NOT_A_PAIR`
+  when the invoice has no live other document.
+- **Reads**: `get_invoices_list` rows carry `doc_type` and `linked_invoice_id`, filter `p_doc_type`; `get_invoice_detail` (`invoice`) and
+  `get_invoice_data` (`header`) carry `doc_type`, `linked_invoice` and `gst` (null for `invoice`). Rules: [INVOICE_RULES.md](INVOICE_RULES.md),
+  "GST documents".
 
 The baseline still holds other functions that are not granted to `anon` or
 `authenticated`. They are not API: do not grant one to make a call work; add a
@@ -383,6 +425,103 @@ are stable: they are the interface, and a change to them is announced here.
    is typed in clear on the Wi-Fi (valid 10 minutes, once). The refresh RPC (REST) may use the LAN path.
 8. **Writes** are never resent after a transport failure or a switch of path (the lost-answer rule above).
 
+### Signing on the LAN path (WH-133, migration 163)
+
+From this release every request on the LAN path (`urls.lan`) is signed by the phone and every answer by the server, with the
+**warehouse network key** of the phone's session (HMAC-SHA256). The server side is `docker/lan-signer/signer.ts` (the canonical strings
+are its `canonicalRequest`, `canonicalAnswer`, `canonicalProof`); the app mirrors this section exactly. The public (https) path is
+unchanged. It replaces rule 2 of the hand-off below (the `instanceId` probe) with the proof in item 3.
+
+1. **The key.** 32 bytes, sent as 64 lowercase hex characters; its id is the session id (a UUID, lowercase), the `session_id` claim of
+   the access token. Use the 32 decoded bytes as the HMAC key. It is delivered:
+   - in every sign-in answer that makes a new session (`operator-otp/verify`, `operator-otp/break-glass`, `central-exchange`; any answer
+     whose session comes from `warehouse_security.issue_session` without a session id): `data.session.lan_key_id` and
+     `data.session.lan_key`, beside `access_token` and
+     `refresh_token`. A refresh answer (`refresh_jwt_token`) never carries it; the key stays the same across refreshes.
+   - in the signed-in `get-config` answer as `data.lanKey: { "id": "<uuid>", "key": "<64 hex>" }`, only when the request came over the
+     public https address. It is absent over the LAN path, on a plain-http public address, and when the session has ended.
+   Keep it with that facility's session tokens and remove it with them. Never send it to another facility or another origin.
+2. **Hex and hashes.** Every hash and signature is lowercase hex. `sha256(body)` is SHA-256 of the body bytes exactly as sent or as
+   received after the transport's own decompression (what `arrayBuffer()` gives); an empty body is
+   `e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855`. Times are whole Unix seconds in decimal, no leading zero.
+   Lines are joined with `\n` (LF), no newline at the end, encoded as UTF-8 (every part is printable ASCII).
+3. **Identity proof before any credential** (replaces the `instanceId` check). `GET <lan>/functions/v1/get-public-config`, no
+   `Authorization`, with `X-Lan-Key-Id: <key id>` and `X-Lan-Challenge: <64 hex, 32 fresh random bytes>`. A good answer has status 200,
+   `X-Warehouse-Path: lan`, `X-Lan-Server-Time: <seconds>` and `X-Lan-Proof: <hex>` where
+   ```
+   proof = HMAC(key, "WH-LAN-PROOF-1\n<key id>\n<challenge>\n<X-Lan-Server-Time>\n<status>\n<sha256(body)>")
+   ```
+   and `data.instanceId` is the saved one. Compare the proof in constant time. Anything else (no or wrong proof, another status, an
+   unsigned 403 `lan_key_unknown`) means "another device" (or a key the server no longer has): send nothing with credentials to that
+   address. Keep `offset = X-Lan-Server-Time - local seconds at receipt` for item 4.
+4. **Every other request is signed.** Headers:
+   - `X-Lan-Key-Id`: the key id;
+   - `X-Lan-Time`: `local seconds + offset` (the offset from the last proof or the last signed answer);
+   - `X-Lan-Request-Id`: 32 lowercase hex characters, 16 fresh random bytes per request (a retry is a new request with a new id);
+   - `X-Lan-Signature`: `HMAC(key, canonical request)`, where the canonical request is
+   ```
+   WH-LAN-REQ-1
+   <METHOD, upper case>
+   <request target: path and query exactly as on the request line, e.g. /rest/v1/rpc/save_grn or /rest/v1/items?select=id&limit=50>
+   <key id>
+   <X-Lan-Time>
+   <X-Lan-Request-Id>
+   <sha256(request body)>
+   accept:<value>
+   accept-profile:<value>
+   apikey:<value>
+   authorization:<value>
+   cache-control:<value>
+   content-profile:<value>
+   content-type:<value>
+   prefer:<value>
+   range:<value>
+   x-upsert:<value>
+   ```
+   Each header value with leading and trailing spaces and tabs removed, empty when the header is not sent; names exactly as listed,
+   in this order. **Only these ten headers reach the server** (others, `x-client-info` and `user-agent` included, are dropped), so set
+   every one you need explicitly, `Content-Type` whenever there is a body; a header that the platform adds and the signature does not
+   cover breaks it. The target must be in the form a WHATWG `URL` gives (`url.pathname + url.search`, no `#`, nothing that a URL parser
+   would re-encode, no `..`); otherwise the request is refused (`lan_malformed` or `lan_request_target`). The body is hashed whole, so
+   a body must be bytes the app knows (a string, an ArrayBuffer); a multipart body that the platform builds cannot be signed. A bearer
+   token must belong to the same session as the key (`lan_session_mismatch`). Do not set `Accept-Encoding`.
+5. **Every answer to a signed request is signed** (the inner server's own 401/403/404/413/429/502/503/504 and the signer's refusals
+   after the signature checked out included). Headers: `X-Lan-Request-Id` (echo), `X-Lan-Server-Time`, `X-Lan-Signature` =
+   ```
+   HMAC(key, "WH-LAN-ANS-1\n<key id>\n<the request id the phone sent>\n<X-Lan-Server-Time>\n<status>\n<sha256(body)>\n
+     content-disposition:<v>\ncontent-range:<v>\ncontent-type:<v>\nlocation:<v>\npreference-applied:<v>\nretry-after:<v>\n
+     www-authenticate:<v>\nx-request-id:<v>")
+   ```
+   (one string; the line breaks inside the block are only for reading; values as in item 4, empty when absent). Only these eight
+   answer headers, `X-Warehouse-Path` and the `X-Lan-*` headers are passed on. Use the request id the phone sent, not the echo. Check
+   the signature in constant time over the whole body before using any of it; on success, update the offset from `X-Lan-Server-Time`.
+6. **Refusals and unsigned answers.** The signer's refusals are JSON `{"message", "code"}` with `X-Warehouse-Path: lan`:
+
+   | Status | `code` | Signed | When |
+   |---|---|---|---|
+   | 403 | `lan_not_signed` | no | no `X-Lan-Signature` on a request that needs one |
+   | 403 | `lan_malformed` | no | a signature header or the target is malformed |
+   | 403 | `lan_key_unknown` | no | the key id is not a live session's |
+   | 403 | `lan_signature` | no | the signature does not match |
+   | 413 | `lan_body_too_large` | no | body over 50 MB (or over the limit of an unsigned request) |
+   | 503 | `lan_key_lookup`, `lan_busy` | no | the key could not be read; too much in memory |
+   | 403 | `lan_time` | yes | `X-Lan-Time` more than 300 s from the server's clock, or before the signer started |
+   | 403 | `lan_request_target` | yes | the target is not in canonical form |
+   | 403 | `lan_replayed` | yes | the key id and request id were used in the last 10 minutes |
+   | 403 | `lan_session_mismatch` | yes | the bearer token is another session's |
+   | 503 | `lan_busy` | yes | too many request ids remembered |
+   | 502, 504 | `lan_upstream`, `lan_answer_too_large`, `lan_timeout` | yes | the inner server failed |
+
+   gateway-lan's outer server also answers unsigned, with `X-Warehouse-Path: lan`: 403 `lan_address` (outside `LAN_CIDR`), 404 (wrong
+   `Host`), 413, 429, 502 `lan_signer_down`, 504. A 403 is never a sign-out. An unsigned or wrongly signed answer to a signed request is
+   not the server's own: discard it and leave the LAN path. A request is never resent on the LAN path (a write ends as a lost answer).
+7. **Requests without a signature.** Exactly these (method and target as written, no query): `GET /functions/v1/hello`,
+   `GET /functions/v1/get-public-config` (the proof of item 3, or a plain answer without one), `GET /rest/v1/` (the operator's key check)
+   `POST /functions/v1/operator-otp/break-glass` (at most 4 KB; no key exists yet), `POST /functions/v1/pairing-redeem` (at most 1 KB;
+   local-only facilities, WH-146: its answer has its own proof and encryption), and `GET /app` and `GET /app/warehouse.apk` (the download
+   page; no credential is passed on; the package is checked against `X-Apk-Sha256`). Their answers are not signed, except the proof.
+   The break-glass answer carries the new session's key in clear over the Wi-Fi (accepted; that session lasts 24 hours at most).
+
 ## Writes: refusals, version tokens, request codes and locks
 
 Rules shared by the dispatch, GRN, invoice and order writes. History: migrations 120, 121 and 124 (2026-10-20 and 21).
@@ -506,6 +645,46 @@ From `create_dispatch_with_stock_check` (`dispatch_disp_no_key`, checked over al
 (a number another dispatch holds), `save_invoice` (both signatures) and `update_invoice` (`unique_inv_no_per_year`, within the
 financial year; an invoice that keeps its own number is not refused). The invoice answers of the three-argument path also carry
 `function_version`. `save_grn` already refuses a duplicate GRN number by name and is unchanged. The answer has no `holder`.
+
+### Charging rule (migration 164, WH-137)
+
+The rule is `{step_days, minimum_days, days_counted, rounding}`: `step_days` 15, 30 or 1; `minimum_days` 0 (one step), 15, 30, 60 or 90,
+not between 0 and `step_days`; `days_counted` `legacy` or `standard`; `rounding` `up`, `nearest` or `none`. Default `{15, 30, legacy, up}`.
+The figures are in [INVOICE_RULES.md](INVOICE_RULES.md), "Charging rule".
+
+- `get_charging_rule()`: administrators (`Administrator required`, 42501, for anyone else). `{success:true, rule:{step_days, minimum_days, days_counted, rounding, updated_at, updated_by, updated_by_name}}`.
+- `set_charging_rule(p_rule jsonb)`: administrators. All four fields are required; a missing or wrong one, or a minimum shorter than
+  one step, is raised as SQLSTATE `22023` with a sentence. Answers `{success:true, changed, rule, previous_rule}`; the same rule again
+  changes and records nothing. Invoices already saved keep their rule.
+- `generate_invoice_data_for_grn_with_pricing(p_gr_id, p_duration_mode DEFAULT NULL, p_invoice_id DEFAULT NULL)` answers `charging` and
+  `storage_amount` on each item; `totals` follow the rule's rounding. Without `p_invoice_id` the rule is the facility's; with the id of a
+  live invoice (an edit, a move to another GRN included) it is that invoice's stored rule, the one `update_invoice` saves with
+  (`Invoice not found` for any other id). `p_duration_mode` defaults to NULL: the rule's `days_counted`.
+- `update_invoice` always works the durations out under the invoice's stored rule; no server check compares an edit with the facility's
+  current minimum. The app's own minimum check on an edit uses `get_invoice_detail`'s `invoice.charging.minimum_days` (0 = one step:
+  `step_days`).
+- `save_invoice(p_invoice_id, p_invoice_data, p_invoice_items)`: `p_invoice_data.charging` is the rule the form showed. When it is
+  not the facility's rule now the save is refused with `{success:false, error_code:'WH409', reason:'CHARGING_CHANGED', charging, sent, error, message}`
+  and nothing is saved. Without the key there is no check.
+- `get_invoice_detail` (`invoice.charging`, `items[].storage_amount`) and `get_invoice_data` (`data.header.charging`,
+  `data.items[].storage_amount`) answer the invoice's stored rule and each line's storage under it (null for a line with no quantity).
+
+### Invoicing goods as they leave (migration 165, WH-138)
+
+- `get_charging_rule()` and `set_charging_rule(p_rule)` carry `invoice_as_goods_leave` (boolean; optional in `p_rule`, left out: unchanged;
+  `previous_rule` carries it too). Turning it off while a GRN with stock has a live invoice answers
+  `{success:false, error_code:'WH409', reason:'PARTIAL_INVOICES_OPEN', count, gr_nos, error, message}` and changes nothing.
+- With it on: `save_invoice`/`update_invoice` skip `GRN_HAS_STOCK`; a second invoice on a GRN is allowed; a line on another live invoice is
+  refused with `A dispatch line is already on another invoice` (WH409). `generate_invoice_data_for_grn_with_pricing` answers a GRN with
+  stock or another invoice and lists only free dispatch lines (none: `items` is `[]`).
+- A dispatch line on another live invoice (setting on or off) is answered `{success:false, error_code:'WH409', reason:'DISPATCH_LINE_INVOICED',
+  error:'A dispatch line is already on another invoice', message}` by `save_invoice` and `update_invoice`.
+- `get_all_grn_items`: each row has `invoice_state` (it has no invoiced filter). The GRN activity PDF (`invoicing`) also takes `'partly_invoiced'`.
+- `get_grn_list`: each GRN has `invoice_state` (`not_invoiced`, `partly_invoiced`, `invoiced`); the filter `invoiced` also takes
+  `'partly_invoiced'`. `get_grn_details`: the invoice summary has `invoice_state` and `invoices` [{id, inv_no, inv_fin_year, inv_date, total}].
+  `get_customer_grn_activity`: the invoice status has `invoiced_amount` (all live invoices of the GRN) and `invoice_state`.
+- Migration 174 (WH-162): the setting defaults to true (turned on by the upgrade where no administrator changed it). `get_grn_details`'s
+  invoice summary has `can_create_invoice` (boolean): not deleted, listed by `get_invoiceable_grns`' rule, and a dispatch line on no live invoice.
 
 ### Document numbering (migration 127, 2026-10-27)
 
@@ -1569,6 +1748,35 @@ History: migration 87 (the outside review fixes of 2026-10-15).
 error:'Upload already confirmed', image_id, storage_path}` (confirmed; nothing is changed), or `{success:false,
 code:'NOT_FOUND', error:'Pending upload not found'}` (no such row, or not the caller's to see). The app removes
 the stored file only after `success:true`.
+
+## Local-only facility: pairing and server alerts (WH-146)
+
+Only in a facility set up with `--ingress local-only` (docs/OPERATOR_INSTALL.md, "Local-only facility"). `get-public-config` is unchanged; the origin it
+returns is a placeholder (`https://wh-<12 hex>.local-only.invalid`), so identify the facility by `instanceId`. `operator-otp` `request` and `verify` answer
+403 `{ success: false, code: "local_only" }` and `central-exchange` answers `central_unavailable`; `break-glass`, `status` and `signout` work as before.
+
+**Making a code (administrators only).** `POST /rest/v1/rpc/make_pairing_code { "p_profile_id": "<user_profiles.id>" }` answers
+`{ success: true, data: { pairing_id, code, secret, expires_at, user: { id, name, role } } }`. `code` is 8 characters from `23456789ABCDEFGHJKMNPQRSTVWXYZ`; `secret` is 64 hex
+characters; `expires_at` is 10 minutes after the call. An earlier unused code of that person stops working. Refusals: 42501 for a person who is inactive, not approved, a service account
+or not in this facility, and for a facility that is not local-only. Pairing is by QR only: the app shows `code` and `secret` only inside the QR, never as text to type, and has no manual entry. The QR text is JSON: `{"v":1,"addr":"http://<lan address>:<port>","instance_id":"<uuid>","code":"XXXXXXXX","secret":"<64 hex>"}`;
+the app builds it from its own server address, `instanceId`, and this answer (`scripts/pairing-code.sh` builds the same text on the host).
+
+**Redeeming (unsigned, no token).** `POST <lan>/functions/v1/pairing-redeem` with `{ "code": "XXXXXXXX", "nonce": "<64 hex, 32 fresh random bytes>" }` (at most 1024 bytes). Answers:
+- 200 `{ success: true, data: { proof, iv, ciphertext } }`, all hex. Check `proof` **first**, in constant time:
+  `proof = HMAC-SHA256(secret, "WH-PAIR-PROOF-1\n" + code + "\n" + nonce)`. A wrong proof means another device answered: stop, send nothing else.
+  Then `key = HKDF-SHA256(ikm = secret, salt = the 32 nonce bytes, info = "WH-PAIR-KEY-1")` (32 bytes) and decrypt `ciphertext` (AES-256-GCM, 12-byte `iv`, the 16-byte tag at the end,
+  additional data = `"WH-PAIR-1\n" + code + "\n" + nonce`). The plaintext is the JSON of a sign-in answer's session: `access_token`, `refresh_token`, `lan_key_id`, `lan_key` and the rest of `issue_session`.
+  Keep the key with that facility's tokens and sign every later request with it (WH-133).
+- 409 `{ success: false, code: "PAIRING_CODE_INVALID" }`: unknown, used, replaced or expired. The app says "This code was used or has expired. Ask for a new one."
+- 429 `rate_limited` (more than 10 tries from one address in 10 minutes), 400 for a malformed body, 404 when the facility is not local-only, 503 when the database cannot be reached.
+A code works once: its first good redeem spends it, and the secret is erased. **The signer must let this one call through unsigned** (docker/lan-signer exempt list; see the hand-over note of WH-146).
+
+**Server alerts (administrators only).** `POST /rest/v1/rpc/get_server_alerts {}` answers `{ success: true, data: [ { id, summary, detail, since } ] }`, oldest first: the alerts firing now
+(`summary` is the banner line "Server alert: <summary>"; **Details** shows `since` and `detail`, which says what to do). Empty when nothing fires. Staff, customers and supervisors get 42501.
+Poll it when Home opens and about every minute while it is open.
+
+**The download page.** `GET <lan>/app` (HTML, English and Gujarati) and `GET <lan>/app/warehouse.apk` (`application/vnd.android.package-archive`, header `X-Apk-Sha256`): the warehouse network listener only,
+no sign-in, 404 anywhere else. The app's "Update app" opens `<lan>/app`.
 
 ## Sensors
 

@@ -55,6 +55,11 @@ SELECT pg_temp.core_assert((SELECT stock=80 FROM public.goodsreceived_trl WHERE 
 SELECT public.get_customer_stock_summary(:'customer_id'::uuid) AS summary \gset
 SELECT pg_temp.core_assert((:'summary'::jsonb#>>'{summary,total_quantity}')::numeric=80
  AND (:'summary'::jsonb#>>'{summary,total_weight_kg}')::numeric=800,'partial balance 80 bags / 800 kg');
+-- Invoicing goods as they leave is on by default since migration 174 (WH-162), and then a partly dispatched receipt can be invoiced.
+-- This test checks the rule of a facility that has it off.
+RESET ROLE;
+UPDATE warehouse_security.charging_rule SET invoice_as_goods_leave = false WHERE id;
+SET LOCAL ROLE authenticated;
 SELECT pg_temp.core_assert(public.generate_invoice_data_for_grn_with_pricing(:'grn_id'::uuid)->>'success'='false','partial receipt cannot invoice');
 SELECT public.create_dispatch_with_stock_check(:'dispatch_data'::jsonb || '{"disp_no":"COREB"}'::jsonb,
  ARRAY[jsonb_build_object('gr_trl_id',:'stock_id','disp_qty',80)],false,0,'core-final') AS final_dispatch \gset

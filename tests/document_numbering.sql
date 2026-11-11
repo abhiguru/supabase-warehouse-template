@@ -85,7 +85,11 @@ SELECT pg_temp.nd_assert(NOT EXISTS (SELECT 1 FROM (VALUES
   ('fy_reset that disagrees with the scheme', $$UPDATE warehouse_security.document_numbering SET fy_reset = true WHERE document_type = 'dispatch'$$),
   ('a free invoice', $$UPDATE warehouse_security.document_numbering SET scheme = 'free', fy_reset = false WHERE document_type = 'invoice'$$),
   ('letters for an invoice', $$UPDATE warehouse_security.document_numbering SET scheme = 'letters', first_letter = 'A', per_letter = 10, fy_reset = false WHERE document_type = 'invoice'$$),
-  ('a prefix on an invoice', $$UPDATE warehouse_security.document_numbering SET scheme = 'sequence', prefix = 'I', fy_reset = false WHERE document_type = 'invoice'$$),
+  -- An invoice may carry a prefix of up to 8 characters from A-Z, 0-9, / and - since migration 175 (WH-139); anything else is refused.
+  ('a lower case prefix on an invoice', $$UPDATE warehouse_security.document_numbering SET scheme = 'sequence', prefix = 'i', fy_reset = false WHERE document_type = 'invoice'$$),
+  ('a nine character prefix on an invoice', $$UPDATE warehouse_security.document_numbering SET scheme = 'sequence', prefix = 'ABCDEFGHI', fy_reset = false WHERE document_type = 'invoice'$$),
+  ('a character outside the prefix set on an invoice', $$UPDATE warehouse_security.document_numbering SET scheme = 'sequence', prefix = 'I#', fy_reset = false WHERE document_type = 'invoice'$$),
+  ('a width on an invoice with a prefix', $$UPDATE warehouse_security.document_numbering SET scheme = 'sequence', prefix = 'I', width = 4, fy_reset = false WHERE document_type = 'invoice'$$),
   ('an invoice with the check off', $$UPDATE warehouse_security.document_numbering SET "check" = false WHERE document_type = 'invoice'$$),
   ('a year number that does not fit the column', $$UPDATE warehouse_security.document_numbering SET scheme = 'year', prefix = 'ABCDEFGHIJ', width = 5, fy_reset = true WHERE document_type = 'dispatch'$$)
   ) AS c(label, statement) WHERE pg_temp.nd_call(c.statement)->>'state' IS DISTINCT FROM '23514'),
@@ -360,7 +364,9 @@ SELECT pg_temp.nd_assert(NOT EXISTS (SELECT 1 FROM (VALUES
   ('grn', '{"scheme":"year","prefix":"ABCDEFGHIJ","width":5}', 'A number with this prefix, the year (26-27/) and 5 digits is longer than 20 characters.'),
   ('invoice', '{"scheme":"letters"}', 'An invoice number is a whole number: use year (starts again at 1 every financial year) or sequence (keeps counting).'),
   ('invoice', '{"scheme":"free"}', 'An invoice number is a whole number: use year (starts again at 1 every financial year) or sequence (keeps counting).'),
-  ('invoice', '{"scheme":"year","prefix":"INV"}', 'prefix does not belong to a year rule for invoice.'),
+  -- An invoice rule may carry a prefix of up to 8 characters since migration 175 (WH-139); a longer one or another character is refused.
+  ('invoice', '{"scheme":"year","prefix":"TOOLONGPFX"}', 'The prefix can have up to 8 characters: capital letters, digits, / and -.'),
+  ('invoice', '{"scheme":"sequence","prefix":"INV#"}', 'The prefix can have up to 8 characters: capital letters, digits, / and -.'),
   ('invoice', '{"scheme":"sequence","width":4}', 'width does not belong to a sequence rule for invoice.')
   ) AS c(t, rule, expected)
   WHERE pg_temp.nd_call(format('SELECT warehouse_security.apply_document_numbering(%L, %L::jsonb, NULL)', c.t, c.rule))

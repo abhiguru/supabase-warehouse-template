@@ -628,9 +628,13 @@ test('setup.sh builds before its first start; setup.sh and start.sh replace opti
     // The full start leaves the LAN fallback out and waits for the public services only (WAREHOUSE_COMPOSE_WITHOUT_LAN); lan.sh starts it
     // on its own, before the optional services are replaced (tests/lan-switch.test.mjs).
     const fullStart = script.indexOf('WAREHOUSE_COMPOSE_WITHOUT_LAN=1 bash "$ROOT/scripts/compose.sh" up -d --remove-orphans --wait --wait-timeout 180');
-    const lanStart = script.findIndex(line => line.startsWith('bash "$ROOT/scripts/lan.sh" start'));
+    // setup.sh (WH-146) follows the full start with the local-only branch: that facility turns the listener on (a fault is a failure) or
+    // starts it, any other starts it as a warning at most. start.sh starts it on the next line.
+    const lanStart = script.findIndex(line => line.trim().startsWith('bash "$ROOT/scripts/lan.sh" start'));
     const replace = script.findIndex(line => line.startsWith('bash "$ROOT/scripts/build-images.sh" --replace-optional'));
-    assert.ok(fullStart > 0 && lanStart === fullStart + 1 && replace > lanStart, `${name} replaces optional services after the full start and the LAN start`);
+    const adjacent = name === 'setup.sh' ? script[fullStart + 1] === 'if [[ -n "$LOCAL_ONLY" ]]; then' : lanStart === fullStart + 1;
+    assert.ok(fullStart > 0 && adjacent && lanStart > fullStart && replace > lanStart, `${name} replaces optional services after the full start and the LAN start`);
+    if (name === 'setup.sh') assert.ok(script.some(line => line.startsWith("  bash \"$ROOT/scripts/lan.sh\" start || echo 'Warning: the LAN fallback was not started")), 'a facility with a public address starts the fallback as a warning at most');
   }
   assert.ok(!lines('start.sh').includes('bash "$ROOT/scripts/build-images.sh"'), 'start.sh never builds');
 });

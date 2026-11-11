@@ -59,3 +59,26 @@ while :; do
   fi
   exit "$status"
 done
+
+# Migration 172: the payments capability moved from instance.json to the database ("Record payments" in the app). An installation that
+# had it on keeps it on: once, after the plan, the file's flag is handed to warehouse_security.carry_payments_capability, which switches
+# record_payments on (audited) only on its first call and answers 'already' on every later one, so a later choice made in the app is never
+# overridden. It is here, not in setup.sh or upgrade.sh, because this is the one step that every path runs after the migrations (setup,
+# the setup rerun of upgrade.sh, restore.sh), under the operator lock, with the state directory and the database at hand. A partial plan
+# (--through) skips it, and so does a manifest that can not be read (nothing is marked, so the next run carries it over).
+if [[ ${#plan_args[@]} -eq 0 ]]; then
+  manifest="$state/public/instance.json"
+  if ! payments_on="$(node -e '
+    const m = JSON.parse(require("fs").readFileSync(process.argv[1], "utf8"));
+    const c = m && m.capabilities;
+    if (!c || typeof c !== "object" || Array.isArray(c)) process.exit(2);
+    console.log(c.payments === true ? "true" : "false");' "$manifest" 2>/dev/null)"; then
+    echo "Could not read capabilities from $manifest: the payments setting was not carried over to the database (it is tried again on the next run)." >&2
+  else
+    carried="$(printf 'SELECT warehouse_security.carry_payments_capability(%s);\n' "$payments_on" |
+      compose exec -T db psql -X -q -t -A -U supabase_admin -d postgres -v ON_ERROR_STOP=1)"
+    if [[ "$carried" == carried_on ]]; then
+      echo 'Payments were on in instance.json: "Record payments" is now on in the database (the app setting on the Charging screen).'
+    fi
+  fi
+fi

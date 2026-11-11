@@ -8,7 +8,7 @@ import { createHash, randomBytes } from 'node:crypto';
 import { gunzipSync } from 'node:zlib';
 import { spawnSync } from 'node:child_process';
 import { signRoleKey } from '../scripts/keys.mjs';
-import { probeLanKeys } from '../scripts/lan-common.mjs';
+import { probeLanKeys, probeLanSigner } from '../scripts/lan-common.mjs';
 
 // The real gateway image (docker/nginx), built from its recipe: `nginx -t` on the rendered configuration, the entrypoint's refusal of
 // a value that could change the configuration, and every route against stand-in upstreams on a throwaway network. Nothing here
@@ -94,7 +94,7 @@ test('nginx -t passes on the rendered configuration, in the image, with the flag
   // The user and the filter of the image.
   const inspected = JSON.parse(docker(['image', 'inspect', IMAGE]).stdout)[0].Config;
   assert.equal(inspected.User, '101:101');
-  assert.ok(inspected.Env.includes('NGINX_ENVSUBST_FILTER=^(CORS_ALLOWED_ORIGIN|ANON_KEY|SERVICE_ROLE_KEY|WAREHOUSE_MAINTENANCE|LAN_CIDR|LAN_BIND_IP|LAN_HTTP_PORT)$'));
+  assert.ok(inspected.Env.includes('NGINX_ENVSUBST_FILTER=^(CORS_ALLOWED_ORIGIN|ANON_KEY|SERVICE_ROLE_KEY|WAREHOUSE_MAINTENANCE|LAN_CIDR|LAN_BIND_IP|LAN_HTTP_PORT|TRUSTED_PROXY_ADDRESS|TRUSTED_PROXY_HEADER)$'));
 });
 
 test('the container refuses to start on a missing value or one that could change the configuration', { skip }, t => {
@@ -134,7 +134,9 @@ const STUB_CONF = `server {
     add_header X-Content-Type-Options "nosniff" always;
     add_header X-Request-Id "from-the-upstream" always;
     default_type text/plain;
-    return 200 "xrid=$http_x_request_id|line=$request|host=$http_host|apikey=$http_apikey|cfip=$http_cf_connecting_ip|xri=$http_x_real_ip|xff=$http_x_forwarded_for|auth=$http_authorization";
+    # The LAN lab (WH-133): this stand-in is also lan-signer. A real signer answers the identity check (a key id no session has) with 403 lan_key_unknown.
+    if ($http_x_lan_key_id) { return 403 '{"code":"lan_key_unknown"}'; }
+    return 200 "xrid=$http_x_request_id|line=$request|host=$http_host|apikey=$http_apikey|cfip=$http_cf_connecting_ip|xri=$http_x_real_ip|xff=$http_x_forwarded_for|auth=$http_authorization|xlan=$http_x_lan_client_addr|xluri=$http_x_lan_request_uri";
   }
 }
 `;
@@ -195,7 +197,7 @@ async function startLab() {
   writeFileSync(join(scratch, 'files/big.json'), jsonOfSize(BIG_BYTES));
   assert.equal(docker(['network', 'create', NETWORK]).status, 0);
   const base = /^FROM (nginx:\S+@sha256:[0-9a-f]{64})$/m.exec(readFileSync(join(repo, 'docker/nginx/Dockerfile'), 'utf8'))[1];
-  const stub = docker(['run', '-d', '--name', STUB, '--network', NETWORK, ...['rest', 'storage', 'functions'].flatMap(name => ['--network-alias', name]), '-v', `${join(scratch, 'stub.conf')}:/etc/nginx/conf.d/default.conf:ro`, '-v', `${join(scratch, 'files')}:/srv/files:ro`, base]);
+  const stub = docker(['run', '-d', '--name', STUB, '--network', NETWORK, ...['rest', 'storage', 'functions', 'lan-signer'].flatMap(name => ['--network-alias', name]), '-v', `${join(scratch, 'stub.conf')}:/etc/nginx/conf.d/default.conf:ro`, '-v', `${join(scratch, 'files')}:/srv/files:ro`, base]);
   assert.equal(stub.status, 0, stub.stderr);
   port = await startGateway(GATEWAY);
 }
@@ -505,20 +507,24 @@ const LAN_IP = '192.168.77.20';
 const LAN_PORT = '18080';
 const LAN_HOST = `${LAN_IP}:${LAN_PORT}`;
 const lanVars = (cidr, over = {}) => ({ NGINX_ENVSUBST_TEMPLATE_DIR: '/etc/nginx/templates-lan', GATEWAY_ROLE: 'lan', LAN_CIDR: cidr, LAN_BIND_IP: LAN_IP, LAN_HTTP_PORT: LAN_PORT, ...over });
-const lanFlags = (cidr, over = {}) => Object.entries(lanVars(cidr, over)).filter(([, value]) => value !== undefined).flatMap(([name, value]) => ['-e', `${name}=${value}`]);
+// The inner server (WH-133) listens on gateway-lan-back:8081, a lan-hop alias in Compose; in the lab the name is the container's own loopback, and the
+// tests reach the inner server from inside the container (innerRequest).
+const lanFlags = (cidr, over = {}) => ['--add-host', 'gateway-lan-back:127.0.0.1', ...Object.entries(lanVars(cidr, over)).filter(([, value]) => value !== undefined).flatMap(([name, value]) => ['-e', `${name}=${value}`])];
 
 test('the LAN container renders the LAN server only, refuses to start without a private range, address and port, and the public container has no LAN listener', { skip }, t => {
   if (unbuilt) return t.skip(unbuilt);
   const run = (flags, ...command) => docker(['run', '--rm', '-e', 'NGINX_ENTRYPOINT_QUIET_LOGS=1', ...HARDENING, ...environment(), ...flags, IMAGE, ...command]);
   const dump = run(lanFlags('192.168.1.0/24'), 'nginx', '-T');
   assert.equal(dump.status, 0, dump.stderr);
-  assert.deepEqual(dump.stdout.match(/^\s*listen\s.*$/gm).map(line => line.trim()), ['listen 8080;'], 'one listener, plain http');
-  assert.match(dump.stdout, /^\s*allow 192\.168\.1\.0\/24;$\n^\s*deny all;$/m);
+  assert.deepEqual(dump.stdout.match(/^\s*listen\s.*$/gm).map(line => line.trim()), ['listen 8080;', 'listen gateway-lan-back:8081;'], 'one plain listener for phones, and the inner one behind the signer');
+  assert.equal((dump.stdout.match(/^\s*allow 192\.168\.1\.0\/24;$\n^\s*deny all;$/gm) || []).length, 2, 'both servers allow the range');
   assert.match(dump.stdout, /^\s*set \$warehouse_path lan;$/m);
   // The Host pin, rendered with the address and the port of the lab.
   assert.match(dump.stdout, new RegExp(`^\\s*"${LAN_IP.replace(/\./g, '\\.')}"\\s+1;$\\n^\\s*"${LAN_IP.replace(/\./g, '\\.')}:${LAN_PORT}"\\s+1;$`, 'm'));
   assert.match(dump.stdout, /^\s*if \(\$lan_host_ok = 0\) \{ return 404; \}$/m);
-  assert.doesNotMatch(dump.stdout, /set_real_ip_from|real_ip_header|listen 8000|\$\{|\bssl\b|http2/);
+  // The only client-address trust is the inner server's, in the one header the signer sends; the outer server believes nobody.
+  assert.deepEqual([...dump.stdout.matchAll(/^\s*(set_real_ip_from|real_ip_header) (\S+);$/gm)].map(match => match[1] + ' ' + match[2]), ['set_real_ip_from 0.0.0.0/0', 'real_ip_header X-Lan-Client-Addr']);
+  assert.doesNotMatch(dump.stdout, /listen 8000|\$\{|\bssl\b|http2/);
   assert.equal(run(lanFlags('192.168.1.0/24'), 'nginx', '-t').status, 0);
   // The public container (no role, the default template directory): listen 8000 only, the trust in the tunnel hop, and nothing of the LAN server.
   const publicDump = run([], 'nginx', '-T');
@@ -618,30 +624,64 @@ function fromStub(path, headers = {}, target = GATEWAY_LAN) {
   return { status, header, text: result.stdout };
 }
 
+// A request to the inner server of a LAN container, from inside it (the lab gives gateway-lan-back the container's loopback). In Compose only the signer
+// reaches this server, over the internal lan-hop network, and it sends the phone's address in X-Lan-Client-Addr; here the test does. Raw HTTP over nc, so
+// any method can be sent.
+function innerRequest(container, path, { method = 'GET', headers = {}, client = labGateway } = {}) {
+  const lines = Object.entries({ Host: 'gateway-lan-back:8081', 'X-Lan-Client-Addr': client, Connection: 'close', ...(method === 'POST' ? { 'Content-Length': '0' } : {}), ...headers }).filter(([, value]) => value !== undefined).map(([name, value]) => `${name}: ${value}`);
+  const raw = `${method} ${path} HTTP/1.1\\r\\n${lines.join('\\r\\n')}\\r\\n\\r\\n`;
+  // nc closes at the end of its input, so the input stays open a moment for the answer of an upstream to come back.
+  const result = docker(['exec', container, 'sh', '-c', `(printf '${raw.replace(/'/g, "'\\\\''")}'; sleep 0.3) | nc -w 5 127.0.0.1 8081`]);
+  const split = result.stdout.indexOf('\r\n\r\n');
+  const head = (split < 0 ? result.stdout : result.stdout.slice(0, split)).split('\r\n');
+  const rows = head.slice(1).map(line => [line.slice(0, line.indexOf(':')).toLowerCase(), line.slice(line.indexOf(':') + 1).trim()]);
+  return { status: Number(/^HTTP\/1\.\d (\d{3})/.exec(head[0])?.[1]), headers: Object.fromEntries(rows), all: name => rows.filter(row => row[0] === name).map(row => row[1]), text: split < 0 ? '' : result.stdout.slice(split + 4) };
+}
+
+// The status lines of `count` GET requests to the inner server, sent one after the other from one shell inside the container.
+function innerBurst(container, path, count, { client = labGateway } = {}) {
+  const raw = `GET ${path} HTTP/1.1\\r\\nHost: gateway-lan-back:8081\\r\\nX-Lan-Client-Addr: ${client}\\r\\nConnection: close\\r\\n\\r\\n`;
+  const result = docker(['exec', container, 'sh', '-c', `for i in $(seq 1 ${count}); do (printf '${raw}'; sleep 0.05) | nc -w 5 127.0.0.1 8081 | head -n 1; done`]);
+  return result.stdout.split('\n').filter(Boolean).map(line => Number(/^HTTP\/1\.\d (\d{3})/.exec(line)?.[1]));
+}
+
 test('LAN: the address is the connection\'s, whatever a client writes in a header, and the answer says it came by the LAN', { skip }, async t => {
   if (unbuilt) return t.skip(unbuilt);
   await startLanLab();
-  // Only one listener in the container: 8080.
+  // Two listeners in the container: 8080 for phones, and the inner server on the container's own gateway-lan-back address (loopback in the lab).
   const listening = docker(['exec', GATEWAY_LAN, 'netstat', '-ltn']).stdout;
   // (Docker's own resolver, 127.0.0.11, is in the list of every container on a user-defined network.)
-  assert.deepEqual([...listening.matchAll(/^tcp\s+\d+\s+\d+\s+(\S+)\s/gm)].map(match => match[1]).filter(address => !address.startsWith('127.0.0.11:')), ['0.0.0.0:8080']);
-  // Forged headers from a client that is not on the host's side: the stand-in's own address is what the upstream and the log see.
-  const forged = { 'CF-Connecting-IP': '203.0.113.9', 'X-Forwarded-For': '1.2.3.4', 'X-Real-IP': '5.6.7.8' };
+  assert.deepEqual([...listening.matchAll(/^tcp\s+\d+\s+\d+\s+(\S+)\s/gm)].map(match => match[1]).filter(address => !address.startsWith('127.0.0.11:')).sort(), ['0.0.0.0:8080', '127.0.0.1:8081']);
+  // The outer server passes every request to the signer (the stand-in answers on lan-signer:9000) with the connection's address in X-Lan-Client-Addr
+  // and the request URI; the headers a client could use to claim an address are emptied, never passed on.
+  const forged = { 'CF-Connecting-IP': '203.0.113.9', 'X-Forwarded-For': '1.2.3.4', 'X-Real-IP': '5.6.7.8', 'X-Lan-Client-Addr': '9.9.9.9', 'X-Lan-Request-Uri': '/forged' };
   for (const path of ['/functions/v1/get-public-config?a=1', '/rest/v1/rpc/x']) {
     const answer = fromStub(path, path.startsWith('/rest') ? { ...forged, apikey: ANON } : forged);
     assert.equal(answer.status, 200, path);
     const seen = echoed(answer.text);
-    assert.equal(seen.cfip, stubAddress, `${path}: CF-Connecting-IP is the connection's address, not the forged one`);
-    assert.equal(seen.xri, stubAddress);
-    assert.equal(seen.xff, stubAddress);
+    assert.equal(seen.xlan, stubAddress, `${path}: the signer is told the connection's address, not the forged one`);
+    assert.equal(seen.xluri, path, `${path}: and the request URI as it came`);
+    assert.equal(seen.cfip, '', 'CF-Connecting-IP of the phone is not passed on');
+    assert.equal(seen.xri, '');
+    assert.equal(seen.xff, '');
+    assert.equal(seen.host, 'lan-signer');
     assert.equal(answer.header('x-warehouse-path'), 'lan');
   }
-  // Storage is still not sent an address.
-  assert.equal(echoed(fromStub('/storage/v1/object/x', forged).text).cfip, '');
   // The public container on the same network trusts the hop (the tunnel's) and takes the header: this is the difference between the two.
   const publicSeen = echoed((await request('/functions/v1/x', { headers: forged, fresh: true })).text);
   assert.equal(publicSeen.cfip, '203.0.113.9');
   assert.equal((await request('/functions/v1/x', { headers: forged, fresh: true })).headers['x-warehouse-path'], 'public');
+  // The inner server (behind the signer) takes the address from X-Lan-Client-Addr only: it is what the routes pass on as the client's, whatever
+  // CF-Connecting-IP says, and the allow list is checked against it.
+  for (const path of ['/functions/v1/get-public-config?a=1', '/rest/v1/rpc/x']) {
+    const answer = innerRequest(GATEWAY_LAN, path, { headers: { 'CF-Connecting-IP': '203.0.113.9', 'X-Forwarded-For': '1.2.3.4', apikey: ANON } });
+    assert.equal(answer.status, 200, path);
+    const seen = echoed(answer.text);
+    assert.equal(seen.cfip, labGateway, `${path}: CF-Connecting-IP is the address the signer sent, not the forged one`);
+    assert.equal(seen.xff, labGateway);
+    assert.equal(answer.headers['x-warehouse-path'], 'lan');
+  }
+  assert.equal(echoed(innerRequest(GATEWAY_LAN, '/storage/v1/object/x', { headers: { 'CF-Connecting-IP': '203.0.113.9' } }).text).cfip, '', 'storage is still not sent an address');
   // The log line is the checker's format with the connection's address in front.
   const log = docker(['logs', GATEWAY_LAN]);
   assert.match(`${log.stdout}\n${log.stderr}`, new RegExp(`^${stubAddress.replace(/\./g, '\\.')} \\[[^\\]]+\\] "GET /functions/v1/get-public-config HTTP/1\\.1" 200 \\d+ [0-9.]+ [0-9a-f]{32}$`, 'm'));
@@ -691,48 +731,51 @@ test('LAN: the Host header must be the host\'s own LAN address (with or without 
   assert.equal((await lanGet('/health')).status, 404);
 });
 
-test('LAN: the key check, the body limit and the rate limit are the public path\'s, and every kind of answer names its path', { skip }, async t => {
+test('LAN: the key check, the body limit and the rate limit are the public path\'s behind the signer, the outer server limits what reaches it, and every kind of answer names its path', { skip }, async t => {
   if (unbuilt) return t.skip(unbuilt);
   await startLanLab();
-  // From the host (the published port): any address inside the lab network, the bridge's own among them, is allowed.
-  const get = lanGet;
-  const missing = await get('/rest/v1/rpc/x');
+  // The inner server (what the signer passes on): the public routes file, so the same key check, preflight and unknown-path answers.
+  const missing = innerRequest(GATEWAY_LAN, '/rest/v1/rpc/x');
   assert.equal(missing.status, 401);
   assert.equal(missing.text, '{"message":"No API key found in request"}');
   assert.equal(missing.headers['www-authenticate'], 'Key');
-  assert.equal((await get('/rest/v1/rpc/x', { headers: { apikey: `${ANON}x` } })).text, '{"message":"Unauthorized"}');
-  assert.equal((await get('/rest/v1/rpc/x', { headers: { apikey: ANON } })).status, 200);
-  const preflight = await get('/rest/v1/rpc/x', { method: 'OPTIONS', headers: { Origin: 'https://evil.example.test', 'Access-Control-Request-Method': 'POST' } });
+  assert.equal(innerRequest(GATEWAY_LAN, '/rest/v1/rpc/x', { headers: { apikey: `${ANON}x` } }).text, '{"message":"Unauthorized"}');
+  assert.equal(innerRequest(GATEWAY_LAN, '/rest/v1/rpc/x', { headers: { apikey: ANON } }).status, 200);
+  const preflight = innerRequest(GATEWAY_LAN, '/rest/v1/rpc/x', { method: 'OPTIONS', headers: { Origin: 'https://evil.example.test', 'Access-Control-Request-Method': 'POST' } });
   assert.equal(preflight.status, 204);
-  const unknown = await get('/nothing', { headers: { apikey: ANON } });
+  const unknown = innerRequest(GATEWAY_LAN, '/nothing', { headers: { apikey: ANON } });
   assert.equal(unknown.status, 404);
   assert.equal(unknown.text, '{"message":"no Route matched with those values"}');
-  const big = await get('/functions/v1/x', { method: 'POST', headers: { 'content-length': String(10 * 1024 * 1024 + 1) }, body: Buffer.alloc(10 * 1024 * 1024 + 1, 120) }).catch(error => ({ status: error.code, headers: {}, text: '' }));
-  assert.ok(big.status === 413 || big.status === 'ECONNRESET' || big.status === 'EPIPE', `HTTP ${big.status}`);
-  if (big.status === 413) assert.equal(big.text, '{"message":"Request size limit exceeded"}');
-  // The path header is on every kind of answer the routes make: success, 401, 404, the preflight and (below) 429.
-  for (const answer of [missing, unknown, preflight, await get('/functions/v1/x'), await get('/storage/v1/object/x')]) { assert.equal(answer.headers['x-warehouse-path'], 'lan'); assertRequestId(answer, 'LAN'); }
+  // The path header is on every kind of answer the routes make: success, 401, 404 and the preflight; the outer server's own answers say it too.
+  for (const answer of [missing, unknown, preflight, innerRequest(GATEWAY_LAN, '/functions/v1/x'), innerRequest(GATEWAY_LAN, '/storage/v1/object/x')]) { assert.equal(answer.headers['x-warehouse-path'], 'lan'); assertRequestId(answer, 'LAN'); }
   assert.deepEqual(missing.all('x-warehouse-path'), ['lan'], 'once');
+  // The outer server passes every request on (the key check is the inner server's and the signer\'s work) and puts its own header on the answer once.
+  const through = await lanGet('/rest/v1/rpc/x');
+  assert.equal(through.status, 200);
+  assert.deepEqual(through.all('x-warehouse-path'), ['lan'], 'once, whatever the signer said');
+  // Its body limit is 50 MB, the largest of the routes behind it (storage); one byte more is refused 413 with the LAN header.
+  const big = await lanGet('/functions/v1/x', { method: 'POST', headers: { 'content-length': String(50 * 1024 * 1024 + 1) }, body: Buffer.alloc(50 * 1024 * 1024 + 1, 120) }).catch(error => ({ status: error.code, headers: {}, text: '' }));
+  assert.ok(big.status === 413 || big.status === 'ECONNRESET' || big.status === 'EPIPE', `HTTP ${big.status}`);
+  if (big.status === 413) { assert.equal(big.text, '{"message":"Request size limit exceeded"}'); assert.equal(big.headers['x-warehouse-path'], 'lan'); }
   // /health answers the container itself only; a client gets the 404 of any unknown path (not the allow-list's 403: `return` is first).
   assert.equal(docker(['exec', GATEWAY_LAN, 'wget', '-q', '-T', '5', '-O', '-', 'http://127.0.0.1:8080/health']).stdout, 'ok\n');
-  assert.equal((await get('/health')).status, 404);
-  // The limit is per connection address, not per header: 100 pass, then 429, and a new forged address does not get a bucket of its own.
-  let passed = 0;
-  let refused;
-  for (let i = 0; !refused && i < 200; i += 1) {
-    const answer = await get('/functions/v1/x', { headers: { 'CF-Connecting-IP': address() } });
-    if (answer.status === 429) refused = answer; else { assert.equal(answer.status, 200); passed += 1; }
-  }
-  assert.ok(refused, `no 429 after ${passed} requests`);
-  assert.ok(passed >= 95 && passed <= 110, `${passed} requests passed`);
+  assert.equal((await lanGet('/health')).status, 404);
+  // The routes' own limit (100 a minute on the functions zone) is per address the signer sends, and another phone has a bucket of its own.
+  const statuses = innerBurst(GATEWAY_LAN, '/functions/v1/x', 170, { client: labGateway });
+  const first = statuses.indexOf(429);
+  assert.ok(first > 0, `no 429 in ${statuses.length} requests`);
+  assert.ok(first >= 95 && first <= 140, `${first} requests passed (100 and what the bucket refills while the loop runs)`);
+  assert.ok(statuses.slice(0, first).every(status => status === 200) && statuses.slice(first).every(status => status === 429 || status === 200), `a 200 until the limit, then 429 (and a 200 again as the bucket refills): ${[...new Set(statuses)]}`);
+  const refused = innerRequest(GATEWAY_LAN, '/functions/v1/x', { client: labGateway });
+  assert.equal(refused.status, 429);
   assert.equal(refused.text, '{"message":"API rate limit exceeded"}');
   assert.equal(refused.headers['x-warehouse-path'], 'lan');
-  assert.equal((await get('/functions/v1/x', { headers: { 'CF-Connecting-IP': address() } })).status, 429, 'a forged address is no way round the limit');
-  // Another client of the LAN (the stand-in, another address) has a bucket of its own: per phone, not per facility.
+  assert.equal(innerRequest(GATEWAY_LAN, '/functions/v1/x', { client: stubAddress }).status, 200, 'another phone has a bucket of its own');
+  // A client on the host's side of the outer server is limited there too (30 requests a second with a burst of 1,800): many pass, nothing is refused early.
   assert.equal(fromStub('/functions/v1/x').status, 200);
 });
 
-test('LAN: a client outside LAN_CIDR is refused 403 (naming the LAN path) on every route that reaches the allow list, and nothing reaches an upstream', { skip }, async t => {
+test('LAN: a client outside LAN_CIDR is refused 403 (naming the LAN path) before anything is passed on, and nothing reaches the signer or an upstream', { skip }, async t => {
   if (unbuilt) return t.skip(unbuilt);
   await startLanLab();
   const marker = randomBytes(6).toString('hex');
@@ -741,15 +784,17 @@ test('LAN: a client outside LAN_CIDR is refused 403 (naming the LAN path) on eve
     const answer = await lanGet(path, { headers: { apikey: ANON, 'CF-Connecting-IP': '10.255.255.7' } }, lanOutPort);
     assert.equal(answer.status, 403, path);
     assert.equal(answer.headers['x-warehouse-path'], 'lan', `${path}: the 403 names the LAN path (the app tells it from a Cloudflare answer by this header)`);
+    assert.equal(answer.text, '{"message":"This address may not use the warehouse network listener","code":"lan_address"}', path);
     assert.doesNotMatch(answer.text, new RegExp(marker));
     // A header that names an address inside the range changes nothing: the connection's address decides.
-    assert.equal(fromStub(path, { 'CF-Connecting-IP': '10.255.255.7', apikey: ANON }, GATEWAY_LAN_OUT).status, 403, `${path} from the stand-in`);
+    assert.equal(fromStub(path, { 'CF-Connecting-IP': '10.255.255.7', 'X-Lan-Client-Addr': '10.255.255.7', apikey: ANON }, GATEWAY_LAN_OUT).status, 403, `${path} from the stand-in`);
+    // The inner server checks the range against the address the signer sends, too.
+    assert.equal(innerRequest(GATEWAY_LAN_OUT, path, { headers: { apikey: ANON } }).status, 403, `${path} on the inner server`);
   }
   const after = docker(['logs', STUB]);
-  assert.doesNotMatch(`${after.stdout}\n${after.stderr}`, new RegExp(`denied-${marker}`), 'a refused request never reached an upstream');
+  assert.doesNotMatch(`${after.stdout}\n${after.stderr}`, new RegExp(`denied-${marker}`), 'a refused request never reached the signer or an upstream');
   assert.equal(`${upstreamBefore.stdout}${upstreamBefore.stderr}`.includes(marker), false);
-  // The same kind of request through the container that allows the lab network is answered (from the stand-in: the host's own
-  // bucket on that container was used up by the rate-limit test above).
+  // The same kind of request through the container that allows the lab network is answered.
   assert.equal(fromStub(`/functions/v1/allowed-${marker}`).status, 200);
 });
 
@@ -760,25 +805,37 @@ test('LAN: the probe of the key check passes with the keys the container was sta
   // by its published port, with the Host the pin wants (a stand-in for fetch that changes only where the connection goes).
   const lan = { ip: LAN_IP, port: LAN_PORT };
   // (fetch cannot write the Host header, so the stand-in uses the lab's own request helper and returns what probeLanKeys reads.)
-  const via = target => async (url, init) => {
+  // The keys are held by the inner server (the routes behind the signer), so the lab asks it from inside the container: it is where a container that was
+  // not recreated after a key rotation answers with the gateway's own 401.
+  const via = container => async (url, init) => {
     assert.equal(String(url), `http://${LAN_HOST}/rest/v1/`, 'the probe asks the LAN address for the REST root, with the anon key');
     assert.equal(init.headers.apikey, ANON);
-    const answer = await request('/rest/v1/', { port: target, headers: { ...init.headers, host: LAN_HOST } });
+    const answer = innerRequest(container, '/rest/v1/', { headers: { apikey: init.headers.apikey } });
     return { status: answer.status, ok: answer.status < 400, json: async () => JSON.parse(answer.text) };
   };
-  assert.deepEqual(await probeLanKeys(lan, ANON, via(lanPort)), { ok: true });
+  assert.deepEqual(await probeLanKeys(lan, ANON, via(GATEWAY_LAN)), { ok: true });
   // A key rotation changes the keys of compose.env; a container that was not recreated still has the old ones. Started here with other keys.
   const oldSecret = createHash('sha384').update('warehouse gateway lab test, before the rotation').digest('hex');
   lanOldPort = await startLan(GATEWAY_LAN_OLD, labSubnet, {}, { ANON_KEY: signRoleKey(oldSecret, 'anon'), SERVICE_ROLE_KEY: signRoleKey(oldSecret, 'service_role') });
-  const stale = await probeLanKeys(lan, ANON, via(lanOldPort));
+  const stale = await probeLanKeys(lan, ANON, via(GATEWAY_LAN_OLD));
   assert.equal(stale.ok, false);
   assert.match(stale.text, /refuses the anon key of this installation \(HTTP 401 from the gateway\).*before a key rotation/);
   assert.match(stale.text, /--force-recreate --no-deps gateway-lan/);
   // The probe that does not need a key still passes against that container: this is the blind spot the key probe closes.
   assert.equal((await lanGet('/functions/v1/get-public-config', {}, lanOldPort)).status, 200);
   // The REST route answers the anon key of the lab's own container with the stand-in's 200; the same request without the key is the gateway's 401.
-  assert.equal((await lanGet('/rest/v1/', { headers: { apikey: ANON } }, lanOldPort)).status, 401);
-  assert.equal((await lanGet('/rest/v1/', { headers: { apikey: ANON } }, lanPort)).status, 200);
+  assert.equal(innerRequest(GATEWAY_LAN_OLD, '/rest/v1/', { headers: { apikey: ANON } }).status, 401);
+  assert.equal(innerRequest(GATEWAY_LAN, '/rest/v1/', { headers: { apikey: ANON } }).status, 200);
+  // The probe of the signer (WH-133): the outer server passes the identity check to lan-signer, which the lab's stand-in answers as a signer does when the
+  // lookup of keys works (403 lan_key_unknown); a listener whose signer answers anything else fails it.
+  const viaPort = target => async (url, init) => {
+    const answer = await request('/functions/v1/get-public-config', { port: target, headers: { ...init.headers, host: LAN_HOST } });
+    return { status: answer.status, ok: answer.status < 400, json: async () => JSON.parse(answer.text) };
+  };
+  assert.deepEqual(await probeLanSigner(lan, viaPort(lanPort)), { ok: true });
+  const unsigned = await probeLanSigner(lan, async () => ({ status: 200, ok: true, json: async () => ({ success: true }) }));
+  assert.equal(unsigned.ok, false);
+  assert.match(unsigned.text, /answered HTTP 200 to the identity check instead of the signer's 403 lan_key_unknown/);
 });
 
 // ---- maintenance mode (WAREHOUSE_MAINTENANCE): the gateway answers "upgrading" while upgrade.sh or scripts/maintenance.sh has the facility closed ---------------
@@ -890,14 +947,15 @@ test('maintenance mode: the LAN server answers the same 503 with its own path he
   if (unbuilt) return t.skip(unbuilt);
   await startLanLab();
   lanMaintPort ??= await startLan(GATEWAY_LAN_MAINT, labSubnet, { WAREHOUSE_MAINTENANCE: 'upgrading' });
-  for (const [path, options] of [['/rest/v1/rpc/x', { headers: { apikey: ANON } }], ['/rest/v1/rpc/x', {}], ['/storage/v1/object/x', {}], ['/functions/v1/get-public-config', {}], ['/functions/v1/operator-otp/request', { method: 'POST', body: '{}' }]]) {
-    const answer = await lanGet(path, options, lanMaintPort);
+  // The routes file (the inner server, behind the signer) answers the 503; the outer server only passes requests on.
+  for (const [path, options] of [['/rest/v1/rpc/x', { headers: { apikey: ANON } }], ['/rest/v1/rpc/x', {}], ['/storage/v1/object/x', {}], ['/functions/v1/get-public-config', {}], ['/functions/v1/operator-otp/request', { method: 'POST' }]]) {
+    const answer = innerRequest(GATEWAY_LAN_MAINT, path, options);
     assert.equal(answer.status, 503, path);
     assert.equal(answer.text, UPGRADING_BODY, path);
     assert.deepEqual(answer.all('retry-after'), ['120'], path);
     assert.deepEqual(answer.all('x-warehouse-path'), ['lan'], path);
   }
-  const preflight = await lanGet('/rest/v1/rpc/x', { method: 'OPTIONS', headers: { Origin: ORIGIN, 'Access-Control-Request-Method': 'POST' } }, lanMaintPort);
+  const preflight = innerRequest(GATEWAY_LAN_MAINT, '/rest/v1/rpc/x', { method: 'OPTIONS', headers: { Origin: ORIGIN, 'Access-Control-Request-Method': 'POST' } });
   assert.equal(preflight.status, 204);
   assert.deepEqual(preflight.all('x-warehouse-path'), ['lan']);
   // The Host pin is still in front: a page moved onto this address by DNS rebinding gets the 404 of any unknown path, not the maintenance answer.
@@ -905,9 +963,6 @@ test('maintenance mode: the LAN server answers the same 503 with its own path he
   assert.equal(rebound.status, 404);
   assert.equal(rebound.text, '{"message":"no Route matched with those values"}');
   assert.equal(docker(['exec', GATEWAY_LAN_MAINT, 'wget', '-q', '-T', '5', '-O', '-', 'http://127.0.0.1:8080/health']).stdout, 'ok\n');
-  // From a second client of the LAN (the stand-in) it is the same.
-  const fromOther = fromStub('/rest/v1/rpc/x', { apikey: ANON }, GATEWAY_LAN_MAINT);
-  assert.equal(fromOther.status, 503);
   // The LAN container that is not in maintenance mode, on the same lab, is open.
   assert.equal((await lanGet('/storage/v1/object/x')).status, 200);
 });

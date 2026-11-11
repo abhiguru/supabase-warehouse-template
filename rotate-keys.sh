@@ -75,16 +75,19 @@ fi
 # the others: a fault of the fallback must not undo a rotation that has already been applied, so a failure here is a warning with the
 # way to repair it. Phones that fall back to the LAN with a container that still has the old keys get the gateway's 401 on every REST
 # request (the app must not end a session on a 401 from the LAN path), and doctor now sees that (scripts/lan.mjs, probeLanKeys).
+# Its signer (lan-signer, WH-133) holds the service key, which it uses to read the warehouse network keys; it is recreated with it, and
+# whenever gateway-lan is (the two always run together). The keys themselves went with the sessions above.
 lan_stale=false
-if [[ -n "$(compose --profile lan ps -a -q gateway-lan 2>/dev/null || true)" ]]; then
-  if ! compose --profile lan up -d --force-recreate --no-deps --wait --wait-timeout 180 gateway-lan; then
+if [[ -n "$(compose --profile lan ps -a -q gateway-lan 2>/dev/null || true)" || -n "$(compose --profile lan ps -a -q lan-signer 2>/dev/null || true)" ]]; then
+  if ! compose --profile lan up -d --force-recreate --no-deps --wait --wait-timeout 180 lan-signer gateway-lan; then
     node "$ROOT/scripts/service-diagnostics.mjs" gateway-lan || true
+    node "$ROOT/scripts/service-diagnostics.mjs" lan-signer || true
     lan_stale=true
   fi
 fi
 node "$ROOT/scripts/doctor.mjs" --local
 if [[ "$lan_stale" == true ]]; then
-  echo 'Warning: the LAN fallback (gateway-lan) was not recreated and still holds the OLD keys: every REST request over the LAN path is refused until it is. The rotation itself is complete. Repair: bash scripts/lan.sh on auto (or: bash scripts/compose.sh --profile lan up -d --force-recreate --no-deps gateway-lan), then node scripts/doctor.mjs --lan.' >&2
+  echo 'Warning: the LAN fallback (gateway-lan and lan-signer) was not recreated and still holds the OLD keys: every request over the LAN path is refused until it is. The rotation itself is complete. Repair: bash scripts/lan.sh on auto (or: bash scripts/compose.sh --profile lan up -d --force-recreate --no-deps lan-signer gateway-lan), then node scripts/doctor.mjs --lan.' >&2
 fi
 echo 'Signing keys rotated: new JWT secret, anon key and service key are active.'
 echo 'Every session was revoked; every device must sign in again. Update any copied anon key.'

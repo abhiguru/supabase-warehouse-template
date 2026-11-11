@@ -23,6 +23,9 @@ COPY nginx.conf api-http.conf api-locations.conf cors-headers.conf /etc/nginx/
 # the checkout, and the public container has no LAN listener at all.
 COPY templates/ /etc/nginx/templates/
 COPY lan/ /etc/nginx/templates-lan/
+# The trusted-proxy variant of the public server (WH-146); only a gateway told INGRESS=trusted-proxy reads it (19-ingress.envsh).
+COPY templates-proxy/ /etc/nginx/templates-proxy/
+COPY templates/http.conf.template /etc/nginx/templates-proxy/http.conf.template
 COPY templates/http.conf.template /etc/nginx/templates-lan/http.conf.template
 # 17-maintenance-default.envsh gives WAREHOUSE_MAINTENANCE its default `off`; 18-require-env.sh runs before the image's own scripts: it
 # refuses to start on a missing or odd value.
@@ -32,7 +35,7 @@ COPY --chmod=0755 docker-entrypoint.d/ /docker-entrypoint.d/
 # $remote_addr, $uri and the other nginx variables in the templates stay as they are. LAN_CIDR, LAN_BIND_IP and LAN_HTTP_PORT are set in
 # the gateway-lan container only (the allow list and the Host pin of the LAN server); the public container has none, so nothing is
 # replaced there. WAREHOUSE_MAINTENANCE (off or upgrading) is in both containers and in the http-level template they share.
-ENV NGINX_ENVSUBST_FILTER="^(CORS_ALLOWED_ORIGIN|ANON_KEY|SERVICE_ROLE_KEY|WAREHOUSE_MAINTENANCE|LAN_CIDR|LAN_BIND_IP|LAN_HTTP_PORT)$"
+ENV NGINX_ENVSUBST_FILTER="^(CORS_ALLOWED_ORIGIN|ANON_KEY|SERVICE_ROLE_KEY|WAREHOUSE_MAINTENANCE|LAN_CIDR|LAN_BIND_IP|LAN_HTTP_PORT|TRUSTED_PROXY_ADDRESS|TRUSTED_PROXY_HEADER)$"
 # The user `nginx` (101) of the image. Ports 8000 (the public server) and 8080 (the LAN server of gateway-lan) need no capability.
 USER 101:101
 EXPOSE 8000 8080

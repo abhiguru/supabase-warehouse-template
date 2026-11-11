@@ -91,14 +91,14 @@ SELECT pg_temp.gi_assert(p.proconfig IS NOT NULL AND p.proconfig::text LIKE '%se
     AND p.proacl IS NOT DISTINCT FROM (SELECT s.proacl FROM pg_proc s WHERE s.oid = 'public.get_customer_stock_summary(uuid)'::regprocedure),
   'search_path, jit and grants of ' || p.proname || ': ' || COALESCE(p.proconfig::text, 'none') || ' ' || COALESCE(p.proacl::text, 'none'))
 FROM pg_proc p WHERE p.pronamespace = 'public'::regnamespace AND p.proname IN ('get_customer_grn_activity', 'get_all_grn_activity');
--- The text: invoice_status is one row per receipt (DISTINCT ON, the order of the four keys and the id, the window count), a
+-- The text (migration 175 adds invoice_label and inv_prefix to the invoice and to the no-invoice answer): invoice_status is one row per receipt (DISTINCT ON, the order of the four keys and the id, the window count), a
 -- receipt without an invoice has count 0, the join, the receipt count, the invoiced count and the whole status are as the fix
 -- relies on them, and the earlier fixes are kept (the weight of migration 59, the India day cut of migration 56).
 SELECT pg_temp.gi_assert(pg_temp.gi_count('public.get_customer_grn_activity(uuid,date,date)', 'SELECT DISTINCT ON (i.gr_id)') = 1
     AND pg_temp.gi_count('public.get_customer_grn_activity(uuid,date,date)', 'DISTINCT ON') = 1
     AND pg_temp.gi_count('public.get_customer_grn_activity(uuid,date,date)', 'ORDER BY i.gr_id, i.inv_date DESC, i.inv_fin_year DESC, i.inv_no DESC, i.id DESC') = 1
     AND pg_temp.gi_count('public.get_customer_grn_activity(uuid,date,date)', '''invoice_count'', COUNT(*) OVER (PARTITION BY i.gr_id)') = 1
-    AND pg_temp.gi_count('public.get_customer_grn_activity(uuid,date,date)', '''invoice_number'', null, ''invoice_count'', 0)) as invoice_status,') = 1
+    AND pg_temp.gi_count('public.get_customer_grn_activity(uuid,date,date)', '''invoice_number'', null, ''invoice_label'', null, ''inv_prefix'', null, ''invoice_count'', 0)) as invoice_status,') = 1
     AND pg_temp.gi_count('public.get_customer_grn_activity(uuid,date,date)', '''invoice_count''') = 2
     AND pg_temp.gi_count('public.get_customer_grn_activity(uuid,date,date)', 'FROM invoice i') = 1
     AND pg_temp.gi_count('public.get_customer_grn_activity(uuid,date,date)', 'WHERE i.deleted_at IS NULL') = 1
@@ -281,10 +281,11 @@ SELECT pg_temp.gi_assert(pg_temp.gi_keys(:'staff_quince'::jsonb) = 'data,metadat
   'staff: the keys of the answer, of data, of the summary and of the metadata are the earlier ones: ' || :'staff_quince');
 SELECT pg_temp.gi_assert(count(*) = 3
     AND bool_and(pg_temp.gi_keys(x) = 'dispatch_summary,gr_no,grn_date,grn_id,image_count,invoice_status,items,note,registration,sender_name,supervisor_name,total_items,total_qty,total_weight')
-    AND bool_and(pg_temp.gi_keys(x->'invoice_status') = 'invoice_count,invoice_id,invoice_number,is_invoiced')
+    -- invoice_state and invoiced_amount (migration 165, WH-138) are on a receipt that has an invoice; one without carries the others only
+    AND bool_and(pg_temp.gi_keys(x->'invoice_status') IN ('inv_prefix,invoice_count,invoice_id,invoice_label,invoice_number,is_invoiced', 'inv_prefix,invoice_count,invoice_id,invoice_label,invoice_number,invoice_state,invoiced_amount,is_invoiced'))
     AND bool_and(pg_temp.gi_keys(x->'dispatch_summary') = 'current_stock,dispatch_count,is_fully_dispatched,last_dispatch_date,total_dispatched')
     AND bool_and((SELECT bool_and(pg_temp.gi_keys(i) = 'current_stock,dispatched_qty,item_name,package_mark,packaging,quantity,rack,weight') FROM jsonb_array_elements(x->'items') AS l(i))),
-  'staff: the keys of each receipt, of its invoice_status (the one new key, invoice_count), of its dispatch summary and of its lines')
+  'staff: the keys of each receipt, of its invoice_status (invoice_count, inv_prefix, invoice_label, and invoice_state and invoiced_amount on an invoiced receipt), of its dispatch summary and of its lines')
 FROM jsonb_array_elements((:'staff_quince'::jsonb)#>'{data,grns}') AS t(x);
 -- The doubled receipt is in the answer once, with its own figures.
 SELECT pg_temp.gi_assert((SELECT count(*) FROM jsonb_array_elements((:'staff_quince'::jsonb)#>'{data,grns}') AS t(x) WHERE x->>'gr_no' = 'GIR1') = 1

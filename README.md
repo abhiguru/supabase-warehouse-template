@@ -67,7 +67,7 @@ Point an AI coding agent at this repository and tell it to install the backend. 
    6. A Slack webhook file (`off` only for a test install).
    7. The ping URL of an external heartbeat, a dead-man switch such as healthchecks.io ([External heartbeat](docs/MONITORING.md#external-heartbeat-the-dead-man-switch)), given as a private file (`--heartbeat-url-file`), or `off`. An association member is told the URL of its association check; if the operator declines, doctor keeps a warning unless they record the decision.
    8. A letterhead file, or `off`.
-   9. Central sign-in, yes or no; if yes, the issuer and the key URL or file ([Central sign-in](docs/OPERATOR_INSTALL.md#central-sign-in)); if no, SMS sign-in only. If yes, also ask whether to require this facility's own SMS code at every central sign-in (`--central-local-code on`, default off; read the trade-off in [Central sign-in](docs/OPERATOR_INSTALL.md#central-sign-in)). The operator gives the association this facility's exact public origin (the `--api-url`) for its catalogue. The central identity service is not part of a facility install: the association's primary operator installs it once from its own repository (`central-identity-template`, private; ask the association). A facility needs only the issuer and the key set from the association.
+   9. Central sign-in, yes or no; if yes, the issuer and the key URL or file ([Central sign-in](docs/OPERATOR_INSTALL.md#central-sign-in)); if no, SMS sign-in only. If yes, also ask whether to require this facility's own SMS code at every central sign-in (`--central-local-code on`, default off; read the trade-off in [Central sign-in](docs/OPERATOR_INSTALL.md#central-sign-in)). Also ask whether a central sign-in alone may open an existing administrator's profile (`--central-admin-trust yes|no`, default yes: today's rule for members; no = administrators also enter a code this facility sends by SMS). A facility on central sign-in also needs its own SMS provider (`--provider-env`), so customers can still sign in when the central service can't send codes. The operator gives the association this facility's exact public origin (the `--api-url`) for its catalogue. The central identity service is not part of a facility install: the association's primary operator installs it once from its own repository (`central-identity-template`, private; ask the association). A facility needs only the issuer and the key set from the association.
    10. The SMS ceilings: SMS sends an hour (default 60) and a day (default 300) for the whole facility (`--sms-hourly-ceiling`, `--sms-daily-ceiling`; `otp_global_hourly_cap`, `otp_daily_provider_attempt_cap`).
    11. The host time zone, the facility's own.
    12. The state directory (absolute, outside the checkout; the guide uses `/srv/warehouse/<name>`).
@@ -159,8 +159,9 @@ Printing and sensors still require hardware acceptance; monitoring is one small 
 for contract parity, but physical printing hardware remains unverified. See [docs/API_CONTRACT.md](docs/API_CONTRACT.md) for
 the exported surface and [docs/PRODUCTION_DEPENDENCIES.md](docs/PRODUCTION_DEPENDENCIES.md) for what has been accepted.
 
-There is no accounting integration. Recorded payments drive the Paid and Pending
-figures of the invoice reports; the app does not write them. The ungranted
+There is no accounting integration. The app does not record payments unless the facility turns on Record payments
+(the Charging screen; off by default). With it on, administrators and supervisors record what a customer pays against
+each invoice (`record_payment`, migration 172), and payments drive the Paid and Due figures. The ungranted
 baseline functions are not API
 ([docs/API_CONTRACT.md](docs/API_CONTRACT.md), "Legacy and dormant functions").
 

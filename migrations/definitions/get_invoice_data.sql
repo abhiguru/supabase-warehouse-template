@@ -37,6 +37,8 @@ BEGIN
         SELECT
             i.id as invoice_id,
             i.inv_no as invoice_number,
+            i.inv_prefix,
+            warehouse_security.invoice_label(i.inv_prefix, i.inv_no) as invoice_label,
             i.inv_date as invoice_date,
             i.inv_fin_year,
             i.inv_fin_year || '-' || (i.inv_fin_year + 1) as financial_year,
@@ -53,6 +55,9 @@ BEGIN
             i.is_auto_generated,
             i.pricing_mode,
             COALESCE(i.duration_mode, 'legacy') as duration_mode,
+            i.charge_step_days,
+            i.charge_minimum_days,
+            i.total_rounding,
             i.notes,
             i.created_by,
             i.updated_at as invoice_updated_at,
@@ -184,6 +189,12 @@ BEGIN
                 'charge', v_item_record.charge,
                 'tax', v_item_record.tax,
                 'labour_rate', v_item_record.labour_rate,
+                -- Migration 164: the line's storage under the invoice's rule (null when the line has no quantity left to read).
+                'storage_amount', CASE WHEN v_item_record.dispatch_quantity IS NULL THEN NULL
+                                       WHEN v_invoice_header.grn_pricing_mode = 'ONE_TIME'
+                                       THEN round(COALESCE(v_item_record.charge, 0) * v_item_record.dispatch_quantity, 2)
+                                       ELSE warehouse_security.invoice_storage_amount(p_invoice_id, COALESCE(v_item_record.charge, 0),
+                                            v_item_record.dispatch_quantity, COALESCE(v_item_record.duration, 1), v_item_record.no_of_days) END,
 
                 'dispatch', jsonb_build_object(
                     'id', v_item_record.dispatch_item_id,
@@ -228,6 +239,8 @@ BEGIN
                 'header', jsonb_build_object(
                     'invoice_id', v_invoice_header.invoice_id,
                     'invoice_number', v_invoice_header.invoice_number,
+                    'inv_prefix', v_invoice_header.inv_prefix,
+                    'invoice_label', v_invoice_header.invoice_label,
                     'invoice_date', v_invoice_header.invoice_date,
                     'inv_fin_year', v_invoice_header.inv_fin_year,
                     'financial_year', v_invoice_header.financial_year,
@@ -244,6 +257,11 @@ BEGIN
                     'is_auto_generated', v_invoice_header.is_auto_generated,
                     'pricing_mode', v_invoice_header.pricing_mode,
                     'duration_mode', v_invoice_header.duration_mode,
+                    -- Migration 164: the charging rule the invoice was made with.
+                    'charging', jsonb_build_object('step_days', v_invoice_header.charge_step_days,
+                                                   'minimum_days', v_invoice_header.charge_minimum_days,
+                                                   'days_counted', v_invoice_header.duration_mode,
+                                                   'rounding', v_invoice_header.total_rounding),
                     'notes', v_invoice_header.notes,
                     'created_by', v_invoice_header.created_by,
                     'updated_at', v_invoice_header.invoice_updated_at,
@@ -304,7 +322,11 @@ BEGIN
                         'display_name', v_invoice_header.created_by_display_name,
                         'role', v_invoice_header.created_by_role
                     )
-                ),
+                -- Migration 172: paid_amount, due_amount and payment_status for administrators, supervisors and the invoice's customer.
+                -- Migration 173: doc_type, linked_invoice and the gst object (warehouse_security.invoice_gst_json).
+                ) || COALESCE(warehouse_security.invoice_gst_json(v_invoice_header.invoice_id), '{}'::jsonb)
+                  || CASE WHEN auth.jwt()->>'role' = 'service_role' OR COALESCE(v_user_role, '') <> 'staff'
+                          THEN warehouse_security.invoice_payment_state(v_invoice_header.invoice_id) ELSE '{}'::jsonb END,
                 'items', v_invoice_items
             )
         );

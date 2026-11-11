@@ -56,7 +56,7 @@ test('the database memory is set by setup.sh --db-memory through three compose.e
   assert.match(example, /^DB_MEMORY_LIMIT=1G$/m);
   assert.match(example, /^DB_SHARED_BUFFERS=128MB$/m);
   assert.match(example, /^DB_EFFECTIVE_CACHE_SIZE=512MB$/m);
-  assert.match(read('setup.sh'), /--gateway-port\|--db-memory\)/);
+  assert.match(read('setup.sh'), /--gateway-port\|--db-memory\|--ingress\|--proxy-address\|--proxy-header\|--from-bundle\)/);
 });
 
 test('the rendered project carries the same settings', { skip: !composeAvailable() && !process.env.CI ? 'docker compose is not installed' : false }, () => {

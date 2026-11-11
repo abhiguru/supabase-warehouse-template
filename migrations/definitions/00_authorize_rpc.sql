@@ -20,13 +20,31 @@ BEGIN
     RETURN;
   END IF;
   -- Central identity (migration 49), sensor settings (migration 74), service accounts
-  -- (migration 78) and the numbering rules (migration 127): administrators only.
-  IF rpc IN ('clear_user_central_identity','update_sensor_device','set_service_account','set_document_numbering') THEN
+  -- (migration 78), the numbering rules (migration 127), the charging rule (migration 164) and the Record payments switch
+  -- (migration 172), and the pairing codes and server alerts of a local-only facility (migration 170): administrators only.
+  IF rpc IN ('clear_user_central_identity','update_sensor_device','set_service_account','set_document_numbering',
+             'get_charging_rule','set_charging_rule','set_record_payments',
+             'make_pairing_code','get_server_alerts') THEN
     IF role_name <> 'admin' THEN RAISE EXCEPTION 'Administrator required' USING ERRCODE = '42501'; END IF;
     RETURN;
   END IF;
+  -- The facility's GST details (migration 173): administrators only. set_item_gst_treatment (migration 173) is for administrators and
+  -- supervisors, like the rates: the line below admits them, and staff and customers are refused by the final ELSE.
+  IF rpc IN ('get_gst_details','set_gst_details') THEN
+    IF role_name <> 'admin' THEN RAISE EXCEPTION 'Administrator required' USING ERRCODE = '42501'; END IF;
+    RETURN;
+  END IF;
+  -- What every customer owes (migration 176): administrators and supervisors only. A customer's statement (migration 176):
+  -- administrators, supervisors and a customer account for its own customers (the get_customer_% rule below); staff never.
+  IF rpc = 'get_customer_dues' AND role_name NOT IN ('admin','supervisor') THEN
+    RAISE EXCEPTION 'Administrator or supervisor required' USING ERRCODE = '42501';
+  END IF;
+  IF rpc = 'get_customer_statement' AND role_name NOT IN ('admin','supervisor','customer') THEN
+    RAISE EXCEPTION 'Customer access denied' USING ERRCODE = '42501';
+  END IF;
   -- Administrators and supervisors: every other RPC, among them cancel_invoice (migration 134; keeps the invoice on record) and
-  -- delete_invoice (migration 146; removes it, administrators and supervisors only), set_rack_presets (migration 131) and the rest of the management RPCs. Staff and
+  -- delete_invoice (migration 146; removes it, administrators and supervisors only), record_payment, update_payment and
+  -- delete_payment (migration 172), set_rack_presets (migration 131) and the rest of the management RPCs. Staff and
   -- customers are refused by the lists and the final ELSE below.
   IF role_name IN ('admin','supervisor') THEN RETURN; END IF;
   -- Approved document RPCs only; no shared ownership or table-policy change.
@@ -64,6 +82,8 @@ BEGIN
     'get_invoiceable_grns','get_invoices_list','get_invoice_data','get_invoice_detail',
     'get_invoice_items_detailed','get_customer_invoice_summary',
     'generate_invoice_data_for_grn_with_pricing',
+    -- Which document(s) the chosen lines make, for the invoice form's review step (migration 173).
+    'preview_invoice_documents',
     -- Orders and queue (user decision, 2026-10-09).
     'get_orders_list','get_order_with_items','get_or_create_cart',
     'add_item_to_order','update_order_item_quantity','remove_item_from_order',

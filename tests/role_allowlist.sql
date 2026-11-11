@@ -102,6 +102,15 @@ INSERT INTO ra_rpc(name,staff,customer) VALUES
  -- the rack presets of the GRN item form (migration 131): staff read the buttons, administrators and supervisors change them
  ('get_rack_presets',true,'no'),('get_items_without_rate',true,'no'),('set_rack_presets',false,'no'),
  ('get_all_grn_items',true,'no'),('get_grn_list',true,'no'),
+ -- the charging rule (migration 164), the Record payments switch and payments (172), the GST details and documents (173), the pairing
+ -- codes and server alerts (170): administrators; the payments, the invoice pair delete and the item GST treatment also supervisors;
+ -- staff only preview which documents an invoice's lines make; dues are for administrators and supervisors, a statement also for a
+ -- customer account's own customers (176)
+ ('get_charging_rule',false,'no'),('set_charging_rule',false,'no'),('set_record_payments',false,'no'),
+ ('record_payment',false,'no'),('update_payment',false,'no'),('delete_payment',false,'no'),('delete_invoice_pair',false,'no'),
+ ('get_gst_details',false,'no'),('set_gst_details',false,'no'),('set_item_gst_treatment',false,'no'),
+ ('preview_invoice_documents',true,'no'),('make_pairing_code',false,'no'),('get_server_alerts',false,'no'),
+ ('get_customer_dues',false,'no'),('get_customer_statement',false,'own'),
  ('get_grn_prefixes_with_stock',true,'no'),('get_all_grn_activity',true,'no'),
  ('search_customers',true,'no'),('get_supervisors',true,'no'),('get_vehicle_suggestions',true,'no'),
  ('register_grn_image_upload',true,'no'),('confirm_grn_image_upload',true,'no'),

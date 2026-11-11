@@ -171,7 +171,9 @@ test('central sign-in settings: off by default, set on a fresh setup or a rerun,
     assert.equal(set.providerUpdated, false);
     const after = readFileSync(envPath, 'utf8');
     const changed = original.split('\n').filter((line, index) => line !== after.split('\n')[index]);
-    assert.deepEqual(changed, ['CENTRAL_ISSUER=', 'CENTRAL_JWKS_URL=']);
+    // Setting an issuer also stores the administrator-trust default (WH-148, migration 168): CENTRAL_ADMIN_TRUST=yes.
+    assert.deepEqual(changed, ['CENTRAL_ISSUER=', 'CENTRAL_JWKS_URL=', 'CENTRAL_ADMIN_TRUST=']);
+    assert.match(after, /^CENTRAL_ADMIN_TRUST=yes$/m);
     assert.equal(original.split('\n').length, after.split('\n').length);
     assert.equal(readEnv(envPath).CENTRAL_ISSUER, issuer);
     assert.equal(readEnv(envPath).CENTRAL_JWKS_URL, jwks);
@@ -224,16 +226,16 @@ test('central sign-in settings: off by default, set on a fresh setup or a rerun,
     assert.throws(() => configure(root, { stateDir, company: 'Different', centralIssuer: issuer, centralJwksUrl: jwks }), /differs/);
     assert.equal(readFileSync(envPath, 'utf8'), original);
 
-    // A state written before the two lines existed: they are appended; "off" leaves such a state alone.
-    const older = original.replace(/^CENTRAL_(?:ISSUER|JWKS_URL|JWKS_FILE|LOCAL_CODE)=\n/gm, '');
+    // A state written before the lines existed: they are appended (the administrator-trust answer yes with an issuer, WH-148); "off" leaves such a state alone.
+    const older = original.replace(/^CENTRAL_(?:ISSUER|JWKS_URL|JWKS_FILE|LOCAL_CODE|ADMIN_TRUST)=\n/gm, '');
     assert.doesNotMatch(older, /^CENTRAL_/m);
     writeFileSync(envPath, older, { mode: 0o600 });
     assert.equal(configure(root, { stateDir, centralIssuer: 'off' }).centralUpdated, false);
     assert.equal(readFileSync(envPath, 'utf8'), older);
     assert.equal(configure(root, { stateDir, centralIssuer: issuer, centralJwksUrl: jwks }).centralUpdated, true);
-    assert.equal(readFileSync(envPath, 'utf8'), `${older}CENTRAL_ISSUER=${issuer}\nCENTRAL_JWKS_URL=${jwks}\nCENTRAL_JWKS_FILE=\n`);
+    assert.equal(readFileSync(envPath, 'utf8'), `${older}CENTRAL_ISSUER=${issuer}\nCENTRAL_JWKS_URL=${jwks}\nCENTRAL_JWKS_FILE=\nCENTRAL_ADMIN_TRUST=yes\n`);
     assert.equal(configure(root, { stateDir, centralIssuer: 'off' }).centralUpdated, true);
-    assert.equal(readFileSync(envPath, 'utf8'), `${older}CENTRAL_ISSUER=\nCENTRAL_JWKS_URL=\nCENTRAL_JWKS_FILE=\n`);
+    assert.equal(readFileSync(envPath, 'utf8'), `${older}CENTRAL_ISSUER=\nCENTRAL_JWKS_URL=\nCENTRAL_JWKS_FILE=\nCENTRAL_ADMIN_TRUST=\n`);
 
     // Fresh setup with the options, and with "off".
     const withCentral = join(scratch, 'state-central');
@@ -292,7 +294,7 @@ test('central sign-in keys from a file: validated, copied into the state, replac
     assert.deepEqual(readdirSync(join(stateDir, 'public')).sort(), ['central-jwks.json', 'instance.json'], 'no temporary file is left');
     assert.equal(validateOperatorEnv(env, stateDir).origin, base.apiUrl);
     const withFile = readFileSync(envPath, 'utf8');
-    assert.deepEqual(original.split('\n').filter((line, index) => line !== withFile.split('\n')[index]), ['CENTRAL_ISSUER=', 'CENTRAL_JWKS_FILE=']);
+    assert.deepEqual(original.split('\n').filter((line, index) => line !== withFile.split('\n')[index]), ['CENTRAL_ISSUER=', 'CENTRAL_JWKS_FILE=', 'CENTRAL_ADMIN_TRUST=']); // the issuer also stores CENTRAL_ADMIN_TRUST=yes (WH-148)
 
     // The same file again changes nothing; without a central option the copy stays.
     assert.equal(configure(root, { stateDir, centralIssuer: issuer, centralJwksFile: first }).centralUpdated, false);
@@ -377,7 +379,7 @@ test('setup and the edge function apply the same key set rules', () => {
 
 test('setup.sh passes the central options on and applies the issuer to the database after the auth settings', () => {
   const setup = readFileSync(new URL('../setup.sh', import.meta.url), 'utf8');
-  assert.match(setup, /--admin-name\|--central-issuer\|--central-jwks-url\|--central-jwks-file\|--central-local-code\|--alert-webhook-file\|--sensor-webhook-file\|--heartbeat-url-file\|--letterhead-file\|--gateway-port\|--db-memory\)/);  // deliberate pin update: --db-memory joins the value options
+  assert.match(setup, /--admin-name\|--central-issuer\|--central-jwks-url\|--central-jwks-file\|--central-local-code\|--central-admin-trust\|--alert-webhook-file\|--sensor-webhook-file\|--heartbeat-url-file\|--letterhead-file\|--gateway-port\|--db-memory\|--ingress\|--proxy-address\|--proxy-header\|--from-bundle\)/);  // deliberate pin update: --db-memory joins the value options
   const auth = setup.indexOf('scripts/configure-auth.sql');
   const central = setup.indexOf('scripts/configure-central.sql');
   assert.ok(auth > 0 && central > auth && central < setup.indexOf('scripts/configure-sms.sql'));
@@ -386,7 +388,8 @@ test('setup.sh passes the central options on and applies the issuer to the datab
   // the database container has no environment entry for it, so an upgrade does not recreate it.
   assert.match(setup, /CENTRAL_ISSUER_VALUE="\$\(sed -n 's\/\^CENTRAL_ISSUER=\/\/p' "\$STATE\/config\/compose\.env" \| head -n 1\)"/);
   assert.match(setup, /CENTRAL_LOCAL_CODE_VALUE="\$\(sed -n 's\/\^CENTRAL_LOCAL_CODE=\/\/p' "\$STATE\/config\/compose\.env" \| head -n 1\)"/);
-  assert.match(setup, /-v central_issuer="\$CENTRAL_ISSUER_VALUE" -v central_local_code="\$CENTRAL_LOCAL_CODE_VALUE" < "\$ROOT\/scripts\/configure-central\.sql"/);
+  assert.match(setup, /-v central_issuer="\$CENTRAL_ISSUER_VALUE" -v central_local_code="\$CENTRAL_LOCAL_CODE_VALUE" -v central_admin_trust="\$CENTRAL_ADMIN_TRUST_VALUE" < "\$ROOT\/scripts\/configure-central\.sql"/);
+  assert.match(setup, /CENTRAL_ADMIN_TRUST_VALUE="\$\(sed -n 's\/\^CENTRAL_ADMIN_TRUST=\/\/p' "\$STATE\/config\/compose\.env" \| head -n 1\)"/);
   assert.doesNotMatch(setup, /(?:^|\s)(?:source|\.)\s+"?\$STATE/m);
   assert.doesNotMatch(sql, /\\getenv/);
   assert.match(sql, /VALUES \('central_issuer',:'central_issuer'\)/);
@@ -581,29 +584,20 @@ test('set-capability flips one manifest flag in place, keeps every other byte an
     assert.doesNotMatch(printing.stdout, /503/, 'the old "still answer 503" text is gone: the router serves the routes as soon as the capability is on');
     assert.equal(readFileSync(manifestPath, 'utf8'), original.replace('"printing": false', '"printing": true'));
     assert.equal(run(['printing', 'off']).status, 0);
-    // payments: accepted like the others, and written into a manifest that predates the key.
-    const payments = run(['payments', 'on']);
-    assert.equal(payments.status, 0, payments.stderr);
-    assert.match(payments.stdout, /Set capabilities\.payments on/);
-    assert.equal(readFileSync(manifestPath, 'utf8'), original.replace('"payments": false', '"payments": true'));
-    assert.equal(run(['payments', 'off']).status, 0);
-    assert.equal(readFileSync(manifestPath, 'utf8'), original, 'off restores the original bytes');
+    // payments (migration 172, WH-143) is the "Record payments" setting in the app: both directions are refused here, with the way to
+    // set it, and the manifest is not touched, whatever layout it has.
+    for (const value of ['on', 'off']) {
+      const payments = run(['payments', value]);
+      assert.equal(payments.status, 1, `payments ${value} was accepted`);
+      assert.match(payments.stderr, /payments is no longer set here: an administrator turns it on or off in the app, Charging screen, "Record payments"/);
+      assert.match(payments.stderr, /Nothing was changed/);
+      assert.equal(readFileSync(manifestPath, 'utf8'), original, 'a refusal changes nothing');
+    }
     const legacy = original.replace(/,\n\s*"payments": false/, '');
     assert.doesNotMatch(legacy, /payments/);
     writeFileSync(manifestPath, legacy);
-    const already = run(['payments', 'off']);
-    assert.equal(already.status, 0, already.stderr);
-    assert.match(already.stdout, /already off/);
-    assert.equal(readFileSync(manifestPath, 'utf8'), legacy, 'an absent key already means off');
-    assert.equal(run(['payments', 'on']).status, 0);
-    assert.deepEqual(JSON.parse(readFileSync(manifestPath, 'utf8')).capabilities, { sensors: false, printing: false, payments: true });
-    assert.equal(readFileSync(manifestPath, 'utf8'), original.replace('"payments": false', '"payments": true'), 'the key is added in the file\'s own layout');
-    // The one-line layout (JSON.stringify) gets the key in the same style.
-    const oneLine = JSON.stringify(JSON.parse(legacy));
-    writeFileSync(manifestPath, oneLine);
-    assert.equal(run(['payments', 'on']).status, 0);
-    assert.equal(readFileSync(manifestPath, 'utf8'), oneLine.replace('"printing":false}', '"printing":false, "payments": true}'));
-    assert.equal(JSON.parse(readFileSync(manifestPath, 'utf8')).capabilities.payments, true);
+    assert.equal(run(['payments', 'on']).status, 1);
+    assert.equal(readFileSync(manifestPath, 'utf8'), legacy, 'a manifest that predates the key is left as it was');
     writeFileSync(manifestPath, original);
 
     for (const args of [['alarms', 'on'], ['sensors', 'yes'], ['sensors', 'true'], ['Sensors', 'on'], ['sensors'], ['sensors', 'on', 'extra'], []]) {
@@ -1178,8 +1172,8 @@ test('a sensor webhook that cannot be placed is refused before the facility webh
   } finally { rmSync(scratch, { recursive: true, force: true }); }
 });
 
-test('central sign-in alone (--central-issuer without --provider-env): no SMS provider is stored, the doctor accepts it, and nothing needing SMS is allowed', () => {
-  const scratch = mkdtempSync(join(tmpdir(), 'warehouse-config-central-only-'));
+test('central sign-in needs the facility\'s own SMS provider (WH-148): --central-issuer without --provider-env is refused and writes nothing; with it the provider is stored', () => {
+  const scratch = mkdtempSync(join(tmpdir(), 'warehouse-config-central-provider-'));
   const root = join(scratch, 'checkout');
   const providerEnv = join(scratch, 'provider.env');
   const issuer = 'https://login.association.example.test';
@@ -1191,49 +1185,28 @@ test('central sign-in alone (--central-issuer without --provider-env): no SMS pr
     const base = { apiUrl: 'https://api.example.com', company: 'Acme Stores' };
     const stateDir = join(scratch, 'state');
     const envPath = join(stateDir, 'config/compose.env');
+    const keeps = /A facility on central sign-in keeps its own SMS provider, so customers can still sign in when the central service can't send codes\. Also give --provider-env/;
 
-    // A first install without a provider file and without central sign-in is still refused.
+    // A first install without a provider file is refused, with or without central sign-in; nothing is written.
     assert.throws(() => configure(root, { ...base, stateDir: join(scratch, 'none') }), /Fresh setup requires --api-url, --company and --provider-env/);
     assert.equal(existsSync(join(scratch, 'none')), false);
-    // The facility's own SMS code needs a provider: refused before anything is written.
-    assert.throws(() => configure(root, { ...base, stateDir: join(scratch, 'refused'), centralIssuer: issuer, centralJwksUrl: jwks, centralLocalCode: 'on' }), /needs an SMS provider/);
+    assert.throws(() => configure(root, { ...base, stateDir: join(scratch, 'refused'), centralIssuer: issuer, centralJwksUrl: jwks }), keeps);
     assert.equal(existsSync(join(scratch, 'refused')), false);
+    assert.throws(() => configure(root, { ...base, stateDir: join(scratch, 'refused2'), centralIssuer: issuer, centralJwksUrl: jwks, centralLocalCode: 'on' }), keeps);
+    assert.equal(existsSync(join(scratch, 'refused2')), false);
 
-    assert.equal(configure(root, { ...base, stateDir, centralIssuer: issuer, centralJwksUrl: jwks }).created, true);
+    // With the provider file: created, the provider stored, central sign-in on, and the doctor accepts it.
+    assert.equal(configure(root, { ...base, stateDir, providerEnv, centralIssuer: issuer, centralJwksUrl: jwks }).created, true);
     const text = readFileSync(envPath, 'utf8');
-    for (const key of ['SMS_PROVIDER', 'MSG91_AUTH_KEY', 'MSG91_TEMPLATE_ID', 'MSG91_PE_ID', 'MSG91_SENDER_ID']) assert.match(text, new RegExp(`^${key}=$`, 'm'), `${key} is stored empty`);
-    assert.doesNotMatch(text, /your-msg91|WHOUSE/, 'no template provider text is left in the state');
+    assert.match(text, /^MSG91_AUTH_KEY=provider-key$/m);
     const env = readEnv(envPath);
     assert.equal(env.CENTRAL_ISSUER, issuer);
-    assert.equal(validateOperatorEnv(env, stateDir).origin, base.apiUrl, 'the doctor accepts an installation with central sign-in and no provider');
+    assert.equal(validateOperatorEnv(env, stateDir).origin, base.apiUrl);
     assert.equal(configure(root, { stateDir }).created, false);
     assert.equal(readFileSync(envPath, 'utf8'), text, 'a rerun changes nothing');
-
-    // The doctor refuses what cannot sign anyone in or send the facility code.
-    assert.throws(() => validateOperatorEnv({ ...env, CENTRAL_ISSUER: '' }, stateDir), /nobody could sign in/);
-    assert.throws(() => validateOperatorEnv({ ...env, CENTRAL_LOCAL_CODE: 'on' }, stateDir), /CENTRAL_LOCAL_CODE=on needs an SMS provider/);
-    assert.throws(() => validateOperatorEnv({ ...env, SMS_PROVIDER: 'msg91' }, stateDir), /Missing production MSG91 setting: MSG91_AUTH_KEY/, 'a half-filled provider is not "no provider"');
-    assert.throws(() => validateOperatorEnv({ ...env, MSG91_AUTH_KEY: 'provider-key' }, stateDir), /must use production mode and MSG91/);
-
-    // Rerun: the extra code and turning central sign-in off are refused (nothing could sign in), and nothing is written.
-    assert.throws(() => configure(root, { stateDir, centralLocalCode: 'on' }), /needs an SMS provider/);
-    assert.throws(() => configure(root, { stateDir, centralIssuer: 'off' }), /no SMS provider/);
-    assert.equal(readFileSync(envPath, 'utf8'), text);
-    // Adding the provider later works, and then both are allowed.
-    assert.equal(configure(root, { stateDir, providerEnv }).providerUpdated, true);
-    assert.equal(validateOperatorEnv(readEnv(envPath), stateDir).origin, base.apiUrl);
+    // The extra code is allowed now that a provider is stored.
     assert.equal(configure(root, { stateDir, centralLocalCode: 'on' }).centralUpdated, true);
     assert.equal(readEnv(envPath).CENTRAL_LOCAL_CODE, 'on');
-    assert.equal(configure(root, { stateDir, centralLocalCode: 'off' }).centralUpdated, true);
-    assert.equal(configure(root, { stateDir, centralIssuer: 'off' }).centralUpdated, true);
-
-    // The database side: compose passes the empty lines, and configure-sms.sql stores nothing for them.
-    const compose = readFileSync(new URL('../docker/docker-compose.yml', import.meta.url), 'utf8');
-    assert.match(compose, /MSG91_AUTH_KEY: \$\{MSG91_AUTH_KEY:-\}/);
-    assert.doesNotMatch(compose, /MSG91_[A-Z_]+: \$\{MSG91_[A-Z_]+:\?/);
-    const sql = readFileSync(new URL('../scripts/configure-sms.sql', import.meta.url), 'utf8');
-    assert.ok(sql.indexOf('\\quit') > 0 && sql.indexOf('\\quit') < sql.indexOf('INSERT INTO public.sms_config'), 'no provider: the script stops before it stores anything');
-    assert.match(sql, /:'sms_provider'='' AND :'sms_production_mode'='true' AND :'sms_auth_key'='' AND :'sms_flow_id'='' AND :'sms_pe_id'='' AND :'sms_sender_id'=''/);
   } finally { rmSync(scratch, { recursive: true, force: true }); }
 });
 
@@ -1273,5 +1246,24 @@ test('--heartbeat-url-file stores, keeps and removes config/heartbeat-url (mode 
     assert.equal(configure(root, { stateDir: state, heartbeatUrlFile: 'off', ...hooks }).heartbeatUrl, undefined, 'nothing to remove');
     assert.equal(parseConfigureArgs(['--state-dir', state, '--heartbeat-url-file', 'off']).heartbeatUrlFile, 'off');
     assert.match(readFileSync(new URL('../scripts/configure.mjs', import.meta.url), 'utf8'), /\[--heartbeat-url-file ABSOLUTE\|off\]/, 'in the usage text');
+  } finally { rmSync(scratch, { recursive: true, force: true }); }
+});
+
+test('a fresh --ingress local-only configure writes INGRESS=local-only with empty SMS lines, and a rerun passes (WH-172)', () => {
+  const scratch = mkdtempSync(join(tmpdir(), 'warehouse-config-local-only-'));
+  const root = join(scratch, 'checkout');
+  const stateDir = join(scratch, 'state');
+  try {
+    mkdirSync(root);
+    copyFileSync(new URL('../.env.example', import.meta.url), join(root, '.env.example'));
+    const options = { stateDir, company: 'Acme Stores', ingress: 'local-only' };
+    assert.equal(configure(root, options).created, true);
+    const envPath = join(stateDir, 'config/compose.env');
+    const text = readFileSync(envPath, 'utf8');
+    assert.match(text, /^INGRESS=local-only$/m);
+    for (const key of ['SMS_PROVIDER', 'MSG91_AUTH_KEY', 'MSG91_TEMPLATE_ID', 'MSG91_PE_ID', 'MSG91_SENDER_ID']) assert.match(text, new RegExp(`^${key}=$`, 'm'), key);
+    const before = readFileSync(envPath);
+    assert.equal(configure(root, options).created, false, 'the rerun passes and changes nothing');
+    assert.deepEqual(readFileSync(envPath), before);
   } finally { rmSync(scratch, { recursive: true, force: true }); }
 });

@@ -236,6 +236,18 @@ client address and has no hourly window**. Since the gateway became nginx (2026-
 `tests/gateway-config.test.mjs` pins the table above, the arithmetic and this wording; `tests/gateway-nginx.test.mjs` runs the
 real image against stand-in upstreams and checks that a burst of 1800 is passed and the next request is refused (the request that opens the bucket makes it 1801), and that another address is not affected.
 
+## Ingress modes (WH-146)
+
+Three modes (`INGRESS` in compose.env). **cloudflare-tunnel** is the one described above and the default: a state without the line is this. **trusted-proxy** renders
+`docker/nginx/templates-proxy/gateway.conf.template` in place of the public server: `set_real_ip_from <TRUSTED_PROXY_ADDRESS>` and `real_ip_header <TRUSTED_PROXY_HEADER>`, nothing else trusted
+(neither loopback nor the private ranges the tunnel mode trusts). The trust lives in that public server only; `api-locations.conf`, shared with the LAN server, stays free of any
+header trust, and the LAN server still takes the connection's own address. Both values are validated by `18-require-env.sh` before rendering (an IPv4 address or /16-/32 range; a header name of
+letters, digits and dashes), and `scripts/ingress.mjs` refuses headers that carry something else on this API (Host, Authorization, apikey, ...). **local-only** keeps the public server of the tunnel mode
+bound to loopback (no tunnel runs, nothing public is published), makes `gateway-lan` mandatory (`lan.sh off` is refused) and refuses to install without the `lan-signer` (WH-133), so the only
+way in is signed. The unsigned calls in that mode are the pairing exchange, `GET /app`, `GET /app/warehouse.apk` and the LAN signer's existing exemptions. The pairing secret is held in
+`warehouse_security.pairing_codes` (no API grant) for at most 10 minutes and erased when used; the code cannot be guessed in the window (30^8 codes, 10 tries per address per 10 minutes, one live
+code per person), and what the server sends back is encrypted under a key derived from the secret. The server hands the encrypted session to anyone who redeems a live code, so a phone that has the code without the secret cannot read it; both live only in the QR, and nothing is shown to type.
+
 ## LAN fallback (gateway-lan)
 
 **Owner decision of 2026-10-26: cleartext to a private LAN address, fallback only.** This amends the rule of the app's decision log
@@ -249,7 +261,7 @@ It is **the gateway's own image**, not a second build: the image holds the publi
 service tells the image's entrypoint to render that directory (`NGINX_ENVSUBST_TEMPLATE_DIR`). So an upgrade that rebuilds the
 gateway rebuilds this too, nothing is mounted from the checkout, and the two containers can never run different versions of the
 routes. It has the same hardening and limits as the gateway (read-only root, no capability, 128 MB, half a CPU) and is on `default`
-only. It listens on 8080 inside the container, plain http, no TLS and no HTTP/2, and is published on
+and the internal `lan-hop` network (for its signer, below). It listens on 8080 inside the container, plain http, no TLS and no HTTP/2, and is published on
 `${LAN_BIND_IP}:${LAN_HTTP_PORT}` only; the default bind is loopback, where nothing outside the host can reach it. A separate
 container, so a failed bind (the router gave the host another address) or a mistake in the LAN server cannot take the public gateway
 down; `scripts/compose.sh` also leaves the profile out of a command while the host does not have the address, so the public services
@@ -257,10 +269,44 @@ still start. **A fault of the fallback never stops a start, a setup, an upgrade 
 wait for the public services only and start `gateway-lan` on its own afterwards (`scripts/lan.sh start`), where a failure is a
 warning, and the health check (`doctor --local`) counts it as a warning like an optional service.
 
+**Signing (WH-133, 2026-11-07).** Every request a phone sends on this path is signed with the **warehouse network key** of its session,
+and every answer is signed by the server with the same key; the exact wire contract is [API_CONTRACT.md](API_CONTRACT.md), "Signing on
+the LAN path". Three parts:
+
+- *The key.* 32 random bytes per session (`warehouse_security.refresh_sessions.lan_key`, migration 163), made with the session and
+  deleted with it: sign-out, revocation (`update_user_status(false)`, `revoke_session`), expiry, the newest-10 rule and `rotate-keys.sh`.
+  It stays the same when the session refreshes. No app role can read the table; the service role reads one key at a time with
+  `public.lan_signing_key`. The phone receives it in the sign-in answer and in `get-config`, which hands it out only over https through the
+  public gateway (the gateway, not the client, tells the functions which way a request came: `X-Warehouse-Path` set by
+  `api-locations.conf`); a refresh answer never carries it. The one exception is a break-glass sign-in over this path (below).
+- *`gateway-lan` is now two servers.* The **outer server** (published, :8080) keeps the Host pin, the allow list and a 50 MB body limit,
+  and passes every request to the signer with the phone's address and the request target exactly as written, overwriting any header of
+  those names the phone sent. The **inner server** (:8081) holds the routes of `api-locations.conf` as before; it listens only on the
+  container's address on the internal `lan-hop` network (the name `gateway-lan-back`), which only the signer shares, and only there is
+  the signer's `X-Lan-Client-Addr` taken as the client address.
+- *`lan-signer`* (same profile; `docker/lan-signer`, run by the edge runtime of the function runtime's own image, so there is no new
+  image) refuses with **HTTP 403** (`X-Warehouse-Path: lan`, a JSON `code`) every request that is not signed with the key of a live
+  session, whose signature does not match (constant-time comparison), whose time is more than 5 minutes from the server's clock, whose
+  request id was used in the last 10 minutes, or whose bearer token belongs to another session. The refusal comes before the inner
+  server, so before PostgREST, Storage and the functions; it never reaches the session code and never ends a session. Only the
+  signed request headers are passed on. It reads the answer whole, signs it and passes on only the signed answer headers. A refusal made
+  after the signature checked out (time, replay, the inner server's own 401/403/404/413/429/502/503/504) is signed; a refusal made before
+  (no signature, unknown key, wrong signature) cannot be and is not. These requests carry no credential and need no signature: `GET
+  /functions/v1/hello`, `GET /functions/v1/get-public-config` (with a challenge it is the phone's identity check, answered with a proof
+  keyed with that session's key), `GET /rest/v1/` with the anon key (the key check of `doctor` and the checker), `POST
+  /functions/v1/operator-otp/break-glass`, and for a local-only facility (WH-146) `POST /functions/v1/pairing-redeem` (its answer has
+  its own proof and encryption; the function limits tries per address) and the download page `GET /app` and `GET /app/warehouse.apk`
+  (no credential passed on). Request ids are kept in memory: after a restart of the signer a request stamped before the
+  restart is refused. Bodies are held in memory to be hashed (192 MB at most at once, then 503), so the container has 512 MB.
+  Its health check (`/__health`, from inside the container only) fails when it cannot read keys, for example with the old service key
+  after a rotation; `rotate-keys.sh` and `lan.sh` recreate it with `gateway-lan`. Nothing it logs holds a key, a signature, a token, a
+  body or a query string.
+
 **Trust boundary.**
 
-- *No trust in a header for the client address.* The LAN server has no `set_real_ip_from` or `real_ip_header`; the client address is the
-  connection's. Every route that passes an address on sets `CF-Connecting-IP`, `X-Real-IP` and `X-Forwarded-For` from `$remote_addr`
+- *No trust in a header the phone sends for the client address.* The outer server takes the address of the connection and writes it
+  into `X-Lan-Client-Addr`, replacing the phone's; the inner server takes that header (`set_real_ip_from`), and only the signer can
+  connect to it (above), so the address is the phone's connection's. Every route that passes an address on sets `CF-Connecting-IP`, `X-Real-IP` and `X-Forwarded-For` from `$remote_addr`
   (the routes file is shared with the public server, which takes the address from the tunnel hop instead), so a phone cannot choose the
   address that the rate limits and the per-source OTP limits of `operator-otp` and `central-exchange` see. The limits are per phone, not
   per facility. A request that names another address in a header gets nothing from it (`tests/gateway-nginx.test.mjs` forges the
@@ -312,39 +358,53 @@ that probes from itself cannot see the phone's side, so also compare one phone's
 **The keys.** `gateway-lan` holds the API keys in its configuration, like the gateway (the map of the `apikey` header, written at
 start). After `rotate-keys.sh` a container that was not recreated still has the old keys and answers the gateway's
 `401 {"message":"Unauthorized"}` to every REST request of every phone, while `get-public-config`, which has no key check, keeps
-answering. `rotate-keys.sh` therefore recreates `gateway-lan` whenever a container of it exists (a failure there is a warning that
+answering. `rotate-keys.sh` therefore recreates `gateway-lan` and `lan-signer` whenever a container of either exists (a failure there is a warning that
 names the repair), and `doctor` and the checker (`lan_http_down`) send the anon key of `compose.env` to the LAN address on `GET /rest/v1/`
 and fail on the gateway's 401. **The app must not end its session on a 401 that arrives over the LAN path**: that is what makes this
 fault dangerous (see the note under "Gateway limits and routes").
 
-**The exposure the owner accepted** (decision of 2026-10-26; stated in full here). Plain http means that, while a phone is on
-this path, its access token (one hour), any refresh token it exchanges, and every photo and document it sends or receives are readable by
-anyone who can see the warehouse Wi-Fi traffic. In particular:
+**The exposure the owner accepted** (decisions of 2026-10-26 and 2026-11-07; stated in full here). The fallback is plain http with
+signatures, not encryption.
 
-- **A token that is read works from anywhere, not only on the LAN.** Access tokens and the session check are not bound to an origin, so a
-  token sniffed on the Wi-Fi works through the public address as well, including from the attacker's own mobile data during the
-  facility's outage, until it ends (one hour).
-- **A stolen refresh token keeps a session alive.** The refresh call goes over REST, so a phone uses the LAN path for it during an outage,
-  and its answer carries the next refresh token. With sliding sessions (30 days idle, 90 days at most), a thief who refreshes first keeps
-  the session going until the real phone presents the token it had; reuse detection then deletes the session for both. The same
-  mechanism lets anyone on the Wi-Fi sign real phones out during an outage, when they cannot sign back in.
-- **Administrator tokens carry administrator rights.** A sniffed administrator token can do whatever the administrator can, until it ends.
-- **A stale saved address can send tokens to another device.** If the host's address changes (a DHCP lease) and a phone still holds the old
-  one, it would send its token to whichever device now has that address, unless the app checks first. The app that uses the fallback
-  (not released yet) is to probe the saved address without credentials before it sends any (`GET /functions/v1/get-public-config`,
-  which must answer 200 with `X-Warehouse-Path: lan` and this installation's `instanceId`), and to check it once a day while the
-  internet is up and the phone is on Wi-Fi, so a stale address shows before the outage.
-- **A break-glass sign-in code crosses the Wi-Fi in clear** when an administrator signs in over the LAN path during an outage
-  (OPERATOR_INSTALL.md, "Break-glass administrator sign-in"): it is valid for 10 minutes and works once, so a code read from the traffic
-  is a race the administrator wins by typing it first.
+*Closed by signing (WH-133):*
+
+- **Changing a request.** A request changed on the way (its method, path, query, body or a signed header such as `Authorization`,
+  `Prefer` or `Range`) no longer matches its signature and is refused with 403 before anything is done.
+- **Changing an answer.** Every answer to a signed request is signed over its status, its body and the headers passed on; the app checks it
+  before using it and leaves the warehouse network when it does not check out.
+- **A copying device receiving tokens.** Before it sends a token to the warehouse address, the phone asks for a proof keyed with its own
+  session's key; a device that copies the public `instanceId` cannot give it.
+- **Replay.** A request sent again within 10 minutes is refused by its request id, after that by its time (5-minute window).
+
+*What stays:*
+
+- **Everything can be read.** While a phone is on this path, its access token (one hour), any refresh token it exchanges, and every
+  photo, document and answer are readable by anyone who can see the warehouse Wi-Fi traffic. There is no encryption.
+- **A token that is read works from anywhere, not only on the LAN.** Access tokens and the session check are not bound to an origin or
+  to the key, so a token sniffed on the Wi-Fi works through the public address, including from the attacker's own mobile data during the
+  facility's outage, until it ends (one hour). The signature protects the LAN path only.
+- **A read refresh token can still be raced.** The refresh call and its answer go over this path during an outage. A thief who refreshes
+  first over the internet keeps the session going until the real phone presents the token it had; reuse detection then deletes the
+  session for both. The same lets someone who can reach the public address sign real phones out during an outage.
+- **Administrator tokens carry administrator rights** over the internet, until they end.
+- **A break-glass session's key can be read.** A break-glass sign-in over this path (OPERATOR_INSTALL.md, "Break-glass administrator
+  sign-in") has no key yet, so the request carries the code in clear and its answer carries the new session's tokens and key in clear.
+  That session's requests are still signed, but someone who read the key can sign as it: for that session (24 hours at most) the exposure
+  is the one before signing. The code is valid for 10 minutes and works once.
+- **Photos shown on screen are not checked by the app** (a native image view cannot check a signature); photos and documents that are
+  shared, printed or saved are.
+- **A phone with no key does not use the path** (signed in before this release and not on the internet since, or an app older than this
+  release): its requests get 403 and it stays on the internet. There is no unsigned mode.
+- **Deleting answers.** Anyone on the Wi-Fi can still drop traffic or answer in the listener's place with an unsigned answer; the phone
+  then stops using the path. Signing makes this visible, not impossible.
 
 Mitigations that stay: refresh tokens rotate at every use and a stolen one used beside the real phone deletes the session (reuse
-detection, [OPERATOR_INSTALL.md](OPERATOR_INSTALL.md#authentication-and-otp-limits)); sessions are deleted when a person is deactivated;
-the app uses the LAN address only while the public address fails; the listener answers the warehouse network only and only by its own
-address; the SMS code and the central identity token still never cross it (sign-in needs the internet, except the break-glass case
-above). The facility's Wi-Fi password is therefore a credential of this system
+detection, [OPERATOR_INSTALL.md](OPERATOR_INSTALL.md#authentication-and-otp-limits)); sessions and their keys are deleted when a person is
+deactivated or a session is signed out; the app uses the LAN address only while the public address fails; the listener answers the
+warehouse network only and only by its own address; the SMS code and the central identity token still never cross it (sign-in needs
+the internet, except the break-glass case above). The facility's Wi-Fi password is therefore still a credential of this system
 ([OPERATOR_INSTALL.md](OPERATOR_INSTALL.md#lan-fallback-plain-http-on-the-warehouse-network)). Turning the fallback off
-(`bash scripts/lan.sh off`) removes the listener entirely.
+(`bash scripts/lan.sh off`) removes the listener and its signer entirely.
 
 **Logs.** `gateway-lan` writes the gateway's access-log format (path without the query, no credential), with the phone's own address in
 front; the checker reads both logs together (`checkApiLogs`).
@@ -355,7 +415,7 @@ What a service log may hold, for the 3 x 10 MB of `json-file` log each service k
 `x-logging`; the oldest file is dropped when the third fills, and a recreated container starts with an empty log). The gateway services
 (`gateway`, `gateway-lan`) keep 10 files of 10 MB instead of 3, since they write a line per request: up to 100 MB each. Before an upgrade, a key rotation or a
 database password rotation recreates containers, `node scripts/service-diagnostics.mjs save <label>` writes the last 48 hours of each service log, through
-the same redaction as the other diagnostics, to `<state>/diagnostics/pre-<label>-<utc>/` (directory 0700, files 0600, the newest 5 kept, and the newest `pre-upgrade-*` one always, since the way back of an upgrade may need it). The five services saved are `gateway`, `gateway-lan`, `functions`, `rest` and `supavisor` (the last two only while running or with their profile). Worst case on disk: about 290 MB a copy (100 + 100 + 30 + 30 + 30 MB of log) and so about 1.7 GB for the six copies kept. The copies are redacted beyond the rule above: a query string in a quoted request line (nginx's error line, PostgREST's request log) becomes `?[REDACTED]`, and the referer and user agent PostgREST appends are removed; they still hold client addresses, so they are as private as the live logs. They are not rotated by Docker: only the count above removes them.
+the same redaction as the other diagnostics, to `<state>/diagnostics/pre-<label>-<utc>/` (directory 0700, files 0600, the newest 5 kept, and the newest `pre-upgrade-*` one always, since the way back of an upgrade may need it). The six services saved are `gateway`, `gateway-lan`, `lan-signer`, `functions`, `rest` and `supavisor` (`rest` and `supavisor` only while running or with their profile). Worst case on disk: about 290 MB a copy (100 + 100 + 30 + 30 + 30 MB of log) and so about 1.7 GB for the six copies kept. The copies are redacted beyond the rule above: a query string in a quoted request line (nginx's error line, PostgREST's request log) becomes `?[REDACTED]`, and the referer and user agent PostgREST appends are removed; they still hold client addresses, so they are as private as the live logs. They are not rotated by Docker: only the count above removes them.
 
 - **The rule.** No log line holds a token, a key, an OTP, a password or a query string. A signed storage link
   (`?token=`) is a credential in a query string: a retained log that holds one can replay a still-valid document link.

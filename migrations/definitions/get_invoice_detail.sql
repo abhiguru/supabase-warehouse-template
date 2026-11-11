@@ -15,12 +15,16 @@ BEGIN
   PERFORM warehouse_security.authorize_rpc('get_invoice_detail',jsonb_build_object('p_invoice_id',p_invoice_id));
     SELECT jsonb_build_object(
         'id', i.id, 'inv_fin_year', i.inv_fin_year, 'inv_no', i.inv_no,
+        'inv_prefix', i.inv_prefix, 'invoice_label', warehouse_security.invoice_label(i.inv_prefix, i.inv_no),
         'gr_id', i.gr_id, 'gr_no', i.gr_no, 'customer_id', i.customer_id,
         'customer_name', i.customer_name, 'inv_date', i.inv_date,
         'labour', i.labour, 'tax_amount', i.tax_amount, 'total', i.total,
         'discount', i.discount, 'one_time_charge', i.one_time_charge,
         'is_auto_generated', i.is_auto_generated, 'pricing_mode', i.pricing_mode,
         'duration_mode', COALESCE(i.duration_mode, 'legacy'),
+        -- Migration 164: the charging rule the invoice was made with (before 164: half-month steps, 1 month minimum, rounded up).
+        'charging', jsonb_build_object('step_days', i.charge_step_days, 'minimum_days', i.charge_minimum_days,
+                                       'days_counted', COALESCE(i.duration_mode, 'legacy'), 'rounding', i.total_rounding),
         'notes', i.notes, 'created_by', i.created_by,
         'updated_at', i.updated_at,
         'cancelled_at', i.cancelled_at, 'cancel_reason', i.cancel_reason,
@@ -53,6 +57,20 @@ BEGIN
 
     v_cancelled := (v_invoice_header->>'cancelled_at') IS NOT NULL;
 
+    -- Migration 172: what is paid and due, and the payments, for administrators, supervisors and the invoice's customer (authorize_rpc
+    -- let the customer through for this invoice only); staff see nothing new.
+    IF auth.jwt()->>'role' = 'service_role' OR COALESCE(warehouse_security.active_role(), '') <> 'staff' THEN
+        v_invoice_header := v_invoice_header || warehouse_security.invoice_payment_state(p_invoice_id)
+            || jsonb_build_object('payments', COALESCE((
+                SELECT jsonb_agg(warehouse_security.payment_json(p)
+                                 ORDER BY COALESCE(p.paid_on, warehouse_security.business_date(p.payment_date)), p.payment_date, p.payment_no)
+                FROM payments p WHERE p.invoice_id = p_invoice_id), '[]'::jsonb));
+    END IF;
+
+    -- Migration 173: doc_type, linked_invoice (the other document of a two-document save) and, for every type but 'invoice', the gst
+    -- object (what the document was made with, the tax split and each line's treatment and amounts).
+    v_invoice_header := v_invoice_header || COALESCE(warehouse_security.invoice_gst_json(p_invoice_id), '{}'::jsonb);
+
     -- Migration 143: a cancelled invoice reads the details its lines kept at cancel (details_kept_at set); the copy wins over the current
     -- dispatch line, GRN and item. A line whose dispatch went before the copy existed is listed with its amounts and details_available false.
     -- A live invoice reads exactly as before: its lines still need every join to match, as the inner joins demanded.
@@ -66,6 +84,11 @@ BEGIN
             'charge', x.charge,
             'tax', x.tax,
             'labour_rate', x.labour_rate,
+            -- Migration 164: the line's storage under the invoice's rule (null when the line has no quantity left to read).
+            'storage_amount', CASE WHEN x.qty IS NULL THEN NULL
+                                   WHEN v_invoice_header->>'grn_pricing_mode' = 'ONE_TIME' THEN round(COALESCE(x.charge, 0) * x.qty, 2)
+                                   ELSE warehouse_security.invoice_storage_amount(x.invoice_id, COALESCE(x.charge, 0), x.qty,
+                                                                                  COALESCE(x.duration, 1), x.no_of_days) END,
             'item_name', x.item_name,
             'packaging', x.packaging,
             'grn_item_id', x.grn_item_id,

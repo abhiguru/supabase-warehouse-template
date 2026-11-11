@@ -100,6 +100,9 @@ ADMIN_PHONE=''
 ADMIN_NAME=''
 WEBHOOK_OFF=no
 ASSUME_YES=no
+# WH-146: an offline bundle (scripts/offline-bundle.sh) in place of the network: BUNDLE_FILE is the file, BUNDLE_DIR where it is opened.
+BUNDLE_FILE=''
+BUNDLE_DIR=''
 # What the release's own preflight said (ok, or absent when the release has none) and the tag the running images got (pre-<label>,
 # or none): both go into the record.
 PREFLIGHT=absent
@@ -428,17 +431,18 @@ main() {
       --dry-run) DRY=yes; shift ;;
       --yes) ASSUME_YES=yes; shift ;;
       --unsigned) export WAREHOUSE_UNSIGNED=yes; echo "Warning: --unsigned: on a host without cosign the release images are used without a signature check (logged in upgrades.log)." >&2; shift ;;
-      --ref|--admin-phone|--admin-name)
+      --ref|--admin-phone|--admin-name|--from-bundle)
         if (($# < 2)) || [[ -z "$2" ]]; then echo "Missing value for $1" >&2; usage; exit 2; fi
-        case "$1" in --ref) REF="$2" ;; --admin-phone) ADMIN_PHONE="$2" ;; --admin-name) ADMIN_NAME="$2" ;; esac
+        case "$1" in --from-bundle) BUNDLE_FILE="$2" ;; --ref) REF="$2" ;; --admin-phone) ADMIN_PHONE="$2" ;; --admin-name) ADMIN_NAME="$2" ;; esac
         shift 2 ;;
       --) shift; SETUP_EXTRA=("$@"); break ;;
       -*) echo "Unknown option: $1" >&2; usage; exit 2 ;;
       *) [[ -z "$TAG" ]] || { echo 'Give one release tag.' >&2; usage; exit 2; }; TAG="$1"; shift ;;
     esac
   done
-  if [[ -n "$REF" && -n "$TAG" ]] || [[ -z "$REF" && -z "$TAG" ]]; then
-    echo 'Give a release tag (bash upgrade.sh v0.7.0) or --ref, not both and not neither.' >&2
+  if [[ -n "$BUNDLE_FILE" && -n "$REF" ]]; then echo '--from-bundle moves to the release in the bundle; it does not go with --ref.' >&2; usage; exit 2; fi
+  if [[ -n "$REF" && -n "$TAG" ]] || [[ -z "$REF" && -z "$TAG" && -z "$BUNDLE_FILE" ]]; then
+    echo 'Give a release tag (bash upgrade.sh v0.7.0), --from-bundle FILE, or --ref, not several and not none.' >&2
     usage; exit 2
   fi
   if [[ -n "$ADMIN_PHONE" || -n "$ADMIN_NAME" ]]; then
@@ -450,7 +454,7 @@ main() {
   for ARG in "${ORIG_ARGS[@]}"; do CMD_TEXT+="$(printf '%q' "$ARG") "; done
   CMD_TEXT="${CMD_TEXT% }"
 
-  trap 'rm -f -- "$BACKUP_OUT" "$DB_ERR"; [[ -z "$SIGNERS_TMP" ]] || rm -rf -- "$SIGNERS_TMP"; [[ -z "$PREFLIGHT_TREE" ]] || rm -rf -- "$PREFLIGHT_TREE"' EXIT
+  trap 'rm -f -- "$BACKUP_OUT" "$DB_ERR"; [[ -z "$SIGNERS_TMP" ]] || rm -rf -- "$SIGNERS_TMP"; [[ -z "$PREFLIGHT_TREE" ]] || rm -rf -- "$PREFLIGHT_TREE"; [[ -z "$BUNDLE_DIR" ]] || rm -rf -- "$BUNDLE_DIR"' EXIT
   DB_ERR="$(mktemp)"
   ((EUID != 0)) || refuse 'upgrade.sh must run as the installation user (the owner of this checkout and of the state, a member of the docker group), not as root and not with sudo: root cannot read the files the way the installation does, and git refuses a checkout it does not own.'
   ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
@@ -479,8 +483,20 @@ main() {
   FROM_SHA="$(git rev-parse HEAD)"
   FROM_LABEL="$(git describe --tags --exact-match --match 'v[0-9]*' HEAD 2>/dev/null || git rev-parse --short HEAD)"
   FROM_TAG="$(git describe --tags --abbrev=0 --match 'v[0-9]*' HEAD 2>/dev/null || true)"
-  git remote get-url origin >/dev/null 2>&1 || refuse "this checkout has no remote named origin. Add it: git remote add origin https://github.com/abhiguru/supabase-warehouse-template.git"
+  [[ -n "$BUNDLE_FILE" ]] || git remote get-url origin >/dev/null 2>&1 || refuse "this checkout has no remote named origin. Add it: git remote add origin https://github.com/abhiguru/supabase-warehouse-template.git"
 
+  if [[ -n "$BUNDLE_FILE" ]]; then
+    # WH-146: the bundle is checked against the keys THIS checkout trusts (.github/allowed_signers at HEAD, never the bundle's own copy), then
+    # opened beside the state. Its images are loaded below, after every check that changes nothing.
+    SIGNERS_TMP="$(mktemp -d)"
+    git show "$FROM_SHA:.github/allowed_signers" > "$SIGNERS_TMP/current" 2>/dev/null || : > "$SIGNERS_TMP/current"
+    BUNDLE_DIR="$(dirname "$STATE")/.warehouse-bundle.$$"
+    bash "$ROOT/scripts/offline-bundle.sh" open "$BUNDLE_FILE" "$BUNDLE_DIR" --signers "$SIGNERS_TMP/current" || { BUNDLE_DIR=''; refuse 'the offline bundle was not accepted (message above). Nothing was changed.'; }
+    rm -rf -- "$SIGNERS_TMP"; SIGNERS_TMP=''
+    BUNDLE_TAG="$(bash "$ROOT/scripts/offline-bundle.sh" field "$BUNDLE_DIR" release)"
+    [[ -z "$TAG" || "$TAG" == "$BUNDLE_TAG" ]] || refuse "the bundle is for $BUNDLE_TAG, not $TAG. Nothing was changed."
+    TAG="$BUNDLE_TAG"
+  fi
   if [[ -n "$TAG" ]] && ! [[ "$TAG" =~ $SEMVER ]]; then
     refuse "'$TAG' is not a release tag. Give a tag such as v0.7.0 (the list is on the GitHub releases page; 'git tag --list \"v*\"' after 'git fetch --tags'). Only tagged releases are supported; --ref COMMIT_OR_BRANCH is for tests and development."
   fi
@@ -491,8 +507,11 @@ main() {
 
   say "Installation: $STATE"
   say "Now at:       $FROM_LABEL"
-  step 'Fetching tags from origin'
-  if ! git fetch --tags origin; then
+  if [[ -n "$BUNDLE_FILE" ]]; then
+    step 'Reading the tag from the offline bundle'
+    # The tag comes from the bundle's own git bundle, no network. An existing local tag of the same name must be the same object.
+    git fetch --quiet "$BUNDLE_DIR/source.bundle" "refs/tags/$TAG:refs/tags/$TAG" || refuse "the bundle's source does not carry the tag $TAG, or this checkout already has a different $TAG. Nothing was changed."
+  elif ! git fetch --tags origin; then
     if [[ -n "$REF" && -n "$(resolve_ref "$REF")" ]]; then
       warn "could not fetch from origin; going on with the local $REF"
     else
@@ -504,12 +523,17 @@ main() {
     TO_SHA="$(git rev-parse -q --verify "refs/tags/$TAG^{commit}" || true)"
     [[ -n "$TO_SHA" ]] || refuse "origin has no tag $TAG (after 'git fetch --tags'). Check the name against the GitHub releases page. Nothing was changed."
     local remote lines peeled direct
+    if [[ -n "$BUNDLE_FILE" ]]; then
+      # The commit the bundle names must be the commit of the tag it carries (the images were built from it); the tag's signature is checked below.
+      [[ "$(bash "$ROOT/scripts/offline-bundle.sh" field "$BUNDLE_DIR" commit)" == "$TO_SHA" ]] || refuse "the commit of the bundle is not the commit of $TAG in its source. Nothing was changed."
+    else
     lines="$(git ls-remote origin "refs/tags/$TAG" "refs/tags/$TAG^{}")" || refuse "could not ask origin about the tag $TAG. Nothing was changed."
     peeled="$(awk '$2 ~ /\^\{\}$/ { print $1 }' <<< "$lines")"
     direct="$(awk '$2 !~ /\^\{\}$/ { print $1 }' <<< "$lines")"
     remote="${peeled:-$direct}"
     [[ -n "$remote" ]] || refuse "the tag $TAG is not on origin (a tag made only in this checkout is not a release). Nothing was changed."
     [[ "$remote" == "$TO_SHA" ]] || refuse "the local tag $TAG points to ${TO_SHA:0:12} but origin's points to ${remote:0:12}: the tag was moved. Delete the local one ('git tag -d $TAG'), fetch again, and read the release notes about why it moved. Nothing was changed."
+    fi
     TO_LABEL="$TAG"
   else
     TO_SHA="$(resolve_ref "$REF")"
@@ -649,6 +673,16 @@ main() {
       [[ "${SETUP_EXTRA[i]}" == --sensor-webhook-file && "${SETUP_EXTRA[i + 1]}" == off ]] && sensor_off=yes
     done
     [[ "$sensor_off" == yes ]] || refuse "no facility Slack webhook is stored, but a sensor webhook file is (config/sensor-webhook-url): setup would refuse '--alert-webhook-file off' while it is there, after the checkout. Put the setup options after a '--' at the end of the command: either '--sensor-webhook-file off' to drop the sensor webhook (bash upgrade.sh vX.Y.Z -- --sensor-webhook-file off), or '--alert-webhook-file /absolute/path' (a file holding the facility webhook URL; bash upgrade.sh vX.Y.Z -- --alert-webhook-file /absolute/path). Nothing was changed by this command."
+  fi
+
+  # WH-146: the bundle's images are put on this host while the facility still serves (the job the pre-pull does online), and the
+  # environment tells the release's preflight, build-images.sh and setup.sh to use the bundle and not the network. Not in a dry run.
+  if [[ -n "$BUNDLE_FILE" ]]; then
+    export WAREHOUSE_OFFLINE_BUNDLE="$BUNDLE_DIR" WAREHOUSE_OFFLINE_BUNDLE_LOADED=
+    if [[ "$DRY" != yes && "$RESUME" != yes ]]; then
+      bash "$ROOT/scripts/offline-bundle.sh" load "$BUNDLE_DIR" || refuse 'the images of the bundle could not be loaded (message above). Nothing was changed.'
+      export WAREHOUSE_OFFLINE_BUNDLE_LOADED=yes
+    fi
   fi
 
   # The release's own preflight: after the checks above (cheap, local, this script's own), before the plan, so that --dry-run shows it.

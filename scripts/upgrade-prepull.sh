@@ -27,6 +27,7 @@ SEMVER='^v[0-9]+\.[0-9]+\.[0-9]+(-[0-9A-Za-z.-]+)?(\+[0-9A-Za-z.-]+)?$'
 [[ "$STATE" == /* && -d "$STATE/config" ]] || refuse "STATE is not an installed operator state ('$STATE')."
 
 skip() { say "Pre-pull of images: not done: $*"; exit 0; }
+[[ -z "${WAREHOUSE_OFFLINE_BUNDLE:-}" ]] || skip 'an offline bundle supplied the images (they are already loaded on this host).'
 [[ "$TO_LABEL" =~ $SEMVER ]] || skip "$TO_LABEL is not a release tag, so its images are built on this host during setup."
 [[ "$TO_SHA" =~ ^[0-9a-f]{40}$ ]] || refuse "the commit of $TO_LABEL is not a 40-digit SHA ('$TO_SHA'), so its images cannot be checked."
 arch="$(uname -m 2>/dev/null || true)"

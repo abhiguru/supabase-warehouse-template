@@ -3,7 +3,10 @@
 # address, which the app uses only when the public address fails (an internet outage). It is off by default: an installation that
 # never turns it on has no gateway-lan container and publishes nothing but the loopback gateway port.
 # The fallback needs no certificate, no DNS record and no port forwarding (a DHCP reservation for the host is advised). Read
-# docs/OPERATOR_INSTALL.md, "LAN fallback", first: while the fallback is in use, tokens cross the Wi-Fi unencrypted.
+# docs/OPERATOR_INSTALL.md, "LAN fallback", first: while the fallback is in use, tokens cross the Wi-Fi unencrypted (still true: every
+# request and answer is signed with the session's warehouse network key, so nothing can be changed on the way, but everything can be
+# read). The listener passes every request through its signer, the lan-signer service, which this script starts, recreates and removes
+# with gateway-lan.
 #
 #   bash scripts/lan.sh on [<address>|auto] [--cidr <range>] [--port <n>]
 #                                   Turns the fallback on. <address> is the host's own private address (10.x.x.x, 172.16-31.x.x,
@@ -57,6 +60,9 @@ service_running() {
 case "$command" in
   status)
     node "$ROOT/scripts/lan.mjs" status "$live" "$(container_state)"
+    # The signer (WH-133) runs beside gateway-lan; its health is whether it can read the warehouse network keys.
+    signer_state="$(compose --profile lan ps --all --format '{{.State}} {{.Health}}' lan-signer 2>/dev/null | head -n 1 || true)"
+    if grep -qx 'LAN_ENABLED=true' "$live"; then echo "Container lan-signer: ${signer_state:-not found (is the stack started?)}"; fi
     ;;
   on)
     service_running gateway || { echo 'The gateway service is not running; start the instance first (bash start.sh).' >&2; exit 1; }
@@ -65,19 +71,20 @@ case "$command" in
     cp -p "$live" "$previous"
     mv -f "$staged" "$live"
     # gateway-lan, and the function runtime, whose environment now carries the address that get-config offers to signed-in phones.
-    if ! compose --profile lan up -d --no-deps --wait --wait-timeout 180 gateway-lan functions; then
+    if ! compose --profile lan up -d --no-deps --wait --wait-timeout 180 lan-signer gateway-lan functions; then
       node "$ROOT/scripts/service-diagnostics.mjs" gateway-lan || true
+      node "$ROOT/scripts/service-diagnostics.mjs" lan-signer || true
       mv -f "$previous" "$live"
       if grep -qx 'LAN_ENABLED=true' "$live"; then
         # The fallback was on, with the settings of the file now back in place: a failed rerun (a new port, a new range) must not take a
         # working fallback away. Start it again with them (the function runtime too: the failed run gave it the new address).
-        if compose --profile lan up -d --no-deps --wait --wait-timeout 180 gateway-lan functions >/dev/null 2>&1; then
+        if compose --profile lan up -d --no-deps --wait --wait-timeout 180 lan-signer gateway-lan functions >/dev/null 2>&1; then
           echo 'The gateway-lan service did not become healthy with the new settings (see above). The LAN fallback keeps its earlier settings: config/compose.env is as it was and the service runs with them again.' >&2
         else
           echo 'The gateway-lan service did not become healthy with the new settings (see above), and it did not start again with the earlier ones either. config/compose.env is as it was. Check: bash scripts/lan.sh status' >&2
         fi
       else
-        compose --profile lan rm -sf gateway-lan >/dev/null 2>&1 || true
+        compose --profile lan rm -sf gateway-lan lan-signer >/dev/null 2>&1 || true
         compose up -d --no-deps --wait --wait-timeout 180 functions >/dev/null 2>&1 || true
         echo 'The gateway-lan service did not become healthy (see above). The LAN fallback was not turned on and config/compose.env is as it was.' >&2
       fi
@@ -100,16 +107,22 @@ case "$command" in
       echo "Warning: ${reason} The public services are not affected." >&2
       exit 0
     fi
-    if ! compose --profile lan up -d --no-deps --wait --wait-timeout 60 gateway-lan; then
+    if ! compose --profile lan up -d --no-deps --wait --wait-timeout 60 lan-signer gateway-lan; then
       node "$ROOT/scripts/service-diagnostics.mjs" gateway-lan || true
+      node "$ROOT/scripts/service-diagnostics.mjs" lan-signer || true
       echo 'Warning: the LAN fallback (the gateway-lan service) did not start or did not become healthy (message above). The public services are not affected. Check: bash scripts/lan.sh status, then node scripts/doctor.mjs --lan' >&2
     fi
     exit 0
     ;;
   off)
+    # WH-146: in a local-only facility the warehouse network listener is the only address; turning it off would leave nothing to reach.
+    if grep -qx 'INGRESS=local-only' "$live"; then
+      echo 'This facility is local-only: the warehouse network listener is its only address and cannot be turned off.' >&2
+      exit 1
+    fi
     node "$ROOT/scripts/lan.mjs" stage "$live" "$staged" off
     mv -f "$staged" "$live"
-    compose --profile lan rm -sf gateway-lan >/dev/null
+    compose --profile lan rm -sf gateway-lan lan-signer >/dev/null
     # The function runtime stops offering the address. Not started if the stack is stopped: it picks the change up at the next start.
     if service_running functions; then compose up -d --no-deps --wait --wait-timeout 180 functions; fi
     echo 'The LAN fallback is off: the gateway-lan service is removed and the variables are reset. Phones that saved the address stop using it and keep working over the internet.'

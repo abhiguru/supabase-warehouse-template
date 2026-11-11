@@ -39,10 +39,13 @@ function configuredHosts(definition, names) {
 
 test('the database is reachable only from the services that use it', { skip }, () => {
   const { networks, members, peers } = topology();
-  assert.deepEqual(Object.keys(networks).sort(), ['database', 'default', 'renderer']);
+  assert.deepEqual(Object.keys(networks).sort(), ['database', 'default', 'lan-hop', 'renderer']);
   // The renderer network has no route out: only the function runtime and the renderer are on it.
   assert.equal(networks.renderer.internal, true);
   assert.deepEqual(members.renderer.slice().sort(), ['functions', 'pdf-renderer']);
+  // The lan-hop network (WH-133) has no route out either: only the LAN gateway and its signer are on it.
+  assert.equal(networks['lan-hop'].internal, true);
+  assert.deepEqual(members['lan-hop'].slice().sort(), ['gateway-lan', 'lan-signer']);
   assert.deepEqual(peers('pdf-renderer'), ['functions']);
   assert.deepEqual(peers('db'), ['rest', 'storage', 'supavisor']);
   // The gateway, the function runtime and the helpers that parse outside input
@@ -89,7 +92,7 @@ test('every service still shares a network with each host it is configured to ca
   assert.equal('meta' in services, false);
   assert.equal('admin' in renderedCompose().networks, false);
   // The network table in docs/ARCHITECTURE.md names exactly the rendered networks and their members.
-  const rows = [...read('docs/ARCHITECTURE.md').matchAll(/^\| `([a-z]+)` \| ([^|]+)\|/gm)];
+  const rows = [...read('docs/ARCHITECTURE.md').matchAll(/^\| `([a-z-]+)` \| ([^|]+)\|/gm)];
   assert.deepEqual(rows.map(match => match[1]).sort(), Object.keys(renderedCompose().networks).sort());
   for (const [, network, list] of rows) {
     const documentedMembers = list.split(',').map(name => name.replace(/\s*\([^)]*\)/g, '').trim()).filter(Boolean).sort();
@@ -106,10 +109,10 @@ test('every service still shares a network with each host it is configured to ca
   assert.deepEqual(Object.keys(services['sensor-bridge'].networks), ['default']);
 });
 
-test('the LAN gateway is in profile lan, on the default network only, and reaches what the gateway reaches and nothing else', { skip }, () => {
+test('the LAN gateway is in profile lan, on the default and lan-hop networks only, and reaches what the gateway reaches and nothing else', { skip }, () => {
   const { services, reaches, peers, members } = topology();
   assert.deepEqual(services['gateway-lan'].profiles, ['lan']);
-  assert.deepEqual(Object.keys(services['gateway-lan'].networks), ['default']);
+  assert.deepEqual(Object.keys(services['gateway-lan'].networks).sort(), ['default', 'lan-hop']); // lan-hop: the inner server is reachable by the signer only (WH-133)
   assert.ok(members.default.includes('gateway-lan'));
   // The upstream names its routes file uses (api-http.conf) resolve from it; the database does not.
   for (const match of read('docker/nginx/api-http.conf').matchAll(/^\s+server ([a-z0-9-]+):\d+ resolve;$/gm)) assert.ok(reaches('gateway-lan', match[1]), `gateway-lan cannot resolve ${match[1]}`);
@@ -331,4 +334,15 @@ test('the CUPS container: no published port, one USB bind, a healthcheck that ne
   assert.match(cups.healthcheck.test.join(' '), /lpstat -p/);
   assert.doesNotMatch(cups.healthcheck.test.join(' '), /curl/);
   assert.equal(cups.environment.PRINTBRIDGE_TOKEN, undefined);
+});
+
+test('the LAN signer is in profile lan, on the default and lan-hop networks, reaches PostgREST and the inner server and not the database', { skip }, () => {
+  const { services, reaches, peers } = topology();
+  assert.deepEqual(services['lan-signer'].profiles, ['lan']);
+  assert.deepEqual(Object.keys(services['lan-signer'].networks).sort(), ['default', 'lan-hop']);
+  assert.ok(reaches('lan-signer', 'rest'), 'lan-signer cannot resolve rest');
+  assert.ok(!peers('lan-signer').includes('db'), 'lan-signer can reach the database');
+  assert.deepEqual(services['gateway-lan'].networks['lan-hop'].aliases, ['gateway-lan-back']);
+  assert.equal(services['lan-signer'].environment.LAN_SIGNER_UPSTREAM, 'http://gateway-lan-back:8081');
+  assert.equal(services['lan-signer'].ports, undefined, 'the signer publishes nothing');
 });

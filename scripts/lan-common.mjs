@@ -188,6 +188,33 @@ export function lanOffText(text, current = {}) {
   return rest.length ? setEnvLine(result, 'COMPOSE_PROFILES', rest.join(',')) : removeEnvLine(result, 'COMPOSE_PROFILES');
 }
 
+// ---------------------------------------------------------------- the probe of the signer (WH-133)
+// Every request a phone makes on the LAN path goes through lan-signer, which reads the session's warehouse network key with the service key.
+// The two probes of the listener (get-public-config, GET /rest/v1/) need no signature, so they pass while lan-signer cannot read keys
+// (the old service key after a rotation, PostgREST down), when every signed request of every phone would be refused. This sends the
+// identity check a phone sends, with a key id no session has (the nil UUID) and a fixed challenge: the signer looks it up and answers 403
+// `lan_key_unknown` when the lookup works. 503 `lan_key_lookup` is the fault; 502 `lan_signer_down` is gateway-lan's answer when lan-signer
+// does not answer at all. Returns { ok: true } or { ok: false, text }.
+export async function probeLanSigner(lan, fetchImpl = fetch) {
+  const origin = lanOrigin(lan);
+  let response;
+  try {
+    response = await fetchImpl(`${origin}/functions/v1/get-public-config`, {
+      headers: { 'x-lan-key-id': '00000000-0000-0000-0000-000000000000', 'x-lan-challenge': '0'.repeat(64) },
+      signal: AbortSignal.timeout(15000), redirect: 'error',
+    });
+  } catch (error) {
+    return { ok: false, text: `${origin} does not answer the identity check from this host (${error.cause?.code ?? error.message}).` };
+  }
+  const body = typeof response.json === 'function' ? await response.json().catch(() => null) : null;
+  const code = body && typeof body === 'object' ? body.code : undefined;
+  if (response.status === 403 && code === 'lan_key_unknown') return { ok: true };
+  const repair = 'Recreate it: bash scripts/compose.sh --profile lan up -d --force-recreate --no-deps lan-signer gateway-lan (or bash scripts/lan.sh on auto)';
+  if (code === 'lan_key_lookup') return { ok: false, text: `the LAN signer (lan-signer) cannot read the warehouse network keys, usually because it holds the service key from before a key rotation, or the REST service is down: every phone's request on the LAN path is refused. ${repair}` };
+  if (response.status === 502) return { ok: false, text: `the LAN signer (lan-signer) does not answer behind ${origin} (HTTP 502): every phone's request on the LAN path fails. Check: bash scripts/lan.sh status. ${repair}` };
+  return { ok: false, text: `${origin} answered HTTP ${response.status}${code ? ` (${String(code)})` : ''} to the identity check instead of the signer's 403 lan_key_unknown: the listener does not check signatures as this release does. ${repair}` };
+}
+
 // ---------------------------------------------------------------- the probe of the key check
 // The LAN listener must hold the same API keys as the rest of the installation. They are written into its configuration when it starts
 // (docker/nginx/templates/http.conf.template, the map of the `apikey` header), so a container that was not recreated after rotate-keys.sh

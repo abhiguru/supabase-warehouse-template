@@ -679,11 +679,13 @@ const lanOn = h => writeFileSync(join(h.state, 'config/compose.env'), `WAREHOUSE
 const HOST_WITH_LAN = [{ name: 'ens33', address: '192.168.1.52', prefix: 24, cidr: '192.168.1.0/24', defaultRoute: true }];
 const LAN_URL = 'http://192.168.1.52:8080/functions/v1/get-public-config';
 const LAN_REST_URL = 'http://192.168.1.52:8080/rest/v1/';
-const lanAnswer = (instanceId = 'iid-1', path = 'lan', status = 200) => async () => ({ ok: status < 400, status, headers: new Headers(path ? { 'x-warehouse-path': path } : {}), json: async () => ({ success: true, data: { instanceId } }) });
+// WH-133: the identity check of the signer (the nil key id) is answered with the signer's own refusal, 403 lan_key_unknown, by a healthy listener.
+const SIGNER_KNOWN = { ok: false, status: 403, headers: new Headers({ 'x-warehouse-path': 'lan' }), json: async () => ({ code: 'lan_key_unknown' }) };
+const lanAnswer = (instanceId = 'iid-1', path = 'lan', status = 200) => async (url, options) => options?.headers?.['x-lan-key-id'] ? SIGNER_KNOWN : ({ ok: status < 400, status, headers: new Headers(path ? { 'x-warehouse-path': path } : {}), json: async () => ({ success: true, data: { instanceId } }) });
 // The listener as it is: the public configuration answers whatever the keys, and the REST root is where the key check is (the gateway's 401 for a key it does not have).
-const lanWithKeys = (restStatus, restBody = { message: 'Unauthorized' }) => async url => (String(url) === LAN_REST_URL
+const lanWithKeys = (restStatus, restBody = { message: 'Unauthorized' }) => async (url, options) => (String(url) === LAN_REST_URL
   ? { ok: restStatus < 400, status: restStatus, headers: new Headers({ 'x-warehouse-path': 'lan' }), json: async () => restBody }
-  : lanAnswer()());
+  : lanAnswer()(url, options));
 
 test('LAN fallback: silent while off, and an alert left from before it was turned off is cleared', async () => {
   const h = harness();
@@ -718,9 +720,9 @@ test('LAN fallback: the listener must answer as this installation with the LAN h
     h.deps.interfaces = () => HOST_WITH_LAN;
     const ids = results => results.map(r => [r.id, r.ok]);
     h.asked = [];
-    h.deps.fetch = async (url, options) => { h.asked.push([url, options.redirect, options.headers?.apikey]); return lanAnswer()(); };
+    h.deps.fetch = async (url, options) => { h.asked.push([url, options.redirect, options.headers?.apikey, options.headers?.['x-lan-key-id']]); return lanAnswer()(url, options); };
     assert.deepEqual(ids(await W.checkApiLan(h.ctx())), [['lan_ip_changed', true], ['lan_http_down', true]]);
-    assert.deepEqual(h.asked, [[LAN_URL, 'error', undefined], [LAN_REST_URL, 'error', 'unit.anon.key']], 'the public configuration, then the REST root with the anon key of compose.env');
+    assert.deepEqual(h.asked, [[LAN_URL, 'error', undefined, undefined], [LAN_REST_URL, 'error', 'unit.anon.key', undefined], [LAN_URL, 'error', undefined, '00000000-0000-0000-0000-000000000000']], 'the public configuration, then the REST root with the anon key of compose.env, then the identity check of the signer');
     h.deps.fetch = lanAnswer('other');
     const other = await W.checkApiLan(h.ctx());
     assert.deepEqual(ids(other), [['lan_ip_changed', true], ['lan_http_down', false]]);
@@ -768,6 +770,24 @@ test('LAN fallback: a listener that answers the public configuration but refuses
     const run = async n => { const ctx = W.makeContext(h.deps, data); const { results, ran } = await W.runChecks(ctx, [['api_lan', W.checkApiLan]]); return W.evaluate(data, results, ran, h.clock.t + n * 5 * 60000); };
     assert.deepEqual((await run(0)).start, []);
     assert.deepEqual((await run(1)).start.map(item => item.id), ['lan_http_down']);
+  } finally { clean(h); }
+});
+
+test('LAN fallback: a listener that does not sign, a signer that cannot read the keys and a signer that is down raise lan_http_down (WH-133)', async () => {
+  const h = harness();
+  try {
+    lanOn(h);
+    h.deps.interfaces = () => HOST_WITH_LAN;
+    const signer = (status, code) => async (url, options) => (options?.headers?.['x-lan-key-id'] ? { ok: false, status, headers: new Headers(), json: async () => (code ? { code } : {}) } : lanAnswer()(url, options));
+    h.deps.fetch = async (url, options) => (options?.headers?.['x-lan-key-id'] ? lanAnswer()(url, options).then(() => ({ ok: true, status: 200, headers: new Headers(), json: async () => ({ success: true }) })) : lanAnswer()(url, options));
+    const unsigned = await W.checkApiLan(h.ctx());
+    assert.deepEqual(unsigned.map(r => [r.id, r.ok]), [['lan_ip_changed', true], ['lan_http_down', false]]);
+    assert.equal(unsigned[1].summary, 'The LAN signer cannot check phones\' requests');
+    assert.match(unsigned[1].detail, /answered HTTP 200 to the identity check instead of the signer's 403 lan_key_unknown/);
+    h.deps.fetch = signer(503, 'lan_key_lookup');
+    assert.match((await W.checkApiLan(h.ctx()))[1].detail, /cannot read the warehouse network keys.*service key from before a key rotation/);
+    h.deps.fetch = signer(502);
+    assert.match((await W.checkApiLan(h.ctx()))[1].detail, /does not answer behind.*\(HTTP 502\)/);
   } finally { clean(h); }
 });
 

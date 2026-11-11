@@ -192,8 +192,8 @@ SELECT pg_temp.dirf_assert((:'details_b'::jsonb#>>'{data,dispatch,invoices_summa
   AND (:'details_b'::jsonb#>>'{data,dispatch,statistics,total_invoice_amount}')::numeric = 714,
   'I6: W2DB has two invoices of 357, 714 in all: ' || (:'details_b'::jsonb#>'{data,dispatch,invoices_summary}')::text
     || ' ' || (:'details_b'::jsonb#>'{data,dispatch,statistics}')::text);
--- The keys of both objects are what they were.
-SELECT pg_temp.dirf_assert(pg_temp.dirf_keys(:'details_a'::jsonb#>'{data,dispatch,invoices_summary}') = 'invoice_numbers,total_amount,total_invoices'
+-- The keys of both objects are what they were. Migration 175 (WH-139) adds invoice_labels to invoices_summary.
+SELECT pg_temp.dirf_assert(pg_temp.dirf_keys(:'details_a'::jsonb#>'{data,dispatch,invoices_summary}') = 'invoice_labels,invoice_numbers,total_amount,total_invoices'
   AND pg_temp.dirf_keys(:'details_a'::jsonb#>'{data,dispatch,statistics}')
       = 'avg_duration,avg_no_of_days,total_dispatched_qty,total_invoice_amount,total_invoiced_items,total_items,unique_grns',
   'I6: the keys of invoices_summary and statistics are unchanged');
@@ -230,8 +230,8 @@ SELECT pg_temp.dirf_assert((pg_temp.dirf_row(:'invoice_list'::jsonb->'data', 'in
   AND (pg_temp.dirf_row(:'invoice_list'::jsonb->'data', 'invoice_number', '104')->>'total_qty')::numeric = 10,
   'I9: total_qty is the billed bags (90101: 20): ' || left(:'invoice_list', 300));
 SELECT pg_temp.dirf_assert(to_regclass('public.mv_invoice_list') IS NULL
-  AND has_function_privilege('authenticated', 'public.get_invoices_list(integer,integer,uuid,integer,text,text,text,text,integer,integer,text,timestamptz,timestamptz,uuid[])', 'EXECUTE')
-  AND NOT has_function_privilege('anon', 'public.get_invoices_list(integer,integer,uuid,integer,text,text,text,text,integer,integer,text,timestamptz,timestamptz,uuid[])', 'EXECUTE'),
+  AND has_function_privilege('authenticated', 'public.get_invoices_list(integer,integer,uuid,integer,text,text,text,text,integer,integer,text,timestamptz,timestamptz,uuid[],text,text)', 'EXECUTE')
+  AND NOT has_function_privilege('anon', 'public.get_invoices_list(integer,integer,uuid,integer,text,text,text,text,integer,integer,text,timestamptz,timestamptz,uuid[],text,text)', 'EXECUTE'),
   'I9: the list view is gone and get_invoices_list is for signed-in callers only');
 SELECT pg_temp.dirf_assert(pg_temp.dirf_col(:'invoice_search'::jsonb->'data', 'invoice_number') = ARRAY['90101'],
   'I11: searching 2026-90101 finds 90101: ' || left(:'invoice_search', 300));
@@ -277,7 +277,7 @@ SELECT pg_temp.dirf_assert(pg_temp.dirf_col(:'activity'::jsonb#>'{data,recent_in
   'I11: the recent invoices show full numbers: ' || pg_temp.dirf_col(:'activity'::jsonb#>'{data,recent_invoices}', 'invoice_number')::text);
 SELECT pg_temp.dirf_assert(position('lpad(m.inv_no::text, 4, ''0'')' IN pg_get_functiondef(p.oid)) = 0,
   'I11: get_invoices_list compares the search with the uncut number')
-FROM pg_proc p WHERE p.oid = 'public.get_invoices_list(integer,integer,uuid,integer,text,text,text,text,integer,integer,text,timestamp with time zone,timestamp with time zone,uuid[])'::regprocedure;
+FROM pg_proc p WHERE p.oid = 'public.get_invoices_list(integer,integer,uuid,integer,text,text,text,text,integer,integer,text,timestamp with time zone,timestamp with time zone,uuid[],text,text)'::regprocedure;
 
 -- ---------------------------------------------------------------------------
 -- The patched functions keep SECURITY DEFINER, their settings and grants

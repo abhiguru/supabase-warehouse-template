@@ -466,7 +466,7 @@ test('the page footer carries the report title without a number and the cut note
 
 test('generate-report-pdf is routed for signed-in callers and gets the document PDF environment', () => {
   const router = readFileSync(new URL('../functions/main/index.ts', import.meta.url), 'utf8');
-  assert.match(router, /const allowed = new Set\(\[\.\.\.publicFunctions, [^\]]*'generate-report-pdf'\]\);/);
+  assert.match(router, /const allowed = new Set\(\[\.\.\.publicFunctions, [^\]]*'generate-report-pdf'[^\]]*\]\);/);
   assert.doesNotMatch(/const publicFunctions = new Set\(\[([^\]]+)\]\)/.exec(router)[1], /generate-report-pdf/);
   assert.deepEqual([...workerEnvNames['generate-report-pdf']].sort(),
     ['JWT_SECRET', 'PDF_RENDERER_URL', 'SUPABASE_ANON_KEY', 'SUPABASE_PUBLIC_URL', 'SUPABASE_REST_URL', 'SUPABASE_SERVICE_ROLE_KEY', 'SUPABASE_STORAGE_URL', 'SUPABASE_URL']);
@@ -1485,7 +1485,7 @@ const otherReports = name => reportNames.filter(report => report !== name);
 const periodOf = report => periodReports.has(report) ? invoicePeriod : {};
 
 test('invoicing, bucket and search are accepted where the app has them, and null or a blank search is no choice', () => {
-  for (const invoicing of ['invoiced', 'not_invoiced']) assert.equal(grnRequest({ invoicing }).invoicing, invoicing);
+  for (const invoicing of ['invoiced', 'not_invoiced', 'partly_invoiced']) assert.equal(grnRequest({ invoicing }).invoicing, invoicing);
   for (const bucket of ['0-120', '121-240', '241-364', 'over-364']) assert.equal(agingRequest({ bucket }).bucket, bucket);
   for (const fields of [{}, { invoicing: null }, { invoicing: undefined }]) assert.equal(grnRequest(fields).invoicing, null);
   for (const fields of [{}, { bucket: null }, { bucket: undefined }]) assert.equal(agingRequest(fields).bucket, null);
@@ -1511,7 +1511,7 @@ test('invoicing, bucket and search are accepted where the app has them, and null
 
 test('invoicing, bucket and search are refused on another report, without the customer, or with a value the app does not send, and never echoed', () => {
   const invoicingScope = 'invoicing is only for the GRN activity of one customer';
-  const invoicingValue = "invoicing must be 'invoiced' or 'not_invoiced'";
+  const invoicingValue = "invoicing must be 'invoiced', 'not_invoiced' or 'partly_invoiced'";
   const bucketScope = 'bucket is only for the stock aging of one customer';
   const bucketValue = "bucket must be '0-120', '121-240', '241-364' or 'over-364'";
   const searchScope = 'search is only for the item stock summary';

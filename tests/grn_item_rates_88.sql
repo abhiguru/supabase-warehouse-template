@@ -205,6 +205,9 @@ SELECT pg_temp.ir_as(:'admin_claims'::jsonb,format($q$SELECT public.create_dispa
   :'dispatch_for',jsonb_build_object('disp_no','IRD3','disp_date',:'dm8'),jsonb_build_object('gr_trl_id',:'pear_lot','disp_qty',:pear_stock))) AS disp3 \gset
 SELECT pg_temp.ir_assert(:'disp3'::jsonb->>'success'='true' AND :pear_stock=2 AND (SELECT stock=0 FROM public.goodsreceived_trl WHERE id=:'pear_lot'::uuid),
   'dispatch of the 2 Pear bags empties the GRN: '||:'disp3');
+-- This test checks the rule of a facility that has invoicing goods as they leave off (the default before migration 174, WH-162): with it on,
+-- the GRN is partly invoiced while the Pear lot has no invoice line (tests/invoice_as_goods_leave.sql).
+UPDATE warehouse_security.charging_rule SET invoice_as_goods_leave = false WHERE id;
 -- Before the invoice: the item's rate, not invoiced.
 SELECT pg_temp.ir_get(:'staff_claims'::jsonb,'IR-INV') AS inv_before \gset
 SELECT pg_temp.ir_assert(:'inv_before'::jsonb#>>'{data,invoiced}'='false' AND pg_temp.ir_row(:'inv_before'::jsonb,'IR Fig',10)='item 4/1.5/5 0-50 false',

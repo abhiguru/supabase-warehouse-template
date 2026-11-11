@@ -41,9 +41,48 @@ the GRN's own rate whose weight band holds the line's weight (the narrowest band
 item's rate. Once the invoice is saved its figures win; if the invoice is deleted, the GRN's own
 rate applies again.
 
-## Header rounding and save contract
+## Charging rule (migration 164)
 
-Preview subtotal sums line bases. Header tax is the ceiling of the sum of
+Each facility has one charging rule (`warehouse_security.charging_rule`, read with `get_charging_rule()` and changed with
+`set_charging_rule(p_rule)`, administrators only; each change writes one `audit_log` row). It starts as the rule above:
+
+| Field | Values | Default (the rule above) |
+|---|---|---|
+| `step_days` | 15 (half a month), 30 (a month), 1 (a day) | 15 |
+| `minimum_days` | 0 (one step), 15, 30, 60, 90; never between 0 and the step | 30 |
+| `days_counted` | `legacy` (dispatch date minus receipt date), `standard` (plus the day of receipt) | `legacy` |
+| `rounding` | `up` (ceiling), `nearest` (50 paise up), `none` (to paise) | `up` |
+
+Duration in months is `max(minimum_days, ceil(billable_days / step_days) × step_days) / 30`, billable days never below one; a month
+is 30 days for every step. With the default this is the formula above, value for value (`warehouse_security.charge_duration` uses
+that expression for it). With steps of a day the stored duration has two decimals (40 days: 1.33) and the line's storage is worked out
+from the days: quantity × rate × days / 30, rounded to paise. `rounding` applies to the header tax and the grand total (where the
+ceilings below are); line figures stay rounded to paise. ONE_TIME lines have no duration; only the rounding applies to them.
+
+A new invoice takes the facility's rule when it is saved and stores it (`invoice.charge_step_days`, `charge_minimum_days`,
+`total_rounding`, and `duration_mode`); an edit, the header recalculation, the readers and the prints use the stored rule. Every
+invoice saved before migration 164 is stored as the default rule. A `duration_mode` sent with a save still wins over `days_counted`.
+The invoice form's preview answers the facility's rule as `charging`; the form sends it back as `charging` in the invoice data, and a
+save whose rule is no longer the facility's is refused with `CHARGING_CHANGED` (WH409, nothing saved; no `charging` key: no check).
+
+## Invoicing goods as they leave (migration 165)
+
+The charging rule's `invoice_as_goods_leave` (default true since migration 174, which also turned it on where no administrator had
+changed it; `set_charging_rule` takes it as an optional key) lets a facility invoice
+dispatch lines while other lots of the GRN are still in store. With it off every rule of this page holds as written. With it on:
+the D9 stock check (`GRN_HAS_STOCK`) is not made, a GRN may have several live invoices, and a dispatch line is on one live invoice at
+most (`A dispatch line is already on another invoice`, WH409). The invoice form offers only the dispatch lines on no live invoice, and
+`get_invoiceable_grns` lists the GRNs that have one. A GRN is `invoiced` when it has no stock and every dispatch line is on a live
+invoice, `partly_invoiced` when it has a live invoice and is not invoiced, else `not_invoiced` (with the setting off: a live invoice
+means invoiced). `goodsreceived.invoiced` is the cache of `invoiced`. A partly invoiced GRN takes new lots; its GRN date is locked; its
+own rates stay live until it is invoiced. Each invoice rounds its own header, so a GRN invoiced in parts can total up to the rounding
+of each invoice more than one invoice would. Turning the setting off is refused while a GRN with stock has a live invoice
+(`PARTIAL_INVOICES_OPEN`, with the count and up to five GRN numbers).
+`get_grn_details` answers `can_create_invoice` in its invoice summary (migration 174): the GRN is not deleted, `get_invoiceable_grns` would
+list it (both use `warehouse_security.grn_invoiceable`), and it has a dispatch line on no live invoice.
+
+
+(With a charging rule other than the default, "ceiling" below reads as the invoice's `rounding`.) Preview subtotal sums line bases. Header tax is the ceiling of the sum of
 **unrounded** line tax bases; grand total is the ceiling of subtotal plus header
 tax. Consequently the sum of displayed line totals can differ from the header.
 
@@ -204,6 +243,59 @@ current dispatch line, GRN or item. Deleting the dispatch later still empties `d
 emptied before the migration has nothing to copy: it is listed with its amounts and reads "Details not available" (`details_available` false).
 The `kept_*` columns are not among the internal columns below: they hold what a line already shows.
 
+## GST documents (migration 173)
+
+Nothing here applies until an administrator saves the facility's GST details (`set_gst_details`): before that every invoice is saved as
+`doc_type` `invoice`, with every figure, read, PDF and pre-printed print exactly as described above, and an item's GST treatment is not
+used. An invoice saved before the details keeps `invoice` and today's rules for good, edits included.
+
+**Which document** (decided by the server at save and stored on the invoice):
+
+| Facility | Lines | Customer | Document |
+|---|---|---|---|
+| Not registered | any | any | `bill`: no tax on any line, no GSTIN or SAC |
+| Registered | all exempt | any | `bill_of_supply` |
+| Registered | all taxable | any | `tax_invoice` |
+| Registered | mixed | no valid GSTIN | `invoice_cum_bos` (tax on the taxable lines only) |
+| Registered | mixed | valid GSTIN | two documents in one transaction: `tax_invoice` (the number sent, the taxable lines, the discount) and `bill_of_supply` (the next number, the exempt lines), linked by `linked_invoice_id` |
+
+A line is exempt when its item's `gst_treatment` is `exempt_agri` at the save; an exempt line charges no tax whatever its rate's tax %, its
+stored tax % is 0, and so is every line of a bill. The invoice form answers `tax_percent` 0 for those lines, so the rate check and the
+total check agree with the save. Each document rounds its own header (the charging rule's rounding).
+
+**Saved documents keep what they were made with**: the facility's legal name, address, GSTIN, state and SACs, the customer's GSTIN, state
+and address, and each line's treatment. An edit keeps them (the customer's are taken again only when the edit moves the invoice to another
+customer); a line the edit adds takes its item's treatment, and the type follows the lines. An edit whose lines would need two documents is
+refused (`EDIT_NEEDS_TWO_DOCUMENTS`). The edit form does not offer the lines of the invoice's other document.
+
+**Tax split** (tax invoice and invoice-cum-bill of supply). The customer's state is the first two digits of a valid GSTIN, else
+`customers.state_code`; the place of supply is the customer's state, else the facility's. The same state as the facility (or none): CGST
+and SGST; another state: IGST. Rounding: the header tax is rounded per the charging rule first; then CGST = round(tax / 2, 2), half away
+from zero, and SGST = tax - CGST, so the two add up to the tax exactly (CGST is at most one paisa more). Each line: line tax = round(taxable
+value x tax % / 100, 2), split the same way. The lines can add up to less than the header by the header's rounding, as before.
+
+Worked (made-up figures, rule `up`, facility in Gujarat): 10 bags, 12.50 a month, labour 3.00, 5 %, 1.5 months: taxable 217.50, line tax
+10.88 (CGST 5.44, SGST 5.44), header tax 11 (CGST 5.50, SGST 5.50), total 229. The same customer with a Maharashtra GSTIN: IGST 11.00. With
+rounding `none` a tax of 10.87 splits 5.44 and 5.43.
+
+**Lost answer**: the kept answer of a two-document save is replayed, and `get_submission_result` finds it, only while both documents
+exist. The two documents are deleted together or not at all: `delete_invoice` refuses one of a pair (`INVOICE_PAIR`) and
+`delete_invoice_pair` deletes both in one transaction (a refusal of either, such as `INVOICE_HAS_PAYMENTS`, deletes neither). Cancelling
+one leaves the other as it is.
+
+**Printed documents.** The PDF of a GST document prints the title (TAX INVOICE, BILL OF SUPPLY, INVOICE-CUM-BILL OF SUPPLY, BILL), the
+facility's legal name, address, GSTIN and state, the customer's name, address ("Not given" when there is none), GSTIN and state, the place
+of supply and "Whether tax is payable on reverse charge: No" (tax documents), each line with its SAC, quantity, months (or One-time), rate,
+labour rate, taxable value and CGST/SGST or IGST, the totals by head, "Exempt supply, no GST charged" on a bill of supply, and "For <legal
+name>, Authorised signatory". The pre-printed form prints no title, and in its state field the facility's state the invoice was made with (GUJARAT, as before, for an
+`invoice` or a bill of an unregistered facility); on a document made with the GST details saved, a GRN reference longer than its 10 characters keeps its end and starts with "..." (an `invoice` cuts its end, as before). It prints half the tax in SGST and CGST for an `invoice` (as always), the stored
+CGST and SGST for a tax invoice or invoice-cum-bill of supply, and blank SGST, CGST and tax total for a bill or bill of supply. An IGST
+invoice is not printed on the form ("IGST invoices print on plain paper."). On a document made with the GST details saved (any type but
+`invoice`), a value longer than its field on the form (an amount, quantity, the state, weight, rate or months, the address, the amount in
+words, the customer's GSTIN) is never cut: that invoice is not printed and is named in `skipped` with `reason` `does_not_fit` and the field;
+the rest of the range prints. An `invoice` (made before the GST details) prints exactly as before: such values are cut to their fields. When every invoice of the range is skipped (cancelled, IGST
+or not fitting) the answer is HTTP 422 with `code` `ALL_SKIPPED`, the message and the `skipped` list.
+
 ## Internal columns
 
 Six columns of `invoice` are internal to the warehouse: `discount_reason`,
@@ -320,6 +412,16 @@ line), and the guards count only live invoices.
 not replayed (migration 120), so entering the same document again creates it. `I1` and `I0001` are different strings: an invoice
 or dispatch number is compared as it is stored. (A soft-deleted invoice row (`deleted_at` set), which only the service key or an operator makes, still
 reserves its number, as above; a deleted invoice's row is gone and `unique_inv_no_per_year` still refuses a second invoice with a number a live or cancelled invoice holds.)
+
+### Optional prefix (migration 175, WH-139)
+
+An administrator may set a prefix of up to 8 characters (`A-Z`, `0-9`, `/`, `-`; lowercase is turned into capitals) with `set_document_numbering('invoice', {scheme, start, prefix})`; empty (the default) means none. A rule that leaves `prefix` out keeps the stored one. The number stays a whole number: counting, the suggestion and uniqueness per financial year read the digits only. The full number is prefix + digits with no space (at most 8 + 8 = 16 characters), for example `SRT/12`.
+
+- The prefix cannot change while any invoice row (live, cancelled or soft-deleted) exists in the current financial year: `{success:false, error_code:'WH409', reason:'NUMBERING_PREFIX_MID_YEAR'}`. From 1 April until the first invoice of the year it can change.
+- Each invoice stores the prefix it was saved with (`invoice.inv_prefix`, set on insert from the prefix the invoice's financial year already holds, else the rule's) and keeps it. All invoices of a financial year carry one prefix: an invoice that `update_invoice` moves to another financial year (a new date) takes that year's prefix, and no other change of the stored prefix is allowed.
+- Reads add `inv_prefix` and `invoice_label` (the full number) beside the unchanged `inv_no` / `invoice_number` digits: invoice list items, `get_invoice_detail` and the `get_invoice_data` header (and their `linked_invoice`), the answers of save (also each of `documents`), update, cancel, delete and `delete_invoice_pair` (and their refusals), the `invoice` object of `record_payment`, `update_payment` and `delete_payment`, the print range, and `suggest_document_number('invoice')` (`prefix`). The GRN, dispatch and customer reads and the reports carry `invoice_label` too (`invoice_labels` beside `invoice_numbers`), and every message that names an invoice uses the full number. `get_invoices_list` searches the full number (`SRT/12` and `12` both match, any case).
+- Both documents of a two-document GST save carry the same prefix (they are in one financial year).
+- The PDF prints the full number; the pre-printed form never cuts it: a number longer than the 12-character field moves the GSTIN right (one space after the number), and an invoice whose GSTIN would then run into the state is printed on plain paper instead (WH-151's fit check).
 
 ## Invoices only when the goods are out, and the total the user confirmed (migration 121, owner decisions D9, D18, D23)
 

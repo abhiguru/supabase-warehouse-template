@@ -28,6 +28,7 @@
     "retention:preview": "bash scripts/retention.sh preview",
     "retention:apply": "bash scripts/retention.sh apply",
     "storage:retag": "bash scripts/storage-retag.sh",
+    "storage:check": "bash scripts/storage-file-check.sh",
     "check:contract": "node scripts/check-mobile-contract.mjs",
     "doctor": "node scripts/doctor.mjs",
     "test:pooler": "bash tests/pooler-check.sh",

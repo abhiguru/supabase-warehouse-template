@@ -16,6 +16,8 @@ Sections: [host prerequisites](#host-prerequisites),
 [authentication and OTP limits](#authentication-and-otp-limits),
 [central sign-in](#central-sign-in),
 [Cloudflare Tunnel ingress](#cloudflare-tunnel-ingress),
+[ingress choices](#ingress-choices-wh-146),
+[local-only facility](#local-only-facility-no-domain-no-internet),
 [LAN fallback](#lan-fallback-plain-http-on-the-warehouse-network),
 [external doctor](#external-doctor), [first-use checks](#first-use-checks),
 [ordinary operation](#ordinary-operation), [retention](#retention),
@@ -185,13 +187,13 @@ The operator scripts use only Node's built-in modules; `npm ci` is needed only t
 | App origin | `--app-url` (optional) | HTTPS origin (no path or port) stored as the trusted browser origin. Leave it out and it is the `--api-url` origin. |
 | Company name | `--company` | Display name of the facility, up to 120 characters. Required on a first install. |
 | Cloudflare Tunnel | `scripts/tunnel.sh adopt` (needs the state, so after setup) | A **new** tunnel for this host with a route for the `--api-url` hostname: its `config.yml` with the credentials JSON, or a dashboard token file. Not a config copied from another machine. See [Cloudflare Tunnel ingress](#cloudflare-tunnel-ingress). |
-| MSG91 provider file | `--provider-env` | Mode-0600 file with five keys; see **MSG91 provider file** below. Required on a first install, **except** a member installation that signs in through the association alone (`--central-issuer` given, no `--central-local-code on`): that one needs no SMS provider and stores none. |
+| MSG91 provider file | `--provider-env` | Mode-0600 file with five keys; see **MSG91 provider file** below. Required on a first install, and whenever `--central-issuer` names an issuer: a facility on central sign-in keeps its own SMS provider, so customers can still sign in when the central service can't send codes. |
 | SMS spending ceilings | `--sms-hourly-ceiling`, `--sms-daily-ceiling` | SMS sends an hour (`otp_global_hourly_cap`) and a day (`otp_daily_provider_attempt_cap`, the last 24 hours) for the whole facility; whole numbers. A terminal is offered 60 and 300 on a first install (Enter accepts); with no terminal and no option a first install gets 60 and 300. See **SMS spending ceiling** under [Authentication and OTP limits](#authentication-and-otp-limits). |
 | First administrator | `--admin-phone`, `--admin-name` (both required) | `91` and ten digits, and a display name; see **First administrator** below. |
 | Slack webhook file | `--alert-webhook-file` | Private file with the facility's incoming-webhook URL. `off` only for a non-production install; without the option a terminal is asked and no terminal means setup refuses. See [Setup](#setup). |
 | Sensor Slack webhook file | `--sensor-webhook-file` | Private file with a second, separate incoming-webhook URL for sensor alerts. Required when Slack alerts are on and sensors are on; `off` removes it; leave it out to keep what is stored. See [Setup](#setup). |
 | External heartbeat file | `--heartbeat-url-file` | Private file (mode 0600, outside the checkout, one line) with the ping URL of a dead-man switch such as healthchecks.io; stored as `config/heartbeat-url`. `off` removes it; leave it out to keep what is stored. Without one `npm run doctor` warns, unless the decision is recorded (`config/heartbeat-declined`, [MONITORING.md](MONITORING.md#external-heartbeat-the-dead-man-switch)). Association members also see [An association view with healthchecks](MONITORING.md#an-association-view-with-healthchecks). |
-| Central sign-in (members only) | `--central-issuer` with `--central-jwks-url` or `--central-jwks-file` | The issuer and the public key set (an address or a file) that the association gives you; see [Central sign-in](#central-sign-in). Leave out for SMS sign-in only. |
+| Central sign-in (members only) | `--central-issuer` with `--central-jwks-url` or `--central-jwks-file`, and `--central-admin-trust yes\|no` | The issuer and the public key set (an address or a file) that the association gives you, and whether a central sign-in alone may open an administrator's profile (default yes); see [Central sign-in](#central-sign-in). Leave out for SMS sign-in only. |
 | PDF letterhead | `--letterhead-file` | A JPEG or PNG banner (at most 2 MiB) that the GRN, dispatch, invoice and customer stock PDFs print at the top, or `off` for plain PDFs. On a first install setup asks for it on a terminal (Enter means plain PDFs) and, with no terminal and without the option, refuses; a rerun without the option asks nothing and keeps what is there. See [Letterhead image](#letterhead-image-optional). |
 | Database memory | `--db-memory` | Whole GiB from 1 to 256 (default: the database container's limit is 1 GiB). Sets the database container's memory limit and, from it, `shared_buffers` (a quarter) and `effective_cache_size` (half) in `config/compose.env` (`DB_MEMORY_LIMIT`, `DB_SHARED_BUFFERS`, `DB_EFFECTIVE_CACHE_SIZE`). Refused while the installation's containers run (`bash stop.sh` first); it applies when the database container is created. A host with 8 GiB of memory can give the database 2 to 4 GiB; leave the rest to the other services. |
 
@@ -227,15 +229,14 @@ rejected. The OTP worker accepts a request only after MSG91 confirms it, but an 
 handset delivery, so test with an owned phone. Real credentials are mandatory: there is no fixed-OTP or local delivery
 mode. Keep the file out of shell history and version control, and include it in your encrypted off-host backups.
 
-**No MSG91 file for a member that signs in through the association.** A facility that gives `--central-issuer` with its key set and does
-**not** turn on its own extra code (`--central-local-code`) never sends an SMS itself: the association sends the codes. Such an
-installation is set up **without** `--provider-env`. Setup then stores no SMS provider (the five provider lines of `config/compose.env` are
-left empty), `node scripts/doctor.mjs` accepts that as long as `CENTRAL_ISSUER` is set, and `operator-otp/request` answers
-`503 {"success": false, "code": "sms_not_configured", "error": "SMS sign-in is not set up on this facility. Use the association sign-in."}`.
-Three things are refused, so that nobody is left without a sign-in: `--central-local-code on` (the extra code is an SMS) on an installation
-with no provider; `--central-issuer off` on one (nothing could sign in); and a first install with neither `--provider-env` nor
-`--central-issuer`. To add a provider later, rerun setup with `--provider-env` (the provider lines are replaced as always). The break-glass
-code ([below](#break-glass-administrator-sign-in)) needs no provider either.
+**A member keeps its own SMS provider.** A facility that gives `--central-issuer` also gives `--provider-env`, and setup refuses without it:
+"A facility on central sign-in keeps its own SMS provider, so customers can still sign in when the central service can't send codes."
+The facility's own SMS sign-in stays open for every profile the facility has approved, customers included, so customers have a way in
+while the association's SMS is down. (An installation made before this rule with a central issuer and no provider keeps working and may
+rerun setup with the same issuer to replace its key set; `node scripts/doctor.mjs` warns about it, `operator-otp/request` answers
+`503 {"success": false, "code": "sms_not_configured", ...}`, and `--central-local-code on` and `--central-admin-trust no` stay refused
+until it has a provider.) `--central-issuer off` on an installation with no provider is refused (nothing could sign in). To add a provider
+later, rerun setup with `--provider-env`. The break-glass code ([below](#break-glass-administrator-sign-in)) needs no provider.
 
 **What setup keeps for you.** This backend stores the sign-in codes itself, as an HMAC
 (the `otp_verifications` table, checked by `operator_verify_otp`), and setup writes the `public.sms_config` row from the
@@ -432,6 +433,39 @@ bash setup.sh --operator <your usual options> --grn-numbering 'year,prefix=GRN/'
   refused with the sentence above. Do not use `free` to let them through: a `free` rule suggests no number, and fas-sync reads the suggestion (`get_next_grn_number`, `get_next_dispatch_number`) before and after every push. The suggestion is
   the rule's whether the check is on or off.
 - **Slips.** Numbers of up to 20 characters are possible; the pre-printed GRN and dispatch slips print the number in a field made for 8, so check a long number on paper once before you use one.
+
+## Import customers, items and rates
+
+An optional step after setup, for a new facility whose owner has the customer list, the items and the rates in a spreadsheet. It runs on the host, once, by the technician; there is no import screen in the app.
+
+```
+bash scripts/import.sh --customers customers.csv --items items.csv --rates rates.csv           # dry run: checks, saves nothing
+bash scripts/import.sh --customers customers.csv --items items.csv --rates rates.csv --apply   # saves
+```
+
+Any one, two or all three files; `WAREHOUSE_STATE_DIR` must be set and the stack running (`bash start.sh`). The command takes the operator lock. Always run the dry run first and read it.
+
+**Files.** Start from the templates in `scripts/import-templates/` (`customers.csv`, `items.csv`, `rates.csv`): a header row, then your rows (each template has one made-up example row to delete). Save from Excel or Google Sheets as **CSV UTF-8** (a file in another encoding stops with "Save the file as CSV UTF-8 and try again."). Gujarati names are fine. Columns are found by header name, in any order; an unknown header is an error, and so is a missing required one. Blank lines are ignored. A cell that holds a comma goes in quotes (spreadsheets do this for you). Dates are `DD/MM/YYYY`; amounts are plain numbers (`12.50`, no ₹ sign, no thousands comma).
+
+| File | Columns (required in bold) |
+| --- | --- |
+| `customers.csv` | **Customer name**, **Mobile number** (10 digits), Email, Full address, City, State, Pincode (6 digits), GST number (15 characters), PAN (10 characters), Contact name, Contact mobile, Contact email |
+| `items.csv` | **Item name**, **Packaging** (Bag, Box, Crate or the item's own word), Description |
+| `rates.csv` | **Item name**, **Packaging**, Customer name (empty = the item's default rate), **Price type** (`Monthly` or `One-time`), **Start date**, **From (kg)**, **Up to (kg)**, **Rent (₹)**, **Labour (₹)**, **Tax (%)** |
+
+The labels are those of the app's customer, item and rate forms. In `rates.csv` one row is one weight band; the rows with the same item, customer, price type and start date make one rate. Rent, labour and tax are all required (0 is allowed, empty is not); rent and labour go up to 9999.99, tax to 100. A default rate's bands must start at 0 kg and follow on without a gap. A rate may name an item or customer from the `items.csv` or `customers.csv` of the same run.
+
+**What is checked.** Every row, by the same rules the app's saves use (required fields, lengths, mobile, GST and PAN shapes, weight bands, amounts, dates), and then against what the facility already holds:
+
+- A customer whose name matches an existing one (case and spaces ignored) is skipped when every field is the same, and is a **conflict** otherwise.
+- An item is matched by name **and** packaging word, the same way: two items may share a name when their packaging words differ.
+- A rate is matched by item, customer, price type, start date and bands: skipped when the same, a conflict when different. The import only adds rates to an item and customer that have none; rates the facility already has are never ended or replaced. (An item made by the same run is given the facility's standard rate when it is created; a default rate in the file for that item replaces it.)
+- The same customer (name or mobile number), item or rate twice in one file is an **error**.
+- Nothing existing is ever updated or overwritten.
+
+**The answer.** One summary line per file (rows read, would add, skip, conflicts, errors), then one line per problem as `file line N, column X: reason` (a conflict ends with "(conflict)"). The exit status is 1 when there is any error, so a script can stop. The dry run really runs the import in the database and rolls it back, so it meets exactly what `--apply` would meet. Format errors (a bad date, a missing column) are listed first, and the database checks run once the files have none.
+
+**`--apply`** saves only when there are no errors, in one transaction, in the order customers, items, rates: it is all or nothing, and a failure leaves nothing behind. Conflicts do not stop it; they are skipped and listed again. Running the same files again adds nothing (everything is skipped). The records are written through the same server functions the app uses, as a service account named `Import` (kept switched off between runs, and not listed in Settings → Users), so the audit log and the price history read "Import". Take a backup first (`bash scripts/backup.sh`) when the facility already holds data.
 
 ## Several facilities on one host
 
@@ -858,8 +892,9 @@ central service for, and what you do not, is the first section of
 [CENTRAL_LOGIN.md](CENTRAL_LOGIN.md#what-the-facility-relies-on-the-central-service-for):
 in short, it vouches that a phone number belongs to a central account; it
 cannot approve anyone here, but its sign-in alone opens an existing person
-profile with that number (administrators included) unless you switch on this
-facility's own extra code, `--central-local-code on` below.
+profile with that number (administrators included) unless you answer **no** to the
+administrator trust question (`--central-admin-trust no`) or switch on this
+facility's own extra code for everyone, `--central-local-code on`, both below.
 
 Turn it on with the issuer the association gives you and **one** source for
 its public keys, added to the usual setup command (first installation or
@@ -903,6 +938,15 @@ bash setup.sh --operator \
   the functions container during that setup run; the database container is not touched.
 - Turn it off with `--central-issuer off` (and no key option). People who signed in centrally keep their profiles and
   sessions; they sign in with an SMS code from then on.
+- `--central-admin-trust yes|no` (default **yes**): whenever `--central-issuer` names an issuer, setup needs this answer. On a terminal
+  it asks: "May a sign-in from {issuer} alone open this facility's administrator accounts? Yes: the association's sign-in is enough
+  (today's rule for members). No: administrators must also enter a code this facility sends by SMS." Without a terminal and without
+  the flag it uses yes and prints that sentence once. With **no**, a central sign-in to an administrator profile asks for this
+  facility's own SMS code every time, and linking waits for it; other roles are unchanged. `--central-local-code on` covers everyone
+  and wins over this. A rerun without the flag keeps the stored answer; a changed answer applies from the next administrator
+  sign-in, and sessions already open are not ended. `no` needs an SMS provider (the code is an SMS). It is stored as
+  `CENTRAL_ADMIN_TRUST` in `config/compose.env` and, for `no`, as the `auth_config` key `central_admin_trust`
+  (migration 168); `--central-issuer off` clears it. If the facility's SMS is down, an administrator still has break-glass.
 - `--central-local-code on|off` (default **off**): with `on`, this facility also sends its own SMS code and asks for it at
   **every** new central sign-in, for every approved profile. Leave it off to let the association's single sign-in open this
   facility; the price is that whoever controls the central service, or a number's SMS there, can open any person profile
@@ -1099,6 +1143,80 @@ zone, by someone who never touches the warehouse server, is enough.
   `curl -sI https://warehouse-api.example.com/functions/v1/get-public-config` answers with a `cf-mitigated: challenge` header
   or a 403 page instead of JSON. Undo the setting; nothing on the host needs to change.
 
+## Ingress choices (WH-146)
+
+`setup.sh --ingress cloudflare-tunnel|trusted-proxy|local-only` says how requests reach this installation. It is chosen at the first setup and
+stored in `config/compose.env` (`INGRESS`); an installation made before has no line and is `cloudflare-tunnel`. Converting one later is refused.
+
+| Mode | For | What changes |
+|---|---|---|
+| `cloudflare-tunnel` (default) | Today's install | Nothing. |
+| `trusted-proxy` | Your own reverse proxy (nginx, Caddy, Traefik) on this host instead of the tunnel | The client address is read from one header, and only from one address: `--proxy-address <ip> --proxy-header <name>`. |
+| `local-only` | No domain and no internet: [Local-only facility](#local-only-facility-no-domain-no-internet) | No tunnel, no public address, no SMS, no Slack. |
+
+**trusted-proxy.** Run your proxy on this host and point it at `http://127.0.0.1:<gateway port>` (`GATEWAY_HTTP_PORT`). The gateway sees the
+connection from Docker's bridge, not from `127.0.0.1`: give `--proxy-address` the **Compose network's gateway address** (for example
+`docker network inspect <project>_default --format '{{(index .IPAM.Config 0).Gateway}}'`), or the network's `/16` to `/24` range if you prefer a
+range. Give `--proxy-header` the header your proxy sets to the client's address, for example `X-Real-IP`; set it with the proxy's own
+`proxy_set_header`, never pass a client's. Only a request from that address is believed: a request that carries the header from any other
+address is counted under its own address, so a stranger cannot choose the address the rate limits and the sign-in limits use. Unlike the
+tunnel mode, no other private range and not loopback is trusted. The proxy must also terminate https: the gateway speaks plain http on
+loopback only. Example: `bash setup.sh --operator ... --ingress trusted-proxy --proxy-address 172.18.0.1 --proxy-header X-Real-IP`.
+Changing the address or header later: rerun setup with the new values.
+
+## Local-only facility: no domain, no internet
+
+A cold storage that works only on its own Wi-Fi. The server, the phones and the backups need no internet, and a stranger on the Wi-Fi cannot
+change records. Product's spec: WH-146. **Needs the signed warehouse network (WH-133, the `lan-signer` service)**: `setup.sh --ingress local-only`
+refuses on a release without it.
+
+**What it is.** `--ingress local-only` publishes no public listener and runs no tunnel. The warehouse network listener (`gateway-lan`, see
+[LAN fallback](#lan-fallback-plain-http-on-the-warehouse-network)) is the facility's only address; setup turns it on (`scripts/lan.sh on auto`) and
+`lan.sh off` is refused. Every request and answer on it is signed (WH-133). Setup asks for no SMS provider, no Slack webhook and no domain:
+`--api-url`, `--provider-env`, `--central-*`, `--sms-*`, `--alert-webhook-file` and the heartbeat and sensor webhooks are refused. The facility's
+identity is its `instanceId`; the origin in `public/instance.json` is a placeholder (`https://wh-<12 hex>.local-only.invalid`) that can never resolve.
+
+**What you need.** The host; a router that gives it a fixed address (**reserve the address in the router**: phones keep the address they
+were paired with; if it changes, a new pairing code carries the new one); a **time source** for the clock (below); a USB drive for backups
+([USB backup](#backup-and-restore)); Docker 29 or newer (its containerd image store keeps the image digests across `docker save` and `docker load`).
+Android phones only: the app comes as the neutral APK.
+
+**Install from the offline bundle.** On a machine with internet, download the release's bundle `warehouse-bundle-vX.Y.Z.tar` and carry it on a USB drive.
+(A maintainer makes it with `bash scripts/offline-bundle.sh make --tag vX.Y.Z --release-images release-images.json --signing-key <release key> --out warehouse-bundle-vX.Y.Z.tar [--apk neutral.apk]`;
+it holds every image by digest, the tagged source as a git bundle, the neutral APK, `SHA256SUMS` and a signature of that list made with the release key.)
+
+1. Check the signature **before** you trust the file, with the key fingerprint published in the README (Security): `tar -xf warehouse-bundle-vX.Y.Z.tar SHA256SUMS SHA256SUMS.sig`, then
+   `ssh-keygen -Y verify -f <a file with: release namespaces="warehouse-offline-bundle" <the public key line>> -I release -n warehouse-offline-bundle -s SHA256SUMS.sig < SHA256SUMS`.
+2. Unpack the source: `tar -xf warehouse-bundle-vX.Y.Z.tar source.bundle && git clone --branch vX.Y.Z source.bundle warehouse && cd warehouse`.
+3. `bash setup.sh --operator --state-dir /srv/warehouse/<name> --admin-phone 91XXXXXXXXXX --admin-name NAME --company "NAME" --ingress local-only --from-bundle /path/warehouse-bundle-vX.Y.Z.tar`.
+   Setup opens the bundle (file names, every checksum, the signature against `.github/allowed_signers`), refuses a checkout that is not the bundle's commit, loads the images
+   with `docker load`, and goes on as an online setup does. The neutral app is copied to `<state>/public/app/`.
+4. `node scripts/doctor.mjs --local` checks the services and the warehouse network listener. It does not look for a public address, a tunnel, Slack or SMS.
+
+**Upgrade with no internet.** `bash upgrade.sh --from-bundle /path/warehouse-bundle-vX.Y.Z.tar` (add `--dry-run` first). It checks the bundle against the keys of **this** checkout, not the
+bundle's own copy, takes the tag from the bundle's source, then does what an online upgrade does: the tag's signature check, a refusal to go backward, the maintenance window, a pre-upgrade backup
+that is proved to restore, the images from the bundle, setup of the new release. An older bundle than the installed release is refused.
+
+**Signing in: pairing codes.** There is no SMS. An administrator opens Users, the person, **Make sign-in code**; the first administrator gets a code from the host:
+`bash scripts/pairing-code.sh <10-digit mobile>` (a terminal QR; it needs `qrencode`, `sudo apt install qrencode`, and stops before making a code without it). Pairing is **by QR only**: no code is shown or typed. The QR is valid for 10 minutes, once, for that person only (a new one replaces the earlier one; the person needs a profile first, and a customer is added by an administrator in person). The phone scans the QR and sends the code in it over the Wi-Fi; the server proves
+it knows the secret, then sends the session and its warehouse network key encrypted under a key derived from the secret, so neither crosses the Wi-Fi readable. Break-glass codes still work for workers.
+Sessions last as normal sessions do (30 days idle, 90 in all); then the person needs a new code.
+
+**The app on the Wi-Fi.** `http://<address>:<port>/app` (the address `bash scripts/lan.sh status` prints) is a download page with the neutral APK and its SHA-256, on the warehouse network only.
+It needs no sign-in (the phone has nothing to sign with before it has the app).
+
+**Alerts.** There is no Slack. The checker writes the alerts that are firing to the database; administrators read them with `get_server_alerts` (the banner at the top of Home). An alert disappears when its
+condition clears; a muted alert is not listed. `node scripts/watch.mjs status` shows them on the host too.
+
+**Backups.** USB only, as described under [backup and restore](#backup-and-restore); the "no copy off this host" alert is answered by the USB copy. The off-site option is for online facilities.
+
+**The clock.** Invoice, GRN and dispatch dates come from the host's clock, and with no internet nothing corrects it. `timedatectl` must say `System clock synchronized: yes` with a time source on your network
+(chrony or systemd-timesyncd pointed at your router or a host that has internet time) or a battery-backed hardware clock you set by hand and check. `doctor` and the checker (`clock_unsynced`) warn
+when `NTPSynchronized` is `no`. Signing is not affected (the server's time is used), but documents would carry the wrong dates.
+
+**What it exposes, plainly.** Everyone on the Wi-Fi can **read** the traffic (plain http); nobody can **change** a request or an answer, because each is signed with the key of a signed-in session. A stranger who
+joins the Wi-Fi cannot sign in without a code. Use WPA2 or WPA3, and, if you can, a separate network for the server and the staff phones. The pairing exchange and the download page are the only unsigned calls.
+
 ## LAN fallback (plain http on the warehouse network)
 
 An internet outage stops the public path (the Cloudflare Tunnel) and, with it, the app on every phone, although the server and the
@@ -1118,25 +1236,33 @@ turning the fallback on only opens the listener: nothing uses it, and the exposu
   never from a header (the public gateway trusts the tunnel's `CF-Connecting-IP`), so the limits and the sign-in functions see each
   phone's own address; it answers the warehouse network only (`LAN_CIDR`); it answers only a request whose `Host` is the server's own
   LAN address (see below); and every answer carries `X-Warehouse-Path: lan`, which is how the app and `doctor` tell the two paths apart.
+- **Signed requests and answers.** A second small container, `lan-signer` (same profile, the function runtime's own image), sits between
+  the listener and the API: it refuses (HTTP 403) every request that is not signed with the **warehouse network key** of a signed-in
+  phone's session, and signs every answer, so nothing can be changed on the Wi-Fi unnoticed. Each session has its own key; the phone gets
+  it over the internet (at sign-in, or at its next configuration check) and it ends with the session. **You do nothing for it:** `lan.sh
+  on|off|start` start and remove the two containers together, and `rotate-keys.sh` recreates both. A phone that has no key yet (signed in
+  before this release and not on the internet since) keeps using the internet only until it has been online once.
 - **What it is not.** It is not a way to sign in with an SMS code or through the association: those need the internet, so a phone that
   is not signed in cannot sign in during an outage, with one exception: **an administrator can sign in over the LAN fallback with a
   break-glass code** ([Break-glass administrator sign-in](#break-glass-administrator-sign-in)). It does not publish anything to the
   internet, and the tunnel and the public gateway are unchanged (the public gateway has no LAN listener at all).
-- **The exposure you accept.** While a phone uses this path, its access token (one hour) and any
-  refresh token it exchanges cross the Wi-Fi **unencrypted**, and so do the photos and documents it sends and receives. Anybody who has
-  the Wi-Fi password, or is on the network, can read them. That has these consequences:
-  - **A token that is read works from anywhere, not only on the LAN**, including from the attacker's own mobile data during your outage,
-    until it ends.
-  - **A stolen refresh token keeps a session alive**: a thief who refreshes first keeps the session going (30 days idle, 90 at most)
-    until the real phone presents the token it had; reuse detection then ends the session for both. The same mechanism lets anyone on
-    the Wi-Fi **sign phones out during an outage**, when they cannot sign back in.
-  - **Administrator tokens carry administrator rights.**
-  - **A stale saved address can send tokens to another device**: if the host's address changes and a phone still holds the old one, the
-    app is to check the address before it sends anything (and once a day while the internet is up), but a phone that was offline since
-    the change has no way to know.
-  - What stays in force: a refresh token is replaced at every use and a stolen one used beside the real phone ends that session (reuse
-    detection), sessions are deleted when a person is deactivated, the LAN path is used only while the public path fails, the listener
-    refuses every address outside `LAN_CIDR` and every `Host` but its own address, and it is published on that address only.
+- **The exposure you accept.** The fallback is plain http **with signatures, not encryption**.
+  - **What signing closes:** a request or an answer changed on the way (an amount, a quantity, stock figures, an invoice PDF) is refused
+    or thrown away; a device that copies the server's answers cannot make a phone send it its tokens; a request recorded on the Wi-Fi
+    cannot be sent again.
+  - **What stays: everything can be read.** While a phone uses this path, its access token (one hour), any refresh token it exchanges,
+    the photos and documents it sends and receives, and every answer cross the Wi-Fi **unencrypted**. Anybody who has the Wi-Fi password,
+    or is on the network, can read them. **A token that is read works from anywhere, not only on the LAN**, including from the
+    attacker's own mobile data during your outage, until it ends (one hour). **A read refresh token can still be raced**: a thief who
+    refreshes first keeps the session going until the real phone presents the token it had; reuse detection then ends the session for
+    both (which also lets such a person sign phones out during an outage). **Administrator tokens carry administrator rights.**
+  - **A break-glass sign-in over the LAN is not protected by signing**: the code, and that session's tokens and key, cross the Wi-Fi in
+    clear, so for that session (24 hours at most) the exposure is as above without the protection of signing.
+  - Photos shown on a phone's screen are not checked; photos and documents that are shared, printed or saved are.
+  - What stays in force as well: a refresh token is replaced at every use and a stolen one used beside the real phone ends that session
+    (reuse detection), sessions and their keys are deleted when a person is deactivated or signed out, the LAN path is used only while
+    the public path fails, the listener refuses every address outside `LAN_CIDR` and every `Host` but its own address, and it is
+    published on that address only.
   Protect the Wi-Fi like a key: a strong password that visitors do not get (give them a guest network that cannot reach the server),
   and turn the fallback off with `bash scripts/lan.sh off` if the facility does not want this exposure. The full statement is in
   [CONTAINER_SECURITY.md](CONTAINER_SECURITY.md#lan-fallback-gateway-lan).
@@ -1156,7 +1282,7 @@ bash scripts/lan.sh off            # removes the container and the variables
 that fails puts the earlier settings back and starts the service with them again). The range defaults to the network of the interface
 (`192.168.1.0/24` for `192.168.1.20/24`) and the port to 8080, or to the one already set. It writes `LAN_ENABLED`, `LAN_BIND_IP`,
 `LAN_HTTP_PORT`, `LAN_CIDR` and `COMPOSE_PROFILES=lan` (added beside any profile already listed) to `config/compose.env`, starts
-`gateway-lan`, recreates the function runtime (a few seconds; it now offers the address to signed-in phones), runs the LAN checks of
+`gateway-lan` and `lan-signer`, recreates the function runtime (a few seconds; it now offers the address to signed-in phones), runs the LAN checks of
 `doctor` and prints, for example:
 
 ```
@@ -1900,6 +2026,35 @@ restore printed, never a wildcard:
 sudo rm -rf "$WAREHOUSE_STATE_DIR/data/db.pre-restore-<utc>" "$WAREHOUSE_STATE_DIR/data/storage.pre-restore-<utc>"
 ls "$WAREHOUSE_STATE_DIR/data"   # only db and storage remain
 ```
+
+### Check that every stored file is there (`npm run storage:check`)
+
+Rows of the object catalog (`storage.objects`) can point at files that are not on disk, for example after the database and the
+files were copied separately. `npm run db:verify-restore` refuses a backup with such a row; this check finds them earlier and
+changes nothing (no row, no file, no hashing):
+
+```bash
+export WAREHOUSE_STATE_DIR=/absolute/path/to/this/warehouse
+npm run storage:check
+```
+
+It prints, per bucket, the rows, the files, the rows with no file and the files with no row, then each row with no file and the
+GRN or dispatch that uses it (`nothing` if none), and a last line: `All files present`, or `N rows have no file; M of them are
+used by a GRN or dispatch`. Exit status 0 is clean, 1 means rows with no file, 2 means it could not read (never a clean result).
+Files with no row are listed but are not a failure. The upgrade's preflight and dry run (`bash upgrade.sh --dry-run vX.Y.Z`) print
+the same report before any change; it only reports, and the backup proof stays the gate. Generated documents (`documents`) are
+reported like any other row; the check does not judge whether one is safe to remove.
+
+**Rule for copying data between servers.** Move data between upgraded servers only through the signed backup and restore
+(`db:backup`, `db:restore-host`): `storage.manifest` holds a checksum for every file, taken at one point in time. For a copy made
+any other way, run the check on the source first and on the target after, and compare the two reports.
+
+**On an older install (such as the old Windows box) with nothing installed there.** Run the query that
+`bash scripts/storage-file-check.sh --print-query` prints (from any checkout) in `psql -A -t -F "<TAB>"` against that database,
+saved to `catalog.tsv`, and list the files read-only with `(cd STORAGE_DIR && find . -type f | sed 's|^\./||') > files.txt`
+(STORAGE_DIR is the folder that holds the tenant folder, normally `data/storage`). Then, on any machine with bash:
+`bash scripts/storage-file-check.sh --catalog catalog.tsv --files files.txt`. Run it on the source before a copy and on the target
+after. A layout that has no `public.goodsreceived` or `dispatch` tables needs the query's last two columns trimmed.
 
 ### Content types of stored files (`npm run storage:retag`)
 

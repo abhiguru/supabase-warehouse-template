@@ -45,7 +45,10 @@ SELECT pg_temp.rc_assert(count(*) = 0, 'an edge function calls a function that i
 FROM unnest(ARRAY[
   'operator_break_glass_open','operator_break_glass_sign_in','operator_central_exchange','operator_enrollment_signout','operator_enrollment_status','operator_finish_otp','operator_prepare_otp',
   'operator_sms_config','operator_verify_otp','get_dispatch_range_for_print','get_grn_range_for_print','get_invoice_range_for_print',
-  'get_public_config','record_sensor_batch']) AS n
+  'get_public_config','record_sensor_batch',
+  -- WH-133 / WH-146 / WH-151 / WH-155: the LAN signer reads a session's network key (lan_signing_key), the pairing redeem (redeem_pairing_code), and the
+  -- invoice PDF and the statement PDF read their figures with the caller's token (get_invoice_detail, get_customer_statement).
+  'lan_signing_key','redeem_pairing_code','get_invoice_detail','get_customer_statement']) AS n
 WHERE NOT EXISTS (SELECT 1 FROM pg_proc p WHERE p.pronamespace = 'public'::regnamespace AND p.proname = n
   AND has_function_privilege('service_role', p.oid, 'EXECUTE'));
 -- The numbering RPCs (migration 127): the app calls them from the build that has the Document numbers screen, with these parameter names, and

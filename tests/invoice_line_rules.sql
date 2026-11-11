@@ -159,6 +159,9 @@ SELECT pg_temp.rule_assert((SELECT invoiced FROM public.goodsreceived WHERE id=:
 
 -- 2. The receipt is invoiced, so a second invoice under a new number is
 -- refused on both save paths, as staff.
+-- With invoicing goods as they leave on (the default since migration 174, WH-162) the refusal is DISPATCH_LINE_INVOICED, checked in
+-- tests/invoice_as_goods_leave.sql; the rule of "a GRN is invoiced once" below is the one of a facility that has it off.
+UPDATE warehouse_security.charging_rule SET invoice_as_goods_leave = false WHERE id;
 SET LOCAL ROLE authenticated;
 SELECT pg_temp.rule_assert(pg_temp.rule_refused(pg_temp.rule_save1(:'a_header'::jsonb || '{"inv_no":20261042}'::jsonb,:'a_items'::jsonb),
  'GRN is already invoiced'),'one-argument save: an invoiced receipt is refused');

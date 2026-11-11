@@ -1,6 +1,6 @@
 # PDF generation
 
-The operator branch implements four mobile endpoints:
+The operator branch implements five mobile endpoints:
 
 | Endpoint | POST body |
 | --- | --- |
@@ -8,6 +8,7 @@ The operator branch implements four mobile endpoints:
 | generate-dispatch-pdf | `{ "disp_no": "..." }` |
 | generate-invoice-pdf | `{ "inv_no": 1, "fin_year": 2026 }` |
 | generate-customer-stock-pdf | `{ "customer_id": "<uuid>" }` |
+| generate-statement-pdf | `{ "customer_id": "<uuid>" }` (migration 176: `get_customer_statement` with the caller's token; staff refused, 403) |
 
 Each requires a valid, active custom user session and returns
 `{ success, pdf_url, expires_in, document }`. Customer access follows assignment
@@ -20,7 +21,7 @@ the subsequent private upload.
 `lang` is still accepted (`en` or `gu`, default `en`) for any caller that sends it, but the app sends none: report PDFs are English only, like every other
 document, and the Gujarati label tables stay in `functions/_shared/report-definitions.ts` unused by the app.
 `status` is `paid` or `pending` and only for the invoice history of one
-customer; `invoicing` is `invoiced` or `not_invoiced` and only for the GRN
+customer; `invoicing` is `invoiced`, `not_invoiced` or `partly_invoiced` (WH-138; the GRN's `invoice_state`, else its `is_invoiced`) and only for the GRN
 activity of one customer; `bucket` is `0-120`, `121-240`, `241-364` or
 `over-364` and only for the stock aging of one customer; `search` is text of
 at most 80 characters after trimming, without control characters, and only for

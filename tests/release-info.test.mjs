@@ -26,6 +26,7 @@ const BASE_ENV = {
 };
 const handlers = {};
 let env = {};
+let recordPayments; // what the database's get_public_config answers as record_payments (migration 172); undefined = the key is absent
 const realDeno = globalThis.Deno;
 const realFetch = globalThis.fetch;
 const json = (body, status = 200) => new Response(JSON.stringify(body), { status, headers: { 'Content-Type': 'application/json' } });
@@ -40,7 +41,7 @@ before(async () => {
     if (path.endsWith('/api_configurations')) return json({ app_version: '0.2.0', build_date: '2026-10-01', maintenance_mode: false });
     if (path.endsWith('/feature_flags') || path.endsWith('/system_settings')) return json([]);
     if (path.endsWith('/sms_config')) return json({ production_mode: true, provider: 'msg91' });
-    if (path.endsWith('/rpc/get_public_config')) return json({ app_version: '0.2.0', maintenance_mode: false, feature_flags: {} });
+    if (path.endsWith('/rpc/get_public_config')) return json({ app_version: '0.2.0', maintenance_mode: false, feature_flags: {}, ...(recordPayments === undefined ? {} : { record_payments: recordPayments }) });
     return json({ message: `unexpected ${path}` }, 404);
   };
   current = 'get-config';
@@ -100,15 +101,26 @@ test('get-public-config: a manifest without minimumClientVersion is valid (the f
   assert.equal(body.data.minimumClientVersion, '1.4.0');
 });
 
-test('get-public-config: capabilities.payments is false when instance.json predates the key, and true only when the manifest says so', async () => {
-  const old = await publicConfig({ INSTANCE_MANIFEST_JSON: JSON.stringify(MANIFEST) });
-  assert.equal(old.status, 200);
-  assert.deepEqual(old.body.data.capabilities, { sensors: false, printing: false, payments: false });
-  const on = await publicConfig({ INSTANCE_MANIFEST_JSON: JSON.stringify({ ...MANIFEST, capabilities: { ...MANIFEST.capabilities, payments: true } }) });
-  assert.equal(on.body.data.capabilities.payments, true);
-  const off = await publicConfig({ INSTANCE_MANIFEST_JSON: JSON.stringify({ ...MANIFEST, capabilities: { ...MANIFEST.capabilities, payments: false } }) });
-  assert.equal(off.body.data.capabilities.payments, false);
-  // A non-boolean flag is still refused.
+test('get-public-config: capabilities.payments follows the database setting (migration 172), never the manifest', async () => {
+  try {
+    // Absent or false in the database: false, whatever instance.json says.
+    const old = await publicConfig({ INSTANCE_MANIFEST_JSON: JSON.stringify(MANIFEST) });
+    assert.equal(old.status, 200);
+    assert.deepEqual(old.body.data.capabilities, { sensors: false, printing: false, payments: false });
+    const manifestOn = await publicConfig({ INSTANCE_MANIFEST_JSON: JSON.stringify({ ...MANIFEST, capabilities: { ...MANIFEST.capabilities, payments: true } }) });
+    assert.equal(manifestOn.body.data.capabilities.payments, false);
+    recordPayments = false;
+    assert.equal((await publicConfig({})).body.data.capabilities.payments, false);
+    // True in the database: true, also when the manifest predates the key or says false; the other capabilities stay the manifest's.
+    recordPayments = true;
+    const on = await publicConfig({ INSTANCE_MANIFEST_JSON: JSON.stringify({ ...MANIFEST, capabilities: { ...MANIFEST.capabilities, payments: false } }) });
+    assert.deepEqual(on.body.data.capabilities, { sensors: false, printing: false, payments: true });
+    assert.equal((await publicConfig({})).body.data.capabilities.payments, true);
+    // Only the boolean true counts.
+    recordPayments = 'true';
+    assert.equal((await publicConfig({})).body.data.capabilities.payments, false);
+  } finally { recordPayments = undefined; }
+  // A non-boolean flag in the manifest is still refused.
   assert.equal((await publicConfig({ INSTANCE_MANIFEST_JSON: JSON.stringify({ ...MANIFEST, capabilities: { payments: 'yes' } }) })).status, 503);
 });
 

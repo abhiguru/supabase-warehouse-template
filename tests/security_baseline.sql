@@ -171,7 +171,9 @@ BEGIN
     AND has_column_privilege('authenticated', a.attrelid, a.attnum, 'SELECT')
         = (a.attname IN ('discount_reason', 'discount_set_by', 'discount_set_at',
                          'zero_charge_reason', 'zero_charge_set_by', 'zero_charge_set_at',
-                         'updated_at', 'cancelled_by'));
+                         'updated_at', 'cancelled_by',
+                         -- the charging rule stored on each invoice (migration 164, WH-137): read through the RPCs only
+                         'charge_step_days', 'charge_minimum_days', 'total_rounding'));
 
   IF invoice_columns IS NOT NULL THEN
     RAISE EXCEPTION 'invoice column readable by the app role although internal, or neither readable nor listed as internal: %', invoice_columns;

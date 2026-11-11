@@ -164,3 +164,13 @@ export function letterheadProblem(env, stateDir) {
     'not-image': `${fault.path} is not a JPEG or PNG image; the PDFs are made without a letterhead. ${rerun}`,
   }[fault.code];
 }
+
+// The host clock of a facility with no internet (WH-146, local-only). Invoice, GRN and dispatch dates come from it, and nothing outside can
+// correct it. systemd's verdict (timedatectl NTPSynchronized) says whether a time source (chrony or systemd-timesyncd, pointed at a time
+// server on the local network, or a GPS or radio clock) has set it; when it says `no` this returns the warning, else ''. A host with no
+// timedatectl is not judged. `run` is probe, replaceable for a test.
+export function localClockProblem(run = probe) {
+  const answer = run('timedatectl', ['show', '-p', 'NTPSynchronized', '--value'], 10000);
+  if (!answer.ok || answer.output.trim() !== 'no') return '';
+  return 'The host clock is not set by a time source (timedatectl: NTPSynchronized=no). With no internet it can drift, and the dates on invoices, GRNs and dispatches come from it. Point chrony or systemd-timesyncd at a time server on your network (the router, or a host that has one) and check with: timedatectl (docs/OPERATOR_INSTALL.md, "Local-only facility", clock).';
+}
