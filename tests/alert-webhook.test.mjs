@@ -394,7 +394,7 @@ test('setup.sh asks after the host checks and the lock, hands the URL over throu
   assert.match(setup, /mktemp "\$\{TMPDIR:-\/tmp\}\/warehouse-slack-webhook\.XXXXXX"/);
   assert.match(setup, /\(umask 077; mktemp/);
   // The offline bundle directory (WH-146) is removed by the same trap.
-  assert.match(setup, /trap 'rm -f "\$WEBHOOK_TMP" "\$LETTERHEAD_TMP"; \[\[ -z "\$BUNDLE_DIR" \]\] \|\| rm -rf -- "\$BUNDLE_DIR"' EXIT/);
+  assert.match(setup, /trap 'rm -f "\$WEBHOOK_TMP" "\$SUPPORT_TMP" "\$LETTERHEAD_TMP"; \[\[ -z "\$BUNDLE_DIR" \]\] \|\| rm -rf -- "\$BUNDLE_DIR"' EXIT/);
   assert.match(setup, /CONFIG_ARGS\+=\(--alert-webhook-file "\$WEBHOOK_TMP"\)/);
   assert.match(setup, /\[\[ "\$2" != ask \]\]/, '`ask` is for the gate; configure.mjs never sees it');
   assert.doesNotMatch(setup, /curl|wget/, 'no URL on a shell command line');
@@ -526,7 +526,7 @@ test('set-capability sensors on prints the notice (exit code 0) only when the se
 
 test('setup.sh passes --sensor-webhook-file to configure.mjs and ends with the sensor-notice command, which prints only while sensors are on', () => {
   const setup = read('setup.sh');
-  assert.match(setup, /--alert-webhook-file\|--sensor-webhook-file\|--heartbeat-url-file\|--letterhead-file/);
+  assert.match(setup, /--alert-webhook-file\|--sensor-webhook-file\|--heartbeat-url-file\|--support-link-file\|--letterhead-file/);
   assert.match(setup, /\*\) CONFIG_ARGS\+=\("\$1" "\$2"\) ;;/, 'the option reaches configure.mjs unchanged');
   assert.ok(setup.indexOf('alert-webhook.mjs" sensor-notice --state-dir "$STATE"') > setup.indexOf('watch-timer.sh" hint'), 'the notice is printed at the end');
   const s = scratch();
