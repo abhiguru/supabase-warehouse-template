@@ -18,7 +18,8 @@
 --     keeps ''). A BEFORE INSERT trigger sets it (the save functions are not changed for this): the prefix of the invoices the financial year
 --     of the new invoice already holds, else the rule's prefix. So all invoices of one financial year carry one prefix, also a back-dated
 --     one, and both documents of a two-document save (migration 173: number n and n + 1). The trigger refuses a later change of the stored
---     prefix. unique_inv_label_per_year makes the full number unique per financial year, on top of unique_inv_no_per_year (it is the same set
+--     prefix, except that an invoice update_invoice moves to another financial year (a new date, migration 121) takes the prefix of that
+--     year (update_invoice sets it; the trigger refuses any other), so a year keeps one prefix. unique_inv_label_per_year makes the full number unique per financial year, on top of unique_inv_no_per_year (it is the same set
 --     while the prefix is the same in the year). The save and update functions, apply_invoice_gst's second number and the advisory lock
 --     71040 are untouched, so no number is skipped or repeated by this change.
 --  3. Reads gain two keys, existing keys and their types are unchanged: inv_prefix (text, '' when none) and invoice_label (text, the full
@@ -63,13 +64,15 @@ ALTER FUNCTION warehouse_security.invoice_label(text, bigint) OWNER TO supabase_
 REVOKE ALL ON FUNCTION warehouse_security.invoice_label(text, bigint) FROM PUBLIC;
 
 -- The prefix a new invoice of the financial year gets: the one the year's invoices already hold (any row counts, as in migration 162),
--- else the rule's.
+-- else the rule's. The trigger below keeps one prefix per year (an invoice re-dated into a year takes that year's prefix); should a year
+-- ever hold two, the one most of its invoices carry wins (then the lowest number's), so a single odd row can't relabel the year.
 CREATE FUNCTION warehouse_security.invoice_prefix_for_year(p_fin_year integer) RETURNS text
     LANGUAGE sql STABLE SECURITY DEFINER
     SET search_path TO 'pg_catalog', 'public'
     AS $$
   SELECT COALESCE(
-    (SELECT i.inv_prefix FROM public.invoice i WHERE i.inv_fin_year = p_fin_year ORDER BY i.inv_no, i.id LIMIT 1),
+    (SELECT i.inv_prefix FROM public.invoice i WHERE i.inv_fin_year = p_fin_year
+      GROUP BY i.inv_prefix ORDER BY count(*) DESC, min(i.inv_no), i.inv_prefix LIMIT 1),
     (SELECT n.prefix FROM warehouse_security.document_numbering n WHERE n.document_type = 'invoice'),
     '')
 $$;
@@ -83,6 +86,12 @@ CREATE FUNCTION warehouse_security.invoice_assign_prefix() RETURNS trigger
 BEGIN
   IF TG_OP = 'INSERT' THEN
     NEW.inv_prefix := warehouse_security.invoice_prefix_for_year(NEW.inv_fin_year);
+  ELSIF NEW.inv_fin_year IS DISTINCT FROM OLD.inv_fin_year THEN
+    -- Re-dated into another financial year (update_invoice, migration 121): the invoice carries that year's prefix, which update_invoice
+    -- sets. The year's prefix is read before this row joins it (the row still holds its old year in the table).
+    IF NEW.inv_prefix IS DISTINCT FROM warehouse_security.invoice_prefix_for_year(NEW.inv_fin_year) THEN
+      RAISE EXCEPTION 'An invoice moved to financial year % takes that year''s prefix.', NEW.inv_fin_year USING ERRCODE = '22023';
+    END IF;
   ELSIF NEW.inv_prefix IS DISTINCT FROM OLD.inv_prefix THEN
     RAISE EXCEPTION 'An invoice keeps the prefix it was saved with.' USING ERRCODE = '22023';
   END IF;
@@ -189,14 +198,23 @@ $m$'invoice_number', v_invoice_number_for_resolution,
 
 SELECT pg_temp.patch_function('public.update_invoice(uuid, jsonb, jsonb[])'::regprocedure, ARRAY[
 $m$p_invoice_data->>'inv_no', p_invoice_data->>'inv_fin_year')$m$,
-$m$'invoice_number', v_invoice_no,$m$
+$m$'invoice_number', v_invoice_no,$m$,
+-- an invoice moved to another financial year takes that year's prefix (on the right of SET, inv_fin_year is the stored year)
+$m$        inv_fin_year = (p_invoice_data->>'inv_fin_year')::integer,
+        inv_no = (p_invoice_data->>'inv_no')::integer,$m$
 ], ARRAY[
 $m$warehouse_security.invoice_label(warehouse_security.invoice_prefix_for_year((p_invoice_data->>'inv_fin_year')::integer),
                                                 (p_invoice_data->>'inv_no')::bigint),
                             p_invoice_data->>'inv_fin_year')$m$,
 $m$'invoice_number', v_invoice_no,
         'inv_prefix', (SELECT x.inv_prefix FROM invoice x WHERE x.id = p_invoice_id),
-        'invoice_label', (SELECT warehouse_security.invoice_label(x.inv_prefix, x.inv_no) FROM invoice x WHERE x.id = p_invoice_id),$m$
+        'invoice_label', (SELECT warehouse_security.invoice_label(x.inv_prefix, x.inv_no) FROM invoice x WHERE x.id = p_invoice_id),$m$,
+$m$        inv_fin_year = (p_invoice_data->>'inv_fin_year')::integer,
+        -- Migration 175 (WH-139): an invoice moved to another financial year takes that year's prefix (the trigger allows only that).
+        inv_prefix = CASE WHEN (p_invoice_data->>'inv_fin_year')::integer IS DISTINCT FROM inv_fin_year
+                          THEN warehouse_security.invoice_prefix_for_year((p_invoice_data->>'inv_fin_year')::integer)
+                          ELSE inv_prefix END,
+        inv_no = (p_invoice_data->>'inv_no')::integer,$m$
 ]);
 
 -- 4e. Cancel and delete answers. The deleted row is gone by the answer, so delete_invoice reads its prefix with the other fields.

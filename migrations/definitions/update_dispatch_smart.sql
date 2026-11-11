@@ -31,6 +31,7 @@ DECLARE
     v_no_changed boolean := false;
     v_inv_no integer;
     v_inv_year integer;
+    v_inv_prefix text;
     v_changed_fields jsonb;
     v_late_gr_no text;
     v_late_grn_day date;
@@ -292,7 +293,7 @@ BEGIN
 
     -- D2: a dispatch with a line on a live invoice keeps its date and number (the invoice's days are counted from them).
     IF v_day_changed OR v_no_changed THEN
-        SELECT i.inv_no, i.inv_fin_year INTO v_inv_no, v_inv_year
+        SELECT i.inv_no, i.inv_fin_year, i.inv_prefix INTO v_inv_no, v_inv_year, v_inv_prefix
         FROM invoice_trl it
         JOIN invoice i ON i.id = it.invoice_id AND i.deleted_at IS NULL AND i.cancelled_at IS NULL
         JOIN dispatch_trl dt ON dt.id = it.disp_trl_id
@@ -306,9 +307,9 @@ BEGIN
             IF v_no_changed THEN v_changed_fields := v_changed_fields || to_jsonb('disp_no'::text); END IF;
             RETURN warehouse_security.refuse('DISPATCH_INVOICED',
                 format('Dispatch %s is on invoice %s. Its date and number can''t be changed. Delete or edit the invoice first.',
-                       v_stored_disp_no, warehouse_security.invoice_label(warehouse_security.invoice_prefix_for_year(v_inv_year), v_inv_no)),
+                       v_stored_disp_no, warehouse_security.invoice_label(v_inv_prefix, v_inv_no)),
                 jsonb_build_object('dispatch_no', v_stored_disp_no, 'invoice_no', v_inv_no,
-                                   'invoice_label', warehouse_security.invoice_label(warehouse_security.invoice_prefix_for_year(v_inv_year), v_inv_no),
+                                   'invoice_label', warehouse_security.invoice_label(v_inv_prefix, v_inv_no),
                                    'inv_fin_year', v_inv_year, 'fields', v_changed_fields));
         END IF;
     END IF;
