@@ -331,7 +331,7 @@ export function configure(root, { stateDir, apiUrl, appUrl, company, providerEnv
   if (localOnly) {
     // A local-only facility has no public address, no SMS, no association sign-in and no Slack or other outside channel.
     const given = Object.entries({ '--api-url': apiUrl, '--app-url': appUrl, '--provider-env': providerEnv, '--central-issuer': centralIssuer, '--central-jwks-url': centralJwksUrl,
-      '--central-jwks-file': centralJwksFile, '--central-local-code': centralLocalCode, '--sensor-webhook-file': sensorWebhookFile, '--heartbeat-url-file': heartbeatUrlFile, '--support-link-file': supportLinkFile })
+      '--central-jwks-file': centralJwksFile, '--central-local-code': centralLocalCode, '--central-admin-trust': centralAdminTrust, '--sensor-webhook-file': sensorWebhookFile, '--heartbeat-url-file': heartbeatUrlFile, '--support-link-file': supportLinkFile })
       .filter(([, value]) => value !== undefined).map(([name]) => name);
     if (alertWebhookFile !== undefined && alertWebhookFile !== 'off') given.push('--alert-webhook-file');
     if (given.length) throw new Error(`--ingress local-only has no public address, SMS, central sign-in or outside alert channel; leave out ${given.join(', ')}.`);
@@ -405,7 +405,7 @@ export function configure(root, { stateDir, apiUrl, appUrl, company, providerEnv
         // header may be changed; any other change is refused.
         const storedMode = storedIngress(text);
         if (ingressChoice && ingressChoice.INGRESS !== storedMode) throw new Error(`This installation is ${storedMode}; changing it to ${ingressChoice.INGRESS} is not supported. Install a new facility in the mode you want.`);
-        if (storedMode === 'local-only' && (providerEnv || central || centralLocalCode !== undefined)) throw new Error('This installation is local-only: it has no SMS provider or central sign-in, and none can be added.');
+        if (storedMode === 'local-only' && (providerEnv || central || centralLocalCode !== undefined || centralAdminTrust !== undefined)) throw new Error('This installation is local-only: it has no SMS provider or central sign-in, and none can be added.');
         if (ingressChoice && storedMode === 'trusted-proxy' && Object.entries(ingressChoice).some(([key, value]) => text.match(new RegExp(`^${key}=(.*)$`, 'm'))?.[1] !== value)) ingressNew = ingressChoice;
         if (centralLocalCode !== undefined || central) centralLocalCodeValues(centralLocalCode, central, text, Boolean(providerEnv));
         if (centralAdminTrust !== undefined || central) { centralAdminTrustValues(centralAdminTrust, central, text, Boolean(providerEnv)); centralNeedsProvider(central, text, Boolean(providerEnv)); }
