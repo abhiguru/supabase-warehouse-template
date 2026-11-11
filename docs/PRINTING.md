@@ -165,12 +165,11 @@ row is written after the send, as before.
 
 ## Operation notes
 
-- **No internet needed to print, one caveat.** The print functions load their libraries from `functions/vendor` and fetch nothing from the network at
-  run time. The edge runtime may still look up Node typings (`@types/node` from registry.npmjs.org) when a worker with a `node:` import is first
-  built; the same holds for the existing `operator-otp` and `central-exchange` (`node:net`) and for `print-via-ipp` before this release
-  (`node:buffer`), so it is not new. Observed once by Test with `--network none`; not verified on a normal install while the facility's
-  internet is down. If a print function does not boot with the internet down, restart `functions` once with it up (the runtime then has
-  its cache) and report it.
+- **No internet needed to print.** The print functions load their libraries from `functions/vendor` and fetch nothing from the network at
+  run time. The `functions` image also carries the edge runtime's module cache (the `@types/node` typings that a `node:` import needs,
+  filled at image build by `docker/edge-runtime/warmup`), so a `functions` container created while the internet is down still boots
+  its print workers, `operator-otp` and `central-exchange`. An installation upgraded from an older image needs the functions image
+  rebuilt or pulled (`bash scripts/build-images.sh`).
 
 - **Staff may print** (owner decision, 2026-11-07). The print functions read documents with the server's key, so a staff member can
   print any customer's documents, as staff can already see them in the app.

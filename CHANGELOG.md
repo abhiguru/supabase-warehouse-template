@@ -32,6 +32,8 @@ file used to carry for earlier installations are in git: `git show b45ae0b:CHANG
 
 ### Fixed
 
+- **A new `functions` container boots with no internet (WH-130).** The functions image now carries the edge runtime's module cache (the `@types/node` typings a `node:` import needs), filled at image build, so printing, sign-in codes and the central exchange work after a container is re-created while the internet is down. Installs must rebuild or pull the functions image (`bash scripts/build-images.sh`); an older image still needs the internet the first time.
+
 - **A GRN weight is at most 9999 on the server too (WH-56).** `save_grn` refuses a line over 9999; `update_grn` refuses a new line, or a saved line whose weight is being changed, over 9999 ("Weight must be at most 9999 for item ..."). A saved line with an older, larger weight is accepted unchanged until its weight is edited. Definition files `save_grn.sql` and `update_grn.sql`, no migration (152 is not used).
 
 - **The audit log is insert-only, and a failed audit write is reported (WH-115, migration 155).** A save still goes through when its audit row cannot be written, but the failure (table, row id, action, error) is now recorded in `warehouse_security.audit_write_failures` and the monitor posts `audit_write_failed` once a day while it keeps happening. `audit_log` and its partitions can no longer be updated or deleted by the service role or any other role (it keeps SELECT and INSERT); only the retention job removes rows, after 8 years. Partitions it creates get SELECT and INSERT only. `docs/OPERATOR_INSTALL.md` said 24 months for the audit log; it is 8 years (2,920 days). Not applied anywhere yet.
