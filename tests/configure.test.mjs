@@ -1248,3 +1248,22 @@ test('--heartbeat-url-file stores, keeps and removes config/heartbeat-url (mode 
     assert.match(readFileSync(new URL('../scripts/configure.mjs', import.meta.url), 'utf8'), /\[--heartbeat-url-file ABSOLUTE\|off\]/, 'in the usage text');
   } finally { rmSync(scratch, { recursive: true, force: true }); }
 });
+
+test('a fresh --ingress local-only configure writes INGRESS=local-only with empty SMS lines, and a rerun passes (WH-172)', () => {
+  const scratch = mkdtempSync(join(tmpdir(), 'warehouse-config-local-only-'));
+  const root = join(scratch, 'checkout');
+  const stateDir = join(scratch, 'state');
+  try {
+    mkdirSync(root);
+    copyFileSync(new URL('../.env.example', import.meta.url), join(root, '.env.example'));
+    const options = { stateDir, company: 'Acme Stores', ingress: 'local-only' };
+    assert.equal(configure(root, options).created, true);
+    const envPath = join(stateDir, 'config/compose.env');
+    const text = readFileSync(envPath, 'utf8');
+    assert.match(text, /^INGRESS=local-only$/m);
+    for (const key of ['SMS_PROVIDER', 'MSG91_AUTH_KEY', 'MSG91_TEMPLATE_ID', 'MSG91_PE_ID', 'MSG91_SENDER_ID']) assert.match(text, new RegExp(`^${key}=$`, 'm'), key);
+    const before = readFileSync(envPath);
+    assert.equal(configure(root, options).created, false, 'the rerun passes and changes nothing');
+    assert.deepEqual(readFileSync(envPath), before);
+  } finally { rmSync(scratch, { recursive: true, force: true }); }
+});
