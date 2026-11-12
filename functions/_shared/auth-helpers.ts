@@ -71,7 +71,7 @@ function errorName(error: unknown): string {
 // `req` is optional so existing callers keep working; pass it so the log line of a server-side failure carries the request id.
 export function createAuthErrorResponse(error: unknown, extraHeaders: Record<string, string> = {}, req?: Request): Response {
   const status = typeof error === 'object' && error !== null && 'status' in error ? Number(error.status) : 500;
-  const safeStatus = [400, 401, 403, 404, 405, 503].includes(status) ? status : 500;
+  const safeStatus = [400, 401, 403, 404, 405, 409, 503].includes(status) ? status : 500;
   // A failure of ours (500 or 503) is the one a client cannot explain: log the status and the id, the class of the error and never its message, a token or a header.
   if (safeStatus >= 500) console.error(`auth error status=${safeStatus} error=${errorName(error)} request_id=${requestId(req)}`);
   const message = safeStatus < 500 && typeof error === 'object' && error !== null && 'message' in error ? String(error.message) : 'Server unavailable';

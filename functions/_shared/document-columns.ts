@@ -20,5 +20,14 @@ export const invoiceDocTypeColumns = 'doc_type';
 export const invoiceGstLineColumns = 'duration,no_of_days,labour_rate,charge,tax,gst_treatment,taxable_value,line_tax,cgst_amount,sgst_amount,igst_amount,'
   + 'details_kept_at,kept_item_name,kept_disp_qty,kept_disp_no,dispatch_trl(disp_qty,dispatch(disp_no),goodsreceived_trl(item_name))';
 
+// The lookup that finds the document before its header is read (migration 191, WH-180): its id, its number and whether it was imported.
+// Kept apart from the header lists, so an invoice's header stays the fields every invoice prints.
+export const documentLookupColumns = (kind: 'grn' | 'dispatch' | 'invoice') =>
+  `id,import_batch_id,${kind === 'grn' ? 'gr_no' : kind === 'dispatch' ? 'disp_no' : 'inv_no'}`;
+
+// The lines of an imported invoice (migration 191): the plain layout's fields and the amounts as issued (migration 189).
+export const invoiceImportedLineColumns = 'duration,no_of_days,labour_rate,charge,tax,issued_storage_amount,taxable_value,line_tax,'
+  + 'details_kept_at,kept_item_name,kept_disp_qty,dispatch_trl(disp_qty,goodsreceived_trl(item_name))';
+
 export const headerColumns = (kind: 'grn' | 'dispatch' | 'invoice') =>
   kind === 'invoice' ? invoiceHeaderColumns : '*';

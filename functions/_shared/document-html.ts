@@ -14,6 +14,8 @@ export const kgEach = (value: unknown): unknown =>
 export const documentDate = (value: unknown): string => formatCell('date', value, 'en') || String(value ?? '');
 
 /** The one header line of a cancelled invoice, in English as every document is: "CANCELLED 01-11-2026 \u2014 reason". */
+// An imported document's line (migration 191, WH-180): it came from the previous system and is printed as issued.
+export const importedNotice = 'Imported from the previous system';
 export const cancelledNotice = (cancelledAt: unknown, reason: unknown): string => `CANCELLED ${documentDate(cancelledAt)} \u2014 ${String(reason ?? '').trim()}`;
 
 // `letterhead` is the optional data URI of the facility's letterhead image (functions/_shared/letterhead.ts). Only a value
