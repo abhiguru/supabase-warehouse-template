@@ -64,6 +64,7 @@ BEGIN
             i.cancelled_at,
             i.cancel_reason,
             i.cancelled_by,
+            i.import_batch_id IS NOT NULL AS imported,  -- Migration 191 (WH-180)
             (SELECT p.name FROM user_profiles p WHERE p.id = i.cancelled_by) as cancelled_by_name,
 
             c.address as customer_address,
@@ -139,6 +140,7 @@ BEGIN
                 it.charge,
                 it.tax,
                 it.labour_rate,
+                it.issued_storage_amount,  -- Migration 191 (WH-180): an imported line's storage as issued
                 -- Migration 143: a cancelled invoice's line that kept its details at cancel reads them; the copy wins.
                 (it.details_kept_at IS NOT NULL OR dt.id IS NOT NULL) as details_available,
 
@@ -196,7 +198,8 @@ BEGIN
                 'tax', v_item_record.tax,
                 'labour_rate', v_item_record.labour_rate,
                 -- Migration 164: the line's storage under the invoice's rule (null when the line has no quantity left to read).
-                'storage_amount', CASE WHEN v_item_record.dispatch_quantity IS NULL THEN NULL
+                'storage_amount', CASE WHEN v_item_record.issued_storage_amount IS NOT NULL THEN v_item_record.issued_storage_amount
+                                       WHEN v_item_record.dispatch_quantity IS NULL THEN NULL
                                        WHEN COALESCE(v_item_record.kept_pricing_mode, v_invoice_header.grn_pricing_mode) = 'ONE_TIME'
                                        THEN round(COALESCE(v_item_record.charge, 0) * v_item_record.dispatch_quantity, 2)
                                        ELSE warehouse_security.invoice_storage_amount(p_invoice_id, COALESCE(v_item_record.charge, 0),
@@ -274,6 +277,7 @@ BEGIN
                     -- Migration 134: a cancelled invoice says so; who cancelled it is for administrators, supervisors and staff only.
                     'cancelled_at', v_invoice_header.cancelled_at,
                     'cancel_reason', v_invoice_header.cancel_reason,
+                    'imported', v_invoice_header.imported,  -- Migration 191 (WH-180)
                     'cancelled_by', CASE WHEN auth.jwt()->>'role' = 'service_role' OR v_user_role IN ('admin', 'supervisor', 'staff') THEN v_invoice_header.cancelled_by END,
                     'cancelled_by_name', CASE WHEN auth.jwt()->>'role' = 'service_role' OR v_user_role IN ('admin', 'supervisor', 'staff') THEN v_invoice_header.cancelled_by_name END,
 

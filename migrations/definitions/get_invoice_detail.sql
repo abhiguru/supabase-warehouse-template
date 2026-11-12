@@ -28,6 +28,8 @@ BEGIN
         'notes', i.notes, 'created_by', i.created_by,
         'updated_at', i.updated_at,
         'cancelled_at', i.cancelled_at, 'cancel_reason', i.cancel_reason,
+        -- Migration 191 (WH-180): imported from the previous system (read-only, amounts as issued).
+        'imported', i.import_batch_id IS NOT NULL,
         -- WH-183: the effective mode. A cancelled invoice's lines keep the GRN's mode at the cancel (kept_pricing_mode, migration 178);
         -- when kept, that mode is returned instead of the GRN's current one, so the GST PDF and the app label the lines as charged.
         'grn_pricing_mode', COALESCE((SELECT k.kept_pricing_mode FROM invoice_trl k
@@ -89,7 +91,9 @@ BEGIN
             'tax', x.tax,
             'labour_rate', x.labour_rate,
             -- Migration 164: the line's storage under the invoice's rule (null when the line has no quantity left to read).
-            'storage_amount', CASE WHEN x.qty IS NULL THEN NULL
+            -- Migration 191 (WH-180): an imported line's storage as issued, never worked out again.
+            'storage_amount', CASE WHEN x.issued_storage_amount IS NOT NULL THEN x.issued_storage_amount
+                                   WHEN x.qty IS NULL THEN NULL
                                    WHEN COALESCE(x.kept_pricing_mode, v_invoice_header->>'grn_pricing_mode') = 'ONE_TIME' THEN round(COALESCE(x.charge, 0) * x.qty, 2)
                                    ELSE warehouse_security.invoice_storage_amount(x.invoice_id, COALESCE(x.charge, 0), x.qty,
                                                                                   COALESCE(x.duration, 1), x.no_of_days) END,
@@ -121,6 +125,7 @@ BEGIN
                CASE WHEN it.details_kept_at IS NOT NULL THEN it.kept_disp_qty ELSE dt.disp_qty END AS qty,
                CASE WHEN it.details_kept_at IS NOT NULL THEN it.kept_disp_no ELSE d.disp_no END AS dispatch_no,
                CASE WHEN it.details_kept_at IS NOT NULL THEN it.kept_disp_date ELSE d.disp_date END AS dispatch_date,
+               it.issued_storage_amount,
                it.kept_pricing_mode, -- WH-98 (migration 178): the GRN's mode when the invoice was cancelled
                CASE WHEN it.details_kept_at IS NOT NULL THEN it.kept_weight ELSE gt.weight END AS weight,
                gt.qty AS grn_original_qty,
@@ -135,7 +140,8 @@ BEGIN
         LEFT JOIN goodsreceived_trl gt ON dt.gr_trl_id = gt.id
         LEFT JOIN goodsreceived gr ON gr.id = gt.gr_id
         WHERE it.invoice_id = p_invoice_id
-          AND (v_cancelled OR (dt.id IS NOT NULL AND d.id IS NOT NULL AND gt.id IS NOT NULL AND gr.id IS NOT NULL))
+          -- Migration 191: a line with kept details (set only by cancel_invoice and the import; an imported line may name no dispatch).
+          AND (v_cancelled OR it.details_kept_at IS NOT NULL OR (dt.id IS NOT NULL AND d.id IS NOT NULL AND gt.id IS NOT NULL AND gr.id IS NOT NULL))
     ) x;
 
     RETURN jsonb_build_object('success', true, 'invoice', v_invoice_header, 'items', COALESCE(v_invoice_items, '[]'::jsonb));
