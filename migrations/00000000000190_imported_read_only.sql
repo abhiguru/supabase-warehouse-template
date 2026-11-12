@@ -28,8 +28,10 @@
 --     that edit or delete a document answer {success:false, error_code:'WH409', reason:'IMPORTED_READ_ONLY', document:'grn' | 'dispatch'
 --     | 'invoice' | 'payment', error and message: the sentence above} right after their authorize_rpc call (so a role the gate refuses is
 --     still refused by the gate) when the document is imported:
---       update_grn, delete_grn_safe, apply_grn_rates (warehouse_security, reached from update_grn) and update_dispatch_smart in their
---       definition files; here, by marker count: get_grn_edit_state (answers the refusal instead of an edit state),
+--       update_grn, delete_grn_safe and update_dispatch_smart in their definition files (warehouse_security.apply_grn_rates is not
+--       refused: rates may be set on an imported GRN, Product 2026-11-12; it writes only grn_rates and item_storage_prices, never a
+--       guarded row, and an imported invoice reads its issued figures); here, by marker count: get_grn_edit_state (answers the refusal
+--       instead of an edit state),
 --       delete_dispatch_with_order_cleanup, update_invoice, cancel_invoice (an imported invoice is not cancelled: that is an edit),
 --       delete_invoice, delete_invoice_pair, update_payment and delete_payment (an imported payment; before PAYMENT_NOT_EDITABLE),
 --       delete_grn_image, delete_dispatch_image, register_grn_image_upload, register_dispatch_image_upload, upload_grn_image and

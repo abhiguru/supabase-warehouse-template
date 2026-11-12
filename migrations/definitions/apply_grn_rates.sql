@@ -16,11 +16,6 @@ DECLARE
   v_band constant text := 'Each band needs whole kilograms with the start at most the end';
   v_unseen jsonb;
 BEGIN
-  -- Migration 190 (WH-180): the rates of a GRN imported from the previous system are not changed here (IMPORTED_READ_ONLY); update_grn
-  -- refuses such a GRN before it gets here, and save_grn only makes app GRNs.
-  IF EXISTS (SELECT 1 FROM public.goodsreceived g WHERE g.id = p_gr_id AND g.import_batch_id IS NOT NULL) THEN
-    RETURN warehouse_security.imported_read_only('grn');
-  END IF;
   SELECT up.id INTO v_profile FROM public.user_profiles up WHERE up.auth_user_id = auth.uid() AND up.active;
   SELECT g.customer_id, g.pricing_mode, warehouse_security.business_date(g.date),
          -- WH-112: one rule for "invoiced": the GRN has a live invoice (neither deleted nor cancelled); the goodsreceived.invoiced flag is only a cache.
