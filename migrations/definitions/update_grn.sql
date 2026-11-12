@@ -81,6 +81,10 @@ DECLARE
     v_registration_sent boolean := false;
 BEGIN
   PERFORM warehouse_security.authorize_rpc('update_grn',jsonb_build_object('p_grn_id',p_grn_id,'p_customer_id',p_customer_id));
+  -- Migration 190 (WH-180): a GRN imported from the previous system is read-only (IMPORTED_READ_ONLY); nothing is written.
+  IF EXISTS (SELECT 1 FROM goodsreceived g WHERE g.id = p_grn_id AND g.import_batch_id IS NOT NULL) THEN
+    RETURN warehouse_security.imported_read_only('grn');
+  END IF;
   -- Migration 90: rates typed on the GRN sheet are an administrator's or a supervisor's.
   IF p_rates IS NOT NULL AND warehouse_security.active_role() = 'staff' THEN
     RETURN warehouse_security.rate_failure('RATES_MANAGER_ONLY', 'Only administrators and supervisors can set rates on a GRN');

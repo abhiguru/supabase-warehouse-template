@@ -60,6 +60,10 @@ DECLARE
     v_registration_sent boolean := false;
 BEGIN
   PERFORM warehouse_security.authorize_rpc('update_dispatch_smart',jsonb_build_object('p_dispatch_id',p_dispatch_id));
+  -- Migration 190 (WH-180): a dispatch imported from the previous system is read-only (IMPORTED_READ_ONLY); nothing is written.
+  IF EXISTS (SELECT 1 FROM dispatch d WHERE d.id = p_dispatch_id AND d.import_batch_id IS NOT NULL) THEN
+    RETURN warehouse_security.imported_read_only('dispatch');
+  END IF;
     -- The list-refresh lock comes before any row lock (migration 46).
     PERFORM pg_advisory_xact_lock(71040);
 
@@ -156,7 +160,8 @@ BEGIN
     END IF;
 
     -- A number another dispatch holds is refused by name, under the lock and before anything is written
-    -- (migration 120). dispatch_disp_no_key covers every row, so the check does too.
+    -- (migration 120). The check looks at every row, imported ones included, so a number the app gives stays unique for all time
+    -- (migration 189 replaced dispatch_disp_no_key, which covered every row, with indexes that do not).
     -- Migration 127: a changed number follows this facility's numbering (the stored number may be sent back as it is).
     IF p_dispatch_data->>'disp_no' IS NOT NULL AND p_dispatch_data->>'disp_no' IS DISTINCT FROM v_stored_disp_no THEN
         v_number_failure := warehouse_security.document_number_failure('dispatch', p_dispatch_data->>'disp_no', COALESCE(warehouse_security.business_date((p_dispatch_data->>'disp_date')::timestamptz), warehouse_security.business_date(v_stored_disp_date)));

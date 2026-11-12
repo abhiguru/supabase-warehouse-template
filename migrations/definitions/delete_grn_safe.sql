@@ -23,6 +23,10 @@ AS $function$
           v_order_effects jsonb;
 BEGIN
   PERFORM warehouse_security.authorize_rpc('delete_grn_safe',jsonb_build_object('p_grn_id',p_grn_id));
+  -- Migration 190 (WH-180): a GRN imported from the previous system is read-only (IMPORTED_READ_ONLY); nothing is written.
+  IF EXISTS (SELECT 1 FROM goodsreceived g WHERE g.id = p_grn_id AND g.import_batch_id IS NOT NULL) THEN
+    RETURN warehouse_security.imported_read_only('grn');
+  END IF;
     -- The list-refresh lock comes before any row lock (migration 46).
     PERFORM pg_advisory_xact_lock(71040);
           -- Authentication and authorization
