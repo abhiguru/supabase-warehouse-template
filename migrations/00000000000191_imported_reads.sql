@@ -14,8 +14,8 @@
 --     and migration 190 refuses every edit of an imported invoice.
 --     get_invoice_items_detailed lists a live invoice's line that has kept details (details_kept_at, set only by cancel_invoice and by the
 --     import) even when it names no dispatch line, as get_invoice_detail does: an imported charge line has no dispatch.
---  2. "imported" (boolean, import_batch_id IS NOT NULL) in get_grn_list (grns[]), get_grn_details (grn), get_dispatch_list_with_items
---     (dispatches[]), get_customer_dispatch_list (dispatches[]), get_dispatch_details (dispatch), get_invoices_list (invoices[]),
+--  2. "imported" (boolean, import_batch_id IS NOT NULL) in get_grn_list (grns[]), get_all_grn_items (data[], the app's GRN list),
+--     get_grn_details (grn), get_dispatch_list_with_items (dispatches[]), get_customer_dispatch_list (dispatches[]), get_dispatch_details (dispatch), get_invoices_list (invoices[]),
 --     get_customer_statement (invoices[]); get_invoice_detail (invoice) and get_invoice_data (header) in their definition files.
 --  3. Preprinted range prints leave imported documents out: get_grn_range_for_print, get_dispatch_range_for_print and
 --     get_invoice_range_for_print print slips for current work; an imported document prints through its own PDF.
@@ -158,6 +158,21 @@ $m$,
 $m$''invoiced'', ga.invoiced,
                                 ''imported'', ga.import_batch_id IS NOT NULL,
                                 ''invoice_state'', warehouse_security.grn_invoice_state(ga.id),$m$
+]);
+
+-- The app's GRN list reads get_all_grn_items (one row per GRN line), so each row says whether its GRN is imported too.
+SELECT pg_temp.patch_function('public.get_all_grn_items(timestamp with time zone, timestamp with time zone, jsonb, text, text, integer, integer)'::regprocedure, ARRAY[
+$m$                gr.invoiced,
+                gr.note,$m$,
+$m$''invoiced'', invoiced,
+                        ''invoice_state'', warehouse_security.grn_invoice_state(id),$m$
+], ARRAY[
+$m$                gr.invoiced,
+                gr.import_batch_id,
+                gr.note,$m$,
+$m$''invoiced'', invoiced,
+                        ''imported'', import_batch_id IS NOT NULL,
+                        ''invoice_state'', warehouse_security.grn_invoice_state(id),$m$
 ]);
 
 SELECT pg_temp.patch_function('public.get_grn_details(uuid)'::regprocedure, ARRAY[
