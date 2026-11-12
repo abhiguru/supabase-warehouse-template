@@ -1,0 +1,2 @@
+Invoice number,Invoice date,Item name,Packaging,Quantity,Dispatch number,Dispatch date,GRN line,Months,Days,Rate,Labour rate,Tax (%),Storage amount,Labour amount,Tax amount
+GC/125,20/06/2023,Example Potato,Bag,60,D-201,14/06/2023,1,1.5,,45.00,2.00,0,4130.00,120.00,0.00
