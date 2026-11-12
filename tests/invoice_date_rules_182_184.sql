@@ -155,6 +155,49 @@ SELECT pg_temp.idr_assert(:'cross_year'::jsonb->>'success' = 'false' AND :'cross
 SELECT pg_temp.idr_assert((SELECT bool_and(inv_date = '2026-05-12T12:00:00Z'::timestamptz AND inv_fin_year = 2026) FROM public.invoice WHERE id IN (:'inv_a'::uuid, :'inv_b'::uuid)),
   'the refusals wrote nothing');
 
+-- WH-183 item 1b: a same-year pair; moving the first document into the next financial year is refused (INVOICE_PAIR_OTHER_YEAR), nothing written.
+SET LOCAL ROLE authenticated;
+SELECT pg_temp.update_invoice_doc(:'inv_a'::uuid, (:'header_a'::jsonb - 'inv_fin_year') || '{"inv_date":"2027-04-05T12:00:00Z"}') AS next_fy \gset
+RESET ROLE;
+SELECT pg_temp.idr_assert(:'next_fy'::jsonb->>'success' = 'false' AND :'next_fy'::jsonb->>'reason' = 'INVOICE_PAIR_OTHER_YEAR' AND :'next_fy'::jsonb->>'error_code' = 'WH409',
+  'WH-183 1b: moving a same-year pair into the next financial year is refused: ' || :'next_fy');
+SELECT pg_temp.idr_assert((SELECT bool_and(inv_date = '2026-05-12T12:00:00Z'::timestamptz AND inv_fin_year = 2026) FROM public.invoice WHERE id IN (:'inv_a'::uuid, :'inv_b'::uuid)),
+  'WH-183 1b: the refusal wrote nothing');
+
+-- WH-183 item 1a: a pair split before 182 (B in FY2027, built by direct UPDATE). Editing A with its own date succeeds and B is unchanged.
+UPDATE public.invoice SET inv_fin_year = 2027, inv_date = '2027-04-10T12:00:00Z' WHERE id = :'inv_b'::uuid;
+SET LOCAL ROLE authenticated;
+SELECT pg_temp.update_invoice_doc(:'inv_a'::uuid, :'header_a'::jsonb || '{"inv_date":"2026-05-12T12:00:00Z","notes":"split pair"}') AS split_edit \gset
+RESET ROLE;
+SELECT pg_temp.idr_assert(:'split_edit'::jsonb->>'success' = 'true', 'WH-183 1a: editing A with its own date succeeds: ' || :'split_edit');
+SELECT pg_temp.idr_assert((SELECT inv_date = '2027-04-10T12:00:00Z'::timestamptz AND inv_fin_year = 2027 AND inv_no = 20270402 FROM public.invoice WHERE id = :'inv_b'::uuid),
+  'WH-183 1a: B keeps its date, year and number');
+SELECT pg_temp.idr_assert((SELECT inv_date = '2026-05-12T12:00:00Z'::timestamptz AND inv_fin_year = 2026 FROM public.invoice WHERE id = :'inv_a'::uuid), 'WH-183 1a: A keeps its date and year');
+UPDATE public.invoice SET inv_fin_year = 2026, inv_date = '2026-05-12T12:00:00Z' WHERE id = :'inv_b'::uuid;
+
+-- WH-183 item 2: A May 5, B May 1 with a payment on B dated May 2 (a pair split before 182, built by direct UPDATE).
+UPDATE public.invoice SET inv_date = '2026-05-05T12:00:00Z' WHERE id = :'inv_a'::uuid;
+UPDATE public.invoice SET inv_date = '2026-05-01T12:00:00Z' WHERE id = :'inv_b'::uuid;
+SET LOCAL ROLE authenticated;
+SELECT public.record_payment(:'inv_b'::uuid, DATE '2026-05-02', 10, 'cash') AS pay_b \gset
+SELECT pg_temp.idr_assert(:'pay_b'::jsonb->>'success' = 'true', 'WH-183 2: a payment on B: ' || :'pay_b');
+SELECT pg_temp.update_invoice_doc(:'inv_a'::uuid, :'header_a'::jsonb || '{"inv_date":"2026-05-05T12:00:00Z"}') AS partner_paid \gset
+RESET ROLE;
+SELECT pg_temp.idr_assert(:'partner_paid'::jsonb->>'success' = 'false' AND :'partner_paid'::jsonb->>'reason' = 'INVOICE_AFTER_PAYMENT'
+  AND :'partner_paid'::jsonb->>'payment_invoice_id' = :'inv_b' AND :'partner_paid'::jsonb->>'date' = '2026-05-02',
+  'WH-183 2a: A on May 5 is refused, naming B as holder of the payment: ' || :'partner_paid');
+SELECT pg_temp.idr_assert((SELECT inv_date = '2026-05-01T12:00:00Z'::timestamptz FROM public.invoice WHERE id = :'inv_b'::uuid)
+  AND (SELECT inv_date = '2026-05-05T12:00:00Z'::timestamptz FROM public.invoice WHERE id = :'inv_a'::uuid), 'WH-183 2a: the refusal wrote nothing');
+-- 2b: the payment is on May 6: the edit succeeds and B becomes May 5.
+UPDATE public.payments SET paid_on = DATE '2026-05-06' WHERE invoice_id = :'inv_b'::uuid;
+SET LOCAL ROLE authenticated;
+SELECT pg_temp.update_invoice_doc(:'inv_a'::uuid, :'header_a'::jsonb || '{"inv_date":"2026-05-05T12:00:00Z"}') AS partner_ok \gset
+RESET ROLE;
+SELECT pg_temp.idr_assert(:'partner_ok'::jsonb->>'success' = 'true', 'WH-183 2b: the edit succeeds when B''s payment is later: ' || :'partner_ok');
+SELECT pg_temp.idr_assert((SELECT bool_and(inv_date = '2026-05-05T12:00:00Z'::timestamptz) FROM public.invoice WHERE id IN (:'inv_a'::uuid, :'inv_b'::uuid)), 'WH-183 2b: B became May 5');
+DELETE FROM public.payments WHERE invoice_id IN (:'inv_a'::uuid, :'inv_b'::uuid);
+UPDATE public.invoice SET inv_date = '2026-05-12T12:00:00Z' WHERE id IN (:'inv_a'::uuid, :'inv_b'::uuid);
+
 -- A cancelled partner is not part of the pair: the live document is edited as an unpaired invoice and the cancelled one keeps its date.
 SET LOCAL ROLE authenticated;
 SELECT public.cancel_invoice(:'inv_b'::uuid, 'Date rules test', NULL) AS cancelled \gset
@@ -165,5 +208,21 @@ RESET ROLE;
 SELECT pg_temp.idr_assert(:'alone'::jsonb->>'success' = 'true', 'a document whose partner is cancelled can be re-dated: ' || :'alone');
 SELECT pg_temp.idr_assert((SELECT inv_date = '2026-05-12T12:00:00Z'::timestamptz FROM public.invoice WHERE id = :'inv_b'::uuid), 'the cancelled partner keeps its date');
 SELECT pg_temp.idr_assert(COALESCE(:'alone_cross'::jsonb->>'reason', '') <> 'INVOICE_PAIR_OTHER_YEAR', 'no pair refusal with a cancelled partner: ' || :'alone_cross');
+
+-- WH-183 item 3: the cancelled monthly invoice (B) keeps MONTHLY in all three reads after its GRN is switched to ONE_TIME; the live invoice (A) shows the GRN's current mode.
+UPDATE public.goodsreceived SET pricing_mode = 'ONE_TIME' WHERE id = :'grn_id'::uuid;
+SET LOCAL ROLE authenticated;
+SELECT public.get_invoice_detail(:'inv_b'::uuid)->'invoice'->>'grn_pricing_mode' AS b_detail \gset
+SELECT public.get_invoice_data(:'inv_b'::uuid) AS b_data \gset
+SELECT public.get_invoice_detail(:'inv_a'::uuid)->'invoice'->>'grn_pricing_mode' AS a_detail \gset
+SELECT public.get_invoice_data(:'inv_a'::uuid) AS a_data \gset
+RESET ROLE;
+SELECT pg_temp.idr_assert(:'b_detail' = 'MONTHLY', 'WH-183 3: get_invoice_detail of the cancelled invoice gives MONTHLY: ' || :'b_detail');
+SELECT pg_temp.idr_assert(:'b_data'::jsonb#>>'{data,header,grn,pricing_mode}' = 'MONTHLY', 'WH-183 3: get_invoice_data grn.pricing_mode is MONTHLY: ' || :'b_data');
+SELECT pg_temp.idr_assert(jsonb_array_length(:'b_data'::jsonb#>'{data,items}') > 0
+  AND (SELECT bool_and(i#>>'{grn_item,pricing_mode}' = 'MONTHLY') FROM jsonb_array_elements(:'b_data'::jsonb#>'{data,items}') i), 'WH-183 3: every items[].grn_item.pricing_mode is MONTHLY');
+SELECT pg_temp.idr_assert(:'a_detail' = 'ONE_TIME' AND :'a_data'::jsonb#>>'{data,header,grn,pricing_mode}' = 'ONE_TIME'
+  AND jsonb_array_length(:'a_data'::jsonb#>'{data,items}') > 0
+  AND (SELECT bool_and(i#>>'{grn_item,pricing_mode}' = 'ONE_TIME') FROM jsonb_array_elements(:'a_data'::jsonb#>'{data,items}') i), 'WH-183 3: a live invoice gives the GRN''s current mode: ' || :'a_detail' || :'a_data');
 ROLLBACK;
 \echo 'Invoice date rules: the pair keeps one date inside one financial year, and no date after a payment passed.'
