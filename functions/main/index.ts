@@ -15,16 +15,33 @@ const serviceFunctions = new Set(['sweep-print-jobs']);
 // cancel-print-job is not in printFunctions: a job already on its way can still be stopped while printing is turned off.
 const allowed = new Set([...publicFunctions, ...serviceFunctions, 'get-config', ...printFunctions, 'cancel-print-job',
   'generate-grn-pdf', 'generate-dispatch-pdf', 'generate-invoice-pdf', 'generate-customer-stock-pdf', 'generate-report-pdf',
-  'generate-statement-pdf']);
+  'generate-statement-pdf', 'generate-temperature-report-pdf']);
 
 // The four document PDFs print the optional letterhead image (setup.sh --letterhead-file); the report PDFs do not.
-const letterheadFunctions = new Set(['generate-grn-pdf', 'generate-dispatch-pdf', 'generate-invoice-pdf', 'generate-customer-stock-pdf']);
+// The temperature report (WH-157) prints it too.
+const letterheadFunctions = new Set(['generate-grn-pdf', 'generate-dispatch-pdf', 'generate-invoice-pdf', 'generate-customer-stock-pdf',
+  'generate-temperature-report-pdf']);
+// Routes that need capabilities.sensors in the instance manifest (a facility without sensors answers SENSORS_OFF).
+const sensorFunctions = new Set(['generate-temperature-report-pdf']);
 const readLetterhead = letterheadReader({
   env: name => Deno.env.get(name),
   stat: async path => { const info = await Deno.stat(path); return { isFile: info.isFile, size: info.size, mtimeMs: info.mtime?.getTime() ?? 0 }; },
   readFile: path => Deno.readFile(path),
   log: line => console.error(line),
 });
+
+// capabilities.sensors of the instance manifest, read like printingEnabled; unreadable counts as off.
+async function sensorsEnabled(): Promise<boolean> {
+  try {
+    const path = Deno.env.get('INSTANCE_MANIFEST_PATH');
+    if (!path) return false;
+    const manifest = JSON.parse(await Deno.readTextFile(path));
+    return manifest?.capabilities?.sensors === true;
+  } catch {
+    console.error('main: the instance manifest could not be read for the sensors check');
+    return false;
+  }
+}
 
 // capabilities.printing of the instance manifest. A manifest that cannot be read or parsed counts as off (nothing prints on a guess).
 async function printingEnabled(): Promise<boolean> {
@@ -50,6 +67,10 @@ Deno.serve(async (req: Request) => {
     // routes refuse, whatever the printer settings say. The manifest is read the way get-public-config reads it.
     if (printFunctions.has(name) && !(await printingEnabled())) {
       return new Response(JSON.stringify({ success: false, code: 'PRINTING_OFF', error: 'Printing is not set up for this facility' }),
+        { status: 503, headers: { ...securityHeaders, 'Content-Type': 'application/json', 'Cache-Control': 'no-store' } });
+    }
+    if (sensorFunctions.has(name) && !(await sensorsEnabled())) {
+      return new Response(JSON.stringify({ success: false, code: 'SENSORS_OFF', error: 'Sensors are not set up for this facility' }),
         { status: 503, headers: { ...securityHeaders, 'Content-Type': 'application/json', 'Cache-Control': 'no-store' } });
     }
     // A worker receives only the variables listed for it in worker-env.ts.

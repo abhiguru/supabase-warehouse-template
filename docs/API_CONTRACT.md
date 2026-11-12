@@ -23,7 +23,7 @@ calls (the name is in a variable: `src/config/supabaseConfig.ts`, `src/utils/ser
 (for example `get_dispatch_list`), so it must not be used.
 `get-config` still publishes `urls.realtime` for older app builds that require it; it will be removed only in a release whose app-compat minimum excludes them. The printing functions (`print-grn-preprinted`, `print-dispatch-preprinted`, `print-invoice-preprinted`,
 `print-via-ipp`, `get-printer-status`) are served by the router (`functions/main/index.ts`) and answer 503 `PRINTING_OFF` only while the `printing` capability is off; the app names the three preprinted ones through a variable, so they are not in the literal
-count. There is no `manage-print-jobs` function. `cancel-print-job` stops a job for real (IPP Cancel-Job, then the row; admin, supervisor and staff may cancel any job; a job the print service cannot stop answers 409 `CANNOT_CANCEL`) and `sweep-print-jobs` (service-role key only, called by the checker) settles jobs stuck `queued` or `printing` after 5 minutes as `unknown`. `get_print_jobs` and `cancel_print_job` (the print "View jobs" sheet; `cancel_print_job` only marks the row) are open to admin, supervisor and staff since migration 123; customers and anon are refused.
+count. There is no `manage-print-jobs` function. `cancel-print-job` stops a job for real (IPP Cancel-Job, then the row; admin, supervisor and staff may cancel any job; a job the print service cannot stop answers 409 `CANNOT_CANCEL`) and `sweep-print-jobs` (service-role key only, called by the checker) settles jobs stuck `queued` or `printing` after 5 minutes as `unknown`. `get_print_jobs` and `cancel_print_job` (the print "View jobs" sheet; `cancel_print_job` only marks the row) are open to admin, supervisor and staff since migration 123; customers and anon are refused. Since migration 183 `get_print_jobs` also answers `server_now` (the server's time of the read), which the sheet compares with each job's `updated_at` instead of the phone's clock.
 
 The checker exits 1 only for a missing name or, with `--live`, a mismatch. Name presence is not signature, security or
 behaviour validation, and a missing endpoint is never replaced with a success stub to make the check pass.
@@ -576,6 +576,8 @@ and `save_invoice_internal` rolls the whole block back and answers it (nothing i
 | `LINE_DISPATCHED_BEFORE` | `update_grn` | `line_id`, `item_name` | {item} was dispatched before, so this line can't be removed. |
 | `TOTAL_CHANGED` | `save_invoice(uuid,jsonb,jsonb[])`, `update_invoice` | `current_total`, `expected_total`, `lines` (`[{disp_trl_id, duration, no_of_days}]` as the server recomputed them) | The total is now {current}, not {expected}. Review the figures and save again. |
 | `INVOICE_DATE_FUTURE` | `save_invoice(uuid,jsonb,jsonb[])`, `update_invoice` (only when the invoice day changes) | `date`, `today` (India days, `YYYY-MM-DD`) | An invoice can't be dated in the future. Today is {today}. |
+| `INVOICE_PAIR_OTHER_YEAR` | `update_invoice` (a live document of a GST pair whose new date or `inv_fin_year` is in another financial year) | `first`, `second` (the two full numbers, lower first), `invoice_id`, `linked_invoice_id`, `fin_year` (the pair's), `new_fin_year` | This invoice has two documents, {first} and {second}. Their date can't move to another financial year. Delete both and make the invoice again. |
+| `INVOICE_AFTER_PAYMENT` | `update_invoice` (only when the invoice day changes) | `date` (the earliest payment day on the invoice or on the live other document of its GST pair, `YYYY-MM-DD`), `invoice_date` (the day asked for), `invoice_id`, `payment_invoice_id` | This invoice has a payment dated {date}. The invoice date can't be after it. (Payments without a `paid_on` day, from the old accounting link, are ignored.) |
 | `INVOICE_BEFORE_DISPATCH` | `save_invoice(uuid,jsonb,jsonb[])`, `update_invoice` (only when the invoice day or the set of lines changes) | `invoice_date`, `dispatch_no`, `dispatch_date` (the latest dispatch of the lines; days as `YYYY-MM-DD`) | The invoice date {invoice_date} is before dispatch {no} ({dispatch_date}). |
 | `DISCOUNT_TOTAL_ZERO` | `save_invoice(uuid,jsonb,jsonb[])`, `update_invoice` | `discount`, `total_before_discount` | A discount can't take the total to zero. To charge nothing, set the charge to 0 and give a reason. |
 | `RATES_CHANGED` | `save_invoice(uuid,jsonb,jsonb[])`, `update_invoice` | `lines`: `[{disp_trl_id, fields, looked_up, current}]`, `fields` the names (`charge`, `labour_rate`, `tax`) that differ, `looked_up` as sent, `current = {charge, labour_rate, tax}` as the form would look them up now | The rates changed since you opened this invoice. Check the new figures. |
@@ -1813,6 +1815,23 @@ What the app reads:
   temperature or humidity that no reading of the hour carried is `null`. Hours without readings have no row. A 200
   `{success:false, error, error_code}` for `INVALID_RANGE` (a null bound, or `p_to` not after `p_from`), `RANGE_TOO_LARGE` (more
   than 400 days) and `DEVICE_NOT_FOUND`.
+- `get_temperature_report(p_device_id uuid, p_from date, p_to date)` (migration 187, WH-157; administrator, supervisor, staff and
+  customer accounts, every sensor): everything the temperature report PDF prints, read by `generate-temperature-report-pdf` with the
+  caller's token. India dates; the period is `p_from` 00:00 to `p_to` + 1 00:00 India time, cut at now when `p_to` is today. A 200
+  `{success:false, error, error_code}` for `INVALID_PERIOD`, `PERIOD_TOO_LONG` (more than 12 months), `PERIOD_TOO_OLD` (starts more than
+  2 years back), `DEVICE_NOT_FOUND` and `NO_READINGS`. The answer's shape is in the header of migration 187.
+- `get_sensor_report_devices()` (migration 187; same four roles): `{success:true, data:[{id, name, location, active, first_reading_at,
+  last_reading_at}]}`, the sensors with readings, by name. Nothing else of a sensor; customers stay refused on the other sensor reads.
+- `submit_connection_notes(p_notes jsonb)` (migration 188, WH-177; any signed-in account, for its own device): a phone hands over its
+  connection gap notes, an array of at most 500 `{id uuid, age_s, length_s, saves_tried, lost_answers}` (`age_s`: seconds since the
+  stretch began by the phone's monotonic clock; `length_s` 0 is a save that ended offline with no gap open). Idempotent per `(caller, id)`:
+  a note handed over again adds nothing. A note holds times, counts and the caller's session user agent, nothing of a customer, document,
+  amount or place. `{success:true, data:{done:[ids]}}` lists every id the server holds or refused as malformed, so the phone drops them.
+  A 200 `{success:false, error_code}` for `AUTH_REQUIRED` and `INVALID_INPUT` (not an array, or more than 500). Notes are kept 90 days.
+- `get_connection_history()` (migration 188; administrators only): `{success:true, data:{days:[{day 'YYYY-MM-DD', gaps, longest_s, total_s,
+  phones, saves_tried, lost_answers}]}}`, 30 rows, today (India day) first; a day without notes has zeros. A note's day is the server's
+  India day at hand-over minus the note's age. `phones` counts distinct person-and-device pairs with a gap. Staff, supervisors and customer
+  accounts are refused (42501).
 - `get_sensor_device(p_device_id)` (new; administrator, supervisor and staff):
   one device's status, its first reading and its hub. `data` also carries the
   keys of a `devices[]` entry of `get_sensor_polling_data`, so the app reads it

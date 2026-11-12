@@ -61,6 +61,9 @@ diagnose() { node "$ROOT/scripts/service-diagnostics.mjs" "$1" || true; }
 
 case "$command" in
   on)
+    # config/maintenance-owner names the backup that owns the marker (scripts/backup.sh writes it after this command); the checker reopens the API
+    # by itself only for a backup that is gone. A marker set by anything else (a person, upgrade.sh) must never carry an old tag.
+    rm -f -- "$state/config/maintenance-owner"
     write_marker || { echo "Could not write $marker, so maintenance mode was not turned on. Nothing was changed." >&2; exit 1; }
     if running gateway; then
       if ! compose up -d --no-deps --no-build --force-recreate --wait --wait-timeout 120 gateway; then

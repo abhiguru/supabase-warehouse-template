@@ -104,7 +104,9 @@ BEGIN
             gr.updated_by as grn_updated_by,
             gr.created_at as grn_created_at,
             gr.updated_at as grn_updated_at,
-            gr.pricing_mode as grn_pricing_mode,
+            -- WH-183: the effective mode: the mode a cancelled invoice's lines kept (migration 178) when set, else the GRN's current one.
+            COALESCE((SELECT k.kept_pricing_mode FROM invoice_trl k
+                       WHERE k.invoice_id = i.id AND k.kept_pricing_mode IS NOT NULL LIMIT 1), gr.pricing_mode) as grn_pricing_mode,
 
             cb.name as created_by_name,
             cb.display_name as created_by_display_name,
@@ -148,6 +150,7 @@ BEGIN
 
                 CASE WHEN it.details_kept_at IS NOT NULL THEN it.kept_disp_no ELSE d.disp_no END as dispatch_no,
                 CASE WHEN it.details_kept_at IS NOT NULL THEN it.kept_disp_date ELSE d.disp_date END as dispatch_date,
+                it.kept_pricing_mode as kept_pricing_mode, -- WH-98 (migration 178): the GRN's mode when the invoice was cancelled
 
                 grt.id as grn_item_id,
                 grt.gr_id as grn_item_gr_id,
@@ -162,11 +165,14 @@ BEGIN
                 CASE WHEN it.details_kept_at IS NOT NULL THEN it.kept_grn_no ELSE gr.gr_no END as grn_item_gr_no,
                 CASE WHEN it.details_kept_at IS NOT NULL THEN it.kept_grn_date ELSE gr.date END as grn_item_gr_date,
                 grt.trl_img_url as grn_item_image_url,
-                gr.pricing_mode as grn_item_pricing_mode,
+                COALESCE(it.kept_pricing_mode, gr.pricing_mode) as grn_item_pricing_mode, -- WH-183: the kept mode when set
 
                 items.id as catalog_id,
                 CASE WHEN it.details_kept_at IS NOT NULL THEN it.kept_item_name ELSE items.name END as catalog_name,
-                CASE WHEN it.details_kept_at IS NOT NULL THEN it.kept_packaging ELSE items.packaging END as catalog_packaging,
+                -- WH-88 (migration 177): a cancelled line keeps the item's own word as it was at the cancel; lines kept before 177 keep the lot's word.
+                CASE WHEN it.details_kept_at IS NOT NULL
+                     THEN CASE WHEN it.kept_catalog_word_set THEN it.kept_catalog_packaging ELSE it.kept_packaging END
+                     ELSE warehouse_security.line_catalog_packaging(grt.item_id) END as catalog_packaging,
                 items.description as catalog_description,
                 items.active as catalog_active
 
@@ -191,7 +197,7 @@ BEGIN
                 'labour_rate', v_item_record.labour_rate,
                 -- Migration 164: the line's storage under the invoice's rule (null when the line has no quantity left to read).
                 'storage_amount', CASE WHEN v_item_record.dispatch_quantity IS NULL THEN NULL
-                                       WHEN v_invoice_header.grn_pricing_mode = 'ONE_TIME'
+                                       WHEN COALESCE(v_item_record.kept_pricing_mode, v_invoice_header.grn_pricing_mode) = 'ONE_TIME'
                                        THEN round(COALESCE(v_item_record.charge, 0) * v_item_record.dispatch_quantity, 2)
                                        ELSE warehouse_security.invoice_storage_amount(p_invoice_id, COALESCE(v_item_record.charge, 0),
                                             v_item_record.dispatch_quantity, COALESCE(v_item_record.duration, 1), v_item_record.no_of_days) END,

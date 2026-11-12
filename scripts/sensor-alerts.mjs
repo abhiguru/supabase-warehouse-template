@@ -110,3 +110,28 @@ export function droppedSummary({ total, byReason }) {
   const parts = Object.entries(byReason).map(([reason, n]) => `${n} ${reason.replace(/_/g, ' ')}`);
   return `Sensor bridge dropped ${total} reading${total === 1 ? '' : 's'} in the last 24 hours (${parts.join('; ')})`;
 }
+
+// WH-157 (migration 186): the stretches of out-of-range and no-reading time are brought up to date at the start of every check, with the
+// facility's alert minutes (also stored for the daily retention run). The minutes come from sensorAlertMinutes, whole numbers 1-1440.
+export const refreshStretchesSql = ({ silentMinutes, outMinutes }) =>
+  `SELECT warehouse_maintenance.refresh_sensor_stretches(now(), ${Number(silentMinutes)}, ${Number(outMinutes)})`;
+
+// The sensor alerts whose start was just posted, could not be posted ('failed') or had no channel ('no_channel'), as the entries of
+// warehouse_maintenance.record_sensor_alert_posts: [{ device_id, alert, since, at, via, state }]. `ids` are alert ids (others are left
+// out: only sensor_range:<id>, sensor_silent:<id> and sensors_stale mark stretches); `alerts` is the checker's state (data.alerts), whose
+// firingSince bounds the out-of-range stretches one alert covers; `at` is the time in ms.
+export function stretchAlertPosts(ids, alerts, { at, via = null, state }) {
+  const posts = [];
+  for (const id of ids) {
+    const m = /^(sensor_range|sensor_silent):([0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12})$/i.exec(String(id));
+    const alert = m ? (m[1] === 'sensor_range' ? 'range' : 'silent') : id === 'sensors_stale' ? 'hub' : null;
+    if (!alert) continue;
+    const since = alerts?.[id]?.firingSince;
+    posts.push({
+      device_id: m ? m[2].toLowerCase() : null, alert, since: Number.isFinite(since) ? new Date(since).toISOString() : null,
+      at: new Date(at).toISOString(), via: state === 'no_channel' ? null : via, state,
+    });
+  }
+  return posts;
+}
+export const RECORD_ALERT_POSTS_SQL = "SELECT warehouse_maintenance.record_sensor_alert_posts(:'posts'::jsonb)";

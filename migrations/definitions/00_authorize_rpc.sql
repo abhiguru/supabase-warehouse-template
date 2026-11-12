@@ -24,7 +24,9 @@ BEGIN
   -- (migration 172), and the pairing codes and server alerts of a local-only facility (migration 170): administrators only.
   IF rpc IN ('clear_user_central_identity','update_sensor_device','set_service_account','set_document_numbering',
              'get_charging_rule','set_charging_rule','set_record_payments',
-             'make_pairing_code','get_server_alerts') THEN
+             'make_pairing_code','get_server_alerts',
+             -- The connection history (migration 188, WH-177): the per-day figures of the phones' gaps.
+             'get_connection_history') THEN
     IF role_name <> 'admin' THEN RAISE EXCEPTION 'Administrator required' USING ERRCODE = '42501'; END IF;
     RETURN;
   END IF;
@@ -129,6 +131,11 @@ BEGIN
 
   -- revoke_session (migration 140): any signed-in account may sign out its own device; the body also lets an administrator or a supervisor act.
   IF rpc IN ('get_items','get_item','search_items_autocomplete','get_orders_list','delete_user_account','revoke_session') THEN RETURN; END IF;
+  -- A phone hands over its connection gap notes (migration 188, WH-177): any signed-in account, for its own device.
+  IF rpc = 'submit_connection_notes' THEN RETURN; END IF;
+  -- The temperature report and its sensor chooser (migration 187, WH-157): staff and customer accounts too, for every sensor (owner,
+  -- 2026-11-11), with no customer-ownership check. Every other sensor read stays refused to customers by the final ELSE.
+  IF rpc IN ('get_temperature_report','get_sensor_report_devices') AND role_name IN ('staff','customer') THEN RETURN; END IF;
   -- get_stock_aging_report and get_item_wise_stock_list: with a customer id
   -- they are that customer's report; without one they are the all-customers
   -- report, which no customer account may run.

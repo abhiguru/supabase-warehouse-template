@@ -22,4 +22,11 @@ COPY --from=upstream /usr/local/bin/edge-runtime /usr/local/bin/edge-runtime
 # stays on bookworm gives a glibc error). Run it once here, as docker/pdf-renderer's Dockerfile runs `ldd` on
 # chrome-headless-shell: if it does not link and start on this base, the build fails.
 RUN ["edge-runtime", "--version"]
+# Fill the runtime's module cache (/root/.cache/deno) with what a `node:` import needs. The runtime fetches the @types/node typings
+# from registry.npmjs.org the first time a worker with a `node:` import is built, so a functions container created while the
+# facility's internet is down could not start those workers (sign-in codes, the central exchange, printing). Starts the runtime
+# once over a tiny worker (docker/edge-runtime/warmup, deleted again after) and keeps the cache in the image. Needs the internet
+# at build time only; the build fails if the worker does not answer.
+COPY warmup /opt/warmup
+RUN bash /opt/warmup/run.sh && rm -rf /opt/warmup /tmp/warmup.log
 ENTRYPOINT ["edge-runtime"]

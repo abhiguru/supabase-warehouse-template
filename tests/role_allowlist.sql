@@ -76,6 +76,10 @@ INSERT INTO ra_rpc(name,staff,customer) VALUES
  -- migration 140: every account may sign out one of its own devices; the body also lets an administrator or a supervisor sign out anyone's
  -- (tests/session_devices_140.sql)
  ('revoke_session',true,'any'),
+ -- migration 187 (WH-157): the temperature report and its sensor chooser are open to staff and customer accounts too, for every sensor;
+ -- migration 188 (WH-177): a phone hands over its connection notes (any account), the per-day history is for administrators only
+ ('get_temperature_report',true,'any'),('get_sensor_report_devices',true,'any'),
+ ('submit_connection_notes',true,'any'),('get_connection_history',false,'no'),
  -- a customer's own documents, carts and reports; staff for every customer
  ('get_grn_details',true,'own'),('get_grn_item_dispatches',true,'own'),('get_grn_item_rates',true,'own'),('get_dispatch_details',true,'own'),
  ('get_invoice_data',true,'own'),('get_invoice_detail',true,'own'),('get_invoice_items_detailed',true,'own'),

@@ -259,17 +259,17 @@ test('the letterhead reader leaves the image out for an empty setting, a bad nam
   }
 });
 
-test('only the four document PDF workers receive the letterhead, and the router and compose pass it the way they pass the central key file', () => {
+test('only the four document PDF workers and the temperature report receive the letterhead, and the router and compose pass it the way they pass the central key file', () => {
   const container = { JWT_SECRET: 'x', SUPABASE_URL: 'u', SUPABASE_ANON_KEY: 'a', SUPABASE_PUBLIC_URL: 'p', PDF_RENDERER_URL: 'r', LETTERHEAD_FILE: 'letterhead.png', LETTERHEAD_DIR: '/etc/warehouse/public' };
   const uri = letterheadDataUri(pngLetterhead);
   for (const name of Object.keys(workerEnvNames)) {
     const got = Object.fromEntries(workerEnv(name, container, { LETTERHEAD_DATA_URI: uri }));
-    const four = ['generate-grn-pdf', 'generate-dispatch-pdf', 'generate-invoice-pdf', 'generate-customer-stock-pdf'].includes(name);
+    const four = ['generate-grn-pdf', 'generate-dispatch-pdf', 'generate-invoice-pdf', 'generate-customer-stock-pdf', 'generate-temperature-report-pdf'].includes(name);
     assert.equal(got.LETTERHEAD_DATA_URI, four ? uri : undefined, name);
     assert.ok(!('LETTERHEAD_FILE' in got) && !('LETTERHEAD_DIR' in got), `${name} received the file setting`);
   }
   const router = readFileSync(new URL('../functions/main/index.ts', import.meta.url), 'utf8');
-  assert.match(router, /const letterheadFunctions = new Set\(\['generate-grn-pdf', 'generate-dispatch-pdf', 'generate-invoice-pdf', 'generate-customer-stock-pdf'\]\);/);
+  assert.match(router, /const letterheadFunctions = new Set\(\['generate-grn-pdf', 'generate-dispatch-pdf', 'generate-invoice-pdf', 'generate-customer-stock-pdf',\n  'generate-temperature-report-pdf'\]\);/);
   assert.match(router, /if \(letterheadFunctions\.has\(name\)\) \{\n      const uri = await readLetterhead\(\);\n      if \(uri\) extra\.LETTERHEAD_DATA_URI = uri;/);
   assert.doesNotMatch(router, /generate-report-pdf'\]\);\nconst readLetterhead/);
   const compose = readFileSync(new URL('../docker/docker-compose.yml', import.meta.url), 'utf8');
@@ -448,7 +448,7 @@ test('setup.sh asks after the Slack webhook question and the lock, before config
   assert.match(setup, /--letterhead-file\) LETTERHEAD_ARG="\$2"; if \[\[ "\$2" != ask \]\]; then CONFIG_ARGS\+=\("\$1" "\$2"\); fi ;;/, '`ask` is for the gate; configure.mjs never sees it');
   assert.match(setup, /--given "\$LETTERHEAD_ARG" --out "\$LETTERHEAD_TMP" \|\| exit 1/, 'a refusal ends setup');
   assert.match(setup, /CONFIG_ARGS\+=\(--letterhead-file "\$\(<"\$LETTERHEAD_TMP"\)"\)/);
-  assert.match(setup, /trap 'rm -f "\$WEBHOOK_TMP" "\$LETTERHEAD_TMP"; \[\[ -z "\$BUNDLE_DIR" \]\] \|\| rm -rf -- "\$BUNDLE_DIR"' EXIT/);
+  assert.match(setup, /trap 'rm -f "\$WEBHOOK_TMP" "\$SUPPORT_TMP" "\$LETTERHEAD_TMP"; \[\[ -z "\$BUNDLE_DIR" \]\] \|\| rm -rf -- "\$BUNDLE_DIR"' EXIT/);
   // The operator-install job; the operator-upgrade job installs an earlier release and passes the option only if that release knows it.
   const ci = readFileSync(new URL('../.github/workflows/ci.yml', import.meta.url), 'utf8');
   const install = ci.slice(ci.indexOf('\n  operator-install:\n') + 1).split(/\n  [a-z-]+:\n/)[0];

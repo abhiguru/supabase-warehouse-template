@@ -379,7 +379,7 @@ test('setup and the edge function apply the same key set rules', () => {
 
 test('setup.sh passes the central options on and applies the issuer to the database after the auth settings', () => {
   const setup = readFileSync(new URL('../setup.sh', import.meta.url), 'utf8');
-  assert.match(setup, /--admin-name\|--central-issuer\|--central-jwks-url\|--central-jwks-file\|--central-local-code\|--central-admin-trust\|--alert-webhook-file\|--sensor-webhook-file\|--heartbeat-url-file\|--letterhead-file\|--gateway-port\|--db-memory\|--ingress\|--proxy-address\|--proxy-header\|--from-bundle\)/);  // deliberate pin update: --db-memory joins the value options
+  assert.match(setup, /--admin-name\|--central-issuer\|--central-jwks-url\|--central-jwks-file\|--central-local-code\|--central-admin-trust\|--alert-webhook-file\|--sensor-webhook-file\|--heartbeat-url-file\|--support-link-file\|--letterhead-file\|--gateway-port\|--db-memory\|--ingress\|--proxy-address\|--proxy-header\|--from-bundle\)/);  // deliberate pin update: --db-memory joins the value options
   const auth = setup.indexOf('scripts/configure-auth.sql');
   const central = setup.indexOf('scripts/configure-central.sql');
   assert.ok(auth > 0 && central > auth && central < setup.indexOf('scripts/configure-sms.sql'));

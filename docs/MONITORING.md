@@ -107,7 +107,7 @@ An alert fires after two failing runs in a row (10 minutes), except the event al
 | `offhost_copy_missing` | **Weekly** (repeats every 168 hours), **never muted**, and the "no copy yet" cases wait until the checker has run for 7 days (time to plug a drive in): the USB backup is not set up (the backups and the backup key then sit only on this one disk), or it is set up and has made no copy yet. The other cases are said at once: the USB copy is stale or failed; or it still writes readable archives although nobody typed `--no-encrypt` (the installation never reran `sudo bash scripts/backup-usb.sh setup --state <state>` after encryption became the default); or its archives are encrypted and the key copy is not confirmed (no `config/backup-key.escrow`, or one for another key: `bash scripts/backup-key-escrow.sh show`); the same rule as `npm run doctor`. The fix is `docs/OPERATOR_INSTALL.md`, "USB backup drive". A facility that has decided not to keep an off-host copy records it, as the user that runs the checker, with `printf '%s\n' 'We have decided not to keep a copy of the backups outside this host.' > config/offhost-copy-declined && chmod 600 config/offhost-copy-declined` (a regular file, owned by that user, mode 0600, exactly that sentence: anything else is ignored); the "no copy" part of the alert then stays silent (a backup key copy that is not confirmed is still said) |
 | `retention_failed` | The last retention clean-up failed |
 | `daily_timer_legacy` | The checker unit is from before the daily timer: the backup still runs inside it (at once; never muted; see "Install the timer") |
-| `upgrade_interrupted` | An upgrade did not finish: `config/upgrade-in-progress` exists and no command holds the operator lock, so `upgrade.sh` is not running (at once; **never muted**). The facility may be half upgraded and the API is closed to phones (maintenance mode) until a person finishes the upgrade (the same command again) or goes back; `node scripts/upgrade-record.mjs report` prints both, `bash scripts/maintenance.sh off` opens the API. Services are not restarted by the checker meanwhile (see "Self-healing"). An upgrade that stopped before its backup was proved changed nothing: the record says so. If the alert says the API is open, the upgrade had finished and opened it, and the health check after that failed: run `node scripts/watch.mjs health`. The same alert also fires, with the summary "Maintenance mode is on and nothing is running that owns it", when `config/maintenance` exists, no upgrade is recorded and no command holds the lock: a backup that was killed part way (it leaves `config/maintenance-owner` beside the marker) or a maintenance mode left on; `bash scripts/maintenance.sh off` opens the API |
+| `upgrade_interrupted` | An upgrade did not finish: `config/upgrade-in-progress` exists and no command holds the operator lock, so `upgrade.sh` is not running (at once; **never muted**). The facility may be half upgraded and the API is closed to phones (maintenance mode) until a person finishes the upgrade (the same command again) or goes back; `node scripts/upgrade-record.mjs report` prints both, `bash scripts/maintenance.sh off` opens the API. Services are not restarted by the checker meanwhile (see "Self-healing"). An upgrade that stopped before its backup was proved changed nothing: the record says so. If the alert says the API is open, the upgrade had finished and opened it, and the health check after that failed: run `node scripts/watch.mjs health`. The same alert also fires, with the summary "Maintenance mode is on and nothing is running that owns it", when `config/maintenance` exists, no upgrade is recorded and no command holds the lock: a backup that was killed part way (it leaves `config/maintenance-owner` beside the marker) or a maintenance mode left on; `bash scripts/maintenance.sh off` opens the API. A killed backup's maintenance mode is opened by the checker itself when it can tell that backup is gone (see "Self-healing"); then the alert does not fire and one `[REOPENED]` message is posted instead. The alert says when the checker is waiting for the services, or that its attempt failed |
 | `operator_lock_stuck` | A setup or restore (or any command but the daily pass) has held the operator lock for 2 hours or more; the daily pass, 4 hours or more; an `upgrade.sh` (while `config/upgrade-in-progress` exists), twice the time of the last backup plus the last verify, but not under 2 hours and not over a day |
 
 While an operator command (setup, backup, restore, stop) holds the lock, the checker judges nothing: those commands stop
@@ -205,6 +205,18 @@ or restarted then could be the new release's code on a schema that is only part 
 starts), and a person decides what the facility runs. The checker never recreates a container, so a
 changed compose file or image is applied only by `setup.sh`. The optional `supavisor`, `cups` and `sensor-bridge` are left
 alone.
+
+**A backup killed while the API was closed.** The daily backup closes the API (maintenance mode) while it holds the services stopped, and
+writes `config/maintenance-owner` ("backup <pid> <start time> <boot id>") beside the marker. If it is killed then (a power cut, out of memory,
+SIGKILL), the checker runs `bash scripts/maintenance.sh off` itself, once, when **all** of these hold: the owner file names a backup (an upgrade,
+a restore or a person's `maintenance.sh on` leaves none: `on` removes it); that backup is gone (the host booted since, or no `backup.sh` runs with
+that pid); no upgrade is recorded; no command holds the operator lock; the host has been up for 15 minutes; and the database and the services
+the backup stops are up. The 15 minutes let the services start at boot and the daily pass that the power cut made the timer miss start
+(its timer is `Persistent`); a backup that is still running holds the lock and is never cut off. It then posts one `[REOPENED]` message: when,
+the backup that was interrupted, and that it did not finish (the interrupted backup left only a `.warehouse-backup-staging.*` directory, which
+is never a backup and which the next backup removes once it is 2 hours old, so `backup_missing` follows as for any missed night). In every
+other case (no owner file, one that cannot be read or names something else, a backup that may still run, a failed attempt) the API stays
+closed and `upgrade_interrupted` says so; open it with `bash scripts/maintenance.sh off` once nothing is meant to be running.
 
 ## How alerts behave
 
@@ -414,6 +426,57 @@ is never an alert, because Slack may be what is down. The URL is a secret (anyon
 backups, and has to be put back after `db:restore-host`. The daily "Monitoring is alive" Slack line stays: it covers a
 checker that runs but cannot reach Slack the other way round.
 
+## The support link
+
+An optional, outward-only health report for the GCSA support desk, so that support sees a problem before the owner does. It is **off unless the
+facility says yes**: setup asks on a terminal (Enter means no) and records the answer in `config/support-link-answer`; nothing is switched on
+silently, and the facility's own Slack alerts and heartbeat do not depend on it. Nothing listens on the facility and no port is opened.
+
+**How it works.** The support desk makes one check per facility on an outside heartbeat service (healthchecks.io or any service with a "success"
+and a "fail" address and a readable last body) and gives the facility its address. After every 5-minute run the checker sends one `POST` to it:
+the success address when all is well, the fail address (`<address>/fail`, or the second line of the file) when the state is `attention`. The send
+has a 3 second limit, follows no redirect, never delays the run beyond that, and a failure is **never an alert at the facility**: it shows only
+in `node scripts/watch.mjs status` ("Support link: on, not sent since ...") and the log. The address is a secret (whoever holds it can only send
+reports, not read any), is stored as `config/support-link-url` (mode 0600) and is not in a backup.
+
+```bash
+bash setup.sh --operator ... --support-link-file /secure/support-link-url.txt    # one or two https lines: success address, optional fail address
+bash setup.sh --operator ... --support-link-file ask                              # ask the question again
+bash setup.sh --operator ... --support-link-file off                              # switch off
+```
+
+**What is sent** (JSON, `format` `warehouse-support-report-1`, at most 8 KiB, typically about 0.6 KiB; the receiving service keeps far more):
+
+| Field | Meaning |
+|---|---|
+| `state` | `ok`, `attention`, `planned_stop` or `switched_off`; `note` says "switched off by the store" for the last one |
+| `plannedStop` | `backup`, `upgrade` or `operator_command` while a command that stops services on purpose runs, else null |
+| `instanceId`, `facility` | the server identity number and the facility's display name |
+| `release`, `schemaHead` | the server release and database version |
+| `reportedAt`, `hostRestartedSinceLastReport` | the time of the report; whether the machine restarted since the last good send |
+| `lastBackupAt`, `lastVerifiedBackupAt`, `offBoxCopyAt` | times of the last backup, of the last backup proved by a restore check, and of the last good copy kept away from the machine (null: none, or not set up) |
+| `diskFreePercent` | `system` (/) and `data` (the state's data directory), percent free |
+| `openAlerts` | for each open alert its `kind` and `since`, nothing else (`service_down:gateway` is sent as `service_down`) |
+| `alertChannelSet` | whether the facility's own Slack alert channel is set up |
+| `minAppVersion` | the oldest app version this server accepts |
+
+**Never sent:** customer, user or item names; any number or amount of receipts, dispatches, invoices, payments or stock; phone numbers; sensor names
+or readings; the details of an alert; addresses on the facility's network.
+
+**The state.** `attention` when any of these is open: `backup_missing`, `backup_failed`, `offhost_copy_missing`, `disk_root_low`, `disk_low`,
+`disk_vhdx_drive_low`, `postgres_down`, `service_down`, `api_down`, `public_https_down`, `upgrade_interrupted`, or the facility's alert channel is not
+set up. Other alerts are listed and change nothing. While the nightly backup, an upgrade or another operator command holds the operator lock (or a live
+backup owns maintenance mode), the services it stopped are left out of the report and the state is `planned_stop`, sent to the success address.
+No report for 15 minutes is "silent" at the service: set its check to a 5 minute period and 15 minute grace.
+
+**See it.** `node scripts/watch.mjs status` shows `Support link: on, last sent <time>` or `off`. `node scripts/watch.mjs support-report` prints the exact
+report the next run would send (nothing is sent). `node scripts/watch.mjs support-log [--days N]` lists what was sent; the record is
+`logs/support-link.jsonl`, kept 12 months beside `logs/alerts.jsonl` (one line per send; the full body when it differs from the one before).
+
+**Switch off.** `--support-link-file off` removes the address from use and records the answer; the next run sends one last report saying "switched off by the
+store" (tried for a day) and from then on nothing is sent. The support desk then pauses that check and removes it after 30 days. A host that
+is local-only (`--ingress local-only`) has no way out and no support link.
+
 ## A newer release
 
 `node scripts/doctor.mjs --local` prints `Note: vX.Y.Z is available (this facility runs vA.B.C)`, and the daily "Monitoring is alive" message
@@ -431,6 +494,8 @@ sees the facility's public IP address and the checkout's own repository name; no
 Both calls have a 10 second limit, follow no redirects, and never prompt. A host that must not contact GitHub from the facility simply gets no line.
 
 ## An association view with healthchecks
+
+(The support desk's richer view, with health signals in the ping body, is [The support link](#the-support-link); this section describes the plain up-or-down board.)
 
 An association that wants to see which of its member facilities have gone quiet can own one healthchecks.io project (or a
 self-hosted healthchecks) for the purpose:

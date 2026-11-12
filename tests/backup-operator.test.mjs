@@ -942,7 +942,7 @@ test('with the gateway running the backup closes the API in maintenance mode (wh
     const stuck = w.run({ FAKE_MAINT: 'off' }, join(w.scratch, 'stuck-backup'));
     assert.notEqual(stuck.status, 0);
     assert.match(stuck.stderr, /The API is not open again/);
-    assert.match(readFileSync(join(w.state, 'config/maintenance-owner'), 'utf8'), /^backup \d+ \d{4}-\d\d-\d\dT\d\d:\d\d:\d\dZ\n$/, 'a marker the backup could not lift carries its owner tag');
+    assert.match(readFileSync(join(w.state, 'config/maintenance-owner'), 'utf8'), /^backup \d+ \d{4}-\d\d-\d\dT\d\d:\d\d:\d\dZ [0-9a-f-]{36}\n$/, 'a marker the backup could not lift carries its owner tag');
     assert.equal(existsSync(join(w.state, 'config/maintenance')), true);
     assert.equal(readFileSync(join(w.scratch, 'stuck-backup/database.dump'), 'utf8'), 'fake database dump\n', 'the backup itself is complete');
     // Exit status 2 of maintenance.sh off: the API is open and only the health check failed. The backup says so and still fails.

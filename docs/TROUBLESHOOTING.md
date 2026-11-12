@@ -173,6 +173,10 @@ A 503 whose body is `{"code":"upgrading","message":"The facility's server is bei
 After it stopped, read what it printed, or `node scripts/upgrade-record.mjs report`: finish it with the same command, or go back, and
 `bash scripts/maintenance.sh off` opens the API ([Rerun and upgrade](OPERATOR_INSTALL.md#rerun-and-upgrade), "While it upgrades"). Do not
 open it to see whether the facility works if the upgrade is half done: the code may be the new release's on a schema that is only part migrated.
+The nightly backup closes the API too while it holds the services stopped. A backup killed then (a power cut) is opened again by the checker
+about 15 minutes after the boot, with one `[REOPENED]` message in Slack; when it cannot tell that backup is gone, Slack says
+`upgrade_interrupted` ("Maintenance mode is on and nothing is running that owns it"): if no backup or upgrade is meant to be running, run
+`bash scripts/maintenance.sh off` ([MONITORING.md](MONITORING.md), "Self-healing").
 
 A 502 with `no live upstreams` or `... could not be resolved` in the gateway log names the
 service behind the route that is down or was just replaced: the gateway looks the names up again every 5 seconds
