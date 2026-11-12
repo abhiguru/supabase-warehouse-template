@@ -81,9 +81,12 @@ DECLARE
     v_registration_sent boolean := false;
 BEGIN
   PERFORM warehouse_security.authorize_rpc('update_grn',jsonb_build_object('p_grn_id',p_grn_id,'p_customer_id',p_customer_id));
-  -- Migration 190 (WH-180): a GRN imported from the previous system is read-only (IMPORTED_READ_ONLY); nothing is written.
+  -- Migration 190 (WH-180): a GRN imported from the previous system is read-only (IMPORTED_READ_ONLY), except its rates: a call whose
+  -- every other field equals what is stored sets p_rates and writes nothing else (warehouse_security.update_imported_grn_rates).
   IF EXISTS (SELECT 1 FROM goodsreceived g WHERE g.id = p_grn_id AND g.import_batch_id IS NOT NULL) THEN
-    RETURN warehouse_security.imported_read_only('grn');
+    RETURN warehouse_security.update_imported_grn_rates(p_grn_id, p_gr_no, p_date, p_customer_id, p_customer_name, p_sender_id,
+      p_sender_name, p_supervisor_id, p_supervisor_name, p_registration, p_note, p_leon, p_pricing_mode, p_items, p_images,
+      p_duration_mode, p_idempotency_key, p_rates, p_expected_updated_at);
   END IF;
   -- Migration 90: rates typed on the GRN sheet are an administrator's or a supervisor's.
   IF p_rates IS NOT NULL AND warehouse_security.active_role() = 'staff' THEN

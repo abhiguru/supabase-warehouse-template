@@ -28,10 +28,7 @@
 --     that edit or delete a document answer {success:false, error_code:'WH409', reason:'IMPORTED_READ_ONLY', document:'grn' | 'dispatch'
 --     | 'invoice' | 'payment', error and message: the sentence above} right after their authorize_rpc call (so a role the gate refuses is
 --     still refused by the gate) when the document is imported:
---       update_grn, delete_grn_safe and update_dispatch_smart in their definition files (warehouse_security.apply_grn_rates is not
---       refused: rates may be set on an imported GRN, Product 2026-11-12; it writes only grn_rates and item_storage_prices, never a
---       guarded row, and an imported invoice reads its issued figures); here, by marker count: get_grn_edit_state (answers the refusal
---       instead of an edit state),
+--       update_grn, delete_grn_safe and update_dispatch_smart in their definition files; here, by marker count:
 --       delete_dispatch_with_order_cleanup, update_invoice, cancel_invoice (an imported invoice is not cancelled: that is an edit),
 --       delete_invoice, delete_invoice_pair, update_payment and delete_payment (an imported payment; before PAYMENT_NOT_EDITABLE),
 --       delete_grn_image, delete_dispatch_image, register_grn_image_upload, register_dispatch_image_upload, upload_grn_image and
@@ -39,6 +36,12 @@
 --       service_role).
 --     Not refused early (the table guard still holds): confirm_* and cancel_*_image_upload (they act on a pending photo row, which no
 --     imported document has); the preview_* functions (they write nothing).
+--     Rates may be set on an imported GRN (Product, 2026-11-12), by the roles that set them on any GRN: update_grn hands an imported
+--     GRN to warehouse_security.update_imported_grn_rates, which accepts the call only when every other field it is sent equals what is
+--     stored (the app's Rates step sends the whole form back), and then writes p_rates through apply_grn_rates and nothing else;
+--     any other difference is IMPORTED_READ_ONLY. apply_grn_rates writes only grn_rates and item_storage_prices, never a guarded row,
+--     and an imported invoice reads its issued figures whatever the rates. get_grn_edit_state answers an imported GRN as any other, so
+--     the Rates step can open; an edit of anything else is refused on save.
 --  3. While the import runs (warehouse.import = 'on'), and only for its INSERTs, audit_trigger_func on the seven document tables,
 --     sync_grn_invoiced_trigger and invoice_discount_audit return at once: the import records one audit row per batch and works out
 --     the GRNs' invoiced flags in one statement. Every other write is audited and synced as before.
@@ -70,6 +73,129 @@ CREATE FUNCTION warehouse_security.imported_read_only(p_document text) RETURNS j
 $$;
 ALTER FUNCTION warehouse_security.imported_read_only(text) OWNER TO supabase_admin;
 REVOKE ALL ON FUNCTION warehouse_security.imported_read_only(text) FROM PUBLIC;
+
+-- The rates-only save of an imported GRN (update_grn's arguments, as the app sends them). Same is: not sent (NULL keeps a value in
+-- update_grn), or equal to what is stored (text: blank and NULL alike, after update_grn's own trimming; the date: the same India day).
+-- p_items must name every stored line once, by id, with the same item, name, packaging, quantity, weight, rack and mark; p_images may
+-- only name photos the GRN has (an imported GRN has none). Answers like update_grn (its success shape, STALE_RECORD, RATES_MANAGER_ONLY,
+-- a rate failure of apply_grn_rates with nothing written), and keeps its answer under p_idempotency_key as update_grn does.
+CREATE FUNCTION warehouse_security.update_imported_grn_rates(
+    p_grn_id uuid, p_gr_no character varying, p_date timestamp with time zone, p_customer_id uuid, p_customer_name character varying,
+    p_sender_id uuid, p_sender_name character varying, p_supervisor_id uuid, p_supervisor_name character varying,
+    p_registration character varying, p_note character varying, p_leon boolean, p_pricing_mode character varying, p_items jsonb,
+    p_images jsonb, p_duration_mode character varying, p_idempotency_key text, p_rates jsonb, p_expected_updated_at timestamp with time zone)
+    RETURNS jsonb
+    LANGUAGE plpgsql
+    SET search_path TO 'pg_catalog', 'public'
+    AS $$
+DECLARE
+  g public.goodsreceived;
+  v_profile uuid;
+  v_role text := warehouse_security.active_role();
+  v_same boolean;
+  v_cached jsonb;
+  v_fail jsonb;
+  v_result jsonb;
+  v_detail text;
+  v_norm text;
+BEGIN
+  IF v_role NOT IN ('admin', 'supervisor') THEN
+    IF p_rates IS NOT NULL AND v_role = 'staff' THEN
+      RETURN warehouse_security.rate_failure('RATES_MANAGER_ONLY', 'Only administrators and supervisors can set rates on a GRN');
+    END IF;
+    RETURN warehouse_security.imported_read_only('grn');
+  END IF;
+  SELECT up.id INTO v_profile FROM public.user_profiles up WHERE up.auth_user_id = auth.uid();
+
+  -- The list-refresh lock, then the saved answer of a repeated save (as update_grn, migrations 46 and 47).
+  PERFORM pg_advisory_xact_lock(71040);
+  IF p_idempotency_key IS NOT NULL THEN
+    SELECT k.response INTO v_cached FROM public.idempotency_keys k
+     WHERE k.idempotency_key = p_idempotency_key AND k.rpc_function = 'update_grn' AND k.created_by = v_profile
+       AND k.response #>> '{grn,id}' = p_grn_id::text AND k.expires_at > now();
+    IF v_cached IS NOT NULL THEN RETURN v_cached || jsonb_build_object('idempotent', true); END IF;
+  END IF;
+
+  SELECT * INTO g FROM public.goodsreceived WHERE id = p_grn_id FOR UPDATE;
+  IF p_expected_updated_at IS NOT NULL
+     AND date_trunc('milliseconds', g.updated_at) IS DISTINCT FROM date_trunc('milliseconds', p_expected_updated_at) THEN
+    RETURN warehouse_security.refuse('STALE_RECORD', 'Someone else changed this GRN. Open it again.',
+      jsonb_build_object('what', 'grn', 'id', p_grn_id, 'expected_updated_at', p_expected_updated_at, 'current_updated_at', g.updated_at));
+  END IF;
+
+  v_norm := NULLIF(regexp_replace(regexp_replace(p_registration, '^[\s ]+|[\s ]+$', '', 'g'), '[\s ]+', ' ', 'g'), '');
+  BEGIN
+    v_same :=
+          (p_gr_no IS NULL OR p_gr_no = g.gr_no)
+      AND (p_date IS NULL OR warehouse_security.business_date(p_date) = warehouse_security.business_date(g.date))
+      AND (p_customer_id IS NULL OR p_customer_id = g.customer_id)
+      AND (p_customer_name IS NULL OR btrim(p_customer_name) IN (btrim(COALESCE(g.customer_name, '')),
+                                                                (SELECT btrim(c.name) FROM public.customers c WHERE c.id = g.customer_id)))
+      AND (p_sender_id IS NULL OR p_sender_id IS NOT DISTINCT FROM g.sender_id)
+      AND (p_sender_name IS NULL OR COALESCE(NULLIF(btrim(p_sender_name), ''), '') = COALESCE(btrim(g.sender_name), ''))
+      AND (p_supervisor_id IS NULL OR p_supervisor_id IS NOT DISTINCT FROM g.supervisor_id)
+      AND (p_supervisor_name IS NULL OR COALESCE(NULLIF(btrim(p_supervisor_name), ''), '') = COALESCE(btrim(g.supervisor_name), ''))
+      AND (p_registration IS NULL OR COALESCE(v_norm, '') = COALESCE(g.registration, ''))
+      AND (p_note IS NULL OR COALESCE(NULLIF(btrim(p_note), ''), '') = COALESCE(btrim(g.note), ''))
+      AND (p_leon IS NULL OR p_leon = COALESCE(g.leon, false))
+      AND (p_pricing_mode IS NULL OR upper(p_pricing_mode) = upper(COALESCE(g.pricing_mode, '')))
+      AND (p_duration_mode IS NULL OR p_duration_mode = g.duration_mode)
+      -- Every stored line once, unchanged.
+      AND jsonb_typeof(p_items) = 'array'
+      AND jsonb_array_length(p_items) = (SELECT count(*) FROM public.goodsreceived_trl t WHERE t.gr_id = p_grn_id)
+      AND (SELECT count(DISTINCT t.id) FROM jsonb_array_elements(p_items) e
+             JOIN public.goodsreceived_trl t ON t.gr_id = p_grn_id AND t.id::text = e->>'id'
+            WHERE COALESCE(e->>'item_id', e->>'itemId', t.item_id::text) = t.item_id::text
+              AND btrim(COALESCE(e->>'item_name', e->>'itemName', t.item_name)) = btrim(t.item_name)
+              AND COALESCE(NULLIF(btrim(e->>'packaging'), ''), '') = COALESCE(btrim(t.packaging), '')
+              AND (e->>'qty')::integer = t.qty
+              AND COALESCE((e->>'weight')::integer, 0) = COALESCE(t.weight, 0)
+              AND COALESCE(NULLIF(warehouse_security.ascii_digits(btrim(e->>'rack')), ''), '') = COALESCE(t.rack, '')
+              AND COALESCE(NULLIF(warehouse_security.ascii_digits(btrim(COALESCE(e->>'package_mark', e->>'packageMark'))), ''), '')
+                  = COALESCE(t.package_mark, ''))
+          = jsonb_array_length(p_items)
+      AND NOT EXISTS (SELECT 1 FROM jsonb_array_elements(COALESCE(p_images, '[]'::jsonb)) e
+                       WHERE NOT EXISTS (SELECT 1 FROM public.grn_images i WHERE i.grn_id = p_grn_id AND i.id::text = e->>'id'));
+  EXCEPTION WHEN invalid_text_representation OR numeric_value_out_of_range OR data_exception THEN
+    v_same := false;
+  END;
+  IF NOT COALESCE(v_same, false) OR p_rates IS NULL THEN
+    RETURN warehouse_security.imported_read_only('grn');
+  END IF;
+
+  BEGIN
+    v_fail := warehouse_security.apply_grn_rates(p_grn_id, p_rates);
+    IF v_fail IS NOT NULL THEN
+      RAISE EXCEPTION 'rate_fail' USING ERRCODE = 'P0001', DETAIL = v_fail::text;
+    END IF;
+  EXCEPTION WHEN SQLSTATE 'P0001' THEN
+    IF SQLERRM <> 'rate_fail' THEN RAISE; END IF;
+    GET STACKED DIAGNOSTICS v_detail = PG_EXCEPTION_DETAIL;
+    RETURN v_detail::jsonb;   -- apply_grn_rates' writes are undone with the block
+  END;
+
+  v_result := jsonb_build_object('success', true, 'message', 'GRN rates updated',
+    'grn', jsonb_build_object('id', g.id, 'gr_no', g.gr_no, 'images', '[]'::jsonb),
+    'stats', jsonb_build_object('items_updated', 0, 'items_added', 0, 'items_deleted', 0, 'images_updated', 0, 'images_added', 0,
+                                'images_deleted', 0, 'items_skipped_stock', 0),
+    'item_mapping', '[]'::jsonb, 'order_effects', '[]'::jsonb);
+  IF p_idempotency_key IS NOT NULL THEN
+    INSERT INTO public.idempotency_keys (idempotency_key, rpc_function, response, created_by, expires_at)
+    VALUES (p_idempotency_key, 'update_grn', v_result, v_profile, now() + interval '7 days')
+    ON CONFLICT (idempotency_key) DO UPDATE SET
+      rpc_function = EXCLUDED.rpc_function, response = EXCLUDED.response, created_by = EXCLUDED.created_by, created_at = now(),
+      expires_at = EXCLUDED.expires_at
+    WHERE idempotency_keys.expires_at <= now()
+       OR (idempotency_keys.rpc_function = EXCLUDED.rpc_function AND idempotency_keys.created_by IS NOT DISTINCT FROM EXCLUDED.created_by);
+  END IF;
+  RETURN v_result;
+END $$;
+ALTER FUNCTION warehouse_security.update_imported_grn_rates(uuid, character varying, timestamp with time zone, uuid, character varying, uuid,
+  character varying, uuid, character varying, character varying, character varying, boolean, character varying, jsonb, jsonb,
+  character varying, text, jsonb, timestamp with time zone) OWNER TO supabase_admin;
+REVOKE ALL ON FUNCTION warehouse_security.update_imported_grn_rates(uuid, character varying, timestamp with time zone, uuid, character varying,
+  uuid, character varying, uuid, character varying, character varying, character varying, boolean, character varying, jsonb, jsonb,
+  character varying, text, jsonb, timestamp with time zone) FROM PUBLIC;
 
 CREATE FUNCTION warehouse_security.refuse_imported_change() RETURNS trigger
     LANGUAGE plpgsql SECURITY DEFINER
@@ -221,20 +347,6 @@ END $$;
 
 -- ===== 2. early refusals =====
 -- Each marker is the function's authorize_rpc line and the line after it; the refusal goes between them.
-
-SELECT pg_temp.patch_function('public.get_grn_edit_state(uuid)'::regprocedure, ARRAY[
-$m$    PERFORM warehouse_security.authorize_rpc('get_grn_edit_state', jsonb_build_object('p_grn_id', p_grn_id));
-
-    -- The token is read before the lines$m$
-], ARRAY[
-$m$    PERFORM warehouse_security.authorize_rpc('get_grn_edit_state', jsonb_build_object('p_grn_id', p_grn_id));
-    -- Migration 190 (WH-180): an imported GRN has no edit state; the answer is the refusal of an edit.
-    IF EXISTS (SELECT 1 FROM goodsreceived g WHERE g.id = p_grn_id AND g.import_batch_id IS NOT NULL) THEN
-        RETURN warehouse_security.imported_read_only('grn');
-    END IF;
-
-    -- The token is read before the lines$m$
-]);
 
 SELECT pg_temp.patch_function('public.delete_dispatch_with_order_cleanup(uuid, uuid)'::regprocedure, ARRAY[
 $m$  PERFORM warehouse_security.authorize_rpc('delete_dispatch_with_order_cleanup',jsonb_build_object('p_dispatch_id',p_dispatch_id));
