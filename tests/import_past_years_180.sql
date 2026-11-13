@@ -323,12 +323,32 @@ SELECT pg_temp.ip_as(:'admin_claims'::jsonb, format($q$SELECT public.update_grn(
   :'grn1', pg_temp.ip_items(:'grn1'::uuid), :'own_rates')) AS rates_admin \gset
 SELECT pg_temp.ip_assert(:'rates_admin'::jsonb->>'success' = 'true', 'an administrator sets rates on an imported GRN: ' || :'rates_admin');
 SELECT pg_temp.ip_assert((SELECT count(*) FROM public.grn_rates WHERE gr_id = :'grn1'::uuid AND unit_price = 7) = 1, 'the GRN has its own rate');
+SELECT updated_by AS sup_by0 FROM public.goodsreceived WHERE id = :'grn2'::uuid \gset
 SELECT pg_temp.ip_as(:'supervisor_claims'::jsonb, format($q$SELECT public.update_grn(p_grn_id=>%L::uuid,p_items=>%L::jsonb,p_rates=>%L::jsonb)$q$,
   :'grn2', pg_temp.ip_items(:'grn2'::uuid), :'own_rates')) AS rates_sup \gset
 SELECT pg_temp.ip_assert(:'rates_sup'::jsonb->>'success' = 'true', 'a supervisor sets rates on an imported GRN: ' || :'rates_sup');
+SELECT pg_temp.ip_assert((SELECT updated_by FROM public.goodsreceived WHERE id = :'grn2'::uuid) = (SELECT id FROM public.user_profiles WHERE mobile = '919888888903') AND :'sup_by0' IS DISTINCT FROM (SELECT id::text FROM public.user_profiles WHERE mobile = '919888888903'), 'the rates save set updated_by to the supervisor (was: ' || :'sup_by0' || ')');
 SELECT pg_temp.ip_as(:'staff_claims'::jsonb, format($q$SELECT public.update_grn(p_grn_id=>%L::uuid,p_items=>%L::jsonb,p_rates=>%L::jsonb)$q$,
   :'grn1', pg_temp.ip_items(:'grn1'::uuid), :'own_rates')) AS rates_staff \gset
 SELECT pg_temp.ip_assert(:'rates_staff'::jsonb->>'success' = 'false' AND :'rates_staff'::jsonb->>'error_code' = 'RATES_MANAGER_ONLY', 'staff get RATES_MANAGER_ONLY: ' || :'rates_staff');
+-- WH-190: a rates-only save is an edit: it sets updated_at and updated_by and answers the new token (grn.updated_at); a second save holding the
+-- older token is STALE_RECORD.
+-- (One transaction: now() does not move here, so the token value itself cannot be seen to change; updated_by, which the save sets, and the returned token can.)
+SELECT updated_at AS tok0, updated_by AS by0 FROM public.goodsreceived WHERE id = :'grn1'::uuid \gset
+SELECT jsonb_build_array(jsonb_build_object('scope','grn','item_id',:'item_id','weight_min',0,'weight_max',100,'unit_price',8,'labour_rate',1,'tax_percent',0)) AS own_rates8 \gset
+SELECT pg_temp.ip_as(:'admin_claims'::jsonb, format($q$SELECT public.update_grn(p_grn_id=>%L::uuid,p_items=>%L::jsonb,p_rates=>%L::jsonb,p_expected_updated_at=>%L::timestamptz)$q$,
+  :'grn1', pg_temp.ip_items(:'grn1'::uuid), :'own_rates8', :'tok0')) AS tok_save1 \gset
+SELECT updated_at AS tok1, updated_by AS tok1_by FROM public.goodsreceived WHERE id = :'grn1'::uuid \gset
+SELECT pg_temp.ip_assert(:'tok_save1'::jsonb->>'success' = 'true' AND :'tok1_by'::uuid = :'admin_profile'::uuid
+  AND (:'tok_save1'::jsonb#>>'{grn,updated_at}')::timestamptz = :'tok1'::timestamptz, 'a rates save sets updated_by and returns the token the table holds: ' || :'tok_save1');
+SELECT jsonb_build_array(jsonb_build_object('scope','grn','item_id',:'item_id','weight_min',0,'weight_max',100,'unit_price',9,'labour_rate',1,'tax_percent',0)) AS own_rates9 \gset
+SELECT pg_temp.ip_as(:'admin_claims'::jsonb, format($q$SELECT public.update_grn(p_grn_id=>%L::uuid,p_items=>%L::jsonb,p_rates=>%L::jsonb,p_expected_updated_at=>%L::timestamptz)$q$,
+  :'grn1', pg_temp.ip_items(:'grn1'::uuid), :'own_rates9', (:'tok0'::timestamptz - interval '1 hour')::text)) AS tok_stale \gset
+SELECT pg_temp.ip_assert(:'tok_stale'::jsonb->>'success' = 'false' AND :'tok_stale'::jsonb::text LIKE '%STALE_RECORD%'
+  AND (SELECT unit_price FROM public.grn_rates WHERE gr_id = :'grn1'::uuid) = 8, 'a second save with the older token is STALE_RECORD and wrote nothing: ' || :'tok_stale');
+SELECT pg_temp.ip_as(:'admin_claims'::jsonb, format($q$SELECT public.update_grn(p_grn_id=>%L::uuid,p_items=>%L::jsonb,p_rates=>%L::jsonb,p_expected_updated_at=>%L::timestamptz)$q$,
+  :'grn1', pg_temp.ip_items(:'grn1'::uuid), :'own_rates9', :'tok1')) AS tok_save2 \gset
+SELECT pg_temp.ip_assert(:'tok_save2'::jsonb->>'success' = 'true' AND (SELECT unit_price FROM public.grn_rates WHERE gr_id = :'grn1'::uuid) = 9, 'a save with the new token works: ' || :'tok_save2');
 -- Anything but the rates is refused: a quantity, a date, a missing line, and no rates at all.
 SELECT pg_temp.ip_as(:'admin_claims'::jsonb, format($q$SELECT public.update_grn(p_grn_id=>%L::uuid,p_items=>%L::jsonb,p_rates=>%L::jsonb)$q$,
   :'grn1', (SELECT jsonb_agg(i || '{"qty":99}'::jsonb) FROM jsonb_array_elements(pg_temp.ip_items(:'grn1'::uuid)) i), :'own_rates')) AS rates_qty \gset
@@ -541,8 +561,93 @@ SELECT pg_temp.ip_assert((SELECT count(*) FROM public.imported_billed_dispatches
 -- Nothing saved moves: the taken dispatches are still on no invoice line.
 SELECT pg_temp.ip_assert((SELECT count(*) FROM public.invoice_trl it JOIN public.dispatch_trl dt ON dt.id = it.disp_trl_id JOIN public.dispatch d ON d.id = dt.disp_id WHERE d.disp_no IN ('I0901','I0904')) = 0,
   'a dispatch taken as billed gets no invoice line');
--- GAP (WH-180, Product's extension): an imported invoice with NO lines at all also takes the earlier dispatches of its GRN as billed. Not
--- written yet: Dev's build for it has not landed. The case to add here: a GRN, a dispatch dated on or before the invoice, an invoice with no
--- invoice-lines rows; expect the dispatch in the taken-as-billed list with that invoice, out of dues and the form, no "the app bills it" note.
+-- An imported invoice with NO lines at all names no dispatch either: it also takes its GRN's earlier imported dispatches as billed.
+-- GRN A0905: dispatches I0906 (before GC/905) and I0907 (after it); GC/905 has no rows in invoice-lines. GRN A0906 (another customer): I0908.
+TRUNCATE warehouse_import.stage_grns, warehouse_import.stage_grn_lines, warehouse_import.stage_dispatches, warehouse_import.stage_dispatch_lines,
+  warehouse_import.stage_invoices, warehouse_import.stage_invoice_lines, warehouse_import.stage_payments;
+INSERT INTO warehouse_import.stage_grns(line,gr_no,gr_date,customer,pricing) VALUES
+ (2,'A0905',:'today_ip'::date - 400,'Import Demo Traders','MONTHLY'), (3,'A0906',:'today_ip'::date - 400,'Import Demo Other','MONTHLY');
+INSERT INTO warehouse_import.stage_grn_lines(line,gr_no,gr_date,line_no,item,packaging,qty,weight,stock_now) VALUES
+ (2,'A0905',:'today_ip'::date - 400,1,'Import Demo Potato','Bag',20,50,10), (3,'A0906',:'today_ip'::date - 400,1,'Import Demo Potato','Bag',20,50,15);
+INSERT INTO warehouse_import.stage_dispatches(line,disp_no,disp_date,customer) VALUES
+ (2,'I0906',:'today_ip'::date - 250,'Import Demo Traders'), (3,'I0907',:'today_ip'::date - 100,'Import Demo Traders'), (4,'I0908',:'today_ip'::date - 250,'Import Demo Other');
+INSERT INTO warehouse_import.stage_dispatch_lines(line,disp_no,disp_date,gr_no,gr_date,grn_line,qty) VALUES
+ (2,'I0906',:'today_ip'::date - 250,'A0905',:'today_ip'::date - 400,1,5), (3,'I0907',:'today_ip'::date - 100,'A0905',:'today_ip'::date - 400,1,5),
+ (4,'I0908',:'today_ip'::date - 250,'A0906',:'today_ip'::date - 400,1,5);
+INSERT INTO warehouse_import.stage_invoices(line,inv_label,inv_no,inv_prefix,inv_date,customer,gr_no,gr_date,labour,tax,total) VALUES
+ (2,'GC/905',905,'GC/',:'today_ip'::date - 200,'Import Demo Traders','A0905',:'today_ip'::date - 400,10.00,0.00,110.00);
+SELECT pg_temp.ip_svc($q$SELECT public.import_history('{}'::jsonb, false)$q$) AS nl_dry \gset
+SELECT pg_temp.ip_svc($q$SELECT public.import_history('{}'::jsonb, true)$q$) AS nl_run \gset
+SELECT pg_temp.ip_assert(:'nl_run'::jsonb->>'success' = 'true' AND pg_temp.ip_taken(:'nl_dry'::jsonb) = pg_temp.ip_taken(:'nl_run'::jsonb), 'the run with a no-lines invoice applies, dry run = apply: ' || left(:'nl_run', 600));
+SELECT pg_temp.ip_assert(pg_temp.ip_taken(:'nl_run'::jsonb) LIKE '%I0906>GC/905@%' AND pg_temp.ip_taken(:'nl_run'::jsonb) NOT LIKE '%I0907%' AND pg_temp.ip_taken(:'nl_run'::jsonb) NOT LIKE '%I0908%'
+  AND (SELECT count(*) FROM public.imported_billed_dispatches) = 3, 'I0906 is taken as billed by GC/905; I0907 (later) and I0908 (another GRN, no invoice) are not: ' || pg_temp.ip_taken(:'nl_run'::jsonb));
+SELECT pg_temp.ip_assert(pg_temp.ip_notes(:'nl_run'::jsonb) = '', 'no "the app bills it" note for the no-lines case: ' || pg_temp.ip_notes(:'nl_run'::jsonb));
+SELECT id AS g905 FROM public.goodsreceived WHERE gr_no = 'A0905' \gset
+SELECT t.id AS d906_line FROM public.dispatch_trl t JOIN public.dispatch d ON d.id = t.disp_id WHERE d.disp_no = 'I0906' \gset
+SELECT t.id AS d907_line FROM public.dispatch_trl t JOIN public.dispatch d ON d.id = t.disp_id WHERE d.disp_no = 'I0907' \gset
+SELECT n.left_bags AS nl_left_bags FROM warehouse_security.not_invoiced_grns(:'trader'::uuid, :'today_ip'::date) n WHERE n.gr_id = :'g905'::uuid \gset
+SELECT pg_temp.ip_assert(:'nl_left_bags'::int = 5, 'dues counts I0907 only (5 bags), not I0906: ' || :'nl_left_bags');
+SELECT set_config('request.jwt.claims', '{"role":"service_role"}', true) AS nl_claims \gset
+SELECT public.build_invoice_form_lines(:'g905'::uuid, NULL) AS nl_form \gset
+SELECT pg_temp.ip_assert(:'nl_form'::jsonb::text LIKE '%' || :'d907_line' || '%' AND :'nl_form'::jsonb::text NOT LIKE '%' || :'d906_line' || '%', 'the form offers I0907 and not I0906: ' || left(:'nl_form', 500));
+SELECT pg_temp.ip_svc($q$SELECT public.import_history('{}'::jsonb, true)$q$) AS nl_again \gset
+SELECT pg_temp.ip_assert((SELECT count(*) FROM public.imported_billed_dispatches) = 3 AND pg_temp.ip_notes(:'nl_again'::jsonb) = '', 'a repeat adds no link');
+
+-- ===== 10. WH-191: get_dispatch_details names the invoice a dispatch line is taken as billed by (migration 196) =====
+SELECT id AS dd901 FROM public.dispatch WHERE disp_no = 'I0901' \gset
+SELECT id AS dd911 FROM public.dispatch WHERE disp_no = 'I0911' \gset
+SELECT id AS dd902 FROM public.dispatch WHERE disp_no = 'I0902' \gset
+SELECT id AS dd906 FROM public.dispatch WHERE disp_no = 'I0906' \gset
+SELECT id AS dd908 FROM public.dispatch WHERE disp_no = 'I0908' \gset
+SELECT id AS dd950 FROM public.dispatch WHERE disp_no = 'I0950' \gset
+SELECT id AS inv901 FROM public.invoice WHERE inv_no = 901 AND import_batch_id IS NOT NULL \gset
+SELECT id AS inv902 FROM public.invoice WHERE inv_no = 902 AND import_batch_id IS NOT NULL \gset
+SELECT id AS inv905 FROM public.invoice WHERE inv_no = 905 AND import_batch_id IS NOT NULL \gset
+-- The taken-as-billed dispatch (criterion 20's GRN): its line reads the billing invoice; per-line charge fields are null.
+SELECT pg_temp.ip_as(:'admin_claims'::jsonb, format($q$SELECT public.get_dispatch_details(%L::uuid)$q$, :'dd901')) AS dd_taken \gset
+SELECT pg_temp.ip_assert((:'dd_taken'::jsonb#>>'{data,dispatch,items,0,invoice_details,invoice_id}') = :'inv901'
+  AND (:'dd_taken'::jsonb#>>'{data,dispatch,items,0,invoice_details,invoice_no}')::int = 901
+  AND (:'dd_taken'::jsonb#>>'{data,dispatch,items,0,invoice_details,invoice_label}') = 'GC/901'
+  AND (:'dd_taken'::jsonb#>>'{data,dispatch,items,0,invoice_details,invoice_date}') IS NOT NULL
+  AND (:'dd_taken'::jsonb#>>'{data,dispatch,items,0,invoice_details,total}')::numeric = 110.00
+  AND jsonb_typeof(:'dd_taken'::jsonb#>'{data,dispatch,items,0,invoice_details,charge}') = 'null'
+  AND jsonb_typeof(:'dd_taken'::jsonb#>'{data,dispatch,items,0,invoice_details,duration}') = 'null'
+  AND jsonb_typeof(:'dd_taken'::jsonb#>'{data,dispatch,items,0,invoice_details,invoice_trl_id}') = 'null',
+  'the taken-as-billed dispatch names GC/901 with no line figures: ' || left(:'dd_taken', 800));
+SELECT pg_temp.ip_assert((:'dd_taken'::jsonb#>>'{data,dispatch,statistics,total_invoiced_items}')::int = 1, 'it counts as one invoiced item: ' || (:'dd_taken'::jsonb#>>'{data,dispatch,statistics}'));
+SELECT pg_temp.ip_assert((:'dd_taken'::jsonb#>>'{data,dispatch,invoices_summary,total_invoices}')::int = 1 AND (:'dd_taken'::jsonb#>>'{data,dispatch,invoices_summary,invoice_labels,0}') = 'GC/901'
+  AND (:'dd_taken'::jsonb#>>'{data,dispatch,invoices_summary,total_amount}')::numeric = 110.00, 'its invoice is in invoices_summary: ' || (:'dd_taken'::jsonb#>>'{data,dispatch,invoices_summary}'));
+-- The dispatch dated after the invoice: nothing.
+SELECT pg_temp.ip_as(:'admin_claims'::jsonb, format($q$SELECT public.get_dispatch_details(%L::uuid)$q$, :'dd911')) AS dd_later \gset
+SELECT pg_temp.ip_assert(jsonb_typeof(:'dd_later'::jsonb#>'{data,dispatch,items,0,invoice_details}') = 'null'
+  AND (:'dd_later'::jsonb#>>'{data,dispatch,statistics,total_invoiced_items}')::int = 0, 'the later dispatch returns no invoice: ' || left(:'dd_later', 600));
+-- A dispatch named by a live invoice line shows that invoice with its line figures, as before.
+SELECT pg_temp.ip_as(:'admin_claims'::jsonb, format($q$SELECT public.get_dispatch_details(%L::uuid)$q$, :'dd902')) AS dd_named \gset
+SELECT pg_temp.ip_assert((:'dd_named'::jsonb#>>'{data,dispatch,items,0,invoice_details,invoice_id}') = :'inv902'
+  AND (:'dd_named'::jsonb#>>'{data,dispatch,items,0,invoice_details,charge}')::numeric = 20.00
+  AND (:'dd_named'::jsonb#>>'{data,dispatch,statistics,total_invoiced_items}')::int = 1, 'a dispatch named by GC/902 shows GC/902 and its line figures: ' || left(:'dd_named', 700));
+-- The no-lines invoice case.
+SELECT pg_temp.ip_as(:'admin_claims'::jsonb, format($q$SELECT public.get_dispatch_details(%L::uuid)$q$, :'dd906')) AS dd_nolines \gset
+SELECT pg_temp.ip_assert((:'dd_nolines'::jsonb#>>'{data,dispatch,items,0,invoice_details,invoice_id}') = :'inv905'
+  AND (:'dd_nolines'::jsonb#>>'{data,dispatch,items,0,invoice_details,invoice_label}') = 'GC/905'
+  AND (:'dd_nolines'::jsonb#>>'{data,dispatch,statistics,total_invoiced_items}')::int = 1, 'a dispatch taken by the no-lines invoice names GC/905: ' || left(:'dd_nolines', 700));
+-- An app-made dispatch, invoiced in the app, reads as before: its own invoice line and figures.
+SELECT t.id AS d950_line FROM public.dispatch_trl t WHERE t.disp_id = :'dd950'::uuid \gset
+SELECT pg_temp.ip_as(:'admin_claims'::jsonb, format($q$SELECT pg_temp.ip_save_invoice(jsonb_build_object('inv_fin_year', %s, 'gr_id', %L, 'gr_no', 'A0901', 'customer_id', %L,
+  'customer_name', 'Import Demo Traders', 'inv_date', now(), 'total', 0, 'tax_amount', 0, 'discount', 0, 'duration_mode', 'legacy', 'inv_no', 3,
+  'items', jsonb_build_array(jsonb_build_object('disp_trl_id', %L, 'charge', 7, 'tax', 0, 'labour_rate', 1))))$q$, :'cur_fy', :'g901', :'trader', :'d950_line')) AS app_inv950 \gset
+SELECT pg_temp.ip_assert(:'app_inv950'::jsonb->>'success' = 'true', 'an app invoice for the app dispatch: ' || :'app_inv950');
+SELECT pg_temp.ip_as(:'admin_claims'::jsonb, format($q$SELECT public.get_dispatch_details(%L::uuid)$q$, :'dd950')) AS dd_app \gset
+SELECT pg_temp.ip_assert((:'dd_app'::jsonb#>>'{data,dispatch,items,0,invoice_details,invoice_id}') = (:'app_inv950'::jsonb->>'invoice_id')
+  AND (:'dd_app'::jsonb#>>'{data,dispatch,items,0,invoice_details,charge}')::numeric = 7.00
+  AND (:'dd_app'::jsonb#>>'{data,dispatch,statistics,total_invoiced_items}')::int = 1, 'the app-made invoiced dispatch reads as before: ' || left(:'dd_app', 700));
+-- A customer account sees the same for its own customer's dispatch and nothing of another customer's.
+SELECT pg_temp.ip_as(:'customer_claims'::jsonb, format($q$SELECT public.get_dispatch_details(%L::uuid)$q$, :'dd901')) AS dd_cust \gset
+SELECT pg_temp.ip_assert((:'dd_cust'::jsonb#>>'{data,dispatch,items,0,invoice_details,invoice_id}') = :'inv901'
+  AND (:'dd_cust'::jsonb#>>'{data,dispatch,statistics,total_invoiced_items}')::int = 1, 'a customer sees its own taken-as-billed dispatch as an administrator does: ' || left(:'dd_cust', 700));
+SELECT pg_temp.ip_as(:'customer_claims'::jsonb, format($q$SELECT public.get_dispatch_details(%L::uuid)$q$, :'dd908')) AS dd_other \gset
+SELECT pg_temp.ip_assert(:'dd_other'::jsonb ? 'raised' OR :'dd_other'::jsonb->>'success' = 'false' OR :'dd_other'::jsonb#>'{data,dispatch}' IS NULL OR jsonb_typeof(:'dd_other'::jsonb#>'{data,dispatch}') = 'null',
+  'a customer gets nothing of another customer''s dispatch: ' || left(:'dd_other', 400));
+SELECT pg_temp.ip_assert(:'dd_other'::jsonb::text NOT LIKE '%GC/%' AND :'dd_other'::jsonb::text NOT LIKE '%' || :'inv905' || '%', 'and no invoice of another customer appears');
 ROLLBACK;
 \echo 'Import of past years: marks, read-only, read as issued, the import itself and rates on an imported GRN passed.'
