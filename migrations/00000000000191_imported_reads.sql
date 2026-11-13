@@ -19,6 +19,8 @@
 --     get_customer_statement (invoices[]); get_invoice_detail (invoice) and get_invoice_data (header) in their definition files.
 --  3. Preprinted range prints leave imported documents out: get_grn_range_for_print, get_dispatch_range_for_print and
 --     get_invoice_range_for_print print slips for current work; an imported document prints through its own PDF.
+--     get_dispatch_range_for_print also leaves out a deleted dispatch (WH-189), as get_grn_range_for_print does (migration 194) and the
+--     invoice range print did already.
 --
 -- No role is created, altered or dropped. No table, column or grant changes.
 
@@ -138,6 +140,7 @@ $m$        FROM dispatch d
 ], ARRAY[
 $m$        FROM dispatch d
         WHERE d.import_batch_id IS NULL  -- Migration 191 (WH-180): an imported dispatch prints through its own PDF.
+          AND d.deleted_at IS NULL  -- Migration 191 (WH-189): a deleted dispatch is never printed (as migration 194 for GRNs).
     ),$m$
 ]);
 
