@@ -40,6 +40,6 @@ bash setup.sh --operator <your usual options> \
 ```
 
 - `--legal-name` defaults to the company name. An empty value (`--legal-city ""`) clears a setting.
-- An administrator can change the same six values through the `set_facility_legal` RPC (administrators only). Every change, by setup or by an administrator, is written to the audit log (`facility_legal`, old and new values). The six values are one settings row (`system_settings`, key `facility_legal`).
+- The app has no screen for these values yet: set them with `setup.sh` as above. The `set_facility_legal` RPC (administrators only) changes the same six values for a future app screen. Every change, by setup or through the RPC, is written to the audit log (`facility_legal`, old and new values). The six values are one settings row (`system_settings`, key `facility_legal`).
 - The values are public: the app reads them without signing in (`legal` in the public configuration) and prints them.
 - `node scripts/doctor.mjs` warns when the city, state, grievance name, email or phone is empty. The app then prints "Not given yet" in their place. A public facility should fill all of them.

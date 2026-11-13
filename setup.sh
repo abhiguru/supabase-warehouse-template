@@ -123,6 +123,13 @@ for numbering in grn dispatch invoice; do
     NUMBERING_VARS+=(-v "${numbering}_numbering=$rule")
   fi
 done
+# The legal settings given on the command line (scripts/legal.mjs), checked here before anything starts: a value that is refused changes
+# nothing. The checked JSON is stored after the migrations (configure-operator.sql); the database checks it again.
+LEGAL_VARS=()
+if ((${#LEGAL_ARGS[@]})); then
+  LEGAL_JSON="$(node "$ROOT/scripts/legal.mjs" check "${LEGAL_ARGS[@]}")" || exit 1
+  LEGAL_VARS=(-v "legal=$LEGAL_JSON")
+fi
 # The SMS spending ceilings (WH-119): SMS sends an hour and a day (MSG91 requests) for the whole facility. Offered 60 and 300 on a new install
 # (Enter accepts each); with no terminal, or with the option given, nothing is asked. A rerun or upgrade asks nothing and keeps what is
 # stored (scripts/configure-sms-ceiling.sql decides what is stored; a value given here always replaces the stored one).
@@ -294,12 +301,6 @@ bash "$ROOT/scripts/compose.sh" exec -T db psql -X -q -U supabase_admin -d postg
 # The SMS spending ceilings: a given value is stored; a new install without one gets 60 an hour and 300 a day; a facility that already
 # sent codes keeps what it has (scripts/configure-sms-ceiling.sql).
 bash "$ROOT/scripts/compose.sh" exec -T db psql -X -q -U supabase_admin -d postgres -v ON_ERROR_STOP=1 -v sms_hourly="$SMS_HOURLY" -v sms_daily="$SMS_DAILY" < "$ROOT/scripts/configure-sms-ceiling.sql"
-# The legal settings given on the command line (scripts/legal.mjs): a value that is refused changes nothing.
-LEGAL_VARS=()
-if ((${#LEGAL_ARGS[@]})); then
-  LEGAL_JSON="$(node "$ROOT/scripts/legal.mjs" check "${LEGAL_ARGS[@]}")" || exit 1
-  LEGAL_VARS=(-v "legal=$LEGAL_JSON")
-fi
 # Storage owns its schema upgrades; wait for them before creating private buckets
 # and access policies. This starts only storage and its internal dependencies.
 bash "$ROOT/scripts/compose.sh" up -d --wait --wait-timeout 180 storage

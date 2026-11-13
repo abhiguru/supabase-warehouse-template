@@ -30,7 +30,7 @@ export function legalProblems(run) {
   let found;
   try { found = JSON.parse(answer.output.trim()); } catch { return []; }
   return Object.entries(LABELS).filter(([key]) => typeof found?.[key] === 'string' && found[key].trim() === '').map(([key, label]) =>
-    `The ${label} for the app's terms and privacy pages is empty, so they read "Not given yet". Set it with setup.sh --operator <your usual options> ${Object.entries(LEGAL_OPTIONS).find(([, k]) => k === key)[0]} VALUE, or an administrator sets it in the app (docs/PRIVACY_FOR_OPERATORS.md).`);
+    `The ${label} for the app's terms and privacy pages is empty, so they read "Not given yet". Set it with setup.sh --operator <your usual options> ${Object.entries(LEGAL_OPTIONS).find(([, k]) => k === key)[0]} VALUE (the app has no screen for it yet; docs/PRIVACY_FOR_OPERATORS.md).`);
 }
 
 if (isMain(import.meta.url)) {
