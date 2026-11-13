@@ -41,4 +41,6 @@ $m$'id', p.id, 'payment_no', p.payment_no,
     'invoice_id', p.invoice_id,$m$
 ]);
 
+DROP FUNCTION pg_temp.patch_function(regprocedure, text[], text[]);
+
 NOTIFY pgrst, 'reload schema';

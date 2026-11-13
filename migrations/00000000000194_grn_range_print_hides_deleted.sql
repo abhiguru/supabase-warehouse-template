@@ -36,4 +36,6 @@ $m$        WHERE gr.deleted_at IS NULL  -- Migration 194 (WH-186): a deleted GRN
           AND gr.import_batch_id IS NULL$m$
 ]);
 
+DROP FUNCTION pg_temp.patch_function(regprocedure, text[], text[]);
+
 NOTIFY pgrst, 'reload schema';
