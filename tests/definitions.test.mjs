@@ -196,7 +196,7 @@ test('a migration forgets the recorded definitions in its own transaction; a pla
   assert.ok(applyingNumbered.length > 0);
   for (const block of applyingNumbered) {
     const body = block.slice(0, block.indexOf('\\endif'));
-    assert.ok(body.indexOf(forget) > 0 && body.indexOf(forget) < body.indexOf('INSERT INTO warehouse_migrations.applied') && body.indexOf('COMMIT;') > body.indexOf(forget), 'inside the migration\'s transaction, before its ledger row');
+    assert.ok(body.indexOf(forget) > 0 && body.indexOf(forget) < body.indexOf('INSERT INTO warehouse_migrations.applied') && body.indexOf('COMMIT;', body.indexOf(forget)) > body.indexOf(forget), 'inside the migration\'s transaction, before its ledger row');
   }
   assert.ok(!migrationPlan(root, { through: '00000000000000_baseline.sql' }).includes("to_regclass('warehouse_migrations.definitions')"));
   const dir = copyRoot({});
