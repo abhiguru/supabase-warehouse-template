@@ -1,5 +1,5 @@
--- WH-158: the accountant pack's database half (migrations 200 and 201; contract product/tech/accountant-pack.md, sections 3 and 8).
--- Written BEFORE the build (test first): it fails today because accountant_export_settings (200) and accountant_pack_read (201) do not exist
+-- WH-158: the accountant pack's database half (migrations 203 and 204; contract product/tech/accountant-pack.md, sections 3 and 8).
+-- Written BEFORE the build (test first): it fails today because accountant_export_settings (203) and accountant_pack_read (204) do not exist
 -- (public.get_accountant_ledgers, public.set_accountant_ledgers, public.get_accountant_pack, warehouse_security.accountant_packs).
 -- Criteria covered: 1, 2, 4, 5, 6, 8, 9 (roles, refusals, ledgers, audit, before-GST count, imported flag) and 14 (record of packs, cancellations).
 -- Fictional data. Runs only in migrations.sh's disposable, network-disabled database; everything is rolled back.
@@ -224,8 +224,8 @@ SET LOCAL session_replication_role = replica;
 UPDATE public.invoice SET cancelled_at = '2026-05-18T11:00:00+05:30' WHERE id = :'inv_d7'::uuid;
 RESET session_replication_role;
 
--- ===== migration 200: the ledger names (criterion 9; contract section 3) =====
-SELECT pg_temp.pk_assert((SELECT value::text FROM public.system_settings WHERE key = 'accountant_export') IN ('{}', '"{}"'), 'migration 200 seeds the system_settings row accountant_export as {}');
+-- ===== migration 203: the ledger names (criterion 9; contract section 3) =====
+SELECT pg_temp.pk_assert((SELECT value::text FROM public.system_settings WHERE key = 'accountant_export') IN ('{}', '"{}"'), 'migration 203 seeds the system_settings row accountant_export as {}');
 SELECT pg_temp.pk_as(:'admin_claims'::jsonb, $q$SELECT public.get_accountant_ledgers()$q$) AS led0 \gset
 SELECT pg_temp.pk_assert(:'led0'::jsonb->>'success'='true' AND (:'led0'::jsonb#>>'{data,saved}')='false', 'get_accountant_ledgers answers saved=false at first: '||:'led0');
 SELECT pg_temp.pk_assert(:'led0'::jsonb#>'{data,ledgers}' = :'led0'::jsonb#>'{data,defaults}', 'the ledgers are the defaults before any save');
@@ -275,7 +275,7 @@ SELECT pg_temp.pk_assert(NOT has_function_privilege('anon','public.get_accountan
   AND NOT has_function_privilege('anon','public.set_accountant_ledgers(jsonb)','EXECUTE') AND has_function_privilege('authenticated','public.set_accountant_ledgers(jsonb)','EXECUTE')
   AND has_function_privilege('service_role','public.set_accountant_ledgers(jsonb)','EXECUTE'), 'grants of the ledger calls');
 
--- ===== migration 201: the record of packs =====
+-- ===== migration 204: the record of packs =====
 SELECT pg_temp.pk_assert(NOT EXISTS (SELECT 1 FROM unnest(ARRAY['anon','authenticated']) r CROSS JOIN unnest(ARRAY['SELECT','INSERT','UPDATE','DELETE','TRUNCATE']) p
   WHERE has_table_privilege(r, 'warehouse_security.accountant_packs', p)), '[crit 14] anon and authenticated cannot read, insert, update, delete or truncate accountant_packs');
 SELECT pg_temp.pk_assert(has_table_privilege('service_role','warehouse_security.accountant_packs','SELECT') AND NOT has_table_privilege('service_role','warehouse_security.accountant_packs','INSERT')
@@ -483,6 +483,53 @@ DO $t$ BEGIN
   BEGIN DELETE FROM warehouse_security.accountant_packs; RAISE EXCEPTION 'delete was allowed';
   EXCEPTION WHEN raise_exception THEN IF SQLERRM = 'delete was allowed' THEN RAISE; END IF; WHEN OTHERS THEN NULL; END;
 END $t$;
+
+-- ===== [crit 14] the cancellation helper and its 10-minute slack (contract D6 (c) and Q11) =====
+-- warehouse_security.accountant_pack_cancellations(p_from, p_to, p_now) is the one rule the read calls with now(). SRT/19 (dated 2026-05-20) was cancelled at 2026-05-28 11:00 India time.
+-- For the next period (June) it is carried as 'exported' when a recorded pack covering its date was made BEFORE the cancel, with 10 minutes of slack in the direction that carries
+-- more (a pack made while the cancel was committing still counts as before), and unless a pack of a period between its date and From (from after the date, to before From) was made AFTER
+-- the cancel, again with the slack (such a pack carried it already; 5 minutes after the cancel is not yet "after", 15 minutes is). The helper is called as the owner with a chosen p_now;
+-- the table is emptied and filled for each case with the triggers off (the packs of the earlier checks are not the case under test).
+SELECT pg_temp.pk_assert(NOT has_function_privilege('anon','warehouse_security.accountant_pack_cancellations(date,date,timestamptz)','EXECUTE')
+  AND NOT has_function_privilege('authenticated','warehouse_security.accountant_pack_cancellations(date,date,timestamptz)','EXECUTE'), 'the helper is not granted to the app roles');
+SELECT (SELECT cancelled_at FROM public.invoice WHERE id = :'inv_x'::uuid) AS x_cancel \gset
+SELECT pg_temp.pk_assert(:'x_cancel'::timestamptz = '2026-05-28T11:00:00+05:30'::timestamptz, 'SRT/19 was cancelled at 2026-05-28 11:00 India time: '||:'x_cancel');
+-- The reason the helper gives SRT/19 for a period with the recorded packs [{from, to, minutes}] (minutes from the cancel), or 'none'.
+CREATE FUNCTION pg_temp.pk_reason(p_packs jsonb, p_from date, p_to date) RETURNS text LANGUAGE plpgsql AS $$
+DECLARE r text; x timestamptz := '2026-05-28T11:00:00+05:30';
+BEGIN
+  SET LOCAL session_replication_role = replica;
+  DELETE FROM warehouse_security.accountant_packs;
+  INSERT INTO warehouse_security.accountant_packs(period_from, period_to, made_at)
+    SELECT (e->>'from')::date, (e->>'to')::date, x + (e->>'minutes')::numeric * interval '1 minute' FROM jsonb_array_elements(p_packs) e;
+  RESET session_replication_role;
+  SELECT c->>'reason' INTO r FROM jsonb_array_elements(warehouse_security.accountant_pack_cancellations(p_from, p_to, '2026-07-15T10:00:00+05:30'::timestamptz)) c WHERE c->>'number' = 'SRT/19';
+  RETURN COALESCE(r, 'none');
+END $$;
+-- (a) and (b) do not depend on any pack record.
+SELECT pg_temp.pk_assert(pg_temp.pk_reason('[]', '2026-05-01', '2026-05-31') = 'in_period', 'helper (a): dated in the period, no pack record needed');
+SELECT pg_temp.pk_assert(pg_temp.pk_reason('[]', '2026-05-21', '2026-05-31') = 'cancelled_in_period', 'helper (b): dated before From and cancelled in the period');
+-- (c) no covering pack, no carry.
+SELECT pg_temp.pk_assert(pg_temp.pk_reason('[]', '2026-06-01', '2026-06-30') = 'none', 'helper (c): no pack was recorded, nothing is carried');
+SELECT pg_temp.pk_assert(pg_temp.pk_reason('[{"from":"2026-05-21","to":"2026-05-31","minutes":-1440}]', '2026-06-01', '2026-06-30') = 'none', 'helper (c): a pack that does not cover the date does not count');
+-- (c) the covering pack, made 1 day before, 5 minutes before, 5 minutes after (slack) carries; 15 minutes after does not.
+SELECT pg_temp.pk_assert(pg_temp.pk_reason('[{"from":"2026-05-01","to":"2026-05-31","minutes":-1440}]', '2026-06-01', '2026-06-30') = 'exported', 'helper (c): a pack made a day before the cancel');
+SELECT pg_temp.pk_assert(pg_temp.pk_reason('[{"from":"2026-05-01","to":"2026-05-31","minutes":-5}]', '2026-06-01', '2026-06-30') = 'exported', 'helper (c): a pack made 5 minutes before the cancel');
+SELECT pg_temp.pk_assert(pg_temp.pk_reason('[{"from":"2026-05-01","to":"2026-05-31","minutes":5}]', '2026-06-01', '2026-06-30') = 'exported', 'helper (c) slack: a pack made 5 minutes AFTER the cancel still counts as before it');
+SELECT pg_temp.pk_assert(pg_temp.pk_reason('[{"from":"2026-05-01","to":"2026-05-31","minutes":15}]', '2026-06-01', '2026-06-30') = 'none', 'helper (c) slack: a pack made 15 minutes after the cancel already held the cancellation');
+-- (c) a pack of a period between the date and From, made after the cancel, carried it already: 15 minutes after does, 5 minutes after (slack) does not, before the cancel does not.
+SELECT pg_temp.pk_assert(pg_temp.pk_reason('[{"from":"2026-05-01","to":"2026-05-31","minutes":-1440},{"from":"2026-05-21","to":"2026-05-31","minutes":15}]', '2026-06-01', '2026-06-30') = 'none',
+  'helper (c) slack: a between-pack made 15 minutes after the cancel carried it already');
+SELECT pg_temp.pk_assert(pg_temp.pk_reason('[{"from":"2026-05-01","to":"2026-05-31","minutes":-1440},{"from":"2026-05-21","to":"2026-05-31","minutes":5}]', '2026-06-01', '2026-06-30') = 'exported',
+  'helper (c) slack: a between-pack made 5 minutes after the cancel is not yet after it, so it is carried again (erring toward twice)');
+SELECT pg_temp.pk_assert(pg_temp.pk_reason('[{"from":"2026-05-01","to":"2026-05-31","minutes":-1440},{"from":"2026-05-21","to":"2026-05-31","minutes":-5}]', '2026-06-01', '2026-06-30') = 'exported',
+  'helper (c): a between-pack made before the cancel did not carry it');
+-- A later pack whose period reaches From (not before it) is not a between-pack.
+SELECT pg_temp.pk_assert(pg_temp.pk_reason('[{"from":"2026-05-01","to":"2026-05-31","minutes":-1440},{"from":"2026-05-21","to":"2026-06-30","minutes":1440}]', '2026-06-01', '2026-06-30') = 'exported',
+  'helper (c): a pack whose period ends on or after From is not a between-pack');
+-- The covering pack made again after the cancel (A again) still lets the next period carry it (criterion 14): "a pack covering its date before the cancel" is enough.
+SELECT pg_temp.pk_assert(pg_temp.pk_reason('[{"from":"2026-05-01","to":"2026-05-31","minutes":-1440},{"from":"2026-05-01","to":"2026-05-31","minutes":1440}]', '2026-06-01', '2026-06-30') = 'exported',
+  'helper (c): month A made again after the cancel does not stop June carrying it');
 
 -- ===== Record payments off: payments is null =====
 SELECT pg_temp.pk_as(:'admin_claims'::jsonb, $q$SELECT public.set_record_payments(false)$q$) AS pay_off \gset
