@@ -73,6 +73,11 @@ test('setup.sh checks the legal options before it starts anything and stores the
   assert.match(setup, /--legal-name\|--legal-city\|--legal-state\|--grievance-name\|--grievance-email\|--grievance-phone\)/);
   assert.match(setup, /LEGAL_JSON="\$\(node "\$ROOT\/scripts\/legal\.mjs" check "\$\{LEGAL_ARGS\[@\]\}"\)" \|\| exit 1/, 'a refusal stops setup');
   assert.match(setup, /if \(\(\$\{#LEGAL_ARGS\[@\]\}\)\); then/, 'checked only when an option was given');
+  // The order: the check runs after the host preflight and before configure, the migrations and the first service start.
+  const gate = setup.indexOf('scripts/legal.mjs" check');
+  assert.ok(gate > setup.indexOf('doctor.mjs" --host-preflight'), 'checked after the host preflight');
+  assert.ok(gate < setup.indexOf('node "$ROOT/scripts/configure.mjs"'), 'and before configure writes anything');
+  assert.ok(gate < setup.indexOf('scripts/migrate.sh" --operator'), 'and before the migrations');
   assert.match(setup, /-v company="\$COMPANY" .*\$\{LEGAL_VARS\[@\]\+"\$\{LEGAL_VARS\[@\]\}"\} < "\$ROOT\/scripts\/configure-operator\.sql"/, 'the checked values reach configure-operator.sql');
   assert.ok(!/CONFIG_ARGS\+=\("\$1" "\$2"\)[^\n]*legal/.test(setup), 'the values do not go into the state files: the database holds them');
   const sql = read('scripts/configure-operator.sql');
