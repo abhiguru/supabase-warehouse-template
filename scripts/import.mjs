@@ -739,6 +739,14 @@ function printProblems(out, list, total) {
 
 export function printTotals(out, t) {
   out('Sign-off totals (whole facility, after this import):');
+  // WH-180 (spec answer 4): imported dispatches that an imported invoice naming no dispatch takes as billed, ahead of the never-billed list.
+  const taken = t.taken_as_billed ?? [];
+  out('  Dispatches taken as billed by an imported invoice that names no dispatch, per customer:');
+  if (!taken.length) out('    none');
+  for (const r of taken) {
+    out(`    ${r.customer}:`);
+    for (const d of r.dispatches) out(`      dispatch ${d.disp_no} of ${String(d.disp_date).split('-').reverse().join('/')} taken as billed by invoice ${d.invoice}`);
+  }
   out('  Dispatches on no invoice, per customer:');
   if (!t.uninvoiced_dispatches.length) out('    none');
   for (const r of t.uninvoiced_dispatches) out(`    ${r.customer}: ${r.dispatches} dispatch(es), ${r.bags} bag(s)`);

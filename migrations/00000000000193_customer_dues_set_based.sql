@@ -7,7 +7,8 @@
 -- customer (on a test set of 32,000 GRNs and 3,200 customers, about 4,700 forms and 9 seconds a read).
 --
 -- Now: warehouse_security.not_invoiced_grns(customer or NULL for all, day) answers, for every such GRN at once, the two figures
--- grn_not_invoiced answered: the goods that have left (every dispatch line on no live invoice, dispatch not deleted) and the goods in
+-- grn_not_invoiced answered: the goods that have left (every dispatch line on no live invoice and not taken as billed by a live imported
+-- invoice (migration 192's imported_billed_dispatches), dispatch not deleted) and the goods in
 -- store (each lot's stock as one notional dispatch on the day), with the lots and the lots without a rate. It is the invoice form of a
 -- new invoice (no invoice being edited, warehouse.form_invoice_id unset) written as one query over many GRNs:
 --   * rows, rate source and rate (the GRN's own rate, else find_storage_price on the GRN date), duration (charge_duration, once per GRN
@@ -61,7 +62,9 @@ CREATE FUNCTION warehouse_security.not_invoiced_grns(p_customer_id uuid, p_today
                         JOIN public.dispatch d ON d.id = dt.disp_id AND d.deleted_at IS NULL
                        WHERE dt.gr_id = g.id
                          AND NOT EXISTS (SELECT 1 FROM public.invoice_trl it JOIN public.invoice iv ON iv.id = it.invoice_id
-                                          WHERE it.disp_trl_id = dt.id AND iv.deleted_at IS NULL AND iv.cancelled_at IS NULL)))
+                                          WHERE it.disp_trl_id = dt.id AND iv.deleted_at IS NULL AND iv.cancelled_at IS NULL)
+                         AND NOT EXISTS (SELECT 1 FROM public.imported_billed_dispatches b JOIN public.invoice bi ON bi.id = b.invoice_id
+                                          WHERE b.disp_trl_id = dt.id AND bi.deleted_at IS NULL AND bi.cancelled_at IS NULL)))
   ),
   raw AS MATERIALIZED (
     -- Goods that have left: every dispatch line of the GRN's lots on no live invoice, dispatch not deleted.
@@ -73,6 +76,9 @@ CREATE FUNCTION warehouse_security.not_invoiced_grns(p_customer_id uuid, p_today
       JOIN public.dispatch d ON d.id = dt.disp_id AND d.deleted_at IS NULL
      WHERE NOT EXISTS (SELECT 1 FROM public.invoice_trl it JOIN public.invoice iv ON iv.id = it.invoice_id
                         WHERE it.disp_trl_id = dt.id AND iv.deleted_at IS NULL AND iv.cancelled_at IS NULL)
+       -- Migration 192 (WH-180): nor taken as billed by a live imported invoice.
+       AND NOT EXISTS (SELECT 1 FROM public.imported_billed_dispatches b JOIN public.invoice bi ON bi.id = b.invoice_id
+                        WHERE b.disp_trl_id = dt.id AND bi.deleted_at IS NULL AND bi.cancelled_at IS NULL)
     UNION ALL
     -- Goods in store: every lot with stock, its whole stock as one dispatch on p_today.
     SELECT gr.id, true, grt.id, grt.item_id, grt.item_name, grt.packaging, grt.weight, grt.stock, p_today

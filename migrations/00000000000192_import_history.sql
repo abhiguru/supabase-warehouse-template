@@ -28,6 +28,15 @@
 --  4. Receipt numbers. payments_payment_no_key UNIQUE (payment_no) is replaced by a unique index over the rows that are not imported: an old
 --     system may use a receipt number again in another year or for another customer; an imported payment is unique by its key above. App
 --     payments are numbered APP-<n> from a sequence and stay unique, as do the rows of the old accounting link.
+--  5. Dispatches taken as billed (WH-180 spec, answer 4, criterion 20). public.imported_billed_dispatches (disp_trl_id, invoice_id): where a
+--     live imported invoice has a line naming no dispatch (invoice_trl.disp_trl_id NULL), each imported dispatch line of that invoice's GRN
+--     dated on or before the invoice (business dates), on no live invoice line and not linked yet, is held as billed by it. Two such
+--     invoices: the earliest one dated on or after the dispatch, then the invoice number. By date only, never by quantity. Worked out at the
+--     end of the writes of every run over all imported invoices and dispatches (this run's and earlier ones); an existing link is never
+--     moved or removed, so a repeat run adds nothing. A link counts only while its invoice is live. Every "dispatch line on no live
+--     invoice" read also requires no link to a live invoice: the never-billed list and notes here, not_invoiced_grns (migration 193), and
+--     the invoice form, the save check and grn_has_free_dispatch_line (migration 196). App-made dispatches are never linked. Only this
+--     function writes the table: RLS on, no policy, no grant to any app role.
 --
 -- Errors (nothing is saved): an unknown customer or item; a line whose document is not in its header file; a GRN or dispatch with no lines; a
 -- GRN or dispatch number that a document made in the app holds; an invoice number that an app invoice of that financial year holds, or that two
@@ -41,10 +50,13 @@
 -- invoice; payments above what is left on an invoice; lines + tax - discount that differ from the invoice's Total; invoices.csv while Record
 -- payments is off; and, once there is no error, an imported dispatch line on no invoice whose GRN has an imported invoice of the same day or
 -- later (when this run adds the dispatch or such an invoice; a dispatch of an earlier run that is not in dispatch-lines.csv is listed on the
--- invoice's row), a lot with goods to bill and no rate, and an invoiced GRN with dispatches on no invoice while Invoice as goods leave is off.
+-- invoice's row; a dispatch taken as billed is not listed), a lot with goods to bill and no rate, an invoiced GRN with dispatches on no
+-- invoice while Invoice as goods leave is off, and an invoice line naming a dispatch line that an earlier run took as billed by another
+-- invoice (both invoices are kept as issued).
 -- Report: {"success", "applied", "dry_run", "batch_id", "masters": import_batch's report or null,
 --   "files": {name: {read, add, skip, errors, notes}}, "problems": the first 200 per file [{kind, file, line, column, reason}],
---   "problem_counts": {name: n}, "totals": the sign-off totals or null while there is an error}.
+--   "problem_counts": {name: n}, "totals": the sign-off totals or null while there is an error}. totals.taken_as_billed:
+--   [{customer, dispatches: [{disp_no, disp_date, invoice}]}], every link of the facility after this run, per customer.
 --
 -- No role is created, altered or dropped.
 
@@ -91,6 +103,19 @@ $own$;
 -- ===== 4. receipt numbers =====
 ALTER TABLE public.payments DROP CONSTRAINT payments_payment_no_key;
 CREATE UNIQUE INDEX payments_payment_no_app_key ON public.payments (payment_no) WHERE import_batch_id IS NULL;
+
+-- ===== 5. dispatches taken as billed =====
+CREATE TABLE public.imported_billed_dispatches (
+  disp_trl_id uuid PRIMARY KEY REFERENCES public.dispatch_trl(id),
+  invoice_id  uuid NOT NULL REFERENCES public.invoice(id)
+);
+ALTER TABLE public.imported_billed_dispatches OWNER TO supabase_admin;
+ALTER TABLE public.imported_billed_dispatches ENABLE ROW LEVEL SECURITY;
+REVOKE ALL ON TABLE public.imported_billed_dispatches FROM PUBLIC, anon, authenticated, service_role;
+-- The foreign key's index, for the reads that start from an invoice.
+CREATE INDEX imported_billed_dispatches_invoice_id_idx ON public.imported_billed_dispatches (invoice_id);
+COMMENT ON TABLE public.imported_billed_dispatches IS
+  'Migration 192 (WH-180, spec answer 4): an imported dispatch line held as billed by an imported invoice whose lines name no dispatch. Written only by import_history, never moved or removed; counts while the invoice is live.';
 
 -- ===== 2. the import =====
 CREATE FUNCTION public.import_history(p_masters jsonb, p_apply boolean DEFAULT false) RETURNS jsonb
@@ -157,7 +182,7 @@ BEGIN
     -- (2) Work tables. They live until COMMIT; a second call in one transaction starts from empty ones.
     DROP TABLE IF EXISTS pg_temp.imp_problems, pg_temp.imp_cust, pg_temp.imp_item, pg_temp.imp_grn, pg_temp.imp_grn_line, pg_temp.imp_grn_map,
       pg_temp.imp_line_map, pg_temp.imp_disp, pg_temp.imp_disp_line, pg_temp.imp_dline_map, pg_temp.imp_inv, pg_temp.imp_inv_map,
-      pg_temp.imp_inv_line, pg_temp.imp_pay;
+      pg_temp.imp_inv_line, pg_temp.imp_pay, pg_temp.imp_billed;
     CREATE TEMP TABLE imp_problems (file text NOT NULL, line integer NOT NULL, col text, kind text NOT NULL, reason text NOT NULL) ON COMMIT DROP;
 
     -- Customers and items by the names WH-142 matches (customer: the server's name key; item: name + packaging word).
@@ -517,6 +542,15 @@ BEGIN
       FROM imp_inv_line l
       JOIN public.invoice_trl t ON t.disp_trl_id = l.dt_id
       JOIN public.invoice iv ON iv.id = t.invoice_id AND iv.deleted_at IS NULL AND iv.cancelled_at IS NULL
+     WHERE l.inv_status = 'add'
+    UNION ALL
+    -- A link of an earlier run is never moved: the dispatch line stays taken as billed by that invoice, and this invoice is kept as issued.
+    SELECT 'invoice-lines', l.line, 'Dispatch number', 'note',
+           format('this dispatch line was taken as billed by invoice %s in an earlier import (that invoice names no dispatch); both invoices are kept as issued',
+                  warehouse_security.invoice_label(iv.inv_prefix, iv.inv_no))
+      FROM imp_inv_line l
+      JOIN public.imported_billed_dispatches b ON b.disp_trl_id = l.dt_id
+      JOIN public.invoice iv ON iv.id = b.invoice_id AND iv.deleted_at IS NULL AND iv.cancelled_at IS NULL
      WHERE l.inv_status = 'add';
 
     -- payments.csv
@@ -625,13 +659,34 @@ BEGIN
         UNION ALL SELECT 'invoice', doc_key, new_id, v_batch, hash FROM imp_inv WHERE nth = 1 AND status = 'add'
         UNION ALL SELECT 'payment', doc_key, new_id, v_batch, hash FROM imp_pay WHERE status = 'add';
 
-        -- The GRNs this run touched: their stock flag and invoiced cache (one statement; the per-row sync skipped the inserts).
+        -- Dispatches taken as billed (section 5 above), over every imported invoice and dispatch line, this run's and earlier ones. A
+        -- dispatch line already linked keeps its link; one on a live invoice line is never linked.
+        CREATE TEMP TABLE imp_billed ON COMMIT DROP AS
+          WITH inv AS (
+            SELECT iv.id, iv.gr_id, iv.inv_fin_year, iv.inv_no, warehouse_security.business_date(iv.inv_date) AS inv_day
+              FROM public.invoice iv
+             WHERE iv.import_batch_id IS NOT NULL AND iv.deleted_at IS NULL AND iv.cancelled_at IS NULL
+               AND EXISTS (SELECT 1 FROM public.invoice_trl x WHERE x.invoice_id = iv.id AND x.disp_trl_id IS NULL))
+          SELECT DISTINCT ON (dt.id) dt.id AS disp_trl_id, inv.id AS invoice_id, inv.gr_id
+            FROM inv
+            JOIN public.dispatch_trl dt ON dt.gr_id = inv.gr_id
+            JOIN public.dispatch dp ON dp.id = dt.disp_id AND dp.import_batch_id IS NOT NULL AND dp.deleted_at IS NULL
+           WHERE warehouse_security.business_date(dp.disp_date) <= inv.inv_day
+             AND NOT EXISTS (SELECT 1 FROM public.invoice_trl it JOIN public.invoice iv ON iv.id = it.invoice_id
+                              WHERE it.disp_trl_id = dt.id AND iv.deleted_at IS NULL AND iv.cancelled_at IS NULL)
+             AND NOT EXISTS (SELECT 1 FROM public.imported_billed_dispatches b WHERE b.disp_trl_id = dt.id)
+           ORDER BY dt.id, inv.inv_day, inv.inv_fin_year, inv.inv_no, inv.id;
+        INSERT INTO public.imported_billed_dispatches (disp_trl_id, invoice_id) SELECT disp_trl_id, invoice_id FROM imp_billed;
+
+        -- The GRNs this run touched: their stock flag and invoiced cache (one statement; the per-row sync skipped the inserts). A GRN that
+        -- gained a link counts too (its dispatch lines taken as billed are no longer free).
         UPDATE public.goodsreceived g
            SET out_of_stock = NOT EXISTS (SELECT 1 FROM public.goodsreceived_trl t WHERE t.gr_id = g.id AND t.stock > 0),
                invoiced = (warehouse_security.grn_invoice_state(g.id) = 'invoiced')
          WHERE g.id IN (SELECT new_id FROM imp_grn WHERE status = 'add'
                         UNION SELECT gr_id FROM imp_disp_line WHERE disp_status = 'add'
-                        UNION SELECT m.gr_id FROM imp_inv i JOIN imp_grn_map m ON m.doc_key = i.grn_key WHERE i.nth = 1 AND i.status = 'add');
+                        UNION SELECT m.gr_id FROM imp_inv i JOIN imp_grn_map m ON m.doc_key = i.grn_key WHERE i.nth = 1 AND i.status = 'add'
+                        UNION SELECT gr_id FROM imp_billed);
       EXCEPTION WHEN OTHERS THEN
         v_errors := v_errors + 1;
         INSERT INTO imp_problems VALUES ('database', 1, NULL, 'error', 'the database refused the import: ' || SQLERRM);
@@ -640,10 +695,11 @@ BEGIN
 
     -- Notes that read the written rows (only when there is no error).
     IF v_errors = 0 THEN
-      -- An imported dispatch line on no live invoice whose GRN has a live imported invoice of the same day or later (the old system may have
-      -- billed it without naming the dispatch): the app counts and bills it again. Raised when this run adds the dispatch or such an
-      -- invoice, so an earlier run's dispatch is caught when its invoice comes now, and a run that adds nothing raises nothing. One note per
-      -- dispatch line: on its dispatch-lines.csv row when the line is in this run's file, else on the row of the first such invoice.
+      -- An imported dispatch line on no live invoice and not taken as billed whose GRN has a live imported invoice of the same day or later:
+      -- left only where every such invoice names its dispatches (or has no lines), since an invoice with a line naming no dispatch takes it
+      -- as billed (section 5). The app counts and bills it. Raised when this run adds the dispatch or such an invoice, so an earlier run's
+      -- dispatch is caught when its invoice comes now, and a run that adds nothing raises nothing. One note per dispatch line: on its
+      -- dispatch-lines.csv row when the line is in this run's file, else on the row of the first such invoice.
       INSERT INTO imp_problems
       SELECT CASE WHEN f.line IS NOT NULL THEN 'dispatch-lines' ELSE 'invoices' END,
              COALESCE(f.line, c.inv_line), CASE WHEN f.line IS NOT NULL THEN 'Dispatch date' ELSE 'GRN number' END, 'note',
@@ -665,6 +721,8 @@ BEGIN
                                   UNION SELECT m.gr_id FROM imp_inv i JOIN imp_grn_map m ON m.doc_key = i.grn_key WHERE i.nth = 1 AND i.status = 'add')
                  AND NOT EXISTS (SELECT 1 FROM public.invoice_trl it JOIN public.invoice iv ON iv.id = it.invoice_id
                                   WHERE it.disp_trl_id = dt.id AND iv.deleted_at IS NULL AND iv.cancelled_at IS NULL)
+                 AND NOT EXISTS (SELECT 1 FROM public.imported_billed_dispatches b JOIN public.invoice bi ON bi.id = b.invoice_id
+                                  WHERE b.disp_trl_id = dt.id AND bi.deleted_at IS NULL AND bi.cancelled_at IS NULL)
                  AND EXISTS (SELECT 1 FROM public.invoice iv WHERE iv.gr_id = dt.gr_id AND iv.import_batch_id IS NOT NULL AND iv.deleted_at IS NULL
                                 AND iv.cancelled_at IS NULL
                                 AND warehouse_security.business_date(iv.inv_date) >= warehouse_security.business_date(dp.disp_date))) c
@@ -679,7 +737,9 @@ BEGIN
        WHERE l.grn_status = 'add'
          AND (t.stock > 0 OR EXISTS (SELECT 1 FROM public.dispatch_trl dt WHERE dt.gr_trl_id = t.id
                                        AND NOT EXISTS (SELECT 1 FROM public.invoice_trl it JOIN public.invoice iv ON iv.id = it.invoice_id
-                                                        WHERE it.disp_trl_id = dt.id AND iv.deleted_at IS NULL AND iv.cancelled_at IS NULL)))
+                                                        WHERE it.disp_trl_id = dt.id AND iv.deleted_at IS NULL AND iv.cancelled_at IS NULL)
+                                       AND NOT EXISTS (SELECT 1 FROM public.imported_billed_dispatches b JOIN public.invoice bi ON bi.id = b.invoice_id
+                                                        WHERE b.disp_trl_id = dt.id AND bi.deleted_at IS NULL AND bi.cancelled_at IS NULL)))
          AND NOT EXISTS (SELECT 1 FROM public.grn_rates r WHERE r.gr_id = g.id AND r.item_id = t.item_id)
          AND (public.find_storage_price(t.item_id, g.customer_id, COALESCE(t.weight, 0), l.gr_date,
                                         CASE WHEN g.pricing_mode = 'ONE_TIME' THEN 'one_time' ELSE 'monthly' END)).id IS NULL
@@ -716,7 +776,21 @@ BEGIN
       v_fy := warehouse_security.financial_year(v_today);
       v_next := warehouse_security.document_number_suggestion('invoice', v_today);
       v_totals := jsonb_build_object(
-        -- (a) Dispatches on no live invoice, per customer.
+        -- (a0) Dispatches taken as billed (section 5), per customer: each dispatch with its invoice, one entry per dispatch and invoice.
+        'taken_as_billed', (
+          SELECT COALESCE(jsonb_agg(jsonb_build_object('customer', x.name, 'dispatches', x.list) ORDER BY x.name), '[]'::jsonb)
+            FROM (SELECT y.name, jsonb_agg(jsonb_build_object('disp_no', y.disp_no, 'disp_date', y.disp_day, 'invoice', y.invoice)
+                                           ORDER BY y.disp_day, y.disp_no, y.inv_day, y.invoice) AS list
+                    FROM (SELECT DISTINCT c.name, d.disp_no, warehouse_security.business_date(d.disp_date) AS disp_day,
+                                 warehouse_security.business_date(iv.inv_date) AS inv_day,
+                                 warehouse_security.invoice_label(iv.inv_prefix, iv.inv_no) AS invoice
+                            FROM public.imported_billed_dispatches b
+                            JOIN public.invoice iv ON iv.id = b.invoice_id AND iv.deleted_at IS NULL AND iv.cancelled_at IS NULL
+                            JOIN public.dispatch_trl dt ON dt.id = b.disp_trl_id
+                            JOIN public.dispatch d ON d.id = dt.disp_id AND d.deleted_at IS NULL
+                            JOIN public.customers c ON c.id = d.customer_id) y
+                   GROUP BY y.name) x),
+        -- (a) Dispatches on no live invoice and not taken as billed (the never-billed list), per customer.
         'uninvoiced_dispatches', (
           SELECT COALESCE(jsonb_agg(jsonb_build_object('customer', x.name, 'dispatches', x.n, 'bags', x.bags) ORDER BY x.name), '[]'::jsonb)
             FROM (SELECT c.name, count(DISTINCT d.id) AS n, sum(dt.disp_qty) AS bags
@@ -725,6 +799,8 @@ BEGIN
                     JOIN public.customers c ON c.id = d.customer_id
                    WHERE NOT EXISTS (SELECT 1 FROM public.invoice_trl it JOIN public.invoice iv ON iv.id = it.invoice_id
                                       WHERE it.disp_trl_id = dt.id AND iv.deleted_at IS NULL AND iv.cancelled_at IS NULL)
+                     AND NOT EXISTS (SELECT 1 FROM public.imported_billed_dispatches b JOIN public.invoice bi ON bi.id = b.invoice_id
+                                      WHERE b.disp_trl_id = dt.id AND bi.deleted_at IS NULL AND bi.cancelled_at IS NULL)
                    GROUP BY c.name) x),
         -- (b) Stock in store per item and packaging.
         'stock', (
