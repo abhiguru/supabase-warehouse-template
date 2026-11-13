@@ -78,7 +78,8 @@ REVOKE ALL ON FUNCTION warehouse_security.imported_read_only(text) FROM PUBLIC;
 -- update_grn), or equal to what is stored (text: blank and NULL alike, after update_grn's own trimming; the date: the same India day).
 -- p_items must name every stored line once, by id, with the same item, name, packaging, quantity, weight, rack and mark; p_images may
 -- only name photos the GRN has (an imported GRN has none). Answers like update_grn (its success shape, STALE_RECORD, RATES_MANAGER_ONLY,
--- a rate failure of apply_grn_rates with nothing written), and keeps its answer under p_idempotency_key as update_grn does.
+-- a rate failure of apply_grn_rates with nothing written), and keeps its answer under p_idempotency_key as update_grn does. A saved rate
+-- change sets the GRN's updated_at and updated_by as any edit does (its new edit token is grn.updated_at in the answer, as update_grn's).
 CREATE FUNCTION warehouse_security.update_imported_grn_rates(
     p_grn_id uuid, p_gr_no character varying, p_date timestamp with time zone, p_customer_id uuid, p_customer_name character varying,
     p_sender_id uuid, p_sender_name character varying, p_supervisor_id uuid, p_supervisor_name character varying,
@@ -173,9 +174,13 @@ BEGIN
     GET STACKED DIAGNOSTICS v_detail = PG_EXCEPTION_DETAIL;
     RETURN v_detail::jsonb;   -- apply_grn_rates' writes are undone with the block
   END;
+  -- A saved rate change is an edit of the GRN (WH-190): a new edit token, so a save sent with the older one is STALE_RECORD as above. The
+  -- table guard lets an imported GRN's updated_at and updated_by change.
+  UPDATE public.goodsreceived SET updated_at = now(), updated_by = v_profile WHERE id = p_grn_id
+  RETURNING updated_at INTO g.updated_at;
 
   v_result := jsonb_build_object('success', true, 'message', 'GRN rates updated',
-    'grn', jsonb_build_object('id', g.id, 'gr_no', g.gr_no, 'images', '[]'::jsonb),
+    'grn', jsonb_build_object('id', g.id, 'gr_no', g.gr_no, 'updated_at', g.updated_at, 'images', '[]'::jsonb),
     'stats', jsonb_build_object('items_updated', 0, 'items_added', 0, 'items_deleted', 0, 'images_updated', 0, 'images_added', 0,
                                 'images_deleted', 0, 'items_skipped_stock', 0),
     'item_mapping', '[]'::jsonb, 'order_effects', '[]'::jsonb);
