@@ -212,14 +212,31 @@ INSERT INTO warehouse_import.stage_dispatches(line,disp_no,disp_date,customer) V
 INSERT INTO warehouse_import.stage_dispatch_lines(line,disp_no,disp_date,gr_no,gr_date,grn_line,qty) VALUES
  (2,'I0007', :'today'::date - 250, 'A0005', :'today'::date - 300, 1, 12),
  (3,'I0008', :'today'::date - 100, 'A0005', :'today'::date - 300, 1, 8);
+-- G7 (Gamma): imported dispatches I0009 (before) and I0010 (after) an imported invoice GC/9 whose line names no dispatch: I0009 is taken as billed
+-- by GC/9 (WH-180, spec answer 4), I0010 is not. The form and dues must agree with a taken-as-billed dispatch present.
+INSERT INTO warehouse_import.stage_grns(line,gr_no,gr_date,customer,pricing) VALUES (3,'A0007', :'today'::date - 300, 'Dues Form Gamma', 'MONTHLY');
+INSERT INTO warehouse_import.stage_grn_lines(line,gr_no,gr_date,line_no,item,packaging,qty,weight,stock_now) VALUES
+ (4,'A0007', :'today'::date - 300, 1, 'Dues Form Potato', 'Bag', 20, 50, 10);
+INSERT INTO warehouse_import.stage_dispatches(line,disp_no,disp_date,customer) VALUES
+ (4,'I0009', :'today'::date - 250, 'Dues Form Gamma'), (5,'I0010', :'today'::date - 200, 'Dues Form Gamma');
+INSERT INTO warehouse_import.stage_dispatch_lines(line,disp_no,disp_date,gr_no,gr_date,grn_line,qty) VALUES
+ (4,'I0009', :'today'::date - 250, 'A0007', :'today'::date - 300, 1, 5),
+ (5,'I0010', :'today'::date - 200, 'A0007', :'today'::date - 300, 1, 5);
+INSERT INTO warehouse_import.stage_invoices(line,inv_label,inv_no,inv_prefix,inv_date,customer,gr_no,gr_date,labour,tax,total) VALUES
+ (2,'GC/9', 9, 'GC/', :'today'::date - 250, 'Dues Form Gamma', 'A0007', :'today'::date - 300, 10.00, 0.00, 110.00);
+INSERT INTO warehouse_import.stage_invoice_lines(line,inv_label,inv_no,inv_date,item,packaging,qty,disp_no,disp_date,grn_line,rate,labour_rate,tax_pct,storage,labour,tax_amount) VALUES
+ (2,'GC/9', 9, :'today'::date - 250, 'Dues Form Potato', 'Bag', 5, NULL, NULL, NULL, 20.00, 2.00, 0, 100.00, 10.00, 0.00);
 SELECT set_config('request.jwt.claims','{"role":"service_role"}',true) AS c \gset
 SET LOCAL ROLE service_role;
 SELECT public.import_history('{}'::jsonb, true) AS imported \gset
 RESET ROLE;
 SELECT pg_temp.wc_assert(:'imported'::jsonb->>'success' = 'true', 'the import: ' || :'imported');
-SELECT pg_temp.wc_assert((SELECT count(*) FROM public.dispatch WHERE import_batch_id IS NOT NULL) = 2
+SELECT pg_temp.wc_assert((SELECT count(*) FROM public.dispatch WHERE import_batch_id IS NOT NULL) = 4
   AND NOT EXISTS (SELECT 1 FROM public.invoice_trl it JOIN public.dispatch_trl dt ON dt.id = it.disp_trl_id JOIN public.dispatch d ON d.id = dt.disp_id WHERE d.import_batch_id IS NOT NULL),
-  'two imported dispatches on no invoice');
+  'four imported dispatches, on no invoice line');
+SELECT pg_temp.wc_assert((SELECT count(*) FROM public.imported_billed_dispatches) = 1
+  AND (SELECT d.disp_no || '>' || i.inv_no FROM public.imported_billed_dispatches b JOIN public.dispatch_trl dt ON dt.id = b.disp_trl_id JOIN public.dispatch d ON d.id = dt.disp_id JOIN public.invoice i ON i.id = b.invoice_id) = 'I0009>9',
+  'I0009 is taken as billed by GC/9, and only that one');
 
 -- ===== WH-187: the old per-GRN function is gone, the new one is the only caller path =====
 SELECT pg_temp.wc_assert(to_regprocedure('warehouse_security.grn_not_invoiced(uuid,date)') IS NULL, 'grn_not_invoiced is dropped');
@@ -276,6 +293,7 @@ SELECT pg_temp.wc_assert((SELECT cardinality(no_rate_lot_ids) = 1 AND left_amoun
 SELECT pg_temp.wc_assert((SELECT left_amount IS NULL AND store_amount > 0 AND store_bags = 12 FROM wc_rows WHERE gr_no = 'A0004'), 'A0004 (one time): all in store');
 SELECT pg_temp.wc_assert((SELECT left_bags = 20 AND left_amount > 0 AND store_bags = 18 FROM wc_rows WHERE gr_no = 'A0005'), 'A0005 (imported dispatches on no invoice): 20 bags to bill at the app''s rates, 18 in store');
 SELECT pg_temp.wc_assert(NOT EXISTS (SELECT 1 FROM wc_rows WHERE gr_no = 'A0006'), 'A0006 (closed and invoiced) has no row');
+SELECT pg_temp.wc_assert((SELECT left_bags = 5 AND left_amount > 0 AND store_bags = 10 FROM wc_rows WHERE gr_no = 'A0007'), 'A0007: I0010 only is to bill (5 bags), I0009 is taken as billed, 10 bags in store');
 -- The GRN's own rate is used by both: raising it moves A0002's figure, and the two still agree.
 UPDATE public.grn_rates SET unit_price = 19 WHERE gr_id = (SELECT id FROM public.goodsreceived WHERE gr_no = 'A0002');
 SELECT pg_temp.wc_assert((SELECT store_amount FROM warehouse_security.not_invoiced_grns(NULL, :'today'::date) WHERE gr_no = 'A0002') > (SELECT store_amount FROM wc_rows WHERE gr_no = 'A0002')

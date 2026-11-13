@@ -5,7 +5,7 @@ import assert from 'node:assert/strict';
 import { mkdtempSync, mkdirSync, writeFileSync, rmSync, copyFileSync, readdirSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
-import { main, splitInvoiceNumber, backupProblem, indiaDay, HISTORY_FILES, historySqlEnd } from '../scripts/import.mjs';
+import { main, splitInvoiceNumber, backupProblem, indiaDay, HISTORY_FILES, historySqlEnd, printTotals } from '../scripts/import.mjs';
 
 const TEMPLATES = new URL('../scripts/import-templates/', import.meta.url).pathname;
 
@@ -216,4 +216,18 @@ test('the SQL around the call: staged rows first, the call as the service role, 
   assert.ok(at('TRUNCATE') < at('COMMIT'));
   assert.match(sql, /, true\);/);
   assert.match(historySqlEnd({}, false), /, false\);/);
+});
+
+test('the sign-off totals list the dispatches taken as billed, per customer, ahead of the never-billed list; an old answer without the list prints "none"', () => {
+  const lines = [];
+  printTotals(l => lines.push(l), { ...totals, taken_as_billed: [{ customer: 'Example Traders', dispatches: [
+    { disp_no: '412', disp_date: '2024-03-05', invoice: 'GC/125' }, { disp_no: '413', disp_date: '2024-03-06', invoice: 'GC/125' }] }],
+  uninvoiced_dispatches: [{ customer: 'Example Traders', dispatches: 1, bags: 7 }] });
+  const text = lines.join('\n');
+  assert.match(text, /Example Traders:\n {6}dispatch 412 of 05\/03\/2024 taken as billed by invoice GC\/125\n {6}dispatch 413 of 06\/03\/2024 taken as billed by invoice GC\/125/);
+  assert.ok(text.indexOf('taken as billed by invoice') < text.indexOf('Dispatches on no invoice, per customer:'), 'the taken list comes first');
+  assert.match(text, /Example Traders: 1 dispatch\(es\), 7 bag\(s\)/);
+  const none = [];
+  printTotals(l => none.push(l), totals);
+  assert.match(none.join('\n'), /taken as billed by an imported invoice that names no dispatch, per customer:\n {4}none/);
 });

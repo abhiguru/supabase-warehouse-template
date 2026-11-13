@@ -422,24 +422,29 @@ SELECT pg_temp.ip_assert((SELECT total FROM public.invoice WHERE id = :'inv125':
   AND (SELECT count(*) FROM public.dispatch_trl WHERE disp_id IN (:'disp1'::uuid, :'disp2'::uuid, :'disp4'::uuid)) = 3
   AND (SELECT qty FROM public.goodsreceived_trl WHERE id = :'lot2'::uuid) = 10, 'the imported documents are as imported');
 
--- ===== 9. the note "a dispatch is on no invoice, but its GRN has an imported invoice of the same day or later" (migration 192) =====
--- N1: an invoice of the SAME day as the dispatch, its lines naming no dispatch: noted. N2: the invoice's line names the dispatch: no note.
--- N3: no imported invoice at all: no note. N4: dispatch imported now, its invoice comes in a later run.
+-- ===== 9. dispatches taken as billed (spec answer 4, criterion 20), and the note that is left =====
+-- GRN A0901: dispatches I0901 (day D) and I0911 (D + 15); the imported invoice GC/901 is dated D and its line names no dispatch.
+--   I0901 is taken as billed by GC/901; I0911 (dated after the invoice) is never billed.
+-- GRN A0902: invoice GC/902 names its dispatch I0902; I0905 (same day, unnamed) has no unnamed invoice line to be taken by, so the note stays.
+-- GRN A0903: a dispatch and no imported invoice: nothing. GRN A0904: its dispatch is imported now, its invoice in a later run.
 SELECT warehouse_security.business_date(now()) AS today_ip \gset
+SELECT warehouse_security.financial_year(warehouse_security.business_date(now())) AS cur_fy \gset
 TRUNCATE warehouse_import.stage_grns, warehouse_import.stage_grn_lines, warehouse_import.stage_dispatches, warehouse_import.stage_dispatch_lines,
   warehouse_import.stage_invoices, warehouse_import.stage_invoice_lines, warehouse_import.stage_payments;
 INSERT INTO warehouse_import.stage_grns(line,gr_no,gr_date,customer,pricing) VALUES
  (2,'A0901',:'today_ip'::date - 400,'Import Demo Traders','MONTHLY'), (3,'A0902',:'today_ip'::date - 400,'Import Demo Traders','MONTHLY'),
  (4,'A0903',:'today_ip'::date - 400,'Import Demo Traders','MONTHLY'), (5,'A0904',:'today_ip'::date - 400,'Import Demo Traders','MONTHLY');
 INSERT INTO warehouse_import.stage_grn_lines(line,gr_no,gr_date,line_no,item,packaging,qty,weight,stock_now) VALUES
- (2,'A0901',:'today_ip'::date - 400,1,'Import Demo Potato','Bag',20,50,15), (3,'A0902',:'today_ip'::date - 400,1,'Import Demo Potato','Bag',20,50,15),
+ (2,'A0901',:'today_ip'::date - 400,1,'Import Demo Potato','Bag',20,50,10), (3,'A0902',:'today_ip'::date - 400,1,'Import Demo Potato','Bag',20,50,10),
  (4,'A0903',:'today_ip'::date - 400,1,'Import Demo Potato','Bag',20,50,15), (5,'A0904',:'today_ip'::date - 400,1,'Import Demo Potato','Bag',20,50,15);
 INSERT INTO warehouse_import.stage_dispatches(line,disp_no,disp_date,customer) VALUES
- (2,'I0901',:'today_ip'::date - 300,'Import Demo Traders'), (3,'I0902',:'today_ip'::date - 300,'Import Demo Traders'),
- (4,'I0903',:'today_ip'::date - 300,'Import Demo Traders'), (5,'I0904',:'today_ip'::date - 200,'Import Demo Traders');
+ (2,'I0901',:'today_ip'::date - 300,'Import Demo Traders'), (3,'I0911',:'today_ip'::date - 285,'Import Demo Traders'),
+ (4,'I0902',:'today_ip'::date - 300,'Import Demo Traders'), (5,'I0905',:'today_ip'::date - 300,'Import Demo Traders'),
+ (6,'I0903',:'today_ip'::date - 300,'Import Demo Traders'), (7,'I0904',:'today_ip'::date - 200,'Import Demo Traders');
 INSERT INTO warehouse_import.stage_dispatch_lines(line,disp_no,disp_date,gr_no,gr_date,grn_line,qty) VALUES
- (2,'I0901',:'today_ip'::date - 300,'A0901',:'today_ip'::date - 400,1,5), (3,'I0902',:'today_ip'::date - 300,'A0902',:'today_ip'::date - 400,1,5),
- (4,'I0903',:'today_ip'::date - 300,'A0903',:'today_ip'::date - 400,1,5), (5,'I0904',:'today_ip'::date - 200,'A0904',:'today_ip'::date - 400,1,5);
+ (2,'I0901',:'today_ip'::date - 300,'A0901',:'today_ip'::date - 400,1,5), (3,'I0911',:'today_ip'::date - 285,'A0901',:'today_ip'::date - 400,1,5),
+ (4,'I0902',:'today_ip'::date - 300,'A0902',:'today_ip'::date - 400,1,5), (5,'I0905',:'today_ip'::date - 300,'A0902',:'today_ip'::date - 400,1,5),
+ (6,'I0903',:'today_ip'::date - 300,'A0903',:'today_ip'::date - 400,1,5), (7,'I0904',:'today_ip'::date - 200,'A0904',:'today_ip'::date - 400,1,5);
 INSERT INTO warehouse_import.stage_invoices(line,inv_label,inv_no,inv_prefix,inv_date,customer,gr_no,gr_date,labour,tax,total) VALUES
  (2,'GC/901',901,'GC/',:'today_ip'::date - 300,'Import Demo Traders','A0901',:'today_ip'::date - 400,10.00,0.00,110.00),
  (3,'GC/902',902,'GC/',:'today_ip'::date - 300,'Import Demo Traders','A0902',:'today_ip'::date - 400,10.00,0.00,110.00);
@@ -447,37 +452,97 @@ INSERT INTO warehouse_import.stage_invoice_lines(line,inv_label,inv_no,inv_date,
  (2,'GC/901',901,:'today_ip'::date - 300,'Import Demo Potato','Bag',5,NULL,NULL,NULL,20.00,2.00,0,100.00,10.00,0.00),
  (3,'GC/902',902,:'today_ip'::date - 300,'Import Demo Potato','Bag',5,'I0902',:'today_ip'::date - 300,1,20.00,2.00,0,100.00,10.00,0.00);
 CREATE FUNCTION pg_temp.ip_notes(p_report jsonb) RETURNS text LANGUAGE sql AS $$
-  SELECT COALESCE(string_agg((p->>'file') || ':' || (p->>'line') || ':' || left(p->>'reason', 40), ' | ' ORDER BY p->>'file', (p->>'line')::int), '')
+  SELECT COALESCE(string_agg((p->>'file') || ':' || (p->>'line') || ':' || left(p->>'reason', 24), ' | ' ORDER BY p->>'file', (p->>'line')::int), '')
     FROM jsonb_array_elements(p_report->'problems') p
    WHERE p->>'kind' = 'note' AND p->>'reason' LIKE '%on no invoice, but its GRN has%' $$;
-SELECT pg_temp.ip_svc($q$SELECT public.import_history('{}'::jsonb, true)$q$) AS n_run1 \gset
-SELECT pg_temp.ip_assert(:'n_run1'::jsonb->>'success' = 'true', 'the run with the dispatches and invoices applies: ' || :'n_run1');
--- (a) N1: the same-day invoice without dispatch names: one note, on the dispatch-lines row (line 2). (c) N2 (named) and (d) N3, N4 (no invoice): none.
-SELECT pg_temp.ip_assert(pg_temp.ip_notes(:'n_run1'::jsonb) LIKE 'dispatch-lines:2:%' AND pg_temp.ip_notes(:'n_run1'::jsonb) NOT LIKE '%|%',
-  '(a) exactly one note, for I0901, on dispatch-lines line 2: ' || pg_temp.ip_notes(:'n_run1'::jsonb));
-SELECT pg_temp.ip_assert(:'n_run1'::jsonb::text LIKE '%same day or later%', 'the note says same day or later');
-SELECT pg_temp.ip_assert((SELECT count(*) FROM public.invoice_trl it WHERE it.disp_trl_id IS NOT NULL
-  AND it.invoice_id = (SELECT id FROM public.invoice WHERE inv_no = 902 AND import_batch_id IS NOT NULL)) = 1, '(c) the line of GC/902 names its dispatch');
--- (e) the same run again: all already there, no second note.
-SELECT pg_temp.ip_svc($q$SELECT public.import_history('{}'::jsonb, true)$q$) AS n_run1b \gset
-SELECT pg_temp.ip_assert(:'n_run1b'::jsonb->>'success' = 'true' AND (:'n_run1b'::jsonb#>>'{files,dispatches,add}')::int = 0 AND pg_temp.ip_notes(:'n_run1b'::jsonb) = '',
-  '(e) a repeat of the same run raises no note: ' || pg_temp.ip_notes(:'n_run1b'::jsonb));
--- (b) a later run brings only the invoice of N4's dispatch (imported earlier, so not in this run's files): the note comes now, on the invoices row.
+-- The taken-as-billed list of a report as "I0901>GC/901@date,...".
+CREATE FUNCTION pg_temp.ip_taken(p_report jsonb) RETURNS text LANGUAGE sql AS $$
+  SELECT COALESCE(string_agg((d->>'disp_no') || '>' || (d->>'invoice') || '@' || (d->>'disp_date'), ',' ORDER BY d->>'disp_no'), '')
+    FROM jsonb_array_elements(COALESCE(p_report#>'{totals,taken_as_billed}', '[]'::jsonb)) c, jsonb_array_elements(c->'dispatches') d $$;
+-- Grants on the link table: nothing for the app roles or the service role.
+SELECT pg_temp.ip_assert(to_regclass('public.imported_billed_dispatches') IS NOT NULL
+  AND (SELECT relrowsecurity FROM pg_class WHERE oid = 'public.imported_billed_dispatches'::regclass)
+  AND NOT EXISTS (SELECT 1 FROM unnest(ARRAY['anon','authenticated','service_role']) r CROSS JOIN unnest(ARRAY['SELECT','INSERT','UPDATE','DELETE']) p
+                   WHERE has_table_privilege(r, 'public.imported_billed_dispatches', p)), 'no role of the app can read or write imported_billed_dispatches');
+-- Dry run first, then the apply: the same list, the same counts, and the dry run saved no link.
+SELECT pg_temp.ip_svc($q$SELECT public.import_history('{}'::jsonb, false)$q$) AS t_dry \gset
+SELECT pg_temp.ip_assert(:'t_dry'::jsonb->>'success' = 'true' AND (SELECT count(*) FROM public.imported_billed_dispatches) = 0, 'the dry run is clean and saves no link: ' || :'t_dry');
+SELECT pg_temp.ip_svc($q$SELECT public.import_history('{}'::jsonb, true)$q$) AS t_run1 \gset
+SELECT pg_temp.ip_assert(:'t_run1'::jsonb->>'success' = 'true', 'the run applies: ' || :'t_run1');
+SELECT pg_temp.ip_assert(pg_temp.ip_taken(:'t_dry'::jsonb) = pg_temp.ip_taken(:'t_run1'::jsonb)
+  AND (:'t_dry'::jsonb#>'{totals,uninvoiced_dispatches}') = (:'t_run1'::jsonb#>'{totals,uninvoiced_dispatches}')
+  AND pg_temp.ip_notes(:'t_dry'::jsonb) = pg_temp.ip_notes(:'t_run1'::jsonb), 'the dry run reports what the apply does: ' || pg_temp.ip_taken(:'t_dry'::jsonb));
+-- The report: I0901 taken as billed by GC/901, dated D; nothing else.
+SELECT pg_temp.ip_assert(pg_temp.ip_taken(:'t_run1'::jsonb) = 'I0901>GC/901@' || (:'today_ip'::date - 300), 'the taken-as-billed list: ' || pg_temp.ip_taken(:'t_run1'::jsonb));
+SELECT pg_temp.ip_assert((SELECT count(*) FROM public.imported_billed_dispatches) = 1
+  AND (SELECT d.disp_no FROM public.imported_billed_dispatches b JOIN public.dispatch_trl dt ON dt.id = b.disp_trl_id JOIN public.dispatch d ON d.id = dt.disp_id) = 'I0901'
+  AND (SELECT i.inv_no FROM public.imported_billed_dispatches b JOIN public.invoice i ON i.id = b.invoice_id) = 901, 'exactly one link: I0901 to GC/901');
+-- The never-billed list holds I0004 (section 1), I0911, I0905, I0903 and I0904 (I0902 is on GC/902), not I0901.
+SELECT pg_temp.ip_assert((SELECT (c->>'dispatches')::int FROM jsonb_array_elements(:'t_run1'::jsonb#>'{totals,uninvoiced_dispatches}') c WHERE c->>'customer' = 'Import Demo Traders') = 5,
+  'five dispatches are never billed (I0004 of the first fixture, I0911, I0905, I0903, I0904): ' || (:'t_run1'::jsonb#>>'{totals,uninvoiced_dispatches}'));
+-- The notes: I0905 (its GRN's invoice names its dispatches) still gets "the app bills it"; I0901 does not; I0911 is dated after its GRN's invoice; I0903 and I0904 have no invoice.
+SELECT pg_temp.ip_assert(pg_temp.ip_notes(:'t_run1'::jsonb) LIKE 'dispatch-lines:5:%' AND pg_temp.ip_notes(:'t_run1'::jsonb) NOT LIKE '%|%',
+  'exactly one note, for I0905 on dispatch-lines line 5: ' || pg_temp.ip_notes(:'t_run1'::jsonb));
+-- A dispatch named by another invoice is not linked (I0902), nor are the others.
+SELECT pg_temp.ip_assert(NOT EXISTS (SELECT 1 FROM public.imported_billed_dispatches b JOIN public.dispatch_trl dt ON dt.id = b.disp_trl_id JOIN public.dispatch d ON d.id = dt.disp_id
+  WHERE d.disp_no IN ('I0902', 'I0905', 'I0903', 'I0904', 'I0911')), 'no other dispatch is linked');
+
+-- Criterion 20, A0901: I0901 is not in Customer dues as not invoiced, is not offered by the invoice form, cannot be claimed by a save;
+-- I0911 is in dues, is in the form, and can be invoiced.
+SELECT id AS g901 FROM public.goodsreceived WHERE gr_no = 'A0901' \gset
+SELECT t.id AS d901_line FROM public.dispatch_trl t JOIN public.dispatch d ON d.id = t.disp_id WHERE d.disp_no = 'I0901' \gset
+SELECT t.id AS d911_line FROM public.dispatch_trl t JOIN public.dispatch d ON d.id = t.disp_id WHERE d.disp_no = 'I0911' \gset
+SELECT n.left_bags AS dues_left_bags, n.left_amount > 0 AS dues_left_priced FROM warehouse_security.not_invoiced_grns(:'trader'::uuid, :'today_ip'::date) n WHERE n.gr_id = :'g901'::uuid \gset
+SELECT pg_temp.ip_assert(:'dues_left_bags'::int = 5 AND :'dues_left_priced'::boolean, 'dues counts I0911 only (5 bags), not I0901: ' || :'dues_left_bags');
+SELECT pg_temp.ip_as(:'admin_claims'::jsonb, format($q$SELECT public.get_customer_statement(%L::uuid)$q$, :'trader')) AS t_stmt \gset
+SELECT pg_temp.ip_assert((SELECT (e->>'bags')::int = 5 FROM jsonb_array_elements(:'t_stmt'::jsonb->'left') e WHERE e->>'gr_no' = 'A0901'), 'the statement shows 5 bags not invoiced for A0901: ' || (:'t_stmt'::jsonb->>'left'));
+SELECT set_config('request.jwt.claims', '{"role":"service_role"}', true) AS t_claims \gset
+SELECT public.build_invoice_form_lines(:'g901'::uuid, NULL) AS t_form \gset
+SELECT pg_temp.ip_assert(:'t_form'::jsonb::text LIKE '%' || :'d911_line' || '%' AND :'t_form'::jsonb::text NOT LIKE '%' || :'d901_line' || '%',
+  'the form offers I0911 and not I0901: ' || left(:'t_form', 600));
+SELECT pg_temp.ip_as(:'admin_claims'::jsonb, format($q$SELECT pg_temp.ip_save_invoice(jsonb_build_object('inv_fin_year', %s, 'gr_id', %L, 'gr_no', 'A0901', 'customer_id', %L,
+  'customer_name', 'Import Demo Traders', 'inv_date', now(), 'total', 0, 'tax_amount', 0, 'discount', 0, 'duration_mode', 'legacy', 'inv_no', 2,
+  'items', jsonb_build_array(jsonb_build_object('disp_trl_id', %L, 'charge', 7, 'tax', 0, 'labour_rate', 1))))$q$, :'cur_fy', :'g901', :'trader', :'d901_line')) AS t_claim \gset
+SELECT pg_temp.ip_assert(:'t_claim'::jsonb->>'success' = 'false' AND :'t_claim'::jsonb::text LIKE '%DISPATCH_LINE_INVOICED%', 'a save claiming I0901 is refused: ' || :'t_claim');
+SELECT pg_temp.ip_as(:'admin_claims'::jsonb, format($q$SELECT pg_temp.ip_save_invoice(jsonb_build_object('inv_fin_year', %s, 'gr_id', %L, 'gr_no', 'A0901', 'customer_id', %L,
+  'customer_name', 'Import Demo Traders', 'inv_date', now(), 'total', 0, 'tax_amount', 0, 'discount', 0, 'duration_mode', 'legacy', 'inv_no', 2,
+  'items', jsonb_build_array(jsonb_build_object('disp_trl_id', %L, 'charge', 7, 'tax', 0, 'labour_rate', 1))))$q$, :'cur_fy', :'g901', :'trader', :'d911_line')) AS t_ok \gset
+SELECT pg_temp.ip_assert(:'t_ok'::jsonb->>'success' = 'true', 'I0911 can be invoiced: ' || :'t_ok');
+-- That app invoice is cancelled again so the facts below are those of the import.
+SELECT pg_temp.ip_as(:'admin_claims'::jsonb, format($q$SELECT public.cancel_invoice(%L::uuid, 'test', NULL)$q$, :'t_ok'::jsonb->>'invoice_id')) AS t_cancel \gset
+
+-- A re-run adds no second link and no second note; then an app-made dispatch on the same GRN (the next run must not link it).
+SELECT pg_temp.ip_svc($q$SELECT public.import_history('{}'::jsonb, true)$q$) AS t_run1b \gset
+SELECT pg_temp.ip_assert(:'t_run1b'::jsonb->>'success' = 'true' AND (SELECT count(*) FROM public.imported_billed_dispatches) = 1
+  AND pg_temp.ip_taken(:'t_run1b'::jsonb) = pg_temp.ip_taken(:'t_run1'::jsonb) AND pg_temp.ip_notes(:'t_run1b'::jsonb) = '',
+  'a re-run adds no second link and no second note: ' || left(:'t_run1b', 900));
+-- An app-made dispatch from the imported GRN A0901 (dated before the invoice): the later runs below must not link it. (After the re-run:
+-- it changes the lot's stock, which the files' "Stock now" would then contradict.)
+SELECT pg_temp.ip_as(:'admin_claims'::jsonb, format($q$SELECT public.create_dispatch_with_stock_check(jsonb_build_object('disp_no','I0950','disp_date',%L,
+  'customer_id',%L,'customer_name','Import Demo Traders','supervisor_id',%L,'supervisor_name','Import Demo Administrator'),
+  ARRAY[jsonb_build_object('gr_trl_id',(SELECT t.id FROM public.goodsreceived_trl t WHERE t.gr_id = %L),'disp_qty',1)],false,0,'ip-app-d950')$q$,
+  (:'today_ip'::date - 299)::text || 'T12:00:00Z', :'trader', :'admin_profile', :'g901')) AS t_appd \gset
+SELECT pg_temp.ip_assert(:'t_appd'::jsonb->>'success' = 'true', 'an app dispatch from A0901: ' || :'t_appd');
+
+-- An earlier run's dispatch is linked when its invoice arrives (A0904's I0904, dated D+100; the invoice GC/904 is dated D+150, no dispatch named).
 TRUNCATE warehouse_import.stage_grns, warehouse_import.stage_grn_lines, warehouse_import.stage_dispatches, warehouse_import.stage_dispatch_lines,
   warehouse_import.stage_invoices, warehouse_import.stage_invoice_lines, warehouse_import.stage_payments;
 INSERT INTO warehouse_import.stage_invoices(line,inv_label,inv_no,inv_prefix,inv_date,customer,gr_no,gr_date,labour,tax,total) VALUES
  (2,'GC/904',904,'GC/',:'today_ip'::date - 150,'Import Demo Traders','A0904',:'today_ip'::date - 400,10.00,0.00,110.00);
 INSERT INTO warehouse_import.stage_invoice_lines(line,inv_label,inv_no,inv_date,item,packaging,qty,disp_no,disp_date,grn_line,rate,labour_rate,tax_pct,storage,labour,tax_amount) VALUES
  (2,'GC/904',904,:'today_ip'::date - 150,'Import Demo Potato','Bag',5,NULL,NULL,NULL,20.00,2.00,0,100.00,10.00,0.00);
-SELECT pg_temp.ip_svc($q$SELECT public.import_history('{}'::jsonb, true)$q$) AS n_run2 \gset
-SELECT pg_temp.ip_assert(:'n_run2'::jsonb->>'success' = 'true', 'the later run applies: ' || :'n_run2');
-SELECT pg_temp.ip_assert(pg_temp.ip_notes(:'n_run2'::jsonb) LIKE 'invoices:2:%' AND pg_temp.ip_notes(:'n_run2'::jsonb) NOT LIKE '%|%',
-  '(b) the dispatch of an earlier run is noted once, on the invoices row: ' || pg_temp.ip_notes(:'n_run2'::jsonb));
-SELECT pg_temp.ip_assert(:'n_run2'::jsonb::text LIKE '%imported earlier%', 'the note says the dispatch was imported earlier');
-SELECT pg_temp.ip_svc($q$SELECT public.import_history('{}'::jsonb, true)$q$) AS n_run2b \gset
-SELECT pg_temp.ip_assert(pg_temp.ip_notes(:'n_run2b'::jsonb) = '', '(e) a repeat of the later run raises no second note: ' || pg_temp.ip_notes(:'n_run2b'::jsonb));
--- Notes change nothing that is saved: the unnamed dispatches stay on no invoice.
+SELECT pg_temp.ip_svc($q$SELECT public.import_history('{}'::jsonb, true)$q$) AS t_run2 \gset
+SELECT pg_temp.ip_assert(:'t_run2'::jsonb->>'success' = 'true' AND pg_temp.ip_taken(:'t_run2'::jsonb) LIKE '%I0904>GC/904@%' AND pg_temp.ip_taken(:'t_run2'::jsonb) LIKE '%I0901>GC/901@%'
+  AND (SELECT count(*) FROM public.imported_billed_dispatches) = 2 AND pg_temp.ip_notes(:'t_run2'::jsonb) = '',
+  'the later invoice takes the earlier run''s dispatch as billed, once, and the older link stays: ' || pg_temp.ip_taken(:'t_run2'::jsonb));
+SELECT pg_temp.ip_svc($q$SELECT public.import_history('{}'::jsonb, true)$q$) AS t_run2b \gset
+SELECT pg_temp.ip_assert((SELECT count(*) FROM public.imported_billed_dispatches) = 2 AND pg_temp.ip_taken(:'t_run2b'::jsonb) = pg_temp.ip_taken(:'t_run2'::jsonb)
+  AND NOT EXISTS (SELECT 1 FROM public.imported_billed_dispatches b JOIN public.dispatch_trl dt ON dt.id = b.disp_trl_id JOIN public.dispatch d ON d.id = dt.disp_id WHERE d.import_batch_id IS NULL), 'a repeat of the later run adds no link, and the app-made dispatch is never linked');
+-- Nothing saved moves: the taken dispatches are still on no invoice line.
 SELECT pg_temp.ip_assert((SELECT count(*) FROM public.invoice_trl it JOIN public.dispatch_trl dt ON dt.id = it.disp_trl_id JOIN public.dispatch d ON d.id = dt.disp_id WHERE d.disp_no IN ('I0901','I0904')) = 0,
-  'the noted dispatches are still on no invoice');
+  'a dispatch taken as billed gets no invoice line');
+-- GAP (WH-180, Product's extension): an imported invoice with NO lines at all also takes the earlier dispatches of its GRN as billed. Not
+-- written yet: Dev's build for it has not landed. The case to add here: a GRN, a dispatch dated on or before the invoice, an invoice with no
+-- invoice-lines rows; expect the dispatch in the taken-as-billed list with that invoice, out of dues and the form, no "the app bills it" note.
 ROLLBACK;
 \echo 'Import of past years: marks, read-only, read as issued, the import itself and rates on an imported GRN passed.'
