@@ -400,10 +400,20 @@ SELECT pg_temp.ip_assert(:'app_inv_cancel'::jsonb->>'success' = 'true', 'the app
 SELECT pg_temp.ip_as(:'admin_claims'::jsonb, format($q$SELECT public.record_payment(%L::uuid, CURRENT_DATE, 100, 'cash')$q$, :'inv125')) AS app_pay \gset
 SELECT pg_temp.ip_assert(:'app_pay'::jsonb->>'success' = 'true', 'an app payment on an imported invoice is allowed: ' || :'app_pay');
 SELECT id AS app_pay_id, updated_at AS app_pay_at FROM public.payments WHERE invoice_id = :'inv125'::uuid AND import_batch_id IS NULL \gset
+-- Migration 195: a payment says whether it was imported; the amounts do not change.
+SELECT pg_temp.ip_assert((:'app_pay'::jsonb#>>'{payment,imported}')::boolean IS FALSE AND (:'app_pay'::jsonb#>>'{payment,amount}')::numeric = 100, 'record_payment answers imported false for an app payment: ' || :'app_pay');
+SELECT pg_temp.ip_as(:'admin_claims'::jsonb, format($q$SELECT public.get_invoice_detail(%L::uuid)$q$, :'inv125')) AS pay_detail \gset
+SELECT pg_temp.ip_assert((SELECT count(*) FROM jsonb_array_elements(:'pay_detail'::jsonb#>'{invoice,payments}') p) = 2
+  AND (SELECT (p->>'imported')::boolean AND (p->>'amount')::numeric = 3250.00 FROM jsonb_array_elements(:'pay_detail'::jsonb#>'{invoice,payments}') p WHERE p->>'id' = :'pay1')
+  AND (SELECT NOT (p->>'imported')::boolean AND (p->>'amount')::numeric = 100.00 FROM jsonb_array_elements(:'pay_detail'::jsonb#>'{invoice,payments}') p WHERE p->>'id' = :'app_pay_id'),
+  'the invoice detail lists the imported payment as imported and the app payment on the same invoice as not: ' || :'pay_detail');
 SELECT pg_temp.ip_as(:'admin_claims'::jsonb, format($q$SELECT public.update_payment(%L::uuid, CURRENT_DATE, 150, 'upi', %L::timestamptz)$q$, :'app_pay_id', :'app_pay_at')) AS app_pay_up \gset
 SELECT pg_temp.ip_assert(:'app_pay_up'::jsonb->>'success' = 'true' AND (SELECT amount FROM public.payments WHERE id = :'app_pay_id'::uuid) = 150, 'the app payment can be edited: ' || :'app_pay_up');
+SELECT pg_temp.ip_assert((:'app_pay_up'::jsonb#>>'{payment,imported}')::boolean IS FALSE AND (:'app_pay_up'::jsonb#>>'{payment,amount}')::numeric = 150
+  AND (:'app_pay_up'::jsonb#>>'{previous,imported}')::boolean IS FALSE AND (:'app_pay_up'::jsonb#>>'{previous,amount}')::numeric = 100, 'update_payment answers imported false, amounts unchanged: ' || :'app_pay_up');
 SELECT pg_temp.ip_as(:'admin_claims'::jsonb, format($q$SELECT public.delete_payment(%L::uuid, NULL)$q$, :'app_pay_id')) AS app_pay_del \gset
 SELECT pg_temp.ip_assert(:'app_pay_del'::jsonb->>'success' = 'true', 'the app payment can be deleted: ' || :'app_pay_del');
+SELECT pg_temp.ip_assert((:'app_pay_del'::jsonb#>>'{deleted,imported}')::boolean IS FALSE AND (:'app_pay_del'::jsonb#>>'{deleted,amount}')::numeric = 150, 'delete_payment answers imported false: ' || :'app_pay_del');
 -- Nothing imported changed through any of it.
 SELECT pg_temp.ip_assert((SELECT total FROM public.invoice WHERE id = :'inv125'::uuid) = 4250.00
   AND (SELECT amount FROM public.payments WHERE id = :'pay1'::uuid) = 3250.00
