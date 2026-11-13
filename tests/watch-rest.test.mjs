@@ -118,6 +118,15 @@ test('support report: rest_down is a planned-stop kind, so a planned stop does n
   assert.ok(JSON.stringify(live).includes('rest_down'), 'listed when no stop is planned');
 });
 
-test('rest_down is not an attention kind (Product has not asked for it)', () => {
-  assert.ok(!ATTENTION_KINDS.has('rest_down'));
+test('support report: an open rest_down turns the report to attention, like api_down; in a planned stop it is left out and the state is the planned stop', () => {
+  assert.ok(ATTENTION_KINDS.has('rest_down'));
+  const base = { now: Date.UTC(2026, 10, 13), alertChannelSet: true };
+  assert.equal(buildReport({ ...base, alerts: [] }).state, 'ok');
+  assert.equal(buildReport({ ...base, alerts: [{ id: 'rest_down', since: 1000 }] }).state, 'attention');
+  assert.equal(buildReport({ ...base, alerts: [{ id: 'api_down', since: 1000 }] }).state, 'attention', 'as api_down does');
+  const planned = buildReport({ ...base, planned: { kind: 'upgrade' }, alerts: [{ id: 'rest_down', since: 1000 }] });
+  assert.equal(planned.state, 'planned_stop');
+  assert.ok(!JSON.stringify(planned).includes('rest_down'));
+  // Another attention kind still wins during a planned stop.
+  assert.equal(buildReport({ ...base, planned: { kind: 'upgrade' }, alerts: [{ id: 'rest_down', since: 1000 }, { id: 'disk_low', since: 1000 }] }).state, 'attention');
 });
