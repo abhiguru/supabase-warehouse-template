@@ -465,7 +465,7 @@ bash setup.sh --operator ... --support-link-file off                            
 or readings; the details of an alert; addresses on the facility's network.
 
 **The state.** `attention` when any of these is open: `backup_missing`, `backup_failed`, `offhost_copy_missing`, `disk_root_low`, `disk_low`,
-`disk_vhdx_drive_low`, `postgres_down`, `service_down`, `api_down`, `public_https_down`, `upgrade_interrupted`, or the facility's alert channel is not
+`disk_vhdx_drive_low`, `postgres_down`, `service_down`, `api_down`, `rest_down`, `public_https_down`, `upgrade_interrupted`, or the facility's alert channel is not
 set up. Other alerts are listed and change nothing. While the nightly backup, an upgrade or another operator command holds the operator lock (or a live
 backup owns maintenance mode), the services it stopped are left out of the report and the state is `planned_stop`, sent to the success address.
 No report for 15 minutes is "silent" at the service: set its check to a 5 minute period and 15 minute grace.
