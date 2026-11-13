@@ -8,6 +8,7 @@
 --     empties them before COMMIT. The script has already checked every format (dates, numbers, lengths, required cells, in-file repeats).
 --  2. public.import_history(p_masters jsonb, p_apply boolean). One transaction (the caller's), all or nothing:
 --     - the same gate as import_batch (migration 171): authorize_rpc, then the call must carry the service role; the same advisory lock;
+--       an apply also takes the app saves' lock 71040 (held to COMMIT), so a number check and an app save never pass each other;
 --     - p_masters, when it holds customers, items or rates, goes through public.import_batch(p_masters, true) first, so customers and items
 --       of this run are there for the checks below (its report is returned as `masters`; an error there is an error of the run);
 --       p_masters.history_files = [{name, sha256, rows}] is recorded on the batch;
@@ -40,8 +41,8 @@
 --     policy, no grant to any app role.
 --
 -- Errors (nothing is saved): an unknown customer or item; a line whose document is not in its header file; a GRN or dispatch with no lines;
--- a GRN or dispatch number that a document made in the app holds; an invoice number that an app invoice of that financial year holds,
--- or an invoice number that two invoices of the file share in one year, or above invoice_number_max(); an
+-- a GRN or dispatch number that a document made in the app holds; an invoice number or full number (prefix and number) that an app invoice
+-- of that financial year holds, or an invoice number that two invoices of the file share in one year, or above invoice_number_max(); an
 -- invoice whose GRN is in neither grns.csv nor an earlier import, or whose GRN belongs to another customer; an invoice line whose dispatch
 -- is not found or has no line of the invoice's GRN (an invoice covers one GRN); a dispatch line on two invoices; a dispatch line of another
 -- customer's GRN, or of a GRN line that is not found; dispatches above what a GRN line received; "Stock now" that differs from received
@@ -157,6 +158,13 @@ BEGIN
   END IF;
   -- The lock of import_batch: one import at a time, masters or history.
   PERFORM pg_advisory_xact_lock(hashtextextended('import_batch', 0));
+  -- An apply also takes the lock every app save of a GRN, dispatch or invoice takes before it checks its number (71040, before any row
+  -- lock, as they do), and holds it to COMMIT: an app save waits for the import, then its own check sees the imported numbers and gives
+  -- its usual "number taken" answer; a save that came first is seen by the checks below (WH-190). App saves wait while an apply runs. A
+  -- dry run writes nothing and takes no such lock.
+  IF p_apply THEN
+    PERFORM pg_advisory_xact_lock(71040);
+  END IF;
 
   BEGIN  -- the work: rolled back as a whole when this block raises 'import_rollback'
     -- (1) Customers, items and rates first, through WH-142's import, kept within this transaction.
@@ -489,9 +497,12 @@ BEGIN
       FROM imp_inv i WHERE i.nth > 1
     UNION ALL
     SELECT 'invoices', i.line, 'Invoice number', 'error',
-           format('invoice number %s of %s-%s is used by an invoice made in the app; nothing made in the app is changed', i.inv_no, i.fy, right((i.fy + 1)::text, 2))
+           format('invoice number %s of %s-%s is used by an invoice made in the app; nothing made in the app is changed', i.inv_label, i.fy, right((i.fy + 1)::text, 2))
       FROM imp_inv i WHERE i.nth = 1 AND i.status = 'add'
-       AND EXISTS (SELECT 1 FROM public.invoice x WHERE x.inv_fin_year = i.fy AND x.inv_no = i.inv_no AND x.import_batch_id IS NULL)
+       -- The number, and the full number (prefix and number, unique_inv_label_per_year): app INV2 + 5 and imported INV + 25 are both INV25.
+       AND EXISTS (SELECT 1 FROM public.invoice x
+                    WHERE x.inv_fin_year = i.fy AND x.import_batch_id IS NULL
+                      AND (x.inv_no = i.inv_no OR warehouse_security.invoice_label(x.inv_prefix, x.inv_no) = warehouse_security.invoice_label(i.inv_prefix, i.inv_no)))
     UNION ALL
     SELECT 'invoices', i.line, 'GRN number', 'error', format('GRN %s of %s is not in grns.csv or an earlier import', i.gr_no, to_char(i.gr_date, 'DD/MM/YYYY'))
       FROM imp_inv i WHERE i.nth = 1 AND i.status = 'add' AND NOT EXISTS (SELECT 1 FROM imp_grn_map m WHERE m.doc_key = i.grn_key)

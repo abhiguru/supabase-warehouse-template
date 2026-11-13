@@ -99,7 +99,7 @@ COMMENT ON COLUMN public.invoice_trl.issued_storage_amount IS
 -- ===== 4. GRN and dispatch numbers =====
 -- App documents: the number alone is unique, as before. Imported documents: number + date is unique, so an old system's numbers may
 -- repeat across years. A clash between an imported number and an app number is not refused here: the import checks it before writing,
--- and the app's saves check every row.
+-- holding the app saves' lock 71040 to COMMIT when it applies (migration 192), and the app's saves check every row under that lock.
 -- An imported row always has its date (the partial index treats NULL dates as distinct); NOT VALID because every existing row is an app row.
 ALTER TABLE public.goodsreceived ADD CONSTRAINT goodsreceived_imported_has_date CHECK (import_batch_id IS NULL OR date IS NOT NULL) NOT VALID;
 ALTER TABLE public.dispatch ADD CONSTRAINT dispatch_imported_has_date CHECK (import_batch_id IS NULL OR disp_date IS NOT NULL) NOT VALID;
