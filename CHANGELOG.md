@@ -12,6 +12,7 @@ file used to carry for earlier installations are in git: `git show b45ae0b:CHANG
 
 ### Added
 
+- A payment now says whether it was imported (WH-180, migration 195): every payment object the app reads (`payments[]` of `get_invoice_detail`, and `payment`, `previous` and `deleted` of `record_payment`, `update_payment` and `delete_payment`) carries `imported` (true for a payment of the past-years import, which is read-only; false for one recorded in the app, also on an imported invoice), so the app can show the tag and hide Edit and Delete. No amount, filter or grant changes.
 - Added the alert `rest_down` (WH-18): the 5-minute checker probes REST (PostgREST) through the gateway with an anonymous `get_public_config` call, since the REST image cannot carry a health check of its own; a refusal, a timeout or a 5xx raises it after two failing runs, a 4xx such as 429 does not.
 - Added the import of past years (`bash scripts/import.sh --folder`): an old system's GRNs, dispatches, invoices and payments from seven CSV files, checked in a dry run with sign-off totals, saved all or nothing as read-only Imported documents with their numbers and amounts as issued; `--apply` now needs a backup made and verified today (WH-180, migrations 189-192).
 - Added `npm run storage:check`, a read-only check that every catalogued photo and document file is on disk, shown in the upgrade preflight (WH-55).
