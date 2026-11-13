@@ -321,5 +321,16 @@ SELECT pg_temp.wc_as(:'admin_claims'::jsonb, format($q$SELECT public.get_custome
 SELECT pg_temp.wc_assert((SELECT sum((e->>'amount')::numeric) FROM jsonb_array_elements(:'st1'::jsonb->'left') e) = (SELECT sum(left_amount) FROM wc_rows WHERE customer_id = :'c1'::uuid)
   AND (SELECT sum((e->>'amount')::numeric) FROM jsonb_array_elements(:'st1'::jsonb->'in_store') e) = (SELECT sum(store_amount) FROM wc_rows WHERE customer_id = :'c1'::uuid),
   'the statement rows are the GRN figures');
+
+-- WH-190: a GRN with no date (the column allows none) is counted in Customer dues and the statement as migration 176's per-GRN function counted
+-- it: the figure the form gives. A0004 (Gamma, one time, 12 bags in store) has its date taken away directly.
+UPDATE public.goodsreceived SET date = NULL WHERE gr_no = 'A0004';
+SELECT pg_temp.wc_assert((SELECT date IS NULL FROM public.goodsreceived WHERE gr_no = 'A0004'), 'the GRN has no date');
+SELECT n.store_bags AS nd_bags, n.store_amount AS nd_amount FROM warehouse_security.not_invoiced_grns(:'c3'::uuid, :'today'::date) n WHERE n.gr_no = 'A0004' \gset
+SELECT pg_temp.wc_assert(:'nd_bags'::numeric = 12 AND :'nd_amount' IS NOT NULL, 'a GRN with no date is still counted in dues (its figure is the form''s, checked next): ' || :'nd_bags' || ' bags, ' || :'nd_amount');
+SELECT pg_temp.wc_assert(pg_temp.wc_diff(:'today'::date) = '', 'with a GRN without a date the form and dues still agree: ' || pg_temp.wc_diff(:'today'::date));
+SELECT pg_temp.wc_as(:'admin_claims'::jsonb, format($q$SELECT public.get_customer_statement(%L::uuid)$q$, :'c3')) AS nd_stmt \gset
+SELECT pg_temp.wc_assert(EXISTS (SELECT 1 FROM jsonb_array_elements(:'nd_stmt'::jsonb->'in_store') e WHERE e->>'gr_no' = 'A0004' AND (e->>'bags')::int = 12),
+  'the statement lists the GRN without a date: ' || (:'nd_stmt'::jsonb->>'in_store'));
 ROLLBACK;
 \echo 'Dues and the invoice form agree for every setting of GST, rounding and charging steps.'
