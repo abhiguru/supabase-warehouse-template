@@ -6,7 +6,11 @@ Storage, Deno edge functions and a PDF renderer, one installation
 per warehouse. It is used from the companion
 [React Native app](https://github.com/abhiguru/rn-warehouse-template).
 
+Built for cold storages in India: sign-in uses +91 phone numbers and MSG91 SMS codes, amounts are in rupees with GST, and dates and times are India time. Use in another country is not supported yet.
+
 ## What this release is for
+
+Built for cold storages in India: sign-in uses +91 phone numbers and MSG91 SMS codes, amounts are in rupees with GST, and dates and times are India time. Use in another country is not supported yet.
 
 For cold storages, used on Android and iPhone phones. Each facility runs its own server.
 
