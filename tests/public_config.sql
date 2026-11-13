@@ -22,8 +22,8 @@ RESET ROLE;
 SELECT pg_temp.pc_assert(:'answer'::jsonb->>'app_version' = '9.8.7' AND (:'answer'::jsonb->>'maintenance_mode')::boolean
   AND (:'answer'::jsonb#>>'{feature_flags,pc_flag_on}')::boolean AND NOT (:'answer'::jsonb#>>'{feature_flags,pc_flag_off}')::boolean
   AND (SELECT count(*) = 6 + 2 FROM jsonb_object_keys(:'answer'::jsonb->'feature_flags')) -- the six seeded flags and the two above
-  AND (SELECT count(*) = 4 FROM jsonb_object_keys(:'answer'::jsonb)) -- record_payments is the fourth (migration 172, WH-143)
-  AND NOT (:'answer'::jsonb->>'record_payments')::boolean, 'the answer carries exactly the version, the maintenance flag, record_payments and the flags: ' || :'answer');
+  AND (SELECT count(*) = 5 FROM jsonb_object_keys(:'answer'::jsonb)) -- record_payments is the fourth (migration 172, WH-143), legal the fifth (migration 199, WH-140)
+  AND NOT (:'answer'::jsonb->>'record_payments')::boolean, 'the answer carries exactly the version, the maintenance flag, record_payments, the flags and legal: ' || :'answer');
 SELECT pg_temp.pc_assert(:'unknown_is_null'::boolean, 'an environment with no active row answers null (the edge function then says "not seeded")');
 -- An inactive row is not shown.
 UPDATE public.api_configurations SET is_active = false WHERE environment = 'pc_test';

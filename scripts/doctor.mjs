@@ -6,6 +6,7 @@ import { spawnSync } from 'node:child_process';
 import { createHash, createHmac, timingSafeEqual } from 'node:crypto';
 import { backupToolProblems, centralKeyFault, collationProblem, localClockProblem, gatewayPortText, letterheadProblem, probe, projectPublishesPort, readEnv, root, supportedNode, waitForDocker } from './doctor-common.mjs';
 import { numberingLine, numberingProblems } from './numbering.mjs';
+import { legalProblems } from './legal.mjs';
 import { canonicalOrigin } from './configure.mjs';
 import { DEFAULT_INGRESS, INGRESS_MODES, proxyAddressValue, proxyHeaderValue } from './ingress.mjs';
 import { validateDbValues } from './db-roles.mjs';
@@ -445,7 +446,7 @@ export async function doctor({ hostPreflight = false, preflight = false, local =
   // The numbering rules the facility's GRN, dispatch and invoice numbers follow (docs/OPERATOR_INSTALL.md, "Document numbers"); information only.
   const inDb = args => probe('bash', [resolve(root, 'scripts/compose.sh'), 'exec', '-T', 'db', ...args]);
   const numbering = numberingLine(inDb);
-  const numberingWarnings = numberingProblems(inDb).map(text => `\nWarning: ${text}`).join('');
+  const numberingWarnings = numberingProblems(inDb).concat(legalProblems(inDb)).map(text => `\nWarning: ${text}`).join('');
   // Sensors are optional. When the capability is on, readings must reach the database; every fault is a warning (scripts/sensors-check.mjs).
   const sensorWarnings = manifest?.capabilities?.sensors === true
     ? sensorReport({ env, db: inDb, compose: args => probe('bash', [resolve(root, 'scripts/compose.sh'), ...args]) }).map(text => `\nWarning: ${text}`).join('')

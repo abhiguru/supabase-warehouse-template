@@ -6,6 +6,18 @@ Storage, Deno edge functions and a PDF renderer, one installation
 per warehouse. It is used from the companion
 [React Native app](https://github.com/abhiguru/rn-warehouse-template).
 
+Built for cold storages in India: sign-in uses +91 phone numbers and MSG91 SMS codes, amounts are in rupees with GST, and dates and times are India time. Use in another country is not supported yet.
+
+## What this release is for
+
+Built for cold storages in India: sign-in uses +91 phone numbers and MSG91 SMS codes, amounts are in rupees with GST, and dates and times are India time. Use in another country is not supported yet.
+
+For cold storages, used on Android and iPhone phones. Each facility runs its own server.
+
+Not supported: e-invoicing (IRN), statutory warehouse receipts, one view across several facilities, tablets and office screens, and storage charged other than by package and month.
+
+General warehouses are not the target yet. Tell us in an issue if you need it.
+
 ## Quickstart
 
 Prerequisites, all required:
@@ -46,6 +58,7 @@ Then install the app, select the HTTPS origin and sign in as the administrator
 with a real SMS code.
 
 - Full guide (host setup, tunnel, backup and restore, key rotation, upgrades): [docs/OPERATOR_INSTALL.md](docs/OPERATOR_INSTALL.md)
+- Privacy under the 2023 Act, answering a person's request, the grievance contact: [docs/PRIVACY_FOR_OPERATORS.md](docs/PRIVACY_FOR_OPERATORS.md)
 - Something went wrong: [docs/TROUBLESHOOTING.md](docs/TROUBLESHOOTING.md)
 - What staff and customers may do: [docs/STAFF_GRN_POLICY.md](docs/STAFF_GRN_POLICY.md)
 - What is still open before production use: [docs/PRODUCTION_DEPENDENCIES.md](docs/PRODUCTION_DEPENDENCIES.md)

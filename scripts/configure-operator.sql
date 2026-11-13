@@ -46,3 +46,8 @@ WHERE key = 'support_email' AND value = 'support@example.com';
     \echo :numbering_message
   \endif
 \endif
+-- The facility's legal settings (migration 199). setup.sh --legal-name, --legal-city, --legal-state, --grievance-name, --grievance-email and
+-- --grievance-phone pass the checked values as the psql variable legal; a rerun without them leaves the stored values alone.
+\if :{?legal}
+  SELECT warehouse_security.apply_facility_legal(:'legal'::jsonb, NULL) IS NOT NULL AS legal_applied \gset
+\endif

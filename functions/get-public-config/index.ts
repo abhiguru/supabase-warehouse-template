@@ -32,6 +32,16 @@ async function readInstanceManifest(origin: string): Promise<InstanceManifest> {
   return manifest;
 }
 
+// Six text values, each an empty string when missing, so the app never has to guess (WH-140).
+function legalSettings(value: unknown): Record<string, string> {
+  const given = (value && typeof value === 'object' ? value : {}) as Record<string, unknown>;
+  const out: Record<string, string> = {};
+  for (const key of ['legalName', 'city', 'state', 'grievanceName', 'grievanceEmail', 'grievancePhone']) {
+    out[key] = typeof given[key] === 'string' ? (given[key] as string) : '';
+  }
+  return out;
+}
+
 Deno.serve(async (req: Request) => {
   if (req.method !== 'GET') return new Response('Method not allowed', { status: 405, headers: securityHeaders });
   try {
@@ -65,6 +75,8 @@ Deno.serve(async (req: Request) => {
       centralLogin,
       urls: { publicConfig: `${baseUrl}/functions/v1/get-public-config`, fullConfig: `${baseUrl}/functions/v1/get-config` },
       featureFlags: config.feature_flags ?? {},
+      // The facility's legal settings for the app's terms and privacy pages (migration 199); empty strings where not given.
+      legal: legalSettings(config.legal),
     }, timestamp: new Date().toISOString() }), {
       headers: { ...securityHeaders, 'Content-Type': 'application/json', 'Cache-Control': 'no-store' },
     });
