@@ -549,7 +549,7 @@ test_files=(
   "$ROOT/tests/report_stock_ist_day.sql" "$ROOT/tests/report_dispatch_weight.sql" "$ROOT/tests/report_grn_weight.sql"
   "$ROOT/tests/report_grn_invoices.sql"
   "$ROOT/tests/sessions_sliding.sql" "$ROOT/tests/session_devices_140.sql" "$ROOT/tests/break_glass.sql" "$ROOT/tests/break_glass_workers.sql" "$ROOT/tests/otp_source_limits.sql"
-  "$ROOT/tests/document_numbering.sql" "$ROOT/tests/order_change_log_128.sql"
+  "$ROOT/tests/document_numbering.sql" "$ROOT/tests/order_change_log_128.sql" "$ROOT/tests/facility_legal_199.sql"
   "$ROOT/tests/order_effects_128.sql" "$ROOT/tests/empty_orders_128.sql"
   "$ROOT/tests/rate_changes_129.sql"
   "$ROOT/tests/invoice_checks_129.sql"

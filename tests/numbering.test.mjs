@@ -129,7 +129,7 @@ test('doctor says nothing about the numbers when the database does not answer or
 
 test('doctor prints the numbering warnings after the other warnings, before the sensor warnings and the rules line', () => {
   const doctor = read('scripts/doctor.mjs');
-  assert.match(doctor, /const numberingWarnings = numberingProblems\(inDb\)\.map\(text => `\\nWarning: \$\{text\}`\)\.join\(''\);/);
+  assert.match(doctor, /const numberingWarnings = numberingProblems\(inDb\)\.concat\(legalProblems\(inDb\)\)\.map\(text => `\\nWarning: \$\{text\}`\)\.join\(''\);/);
   assert.match(doctor, /\+ lanNote \+ numberingWarnings \+ sensorWarnings \+ \(numbering \? `\\n\$\{numbering\}` : ''\) \+ releaseText;/);
 });
 
@@ -141,7 +141,7 @@ test('setup.sh checks the given rules before it changes anything, and stores onl
   assert.ok(gate < setup.indexOf('scripts/migrate.sh" --operator'), 'and before the migrations');
   assert.match(setup, /if \[\[ -n "\$\{!given\+x\}" \]\]; then/, 'a rule is checked only when the option was given');
   assert.match(setup, /rule="\$\(node "\$ROOT\/scripts\/numbering\.mjs" rule "\$numbering" "\$\{!given\}"\)" \|\| exit 1/, 'a refusal stops setup');
-  assert.match(setup, /-v company="\$COMPANY" \$\{NUMBERING_VARS\[@\]\+"\$\{NUMBERING_VARS\[@\]\}"\} < "\$ROOT\/scripts\/configure-operator\.sql"/, 'the checked rules reach configure-operator.sql as psql variables');
+  assert.match(setup, /-v company="\$COMPANY" \$\{NUMBERING_VARS\[@\]\+"\$\{NUMBERING_VARS\[@\]\}"\} \$\{LEGAL_VARS\[@\]\+"\$\{LEGAL_VARS\[@\]\}"\} < "\$ROOT\/scripts\/configure-operator\.sql"/, 'the checked rules reach configure-operator.sql as psql variables');
   assert.ok(!/CONFIG_ARGS\+=\("\$1" "\$2"\)[^\n]*numbering/.test(setup), 'the rules do not go into compose.env: the database holds them');
 });
 

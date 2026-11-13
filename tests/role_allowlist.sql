@@ -112,7 +112,7 @@ INSERT INTO ra_rpc(name,staff,customer) VALUES
  -- customer account's own customers (176)
  ('get_charging_rule',false,'no'),('set_charging_rule',false,'no'),('set_record_payments',false,'no'),
  ('record_payment',false,'no'),('update_payment',false,'no'),('delete_payment',false,'no'),('delete_invoice_pair',false,'no'),
- ('get_gst_details',false,'no'),('set_gst_details',false,'no'),('set_item_gst_treatment',false,'no'),
+ ('get_gst_details',false,'no'),('set_gst_details',false,'no'),('set_facility_legal',false,'no'),('set_item_gst_treatment',false,'no'),
  ('preview_invoice_documents',true,'no'),('make_pairing_code',false,'no'),('get_server_alerts',false,'no'),
  ('get_customer_dues',false,'no'),('get_customer_statement',false,'own'),
  ('get_grn_prefixes_with_stock',true,'no'),('get_all_grn_activity',true,'no'),
