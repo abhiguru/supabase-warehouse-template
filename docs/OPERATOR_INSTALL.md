@@ -467,7 +467,49 @@ The labels are those of the app's customer, item and rate forms. In `rates.csv` 
 
 **The answer.** One summary line per file (rows read, would add, skip, conflicts, errors), then one line per problem as `file line N, column X: reason` (a conflict ends with "(conflict)"). The exit status is 1 when there is any error, so a script can stop. The dry run really runs the import in the database and rolls it back, so it meets exactly what `--apply` would meet. Format errors (a bad date, a missing column) are listed first, and the database checks run once the files have none.
 
-**`--apply`** saves only when there are no errors, in one transaction, in the order customers, items, rates: it is all or nothing, and a failure leaves nothing behind. Conflicts do not stop it; they are skipped and listed again. Running the same files again adds nothing (everything is skipped). The records are written through the same server functions the app uses, as a service account named `Import` (kept switched off between runs, and not listed in Settings → Users), so the audit log and the price history read "Import". Take a backup first (`bash scripts/backup.sh`) when the facility already holds data.
+**`--apply`** saves only when there are no errors, in one transaction, in the order customers, items, rates: it is all or nothing, and a failure leaves nothing behind. Conflicts do not stop it; they are skipped and listed again. Running the same files again adds nothing (everything is skipped). The records are written through the same server functions the app uses, as a service account named `Import` (kept switched off between runs, and not listed in Settings → Users), so the audit log and the price history read "Import". `--apply` refuses unless a backup made and verified today is on record (see "The backup rule" under [Import past years](#import-past-years)).
+
+## Import past years
+
+An optional step for a facility moving from an old program: its past GRNs, dispatches, invoices and payments become records in the app, so a customer's history and balance are in one place. It runs on the host, by the technician, with the same command as the import above; there is no import screen in the app. Customers, items and rates come first (the section above), in the same run or an earlier one.
+
+```
+bash scripts/import.sh --folder /path/to/files            # dry run: checks everything, saves nothing, prints the sign-off totals
+bash scripts/import.sh --folder /path/to/files --apply    # saves, all or nothing
+```
+
+The server knows nothing of any old program. Turning an old system's data into these files is a separate converter, written per old system and run away from the facility's server; it is not part of this repository.
+
+**Files.** Put any of these in one folder (any may be missing; `customers.csv`, `items.csv` and `rates.csv` are picked up from the folder too). Templates with one made-up row each are in `scripts/import-templates/`. The format is the one above: CSV UTF-8, a header row, columns found by header name in any order, dates `DD/MM/YYYY`, amounts as plain numbers. A file may hold up to 3,000,000 rows and 512 MB; it is read as a stream. A document is named by its number **and** date everywhere, so an old program that started its numbers again each year is fine.
+
+| File | Columns (required in bold) |
+| --- | --- |
+| `grns.csv` | **GRN number**, **GRN date**, **Customer name**, Pricing (`Monthly` or `One-time`; empty = Monthly), Vehicle, Sender, Note |
+| `grn-lines.csv` | **GRN number**, **GRN date**, **Line** (1, 2, …), **Item name**, **Packaging**, **Quantity**, Kg each, Rack, Mark, Stock now |
+| `dispatches.csv` | **Dispatch number**, **Dispatch date**, **Customer name**, Vehicle, Note |
+| `dispatch-lines.csv` | **Dispatch number**, **Dispatch date**, **GRN number**, **GRN date**, **GRN line**, **Quantity** |
+| `invoices.csv` | **Invoice number**, **Invoice date**, **Customer name**, **GRN number**, **GRN date**, Name on invoice, **Labour**, **Tax**, Discount, **Total**, Note |
+| `invoice-lines.csv` | **Invoice number**, **Invoice date**, **Item name**, **Packaging**, **Quantity**, Dispatch number, Dispatch date, GRN line, Months, Days, **Rate**, Labour rate, Tax (%), **Storage amount**, Labour amount, **Tax amount** |
+| `payments.csv` | **Receipt number**, **Payment date**, **Customer name**, Invoice number, Invoice date, **Amount**, Mode (Cash, UPI, Bank transfer, Cheque, Other), Note |
+
+- Customers and items are named as they are in the app (the item by name and packaging). An unknown one is an error; nothing is created on the way.
+- GRN and dispatch numbers: up to 20 letters, digits, `/` or `-`. The facility's number rule (Document numbers) is not applied to imported documents.
+- An invoice number ends in digits: `GC/000125` is number 125 of its financial year and prints back as `GC/000125`. The part before the digits is at most 8 capital letters, digits, `/` or `-`.
+- An invoice covers one GRN. An invoice line names its dispatch (number and date) when it has one; GRN line is needed only when that dispatch has several lines of the invoice's GRN. Every amount is kept exactly as in the file and is never worked out again.
+- **Taken as billed.** When none of an invoice's lines names a dispatch, or it has no lines at all (an old program may export bill totals only), every imported dispatch of its GRN dated on or before the invoice's date, and on no invoice, counts as billed by that invoice: it is not in Customer dues or the statement as goods not yet invoiced, and the app does not offer it for a new invoice. When two such invoices could take it, the earliest one dated on or after the dispatch does. This goes by date only, not by quantity; a dispatch of that GRN dated after the invoice stays not invoiced. Each run works this out again over everything imported so far, and a dispatch once taken as billed keeps its invoice.
+- A payment with no invoice is a payment on account, as today's unlinked payments are. `payments.csv` needs **Record payments** turned on (Charging screen) first.
+
+**What is checked.** First every cell and the repeats within each file; then, in the database, everything against everything else and against what the facility holds. **Errors** (nothing is saved): an unknown customer or item; a line whose document is not in its header file; a GRN or dispatch with no lines; a number that a document made in the app holds; the same invoice number twice in one financial year; an invoice whose GRN is not in the files or an earlier import, or that spans two GRNs; a dispatch or invoice of a GRN of another customer; a dispatch line on two invoices; dispatches above what a GRN line received; **Stock now** that differs from received less dispatched; a date after today; a document that differs from what an earlier run imported. **Notes** (saved as issued, listed): a dispatch dated before its GRN, an invoice before its last dispatch, a payment before its invoice; payments above an invoice's total (its due stays at 0); lines that do not add up to the Total; a lot with goods left to bill and no rate; an invoiced GRN with dispatches on no invoice while Invoice as goods leave is off; an imported dispatch on no invoice whose GRN has an imported invoice of the same day or later that names a dispatch on at least one of its lines (the app bills it; an invoice that names some dispatches takes none as billed); an invoice line naming a dispatch that an earlier run took as billed by another invoice.
+
+**The answer.** One line per file (read, would add, already there, errors, notes), then one line per problem as `file line N, column X: reason` (a note ends with "(note)"), at most 200 per file and then "and N more". With no error it ends with the **sign-off totals** for the whole facility as they will be after the import: the dispatches taken as billed per customer, each with its invoice ("dispatch 412 of 05/03/2024 taken as billed by invoice 125"); dispatches on no invoice per customer (the app bills them at its own rates, as new invoices); stock in store per item; what each customer owes (due on invoices, payments on account, and the two together); invoices per financial year, imported and made in the app; and the next invoice number the app will give this financial year (one above the highest imported one).
+
+**The sign-off sheet.** Before `--apply`, the store's owner compares the sign-off totals of the dry run with the same figures in the old program, line by line, and signs them. A difference is fixed in the files (or the converter) and the dry run is repeated.
+
+**The backup rule.** `--apply` (this import or the one above) refuses unless the newest backup on record as verified (`config/backups-verified.list` in the state folder) was made today and verified today (India time). The nightly pass records one; to make one by hand: `bash scripts/backup.sh`, then `bash scripts/verify-restore.sh <the new folder under backups/>`, then `node scripts/watch.mjs record-verified <its name>`. That backup is the way back: an imported document cannot be edited or deleted in the app, and there is no "undo import".
+
+**`--apply`** saves everything or nothing, in one transaction, as the `Import` service account. Each imported GRN, dispatch, invoice and payment is marked **Imported** and is read-only in the app; a GRN with stock can still be dispatched from, and an unpaid invoice can still take a payment. The audit log holds one entry per run. Expect a few minutes for five busy years; run it with the app idle: while it runs, a GRN, dispatch or invoice saved in the app waits for it (so that no app number can clash with an imported one), and a save that waits too long is refused and must be made again afterwards. Afterwards the database statistics of the document tables are refreshed.
+
+**Running it again** adds only what is new: a document equal to one imported before is "already there"; one that differs is an error; a document made in the app is never touched. So a store can import year by year, or add the last weeks before the switch.
 
 ## Several facilities on one host
 

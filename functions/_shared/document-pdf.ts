@@ -3,8 +3,8 @@ import { restClient } from './supabase-rest.ts';
 import { validateUserAccess, createAuthErrorResponse, requestId } from './auth-helpers.ts';
 import { securityHeaders } from './security-headers.ts';
 import { renderDocumentPdf } from './pdf-renderer-client.ts';
-import { cancelledNotice, documentDate, documentHtml, kgEach, withNotice } from './document-html.ts';
-import { headerColumns, invoiceCancelColumns, invoiceDocTypeColumns, invoiceGstLineColumns } from './document-columns.ts';
+import { cancelledNotice, documentDate, documentHtml, importedNotice, kgEach, withNotice } from './document-html.ts';
+import { documentLookupColumns, headerColumns, invoiceCancelColumns, invoiceDocTypeColumns, invoiceGstLineColumns, invoiceImportedLineColumns } from './document-columns.ts';
 import { gstColumns, gstDocumentHtml, gstRows, isGstDocType } from './gst-document-html.ts';
 import type { GstInvoice } from './gst-document-html.ts';
 import { publicBaseUrl } from './public-url.ts';
@@ -13,6 +13,9 @@ import { estimatePages, MAX_PDF_PAGES, SOLO_PDF_PAGES } from './document-pages.t
 
 type Kind = 'grn' | 'dispatch' | 'invoice' | 'stock';
 const uuid = /^[a-f0-9]{8}-[a-f0-9]{4}-[a-f0-9]{4}-[a-f0-9]{4}-[a-f0-9]{12}$/i;
+// A GRN or dispatch number: letters, digits, '-' and '/' (the year scheme of migration 127 gives GRN/26-27/0042; an imported number,
+// migration 189, may hold '/' too). An invoice number is the whole number inv_no.
+const documentNumber = /^[A-Za-z0-9/-]{1,20}$/;
 
 export const documentPdf = (kind: Kind) => async (req: Request): Promise<Response> => {
   try {
@@ -24,7 +27,7 @@ export const documentPdf = (kind: Kind) => async (req: Request): Promise<Respons
     const publicUrl = publicBaseUrl(Deno.env.get('SUPABASE_PUBLIC_URL'));
     // Every business-data read uses the caller's token and row-level security.
     const reader = restClient(internal, Deno.env.get('SUPABASE_ANON_KEY')!, { authorization: req.headers.get('Authorization')! });
-    let header; let details; let number; let date; let columns; let rows; let notice: string | undefined;
+    let header; let details; let number; let date; let columns; let rows; const notices: string[] = [];
     let gstInvoice: GstInvoice | undefined;
     if (kind === 'stock') {
       if (typeof body.customer_id !== 'string' || !uuid.test(body.customer_id)) throw { status: 400, message: 'customer_id must be a UUID' };
@@ -37,27 +40,45 @@ export const documentPdf = (kind: Kind) => async (req: Request): Promise<Respons
       rows = details.data?.map(line => [line.item_name,line.packaging,line.stock,line.rack,line.package_mark]);
       number = 'Current stock'; date = new Date().toISOString();
     } else {
-      const value = kind === 'grn' ? body.gr_no : kind === 'dispatch' ? body.disp_no : body.inv_no;
-      if ((typeof value !== 'string' && typeof value !== 'number') || !/^[A-Za-z0-9-]{1,20}$/.test(String(value))) throw { status: 400, message: 'Invalid document number' };
       const table = kind === 'grn' ? 'goodsreceived' : kind;
       const key = kind === 'grn' ? 'gr_no' : kind === 'dispatch' ? 'disp_no' : 'inv_no';
-      let query = reader.from(table).select(headerColumns(kind)).eq(key,value).is('deleted_at',null);
-      if (kind === 'invoice') {
-        if (!Number.isInteger(Number(body.fin_year)) || Number(body.fin_year)<2000 || Number(body.fin_year)>9999) throw { status: 400, message: 'Invalid financial year' };
-        query = query.eq('inv_fin_year',body.fin_year);
+      // Migration 191 (WH-180): an app that knows imported documents sends the document's id; an older app sends the number (and, for an
+      // invoice, the financial year). Imported GRN and dispatch numbers may repeat across years, so a number that matches more than one
+      // document is refused rather than printing one of them.
+      let lookup = reader.from(table).select(documentLookupColumns(kind)).is('deleted_at',null);
+      if (body.id !== undefined && body.id !== null) {
+        if (typeof body.id !== 'string' || !uuid.test(body.id)) throw { status: 400, message: 'id must be a UUID' };
+        lookup = lookup.eq('id',body.id);
+      } else {
+        const value = kind === 'grn' ? body.gr_no : kind === 'dispatch' ? body.disp_no : body.inv_no;
+        if ((typeof value !== 'string' && typeof value !== 'number') || !documentNumber.test(String(value))) throw { status: 400, message: 'Invalid document number' };
+        lookup = lookup.eq(key,value);
+        if (kind === 'invoice') {
+          if (!Number.isInteger(Number(body.fin_year)) || Number(body.fin_year)<2000 || Number(body.fin_year)>9999) throw { status: 400, message: 'Invalid financial year' };
+          lookup = lookup.eq('inv_fin_year',body.fin_year);
+        }
       }
+      const found = await lookup.limit(2);
+      if (found.error || !Array.isArray(found.data) || found.data.length === 0) throw { status: 404, message: 'Document unavailable' };
+      if (found.data.length > 1) throw { status: 409, code: 'SEVERAL_DOCUMENTS', message: 'Several documents have this number; update the app' };
+      const match = found.data[0] as Record<string, unknown>;
+      const imported = match.import_batch_id !== null && match.import_batch_id !== undefined;
+      const query = reader.from(table).select(headerColumns(kind)).eq('id',match.id).is('deleted_at',null);
       const result = await query.single();
       if (result.error || !result.data) throw { status: 404, message: 'Document unavailable' };
-      header = result.data; number = kind === 'invoice' ? `${header.inv_prefix ?? ''}${value}` : String(value); date = header.date || header.disp_date || header.inv_date;
+      header = result.data; number = kind === 'invoice' ? `${header.inv_prefix ?? ''}${match.inv_no}` : String(match[key]); date = header.date || header.disp_date || header.inv_date;
+      // Migration 191 (WH-180): an imported GRN, dispatch or invoice says so on its PDF.
+      if (imported) notices.push(importedNotice);
       if (kind === 'invoice') {
         // Only a cancelled invoice gets the line; an invoice that is not cancelled prints as it always did.
         const cancel = await reader.from('invoice').select(invoiceCancelColumns).eq('id',header.id).single();
         if (cancel.error) throw { status: 503, message: 'Document status unavailable' };
-        if (cancel.data?.cancelled_at) notice = cancelledNotice(cancel.data.cancelled_at, cancel.data.cancel_reason);
+        if (cancel.data?.cancelled_at) notices.push(cancelledNotice(cancel.data.cancelled_at, cancel.data.cancel_reason));
         // Migration 173: a GST document (any type but 'invoice') prints the GST layout from what the save stored; an 'invoice' prints as before.
         const type = await reader.from('invoice').select(invoiceDocTypeColumns).eq('id',header.id).single();
         if (type.error) throw { status: 503, message: 'Document status unavailable' };
-        if (isGstDocType(type.data?.doc_type)) {
+        // An imported invoice never prints the GST layout: its figures are the previous system's, printed as issued.
+        if (!imported && isGstDocType(type.data?.doc_type)) {
           const detail = await reader.rpc('get_invoice_detail',{ p_invoice_id: header.id });
           if (detail.error || detail.data?.success !== true || !detail.data?.invoice?.gst) throw { status: 503, message: 'Document details unavailable' };
           gstInvoice = detail.data.invoice as GstInvoice;
@@ -79,6 +100,18 @@ export const documentPdf = (kind: Kind) => async (req: Request): Promise<Respons
         details = await readDocumentLines(reader,kind,'invoice_trl',invoiceGstLineColumns,query => query.eq('invoice_id',header.id));
         columns = gstColumns(invoice);
         rows = details.data ? gstRows(invoice, details.data) : undefined;
+      } else if (imported) {
+        // Migration 191 (WH-180): an imported invoice's lines with each line's amount as issued (taxable_value = storage + labour, else
+        // the storage as issued); nothing is worked out again.
+        details = await readDocumentLines(reader,kind,'invoice_trl',invoiceImportedLineColumns,query => query.eq('invoice_id',header.id));
+        columns = ['Item','Quantity','Duration','Days','Labour rate','Charge','Tax','Amount'];
+        rows = details.data?.map(line => {
+          const dispatch = Array.isArray(line.dispatch_trl) ? line.dispatch_trl[0] : line.dispatch_trl;
+          const item = Array.isArray(dispatch?.goodsreceived_trl) ? dispatch.goodsreceived_trl[0] : dispatch?.goodsreceived_trl;
+          const amount = line.taxable_value ?? line.issued_storage_amount;
+          if (line.details_kept_at) return [line.kept_item_name,line.kept_disp_qty,line.duration,line.no_of_days,line.labour_rate,line.charge,line.tax,amount];
+          return [item?.item_name,dispatch?.disp_qty,line.duration,line.no_of_days,line.labour_rate,line.charge,line.tax,amount];
+        });
       } else {
         details = await readDocumentLines(reader,kind,'invoice_trl','duration,no_of_days,labour_rate,charge,tax,details_kept_at,kept_item_name,kept_disp_qty,dispatch_trl(disp_qty,goodsreceived_trl(item_name))',query => query.eq('invoice_id',header.id));
         columns = ['Item','Quantity','Duration','Days','Labour rate','Charge','Tax'];
@@ -111,7 +144,8 @@ export const documentPdf = (kind: Kind) => async (req: Request): Promise<Respons
       ? gstDocumentHtml({ invoice: gstInvoice, lines: details.data, number, date: documentDate(date), financialYear: header.inv_fin_year,
                           company: company.data.value, letterhead: Deno.env.get('LETTERHEAD_DATA_URI') || undefined })
       : documentHtml(kind.toUpperCase(),company.data.value,metadata,columns,rows,Deno.env.get('LETTERHEAD_DATA_URI') || undefined);
-    if (notice) html = withNotice(html,notice);
+    // withNotice puts each line under the title, so the first notice is added last and prints first.
+    for (const notice of [...notices].reverse()) html = withNotice(html,notice);
     const pdf = await renderDocumentPdf(html,{ solo: pages > SOLO_PDF_PAGES, requestId: requestId(req) });
     // Upload uses server authority only after document reads were authorized.
     const path = `${kind}/${header.id}/${crypto.randomUUID()}.pdf`;

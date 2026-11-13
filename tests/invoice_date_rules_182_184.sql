@@ -140,7 +140,7 @@ SELECT pg_temp.idr_assert((SELECT bool_and(inv_date = '2026-05-12T12:00:00Z'::ti
 SET LOCAL ROLE authenticated;
 SELECT pg_temp.update_invoice_doc(:'inv_a'::uuid, (:'header_a'::jsonb - 'inv_fin_year') || '{"inv_date":"2026-03-30T12:00:00Z"}') AS cross_a \gset
 SELECT pg_temp.update_invoice_doc(:'inv_b'::uuid, (:'header_b'::jsonb - 'inv_fin_year') || '{"inv_date":"2026-03-30T12:00:00Z"}') AS cross_b \gset
--- With inv_fin_year sent, the older generic financial-year check answers first (WH422); the move is refused all the same.
+-- With inv_fin_year sent (as the app always does) the move is refused all the same, with the pair's refusal (migration 197).
 SELECT pg_temp.update_invoice_doc(:'inv_a'::uuid, :'header_a'::jsonb || '{"inv_date":"2026-03-30T12:00:00Z"}') AS cross_dated \gset
 SELECT pg_temp.update_invoice_doc(:'inv_a'::uuid, :'header_a'::jsonb || '{"inv_fin_year":2025}') AS cross_year \gset
 RESET ROLE;
@@ -148,10 +148,24 @@ SELECT pg_temp.idr_assert(:'cross_a'::jsonb->>'success' = 'false' AND :'cross_a'
   AND :'cross_a'::jsonb->>'first' = '20270401' AND :'cross_a'::jsonb->>'second' = '20270402' AND (:'cross_a'::jsonb->>'fin_year')::int = 2026,
   'a date in the previous financial year is refused for the first document: ' || :'cross_a');
 SELECT pg_temp.idr_assert(:'cross_b'::jsonb->>'reason' = 'INVOICE_PAIR_OTHER_YEAR', 'and for the second document: ' || :'cross_b');
-SELECT pg_temp.idr_assert(:'cross_dated'::jsonb->>'success' = 'false' AND :'cross_dated'::jsonb->>'error_code' = 'WH422' AND :'cross_dated'::jsonb->>'error' LIKE 'The invoice date belongs to financial year%',
-  'with inv_fin_year sent, a date in the previous financial year gets the generic refusal: ' || :'cross_dated');
-SELECT pg_temp.idr_assert(:'cross_year'::jsonb->>'success' = 'false' AND :'cross_year'::jsonb->>'error_code' = 'WH422',
-  'a different inv_fin_year is refused too (generic refusal while the date stays): ' || :'cross_year');
+-- WH-181 (migration 197): the pair's refusal comes before the generic financial-year check, so the app (which always sends inv_fin_year) reads it.
+SELECT pg_temp.idr_assert(:'cross_dated'::jsonb->>'success' = 'false' AND :'cross_dated'::jsonb->>'reason' = 'INVOICE_PAIR_OTHER_YEAR' AND :'cross_dated'::jsonb->>'error_code' = 'WH409'
+  AND :'cross_dated'::jsonb->>'first' = '20270401' AND :'cross_dated'::jsonb->>'second' = '20270402',
+  'with inv_fin_year sent, a date in the previous financial year gets the pair refusal: ' || :'cross_dated');
+SELECT pg_temp.idr_assert(:'cross_year'::jsonb->>'success' = 'false' AND :'cross_year'::jsonb->>'reason' = 'INVOICE_PAIR_OTHER_YEAR' AND :'cross_year'::jsonb->>'error_code' = 'WH409',
+  'a different inv_fin_year is refused with the pair refusal too: ' || :'cross_year');
+-- An invoice that is not half of a pair still gets the generic refusal (WH422) for the same edits.
+SAVEPOINT sp_unpaired;
+UPDATE public.invoice SET linked_invoice_id = NULL WHERE id IN (:'inv_a'::uuid, :'inv_b'::uuid);
+SET LOCAL ROLE authenticated;
+SELECT pg_temp.update_invoice_doc(:'inv_a'::uuid, :'header_a'::jsonb || '{"inv_date":"2026-03-30T12:00:00Z"}') AS unpaired_dated \gset
+SELECT pg_temp.update_invoice_doc(:'inv_a'::uuid, :'header_a'::jsonb || '{"inv_fin_year":2025}') AS unpaired_year \gset
+RESET ROLE;
+ROLLBACK TO SAVEPOINT sp_unpaired;
+SELECT pg_temp.idr_assert(:'unpaired_dated'::jsonb->>'success' = 'false' AND :'unpaired_dated'::jsonb->>'error_code' = 'WH422' AND :'unpaired_dated'::jsonb->>'error' LIKE 'The invoice date belongs to financial year%',
+  'an unpaired invoice: a date in the previous financial year still gets the generic refusal: ' || :'unpaired_dated');
+SELECT pg_temp.idr_assert(:'unpaired_year'::jsonb->>'success' = 'false' AND :'unpaired_year'::jsonb->>'error_code' = 'WH422',
+  'an unpaired invoice: a different inv_fin_year still gets the generic refusal: ' || :'unpaired_year');
 SELECT pg_temp.idr_assert((SELECT bool_and(inv_date = '2026-05-12T12:00:00Z'::timestamptz AND inv_fin_year = 2026) FROM public.invoice WHERE id IN (:'inv_a'::uuid, :'inv_b'::uuid)),
   'the refusals wrote nothing');
 

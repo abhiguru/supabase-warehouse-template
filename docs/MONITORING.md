@@ -85,6 +85,7 @@ An alert fires after two failing runs in a row (10 minutes), except the event al
 | `stack_restarts` | The whole stack restarted more than 3 times in the last hour (the host, WSL or Docker keeps restarting); one alert for the stack, not one per container |
 | `container_memory:<name>` | A container uses 90% or more of its memory limit |
 | `api_down` | The gateway does not answer `get-public-config` on this host |
+| `rest_down` | The REST service (PostgREST) does not answer through the gateway on this host: an anonymous `POST /rest/v1/rpc/get_public_config` with this installation's anon key is refused, times out (15 s) or gets a 5xx (two failing runs). Any other answer, a 4xx such as 429 included, means REST is up and does not raise it |
 | `public_https_down` | The public HTTPS address does not answer, or answers as another installation |
 | `lan_http_down` | The LAN fallback is on (`LAN_ENABLED=true`) and `http://<LAN address>:<port>/functions/v1/get-public-config` does not answer from this host, answers as another installation, or answers without `X-Warehouse-Path: lan`; or a REST request to `/rest/v1/` with this installation's anon key is refused by the LAN gateway's key check (HTTP 401: the container was not recreated after `rotate-keys.sh`) or does not reach the REST service (5xx) (two failing runs; silent while the fallback is off; see "LAN fallback") |
 | `lan_ip_changed` | The LAN fallback is on and the host no longer has the address `LAN_BIND_IP` (the router gave it another one): phones cannot reach the fallback and the `gateway-lan` service is not started; the public path is not affected. Run `bash scripts/lan.sh on auto` |
@@ -464,7 +465,7 @@ bash setup.sh --operator ... --support-link-file off                            
 or readings; the details of an alert; addresses on the facility's network.
 
 **The state.** `attention` when any of these is open: `backup_missing`, `backup_failed`, `offhost_copy_missing`, `disk_root_low`, `disk_low`,
-`disk_vhdx_drive_low`, `postgres_down`, `service_down`, `api_down`, `public_https_down`, `upgrade_interrupted`, or the facility's alert channel is not
+`disk_vhdx_drive_low`, `postgres_down`, `service_down`, `api_down`, `rest_down`, `public_https_down`, `upgrade_interrupted`, or the facility's alert channel is not
 set up. Other alerts are listed and change nothing. While the nightly backup, an upgrade or another operator command holds the operator lock (or a live
 backup owns maintenance mode), the services it stopped are left out of the report and the state is `planned_stop`, sent to the success address.
 No report for 15 minutes is "silent" at the service: set its check to a 5 minute period and 15 minute grace.

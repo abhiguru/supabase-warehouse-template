@@ -178,7 +178,8 @@ BEGIN
     END IF;
 
     -- A number another dispatch holds is refused by name, under the lock and before anything is written
-    -- (migration 120). dispatch_disp_no_key covers every row, so the check does too.
+    -- (migration 120). The check looks at every row, imported ones included, so a number the app gives stays unique for all time
+    -- (migration 189 replaced dispatch_disp_no_key, which covered every row, with indexes that do not).
     IF EXISTS (SELECT 1 FROM dispatch d WHERE d.disp_no = p_dispatch_data->>'disp_no') THEN
         RETURN jsonb_build_object(
             'success', false,
