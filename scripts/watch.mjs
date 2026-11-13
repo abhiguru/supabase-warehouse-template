@@ -753,6 +753,24 @@ export async function checkApiLocal(ctx) {
   try { await getJson(ctx, `http://127.0.0.1:${port}/functions/v1/get-public-config`); return [result('api_local', 'api_down', true, 'API gateway answers')]; }
   catch (error) { return [result('api_local', 'api_down', false, 'API gateway is not answering on this host', error.message)]; }
 }
+// WH-18: PostgREST has no health check of its own (`postgrest --ready` needs server-host=localhost, which would cut off the gateway, and the
+// image has no shell or curl), and get-public-config is answered by the functions, not by REST. So REST is probed through the gateway with the
+// anonymous RPC get_public_config and the anon key of compose.env, like the other local API probe (`rest_down`, after two failing runs). Down is: no
+// answer in 15 s, a refused connection, or a 5xx (502, 503 and 504 are the gateway saying it cannot reach REST; PostgREST's own 5xx means it
+// cannot serve). Answered is any other status: 2xx, and a 4xx too (429 rate limit, 401 a key mismatch that `doctor` and `lan_http_down` report),
+// because REST itself is up. Nothing of the request is put in the alert text.
+export async function checkApiRest(ctx) {
+  const port = gatewayPortText(ctx.env_());
+  if (!/^\d+$/.test(port ?? '')) throw new Error('GATEWAY_HTTP_PORT is not set in compose.env');
+  try {
+    const response = await ctx.fetch(`http://127.0.0.1:${port}/rest/v1/rpc/get_public_config`, {
+      method: 'POST', headers: { apikey: ctx.env_().ANON_KEY ?? '', 'Content-Type': 'application/json' }, body: JSON.stringify({ p_environment: 'production' }),
+      signal: AbortSignal.timeout(15000), redirect: 'error',
+    });
+    if (response.status >= 500) throw new Error(`HTTP ${response.status}`);
+    return [result('api_rest', 'rest_down', true, 'REST answers through the gateway')];
+  } catch (error) { return [result('api_rest', 'rest_down', false, 'REST is not answering through the gateway', `${error.cause?.code ?? error.message} (docker compose logs rest)`)]; }
+}
 // WH-146: a local-only facility (INGRESS=local-only in compose.env) has no public address, tunnel, Slack or internet time: those checks do not
 // run for it (a result list of [] clears an alert left over from before), and its alerts are written to the database for the app's banner.
 export const isLocalOnly = ctx => ctx.env_().INGRESS === 'local-only';
@@ -1437,7 +1455,7 @@ export const CHECKS = [
   ['cpu', checkCpu], ['memory', checkMemory], ['disk', checkDisks], ['database', checkDatabase],
   ['services', checkServices], ['container_oom', checkContainerOom], ['container_restarts', checkContainerRestarts],
   ['stack_restarts', checkStackRestarts],
-  ['container_memory', checkContainerMemory], ['api_local', checkApiLocal], ['api_public', checkApiPublic], ['api_lan', checkApiLan],
+  ['container_memory', checkContainerMemory], ['api_local', checkApiLocal], ['api_rest', checkApiRest], ['api_public', checkApiPublic], ['api_lan', checkApiLan],
   ['api_logs', checkApiLogs], ['pdf_renderer', checkPdfRenderer], ['central_key', checkCentralKey], ['letterhead', checkLetterhead], ['backups', checkBackups],
   ['restore_space', checkRestoreSpace], ['upgrade', checkUpgrade], ['sms_delivery', checkSmsDelivery], ['sms_ceiling', checkSmsCeiling], ['break_glass', checkBreakGlass], ['audit_writes', checkAuditWrites], ['clock', checkClock],
   ['cloudflared', checkCloudflared], ['host_node', checkHostNode], ['root_copies', checkRootCopies], ['sensors_stale', checkSensors],
