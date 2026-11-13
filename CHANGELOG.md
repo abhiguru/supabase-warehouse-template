@@ -36,6 +36,7 @@ file used to carry for earlier installations are in git: `git show b45ae0b:CHANG
 
 ### Fixed
 
+- **A deleted GRN is no longer printed on the preprinted form (WH-186, migration 194).** The GRN range print did not skip a deleted GRN; it now does, and a range of only deleted GRNs prints nothing, as an empty range always did.
 - **Customer dues and the customer statement open fast with years of history (WH-187, migration 193).** The figures of every GRN not yet invoiced are worked out in one pass (`warehouse_security.not_invoiced_grns`) instead of one invoice form per GRN; every figure, the estimate at today's rates included, is the same as before, and nothing is stored. On a test set of 32,000 GRNs and 3,200 customers `get_customer_dues` went from about 9 s to 0.7 s.
 - **A new `functions` container boots with no internet (WH-130).** The functions image now carries the edge runtime's module cache (the `@types/node` typings a `node:` import needs), filled at image build, so printing, sign-in codes and the central exchange work after a container is re-created while the internet is down. Installs must rebuild or pull the functions image (`bash scripts/build-images.sh`); an older image still needs the internet the first time.
 
