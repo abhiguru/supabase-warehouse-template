@@ -132,7 +132,9 @@ CREATE FUNCTION warehouse_security.not_invoiced_grns(p_customer_id uuid, p_today
       JOIN grns gr ON gr.id = r.gr_id
       CROSS JOIN ctx
       JOIN rates rt ON rt.gr_id = r.gr_id AND rt.item_id = r.item_id AND rt.weight IS NOT DISTINCT FROM r.weight
-      JOIN dur ON dur.grn_date = gr.grn_date AND dur.day IS NOT DISTINCT FROM r.day
+      -- NULL-safe on the GRN date too (WH-190): a GRN saved with no date (goodsreceived.date allows none; no save path leaves it empty
+      -- today) is priced as the form prices it, with the duration charge_duration gives for no GRN date, not dropped.
+      JOIN dur ON dur.grn_date IS NOT DISTINCT FROM gr.grn_date AND dur.day IS NOT DISTINCT FROM r.day
       LEFT JOIN public.items i ON i.id = r.item_id
       CROSS JOIN LATERAL (
           SELECT rt.src_unit::numeric(12,2) AS unit_price,
