@@ -28,31 +28,32 @@
 --  4. Receipt numbers. payments_payment_no_key UNIQUE (payment_no) is replaced by a unique index over the rows that are not imported: an old
 --     system may use a receipt number again in another year or for another customer; an imported payment is unique by its key above. App
 --     payments are numbered APP-<n> from a sequence and stay unique, as do the rows of the old accounting link.
---  5. Dispatches taken as billed (WH-180 spec, answer 4, criterion 20). public.imported_billed_dispatches (disp_trl_id, invoice_id): where a
---     live imported invoice has a line naming no dispatch (invoice_trl.disp_trl_id NULL), each imported dispatch line of that invoice's GRN
---     dated on or before the invoice (business dates), on no live invoice line and not linked yet, is held as billed by it. Two such
---     invoices: the earliest one dated on or after the dispatch, then the invoice number. By date only, never by quantity. Worked out at the
---     end of the writes of every run over all imported invoices and dispatches (this run's and earlier ones); an existing link is never
---     moved or removed, so a repeat run adds nothing. A link counts only while its invoice is live. Every "dispatch line on no live
---     invoice" read also requires no link to a live invoice: the never-billed list and notes here, not_invoiced_grns (migration 193), and
---     the invoice form, the save check and grn_has_free_dispatch_line (migration 196). App-made dispatches are never linked. Only this
---     function writes the table: RLS on, no policy, no grant to any app role.
+--  5. Dispatches taken as billed (WH-180 spec, answer 4, criterion 20). public.imported_billed_dispatches (disp_trl_id, invoice_id):
+--     where a live imported invoice names no dispatch on some line (invoice_trl.disp_trl_id NULL) or has no lines at all (its GRN is the
+--     GRN of its invoices.csv row, invoice.gr_id), each imported dispatch line of that invoice's GRN dated on or before the invoice
+--     (business dates), on no live invoice line and not linked yet, is held as billed by it. Two such invoices: the earliest one dated on
+--     or after the dispatch, then the invoice number. By date only, never by quantity. Worked out at the end of the writes of every run
+--     over all imported invoices and dispatches (this run's and earlier ones); an existing link is never moved or removed, so a repeat run
+--     adds nothing. A link counts only while its invoice is live. Every "dispatch line on no live invoice" read also requires no link to a
+--     live invoice: the never-billed list and notes here, not_invoiced_grns (migration 193), and the invoice form, the save check and
+--     grn_has_free_dispatch_line (migration 196). App-made dispatches are never linked. Only this function writes the table: RLS on, no
+--     policy, no grant to any app role.
 --
--- Errors (nothing is saved): an unknown customer or item; a line whose document is not in its header file; a GRN or dispatch with no lines; a
--- GRN or dispatch number that a document made in the app holds; an invoice number that an app invoice of that financial year holds, or that two
--- invoices of the file share in one year, or above invoice_number_max(); an invoice whose GRN is in neither grns.csv nor an earlier import, or
--- whose GRN belongs to another customer; an invoice line whose dispatch is not found or has no line of the invoice's GRN (an invoice covers one
--- GRN); a dispatch line on two invoices; a dispatch line of another customer's GRN, or of a GRN line that is not found; dispatches above what a
--- GRN line received; "Stock now" that differs from received less dispatched; a payment whose invoice is not found among the imported ones, or
--- belongs to another customer; payments.csv while Record payments is off; a date after today (India); a document that differs from what an
--- earlier import saved under the same key.
--- Notes (saved as issued, listed): a dispatch dated before its GRN; an invoice dated before its last named dispatch; a payment dated before its
--- invoice; payments above what is left on an invoice; lines + tax - discount that differ from the invoice's Total; invoices.csv while Record
--- payments is off; and, once there is no error, an imported dispatch line on no invoice whose GRN has an imported invoice of the same day or
--- later (when this run adds the dispatch or such an invoice; a dispatch of an earlier run that is not in dispatch-lines.csv is listed on the
--- invoice's row; a dispatch taken as billed is not listed), a lot with goods to bill and no rate, an invoiced GRN with dispatches on no
--- invoice while Invoice as goods leave is off, and an invoice line naming a dispatch line that an earlier run took as billed by another
--- invoice (both invoices are kept as issued).
+-- Errors (nothing is saved): an unknown customer or item; a line whose document is not in its header file; a GRN or dispatch with no lines;
+-- a GRN or dispatch number that a document made in the app holds; an invoice number that an app invoice of that financial year holds,
+-- or an invoice number that two invoices of the file share in one year, or above invoice_number_max(); an
+-- invoice whose GRN is in neither grns.csv nor an earlier import, or whose GRN belongs to another customer; an invoice line whose dispatch
+-- is not found or has no line of the invoice's GRN (an invoice covers one GRN); a dispatch line on two invoices; a dispatch line of another
+-- customer's GRN, or of a GRN line that is not found; dispatches above what a GRN line received; "Stock now" that differs from received
+-- less dispatched; a payment whose invoice is not found among the imported ones, or belongs to another customer; payments.csv while Record
+-- payments is off; a date after today (India); a document that differs from what an earlier import saved under the same key.
+-- Notes (saved as issued, listed): a dispatch dated before its GRN; an invoice dated before its last named dispatch; a payment dated before
+-- its invoice; payments above what is left on an invoice; lines + tax - discount that differ from the invoice's Total; invoices.csv while
+-- Record payments is off; and, once there is no error, an imported dispatch line on no invoice whose GRN has an imported invoice of the
+-- same day or later where every such invoice names a dispatch on each of its lines (when this run adds the dispatch or such an invoice; a
+-- dispatch of an earlier run that is not in dispatch-lines.csv is listed on the invoice's row; a dispatch taken as billed is not listed), a
+-- lot with goods to bill and no rate, an invoiced GRN with dispatches on no invoice while Invoice as goods leave is off, and an invoice
+-- line naming a dispatch line that an earlier run took as billed by another invoice (both invoices are kept as issued).
 -- Report: {"success", "applied", "dry_run", "batch_id", "masters": import_batch's report or null,
 --   "files": {name: {read, add, skip, errors, notes}}, "problems": the first 200 per file [{kind, file, line, column, reason}],
 --   "problem_counts": {name: n}, "totals": the sign-off totals or null while there is an error}. totals.taken_as_billed:
@@ -115,7 +116,7 @@ REVOKE ALL ON TABLE public.imported_billed_dispatches FROM PUBLIC, anon, authent
 -- The foreign key's index, for the reads that start from an invoice.
 CREATE INDEX imported_billed_dispatches_invoice_id_idx ON public.imported_billed_dispatches (invoice_id);
 COMMENT ON TABLE public.imported_billed_dispatches IS
-  'Migration 192 (WH-180, spec answer 4): an imported dispatch line held as billed by an imported invoice whose lines name no dispatch. Written only by import_history, never moved or removed; counts while the invoice is live.';
+  'Migration 192 (WH-180, spec answer 4): an imported dispatch line held as billed by an imported invoice with a line naming no dispatch or with no lines. Written only by import_history, never moved or removed; counts while the invoice is live.';
 
 -- ===== 2. the import =====
 CREATE FUNCTION public.import_history(p_masters jsonb, p_apply boolean DEFAULT false) RETURNS jsonb
@@ -666,7 +667,8 @@ BEGIN
             SELECT iv.id, iv.gr_id, iv.inv_fin_year, iv.inv_no, warehouse_security.business_date(iv.inv_date) AS inv_day
               FROM public.invoice iv
              WHERE iv.import_batch_id IS NOT NULL AND iv.deleted_at IS NULL AND iv.cancelled_at IS NULL
-               AND EXISTS (SELECT 1 FROM public.invoice_trl x WHERE x.invoice_id = iv.id AND x.disp_trl_id IS NULL))
+               AND (EXISTS (SELECT 1 FROM public.invoice_trl x WHERE x.invoice_id = iv.id AND x.disp_trl_id IS NULL)
+                    OR NOT EXISTS (SELECT 1 FROM public.invoice_trl x WHERE x.invoice_id = iv.id)))
           SELECT DISTINCT ON (dt.id) dt.id AS disp_trl_id, inv.id AS invoice_id, inv.gr_id
             FROM inv
             JOIN public.dispatch_trl dt ON dt.gr_id = inv.gr_id
@@ -696,10 +698,10 @@ BEGIN
     -- Notes that read the written rows (only when there is no error).
     IF v_errors = 0 THEN
       -- An imported dispatch line on no live invoice and not taken as billed whose GRN has a live imported invoice of the same day or later:
-      -- left only where every such invoice names its dispatches (or has no lines), since an invoice with a line naming no dispatch takes it
-      -- as billed (section 5). The app counts and bills it. Raised when this run adds the dispatch or such an invoice, so an earlier run's
-      -- dispatch is caught when its invoice comes now, and a run that adds nothing raises nothing. One note per dispatch line: on its
-      -- dispatch-lines.csv row when the line is in this run's file, else on the row of the first such invoice.
+      -- left only where every such invoice names a dispatch on each of its lines, since an invoice with a line naming no dispatch, or with
+      -- no lines, takes it as billed (section 5). The app counts and bills it. Raised when this run adds the dispatch or such an invoice,
+      -- so an earlier run's dispatch is caught when its invoice comes now, and a run that adds nothing raises nothing. One note per
+      -- dispatch line: on its dispatch-lines.csv row when the line is in this run's file, else on the row of the first such invoice.
       INSERT INTO imp_problems
       SELECT CASE WHEN f.line IS NOT NULL THEN 'dispatch-lines' ELSE 'invoices' END,
              COALESCE(f.line, c.inv_line), CASE WHEN f.line IS NOT NULL THEN 'Dispatch date' ELSE 'GRN number' END, 'note',
