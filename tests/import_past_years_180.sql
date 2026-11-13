@@ -421,5 +421,63 @@ SELECT pg_temp.ip_assert((SELECT total FROM public.invoice WHERE id = :'inv125':
   AND (SELECT amount FROM public.payments WHERE id = :'pay1'::uuid) = 3250.00
   AND (SELECT count(*) FROM public.dispatch_trl WHERE disp_id IN (:'disp1'::uuid, :'disp2'::uuid, :'disp4'::uuid)) = 3
   AND (SELECT qty FROM public.goodsreceived_trl WHERE id = :'lot2'::uuid) = 10, 'the imported documents are as imported');
+
+-- ===== 9. the note "a dispatch is on no invoice, but its GRN has an imported invoice of the same day or later" (migration 192) =====
+-- N1: an invoice of the SAME day as the dispatch, its lines naming no dispatch: noted. N2: the invoice's line names the dispatch: no note.
+-- N3: no imported invoice at all: no note. N4: dispatch imported now, its invoice comes in a later run.
+SELECT warehouse_security.business_date(now()) AS today_ip \gset
+TRUNCATE warehouse_import.stage_grns, warehouse_import.stage_grn_lines, warehouse_import.stage_dispatches, warehouse_import.stage_dispatch_lines,
+  warehouse_import.stage_invoices, warehouse_import.stage_invoice_lines, warehouse_import.stage_payments;
+INSERT INTO warehouse_import.stage_grns(line,gr_no,gr_date,customer,pricing) VALUES
+ (2,'A0901',:'today_ip'::date - 400,'Import Demo Traders','MONTHLY'), (3,'A0902',:'today_ip'::date - 400,'Import Demo Traders','MONTHLY'),
+ (4,'A0903',:'today_ip'::date - 400,'Import Demo Traders','MONTHLY'), (5,'A0904',:'today_ip'::date - 400,'Import Demo Traders','MONTHLY');
+INSERT INTO warehouse_import.stage_grn_lines(line,gr_no,gr_date,line_no,item,packaging,qty,weight,stock_now) VALUES
+ (2,'A0901',:'today_ip'::date - 400,1,'Import Demo Potato','Bag',20,50,15), (3,'A0902',:'today_ip'::date - 400,1,'Import Demo Potato','Bag',20,50,15),
+ (4,'A0903',:'today_ip'::date - 400,1,'Import Demo Potato','Bag',20,50,15), (5,'A0904',:'today_ip'::date - 400,1,'Import Demo Potato','Bag',20,50,15);
+INSERT INTO warehouse_import.stage_dispatches(line,disp_no,disp_date,customer) VALUES
+ (2,'I0901',:'today_ip'::date - 300,'Import Demo Traders'), (3,'I0902',:'today_ip'::date - 300,'Import Demo Traders'),
+ (4,'I0903',:'today_ip'::date - 300,'Import Demo Traders'), (5,'I0904',:'today_ip'::date - 200,'Import Demo Traders');
+INSERT INTO warehouse_import.stage_dispatch_lines(line,disp_no,disp_date,gr_no,gr_date,grn_line,qty) VALUES
+ (2,'I0901',:'today_ip'::date - 300,'A0901',:'today_ip'::date - 400,1,5), (3,'I0902',:'today_ip'::date - 300,'A0902',:'today_ip'::date - 400,1,5),
+ (4,'I0903',:'today_ip'::date - 300,'A0903',:'today_ip'::date - 400,1,5), (5,'I0904',:'today_ip'::date - 200,'A0904',:'today_ip'::date - 400,1,5);
+INSERT INTO warehouse_import.stage_invoices(line,inv_label,inv_no,inv_prefix,inv_date,customer,gr_no,gr_date,labour,tax,total) VALUES
+ (2,'GC/901',901,'GC/',:'today_ip'::date - 300,'Import Demo Traders','A0901',:'today_ip'::date - 400,10.00,0.00,110.00),
+ (3,'GC/902',902,'GC/',:'today_ip'::date - 300,'Import Demo Traders','A0902',:'today_ip'::date - 400,10.00,0.00,110.00);
+INSERT INTO warehouse_import.stage_invoice_lines(line,inv_label,inv_no,inv_date,item,packaging,qty,disp_no,disp_date,grn_line,rate,labour_rate,tax_pct,storage,labour,tax_amount) VALUES
+ (2,'GC/901',901,:'today_ip'::date - 300,'Import Demo Potato','Bag',5,NULL,NULL,NULL,20.00,2.00,0,100.00,10.00,0.00),
+ (3,'GC/902',902,:'today_ip'::date - 300,'Import Demo Potato','Bag',5,'I0902',:'today_ip'::date - 300,1,20.00,2.00,0,100.00,10.00,0.00);
+CREATE FUNCTION pg_temp.ip_notes(p_report jsonb) RETURNS text LANGUAGE sql AS $$
+  SELECT COALESCE(string_agg((p->>'file') || ':' || (p->>'line') || ':' || left(p->>'reason', 40), ' | ' ORDER BY p->>'file', (p->>'line')::int), '')
+    FROM jsonb_array_elements(p_report->'problems') p
+   WHERE p->>'kind' = 'note' AND p->>'reason' LIKE '%on no invoice, but its GRN has%' $$;
+SELECT pg_temp.ip_svc($q$SELECT public.import_history('{}'::jsonb, true)$q$) AS n_run1 \gset
+SELECT pg_temp.ip_assert(:'n_run1'::jsonb->>'success' = 'true', 'the run with the dispatches and invoices applies: ' || :'n_run1');
+-- (a) N1: the same-day invoice without dispatch names: one note, on the dispatch-lines row (line 2). (c) N2 (named) and (d) N3, N4 (no invoice): none.
+SELECT pg_temp.ip_assert(pg_temp.ip_notes(:'n_run1'::jsonb) LIKE 'dispatch-lines:2:%' AND pg_temp.ip_notes(:'n_run1'::jsonb) NOT LIKE '%|%',
+  '(a) exactly one note, for I0901, on dispatch-lines line 2: ' || pg_temp.ip_notes(:'n_run1'::jsonb));
+SELECT pg_temp.ip_assert(:'n_run1'::jsonb::text LIKE '%same day or later%', 'the note says same day or later');
+SELECT pg_temp.ip_assert((SELECT count(*) FROM public.invoice_trl it WHERE it.disp_trl_id IS NOT NULL
+  AND it.invoice_id = (SELECT id FROM public.invoice WHERE inv_no = 902 AND import_batch_id IS NOT NULL)) = 1, '(c) the line of GC/902 names its dispatch');
+-- (e) the same run again: all already there, no second note.
+SELECT pg_temp.ip_svc($q$SELECT public.import_history('{}'::jsonb, true)$q$) AS n_run1b \gset
+SELECT pg_temp.ip_assert(:'n_run1b'::jsonb->>'success' = 'true' AND (:'n_run1b'::jsonb#>>'{files,dispatches,add}')::int = 0 AND pg_temp.ip_notes(:'n_run1b'::jsonb) = '',
+  '(e) a repeat of the same run raises no note: ' || pg_temp.ip_notes(:'n_run1b'::jsonb));
+-- (b) a later run brings only the invoice of N4's dispatch (imported earlier, so not in this run's files): the note comes now, on the invoices row.
+TRUNCATE warehouse_import.stage_grns, warehouse_import.stage_grn_lines, warehouse_import.stage_dispatches, warehouse_import.stage_dispatch_lines,
+  warehouse_import.stage_invoices, warehouse_import.stage_invoice_lines, warehouse_import.stage_payments;
+INSERT INTO warehouse_import.stage_invoices(line,inv_label,inv_no,inv_prefix,inv_date,customer,gr_no,gr_date,labour,tax,total) VALUES
+ (2,'GC/904',904,'GC/',:'today_ip'::date - 150,'Import Demo Traders','A0904',:'today_ip'::date - 400,10.00,0.00,110.00);
+INSERT INTO warehouse_import.stage_invoice_lines(line,inv_label,inv_no,inv_date,item,packaging,qty,disp_no,disp_date,grn_line,rate,labour_rate,tax_pct,storage,labour,tax_amount) VALUES
+ (2,'GC/904',904,:'today_ip'::date - 150,'Import Demo Potato','Bag',5,NULL,NULL,NULL,20.00,2.00,0,100.00,10.00,0.00);
+SELECT pg_temp.ip_svc($q$SELECT public.import_history('{}'::jsonb, true)$q$) AS n_run2 \gset
+SELECT pg_temp.ip_assert(:'n_run2'::jsonb->>'success' = 'true', 'the later run applies: ' || :'n_run2');
+SELECT pg_temp.ip_assert(pg_temp.ip_notes(:'n_run2'::jsonb) LIKE 'invoices:2:%' AND pg_temp.ip_notes(:'n_run2'::jsonb) NOT LIKE '%|%',
+  '(b) the dispatch of an earlier run is noted once, on the invoices row: ' || pg_temp.ip_notes(:'n_run2'::jsonb));
+SELECT pg_temp.ip_assert(:'n_run2'::jsonb::text LIKE '%imported earlier%', 'the note says the dispatch was imported earlier');
+SELECT pg_temp.ip_svc($q$SELECT public.import_history('{}'::jsonb, true)$q$) AS n_run2b \gset
+SELECT pg_temp.ip_assert(pg_temp.ip_notes(:'n_run2b'::jsonb) = '', '(e) a repeat of the later run raises no second note: ' || pg_temp.ip_notes(:'n_run2b'::jsonb));
+-- Notes change nothing that is saved: the unnamed dispatches stay on no invoice.
+SELECT pg_temp.ip_assert((SELECT count(*) FROM public.invoice_trl it JOIN public.dispatch_trl dt ON dt.id = it.disp_trl_id JOIN public.dispatch d ON d.id = dt.disp_id WHERE d.disp_no IN ('I0901','I0904')) = 0,
+  'the noted dispatches are still on no invoice');
 ROLLBACK;
 \echo 'Import of past years: marks, read-only, read as issued, the import itself and rates on an imported GRN passed.'
