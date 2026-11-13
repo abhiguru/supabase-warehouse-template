@@ -5,8 +5,11 @@
 -- document of a pair (migration 173) to another financial year read the generic refusal and never INVOICE_PAIR_OTHER_YEAR ("This invoice
 -- has two documents, ... Delete both and make the invoice again."). The pair check now comes first; nothing else changes: the two checks
 -- are as they were, both run before anything is written, and an unpaired invoice is refused (WH422) exactly as before.
--- Written against update_invoice as migrations 182, 184 and 190 left it. Marker-count patch: the before-text (the two checks, in their old
--- order) is found once.
+-- WH-190 item 3: update_invoice's "number taken" check also compares the full number the invoice will have (prefix and number, the set
+-- unique_inv_label_per_year covers), so a number whose full number an imported invoice holds (app INV2 + 5, imported INV + 25) is refused
+-- as NUMBER_TAKEN rather than failing on the index; save_invoice_internal and apply_invoice_gst have the same in migration 198.
+-- Written against update_invoice as migrations 182, 184 and 190 left it. Marker-count patch: each before-text (the two checks in their old
+-- order; the number check's condition) is found once.
 --
 -- No role is created, altered or dropped. No table, column or grant changes (CREATE OR REPLACE keeps the function's owner and grants).
 
@@ -72,7 +75,9 @@ $m$    -- The financial year is the one of the invoice date (migration 120). It 
                                    'linked_invoice_id', v_pair_id, 'fin_year', v_stored_fin_year,
                                    'new_fin_year', COALESCE((p_invoice_data->>'inv_fin_year')::integer, v_new_fin_year)));
         END IF;
-    END IF;$m$
+    END IF;$m$,
+$m$          AND i.inv_no = (p_invoice_data->>'inv_no')::integer
+          AND i.id IS DISTINCT FROM p_invoice_id$m$
 ], ARRAY[
 $m$    -- Migration 182 (WH-174): the other, live document of a GST pair (migration 173; a cancelled partner is not a pair here), locked (lock 71040 is held, so this order is safe).
     -- A paired document's date may not leave its financial year; nothing is written before this.
@@ -113,7 +118,17 @@ $m$    -- Migration 182 (WH-174): the other, live document of a GST pair (migrat
             warehouse_security.financial_year(warehouse_security.business_date((p_invoice_data->>'inv_date')::TIMESTAMPTZ)),
             (p_invoice_data->>'inv_fin_year')::integer
             USING ERRCODE = 'WH422';
-    END IF;$m$
+    END IF;$m$,
+$m$          AND (i.inv_no = (p_invoice_data->>'inv_no')::integer
+               -- Migration 197 (WH-190): or the full number it will have (unique_inv_label_per_year): the new year's prefix when the
+               -- edit moves it to another financial year, else its own. An imported INV + 25 holds INV25, so INV2 + 5 is taken.
+               OR (i.inv_prefix::text || i.inv_no::text)
+                  = warehouse_security.invoice_label(
+                      CASE WHEN (p_invoice_data->>'inv_fin_year')::integer IS DISTINCT FROM v_stored_fin_year
+                           THEN warehouse_security.invoice_prefix_for_year((p_invoice_data->>'inv_fin_year')::integer)
+                           ELSE (SELECT x.inv_prefix FROM invoice x WHERE x.id = p_invoice_id) END,
+                      (p_invoice_data->>'inv_no')::bigint))
+          AND i.id IS DISTINCT FROM p_invoice_id$m$
 ]);
 
 DROP FUNCTION pg_temp.patch_function(regprocedure, text[], text[]);
