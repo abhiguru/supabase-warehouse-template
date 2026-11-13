@@ -83,6 +83,8 @@ SELECT pg_temp.ip_as(:'admin_claims'::jsonb, format($q$SELECT public.replace_ite
 SELECT pg_temp.ip_assert(:'rates'::jsonb->>'success'='true','general rates: '||:'rates');
 SELECT pg_temp.ip_as(:'admin_claims'::jsonb, $q$SELECT public.set_record_payments(true)$q$) AS pay_on \gset
 SELECT pg_temp.ip_assert(:'pay_on'::jsonb->>'success'='true','record payments on');
+-- The facility's charging rule as a fresh install has it, Invoice as goods leave on (earlier suites of the shared test database may leave another).
+UPDATE warehouse_security.charging_rule SET step_days = 15, minimum_days = 30, days_counted = 'legacy', rounding = 'up', invoice_as_goods_leave = true WHERE id;
 
 -- ===== the files, staged =====
 INSERT INTO warehouse_import.stage_grns(line,gr_no,gr_date,customer,pricing) VALUES

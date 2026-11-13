@@ -137,6 +137,7 @@ SELECT warehouse_security.bootstrap_first_admin('9888888931','Dues Form Administ
 SELECT pg_temp.wc_login('9888888931') AS admin_claims \gset
 SELECT id AS admin_profile FROM public.user_profiles WHERE mobile = '919888888931' \gset
 SELECT warehouse_security.business_date(now()) AS today \gset
+UPDATE warehouse_security.charging_rule SET days_counted = 'legacy', invoice_as_goods_leave = true WHERE id;
 INSERT INTO public.customers(name,mobile) VALUES ('Dues Form Alpha','9888888932') RETURNING id AS c1 \gset
 INSERT INTO public.customers(name,mobile,gst) VALUES ('Dues Form Beta','9888888933','24AAACC1206D1ZM') RETURNING id AS c2 \gset
 INSERT INTO public.customers(name,mobile) VALUES ('Dues Form Gamma','9888888934') RETURNING id AS c3 \gset
