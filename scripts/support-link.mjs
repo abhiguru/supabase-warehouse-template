@@ -37,7 +37,7 @@ const LOG_MAX_AGE_MS = 365 * 24 * 60 * 60 * 1000;
 export const ATTENTION_KINDS = new Set(['backup_missing', 'backup_failed', 'offhost_copy_missing', 'disk_root_low', 'disk_low', 'disk_vhdx_drive_low',
   'postgres_down', 'service_down', 'api_down', 'public_https_down', 'upgrade_interrupted']);
 // During a planned stop (the nightly backup, an upgrade, another operator command) the services are stopped on purpose.
-export const PLANNED_STOP_KINDS = new Set(['service_down', 'api_down', 'public_https_down', 'check_error']);
+export const PLANNED_STOP_KINDS = new Set(['service_down', 'api_down', 'rest_down', 'public_https_down', 'check_error']);
 export const STATES = ['ok', 'attention', 'planned_stop', 'switched_off'];
 
 // The kind of an alert id: what stands before the first ':' and only when it looks like a kind (never a name, a path or a value).
