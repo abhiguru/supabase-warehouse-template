@@ -39,8 +39,9 @@
 -- earlier import saved under the same key.
 -- Notes (saved as issued, listed): a dispatch dated before its GRN; an invoice dated before its last named dispatch; a payment dated before its
 -- invoice; payments above what is left on an invoice; lines + tax - discount that differ from the invoice's Total; invoices.csv while Record
--- payments is off; and, once there is no error, a dispatch on no invoice that is older than a later imported invoice of its GRN, a lot with
--- goods to bill and no rate, and an invoiced GRN with dispatches on no invoice while Invoice as goods leave is off.
+-- payments is off; and, once there is no error, an imported dispatch line on no invoice whose GRN has an imported invoice of the same day or
+-- later (when this run adds the dispatch or such an invoice; a dispatch of an earlier run that is not in dispatch-lines.csv is listed on the
+-- invoice's row), a lot with goods to bill and no rate, and an invoiced GRN with dispatches on no invoice while Invoice as goods leave is off.
 -- Report: {"success", "applied", "dry_run", "batch_id", "masters": import_batch's report or null,
 --   "files": {name: {read, add, skip, errors, notes}}, "problems": the first 200 per file [{kind, file, line, column, reason}],
 --   "problem_counts": {name: n}, "totals": the sign-off totals or null while there is an error}.
@@ -639,16 +640,36 @@ BEGIN
 
     -- Notes that read the written rows (only when there is no error).
     IF v_errors = 0 THEN
+      -- An imported dispatch line on no live invoice whose GRN has a live imported invoice of the same day or later (the old system may have
+      -- billed it without naming the dispatch): the app counts and bills it again. Raised when this run adds the dispatch or such an
+      -- invoice, so an earlier run's dispatch is caught when its invoice comes now, and a run that adds nothing raises nothing. One note per
+      -- dispatch line: on its dispatch-lines.csv row when the line is in this run's file, else on the row of the first such invoice.
       INSERT INTO imp_problems
-      SELECT 'dispatch-lines', l.line, 'Dispatch date', 'note',
-             format('dispatch %s of %s is on no invoice, but its GRN has a later imported invoice; the app bills it at today''s rates', l.disp_no,
-                    to_char(l.disp_date, 'DD/MM/YYYY'))
-        FROM imp_disp_line l
-       WHERE l.disp_status = 'add'
-         AND NOT EXISTS (SELECT 1 FROM public.invoice_trl it JOIN public.invoice iv ON iv.id = it.invoice_id
-                          WHERE it.disp_trl_id = l.new_id AND iv.deleted_at IS NULL AND iv.cancelled_at IS NULL)
-         AND EXISTS (SELECT 1 FROM public.invoice iv WHERE iv.gr_id = l.gr_id AND iv.import_batch_id IS NOT NULL AND iv.deleted_at IS NULL
-                        AND iv.cancelled_at IS NULL AND warehouse_security.business_date(iv.inv_date) > l.disp_date)
+      SELECT CASE WHEN f.line IS NOT NULL THEN 'dispatch-lines' ELSE 'invoices' END,
+             COALESCE(f.line, c.inv_line), CASE WHEN f.line IS NOT NULL THEN 'Dispatch date' ELSE 'GRN number' END, 'note',
+             CASE WHEN f.line IS NOT NULL
+               THEN format('dispatch %s of %s is on no invoice, but its GRN has an imported invoice of the same day or later; the app bills it '
+                           'at today''s rates', c.disp_no, to_char(c.disp_day, 'DD/MM/YYYY'))
+               ELSE format('dispatch %s of %s (imported earlier, not in dispatch-lines.csv) is on no invoice, but its GRN has this imported '
+                           'invoice of the same day or later; the app bills it at today''s rates', c.disp_no, to_char(c.disp_day, 'DD/MM/YYYY'))
+             END
+        FROM (SELECT dt.id AS dt_id, dt.gr_trl_id, dp.disp_no, warehouse_security.business_date(dp.disp_date) AS disp_day, d.doc_key AS disp_key,
+                     dp.import_batch_id = v_batch AS disp_new,
+                     (SELECT min(i.line) FROM imp_inv i JOIN public.invoice iv ON iv.id = i.new_id
+                       WHERE i.nth = 1 AND i.status = 'add' AND iv.gr_id = dt.gr_id AND iv.deleted_at IS NULL AND iv.cancelled_at IS NULL
+                         AND warehouse_security.business_date(iv.inv_date) >= warehouse_security.business_date(dp.disp_date)) AS inv_line
+                FROM public.dispatch_trl dt
+                JOIN public.dispatch dp ON dp.id = dt.disp_id AND dp.import_batch_id IS NOT NULL AND dp.deleted_at IS NULL
+                JOIN warehouse_security.imported_documents d ON d.kind = 'dispatch' AND d.doc_id = dp.id
+               WHERE dt.gr_id IN (SELECT l.gr_id FROM imp_disp_line l WHERE l.disp_status = 'add'
+                                  UNION SELECT m.gr_id FROM imp_inv i JOIN imp_grn_map m ON m.doc_key = i.grn_key WHERE i.nth = 1 AND i.status = 'add')
+                 AND NOT EXISTS (SELECT 1 FROM public.invoice_trl it JOIN public.invoice iv ON iv.id = it.invoice_id
+                                  WHERE it.disp_trl_id = dt.id AND iv.deleted_at IS NULL AND iv.cancelled_at IS NULL)
+                 AND EXISTS (SELECT 1 FROM public.invoice iv WHERE iv.gr_id = dt.gr_id AND iv.import_batch_id IS NOT NULL AND iv.deleted_at IS NULL
+                                AND iv.cancelled_at IS NULL
+                                AND warehouse_security.business_date(iv.inv_date) >= warehouse_security.business_date(dp.disp_date))) c
+        LEFT JOIN LATERAL (SELECT min(l.line) AS line FROM imp_disp_line l WHERE l.disp_key = c.disp_key AND l.trl_id = c.gr_trl_id) f ON true
+       WHERE c.disp_new OR c.inv_line IS NOT NULL
       UNION ALL
       SELECT 'grn-lines', l.line, 'Item name', 'note',
              'no rate for this lot from its GRN date: Customer dues can''t price its goods left to bill, and an app invoice needs one (set a rate in the app)'
