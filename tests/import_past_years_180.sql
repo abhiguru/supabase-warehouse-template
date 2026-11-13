@@ -593,6 +593,48 @@ SELECT pg_temp.ip_assert(:'nl_form'::jsonb::text LIKE '%' || :'d907_line' || '%'
 SELECT pg_temp.ip_svc($q$SELECT public.import_history('{}'::jsonb, true)$q$) AS nl_again \gset
 SELECT pg_temp.ip_assert((SELECT count(*) FROM public.imported_billed_dispatches) = 3 AND pg_temp.ip_notes(:'nl_again'::jsonb) = '', 'a repeat adds no link');
 
+
+-- A MIXED invoice (ec5da72): one line names a dispatch, another (a loading line) names none: it takes nothing as billed.
+-- GRN A0907: I0913 (earlier, unnamed) and I0912 (named by GC/906's first line); GC/906's second line has no dispatch.
+TRUNCATE warehouse_import.stage_grns, warehouse_import.stage_grn_lines, warehouse_import.stage_dispatches, warehouse_import.stage_dispatch_lines,
+  warehouse_import.stage_invoices, warehouse_import.stage_invoice_lines, warehouse_import.stage_payments;
+INSERT INTO warehouse_import.stage_grns(line,gr_no,gr_date,customer,pricing) VALUES (2,'A0907',:'today_ip'::date - 400,'Import Demo Traders','MONTHLY');
+INSERT INTO warehouse_import.stage_grn_lines(line,gr_no,gr_date,line_no,item,packaging,qty,weight,stock_now) VALUES (2,'A0907',:'today_ip'::date - 400,1,'Import Demo Potato','Bag',20,50,10);
+INSERT INTO warehouse_import.stage_dispatches(line,disp_no,disp_date,customer) VALUES
+ (2,'I0913',:'today_ip'::date - 260,'Import Demo Traders'), (3,'I0912',:'today_ip'::date - 250,'Import Demo Traders');
+INSERT INTO warehouse_import.stage_dispatch_lines(line,disp_no,disp_date,gr_no,gr_date,grn_line,qty) VALUES
+ (2,'I0913',:'today_ip'::date - 260,'A0907',:'today_ip'::date - 400,1,5), (3,'I0912',:'today_ip'::date - 250,'A0907',:'today_ip'::date - 400,1,5);
+INSERT INTO warehouse_import.stage_invoices(line,inv_label,inv_no,inv_prefix,inv_date,customer,gr_no,gr_date,labour,tax,total) VALUES
+ (2,'GC/906',906,'GC/',:'today_ip'::date - 240,'Import Demo Traders','A0907',:'today_ip'::date - 400,10.00,0.00,120.00);
+INSERT INTO warehouse_import.stage_invoice_lines(line,inv_label,inv_no,inv_date,item,packaging,qty,disp_no,disp_date,grn_line,rate,labour_rate,tax_pct,storage,labour,tax_amount) VALUES
+ (2,'GC/906',906,:'today_ip'::date - 240,'Import Demo Potato','Bag',5,'I0912',:'today_ip'::date - 250,1,20.00,2.00,0,100.00,10.00,0.00),
+ (3,'GC/906',906,:'today_ip'::date - 240,'Import Demo Potato','Bag',1,NULL,NULL,NULL,10.00,0.00,0,10.00,0.00,0.00);
+SELECT pg_temp.ip_svc($q$SELECT public.import_history('{}'::jsonb, true)$q$) AS mx_run \gset
+SELECT pg_temp.ip_assert(:'mx_run'::jsonb->>'success' = 'true', 'the run with a mixed invoice applies: ' || left(:'mx_run', 600));
+SELECT pg_temp.ip_assert((SELECT count(*) FROM public.imported_billed_dispatches) = 3 AND pg_temp.ip_taken(:'mx_run'::jsonb) NOT LIKE '%I0913%' AND pg_temp.ip_taken(:'mx_run'::jsonb) NOT LIKE '%I0912%'
+  AND NOT EXISTS (SELECT 1 FROM public.imported_billed_dispatches b JOIN public.dispatch_trl dt ON dt.id = b.disp_trl_id JOIN public.dispatch d ON d.id = dt.disp_id WHERE d.disp_no IN ('I0913','I0912')),
+  'a mixed invoice takes nothing as billed: ' || pg_temp.ip_taken(:'mx_run'::jsonb));
+-- I0913 gets the "on no invoice" note, on its dispatch-lines row (line 2), and joins the never-billed list.
+SELECT pg_temp.ip_assert(pg_temp.ip_notes(:'mx_run'::jsonb) LIKE 'dispatch-lines:2:%' AND pg_temp.ip_notes(:'mx_run'::jsonb) NOT LIKE '%|%', 'I0913 is noted once: ' || pg_temp.ip_notes(:'mx_run'::jsonb));
+SELECT pg_temp.ip_assert((SELECT (c->>'dispatches')::int FROM jsonb_array_elements(:'mx_run'::jsonb#>'{totals,uninvoiced_dispatches}') c WHERE c->>'customer' = 'Import Demo Traders')
+  = 1 + (SELECT (c->>'dispatches')::int FROM jsonb_array_elements(:'nl_again'::jsonb#>'{totals,uninvoiced_dispatches}') c WHERE c->>'customer' = 'Import Demo Traders'),
+  'I0913 is in the never-billed list: ' || (:'mx_run'::jsonb#>>'{totals,uninvoiced_dispatches}'));
+-- It counts in Customer dues, is offered by the invoice form, and an app invoice can claim it; I0912 shows its naming invoice.
+SELECT id AS g907 FROM public.goodsreceived WHERE gr_no = 'A0907' \gset
+SELECT t.id AS d913_line FROM public.dispatch_trl t JOIN public.dispatch d ON d.id = t.disp_id WHERE d.disp_no = 'I0913' \gset
+SELECT t.id AS d912_line FROM public.dispatch_trl t JOIN public.dispatch d ON d.id = t.disp_id WHERE d.disp_no = 'I0912' \gset
+SELECT n.left_bags AS mx_left FROM warehouse_security.not_invoiced_grns(:'trader'::uuid, :'today_ip'::date) n WHERE n.gr_id = :'g907'::uuid \gset
+SELECT pg_temp.ip_assert(:'mx_left'::int = 5, 'dues counts I0913 (5 bags) and not I0912: ' || :'mx_left');
+SELECT set_config('request.jwt.claims', '{"role":"service_role"}', true) AS mx_claims \gset
+SELECT public.build_invoice_form_lines(:'g907'::uuid, NULL) AS mx_form \gset
+SELECT pg_temp.ip_assert(:'mx_form'::jsonb::text LIKE '%' || :'d913_line' || '%', 'the form offers I0913: ' || left(:'mx_form', 400));
+SELECT pg_temp.ip_as(:'admin_claims'::jsonb, format($q$SELECT pg_temp.ip_save_invoice(jsonb_build_object('inv_fin_year', %s, 'gr_id', %L, 'gr_no', 'A0907', 'customer_id', %L,
+  'customer_name', 'Import Demo Traders', 'inv_date', now(), 'total', 0, 'tax_amount', 0, 'discount', 0, 'duration_mode', 'legacy', 'inv_no', 4,
+  'items', jsonb_build_array(jsonb_build_object('disp_trl_id', %L, 'charge', 7, 'tax', 0, 'labour_rate', 1))))$q$, :'cur_fy', :'g907', :'trader', :'d913_line')) AS mx_claim \gset
+SELECT pg_temp.ip_assert(:'mx_claim'::jsonb->>'success' = 'true', 'an app invoice can claim I0913: ' || :'mx_claim');
+SELECT id AS inv906 FROM public.invoice WHERE inv_no = 906 AND import_batch_id IS NOT NULL \gset
+SELECT pg_temp.ip_as(:'admin_claims'::jsonb, format($q$SELECT public.get_dispatch_details(%L::uuid)$q$, (SELECT id FROM public.dispatch WHERE disp_no = 'I0912'))) AS mx_named \gset
+SELECT pg_temp.ip_assert((:'mx_named'::jsonb#>>'{data,dispatch,items,0,invoice_details,invoice_id}') = :'inv906', 'I0912 shows its naming invoice GC/906: ' || left(:'mx_named', 500));
 -- ===== 10. WH-191: get_dispatch_details names the invoice a dispatch line is taken as billed by (migration 196) =====
 SELECT id AS dd901 FROM public.dispatch WHERE disp_no = 'I0901' \gset
 SELECT id AS dd911 FROM public.dispatch WHERE disp_no = 'I0911' \gset
