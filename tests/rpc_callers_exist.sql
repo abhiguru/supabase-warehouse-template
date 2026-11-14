@@ -50,7 +50,9 @@ FROM unnest(ARRAY[
   -- invoice PDF and the statement PDF read their figures with the caller's token (get_invoice_detail, get_customer_statement).
   'lan_signing_key','redeem_pairing_code','get_invoice_detail','get_customer_statement',
   -- WH-157: the temperature report PDF reads its figures with the caller's token.
-  'get_temperature_report']) AS n
+  'get_temperature_report',
+  -- WH-158: the accountant pack reads its vouchers with the caller's token.
+  'get_accountant_pack']) AS n
 WHERE NOT EXISTS (SELECT 1 FROM pg_proc p WHERE p.pronamespace = 'public'::regnamespace AND p.proname = n
   AND has_function_privilege('service_role', p.oid, 'EXECUTE'));
 -- The numbering RPCs (migration 127): the app calls them from the build that has the Document numbers screen, with these parameter names, and
