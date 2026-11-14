@@ -11,6 +11,8 @@
 -- A plain CREATE OR REPLACE (the function is small): owner, grants, language, volatility and search_path are unchanged and kept.
 -- The report/ alternative is byte for byte as before (tests/report-pdf.test.mjs reads it from the last definition).
 
+-- The body reads storage.objects, which the storage service creates after the migrations run: as in migration 130, it is not checked at creation.
+SET LOCAL check_function_bodies = false;
 CREATE OR REPLACE FUNCTION warehouse_maintenance.expired_generated_documents(p_now timestamp with time zone DEFAULT now()) RETURNS SETOF text
     LANGUAGE sql STABLE
     SET search_path TO 'pg_catalog', 'public', 'warehouse_maintenance'
@@ -22,3 +24,4 @@ CREATE OR REPLACE FUNCTION warehouse_maintenance.expired_generated_documents(p_n
       OR o.name ~ '^report/(grn-activity|dispatch-activity|invoice-history|stock-summary|stock-aging|item-stock-summary|customer-activity)/([0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}|all)/[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}\.pdf$')
   ORDER BY o.created_at, o.name
 $$;
+RESET check_function_bodies;
