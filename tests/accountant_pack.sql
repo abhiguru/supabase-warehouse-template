@@ -249,6 +249,9 @@ SELECT pg_temp.pk_assert(:'r_control'::jsonb->>'success'='false', 'a control cha
 SELECT pg_temp.pk_as(:'admin_claims'::jsonb, format($q$SELECT public.set_accountant_ledgers(%L::jsonb || jsonb_build_object('labour', repeat('y', 60)))$q$, :'defaults_json')) AS r_sixty \gset
 SELECT pg_temp.pk_assert(:'r_sixty'::jsonb->>'success'='true', '60 characters pass: '||:'r_sixty');
 SELECT pg_temp.pk_assert((SELECT count(*) FROM public.audit_log WHERE table_name = 'accountant_export') = 1, 'refusals wrote no audit row, the one save wrote one');
+-- [reading] the first save of names (here: the defaults with one 60-character name) writes one audit row: old = the defaults the screen showed, new = the saved names.
+SELECT pg_temp.pk_assert((SELECT old_data = (:'led0'::jsonb#>'{data,defaults}') AND new_data->>'labour' = repeat('y', 60) AND action = 'UPDATED'
+    FROM public.audit_log WHERE table_name = 'accountant_export'), '[reading] the first save writes old = defaults, new = the saved names');
 -- A save: names trimmed, one audit row, the same values again write nothing.
 SELECT pg_temp.pk_as(:'admin_claims'::jsonb, format($q$SELECT public.set_accountant_ledgers(%L::jsonb || '{"labour":"  Labour X  ","storage_taxable":"Rent X","cgst":"CGST X","sgst":"SGST X","igst":"IGST X","round_off":"Round X","discount":"Disc X","storage_exempt":"Rent Exempt X","receipt_cash":"Cash X","receipt_upi":"UPI X","receipt_bank_transfer":"Bank X","receipt_cheque":"Cheque X","receipt_other":"Other X"}'::jsonb)$q$, :'defaults_json')) AS r_save \gset
 SELECT pg_temp.pk_assert(:'r_save'::jsonb->>'success'='true' AND (:'r_save'::jsonb#>>'{data,changed}')='true' AND (:'r_save'::jsonb#>>'{data,saved}')='true'
@@ -392,6 +395,9 @@ SELECT pg_temp.pk_assert((:'pack_a'::jsonb#>'{data,missing_numbers}') @> '["SRT/
 SELECT pg_temp.pk_assert((SELECT (i->>'count')::int = 7 AND (i->>'cancelled')::int = 1 FROM jsonb_array_elements(:'pack_a'::jsonb#>'{data,issued}') i WHERE i->>'doc_type'='tax_invoice')
   AND (SELECT (i->>'count')::int = 1 AND (i->>'cancelled')::int = 0 FROM jsonb_array_elements(:'pack_a'::jsonb#>'{data,issued}') i WHERE i->>'doc_type'='bill_of_supply')
   AND (SELECT (i->>'count')::int = 1 FROM jsonb_array_elements(:'pack_a'::jsonb#>'{data,issued}') i WHERE i->>'doc_type'='invoice'), '[crit 4] issued: 7 tax invoices (1 cancelled), 1 bill of supply, 1 before-GST invoice');
+-- [reading] first and last issued numbers go by prefix, then number: GC/125 (imported, prefix GC) comes before SRT/12, and SRT/20 is last.
+SELECT pg_temp.pk_assert((SELECT i->>'first_number' = 'GC/125' AND i->>'last_number' = 'SRT/20' FROM jsonb_array_elements(:'pack_a'::jsonb#>'{data,issued}') i WHERE i->>'doc_type'='tax_invoice'),
+  '[reading] issued first and last by prefix then number: '||(:'pack_a'::jsonb#>>'{data,issued}'));
 
 -- [crit 5] cash of 2,00,000 or more.
 SELECT pg_temp.pk_assert((pg_temp.pk_pay_of(:'pack_a'::jsonb,'APP-42')->>'cash_large')='true' AND (pg_temp.pk_pay_of(:'pack_a'::jsonb,'APP-43')->>'cash_large')='false'
