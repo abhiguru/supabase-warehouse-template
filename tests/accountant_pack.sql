@@ -157,7 +157,7 @@ SELECT pg_temp.pk_disp('PKD2','2026-05-10',:'g1'::uuid,:'cust_n'::uuid,'Pack Dem
 SELECT pg_temp.pk_disp('PKD3','2026-05-20',:'g2'::uuid,:'cust_m'::uuid,'Pack Demo Other State',20) AS dq3 \gset
 SELECT pg_temp.pk_disp('PKD4','2026-05-22',:'g3'::uuid,:'cust_n'::uuid,'Pack Demo Traders',10) AS dq4 \gset
 SELECT pg_temp.pk_disp('PKD5','2026-05-22',:'g3'::uuid,:'cust_n'::uuid,'Pack Demo Traders',8) AS dq5 \gset
-SELECT pg_temp.pk_disp('PKD6','2026-05-25',:'g4'::uuid,:'cust_u'::uuid,'Pack Demo Walkin',12) AS dq6 \gset
+SELECT pg_temp.pk_disp('PKD6','2026-05-25',:'g4'::uuid,:'cust_u'::uuid,'Pack Demo Walkin',1) AS dq6 \gset
 SELECT pg_temp.pk_disp('PKD7','2026-05-12',:'g1'::uuid,:'cust_n'::uuid,'Pack Demo Traders',5) AS dq7 \gset
 SELECT pg_temp.pk_disp('PKD8','2026-05-12',:'g1'::uuid,:'cust_n'::uuid,'Pack Demo Traders',3) AS dq8 \gset
 SELECT pg_temp.pk_disp('PKD9','2026-05-20',:'g1'::uuid,:'cust_n'::uuid,'Pack Demo Traders',1) AS dq9 \gset
@@ -199,23 +199,23 @@ INSERT INTO public.payments(payment_no,payment_date,paid_on,customer_id,invoice_
  ('APP-41','2026-05-20T12:00:00+05:30','2026-05-20',:'cust_n'::uuid,:'inv_d1'::uuid,229.00,'upi'),
  ('APP-42','2026-05-21T12:00:00+05:30','2026-05-21',:'cust_n'::uuid,:'inv_d1'::uuid,200000.00,'cash'),
  ('APP-43','2026-05-21T12:00:00+05:30','2026-05-21',:'cust_n'::uuid,:'inv_d1'::uuid,199999.00,'cash');
-INSERT INTO public.payments(payment_no,payment_date,customer_id,invoice_id,amount,payment_mode,bank,cheque_no) VALUES
- ('OLD-7','2026-05-22T20:00:00Z',:'cust_n'::uuid,:'inv_d1'::uuid,500.00,'cheque','Demo Bank','CHQ123');
+INSERT INTO public.payments(payment_no,payment_date,customer_id,invoice_id,amount,payment_mode,cheque_no) VALUES
+ ('OLD-7','2026-05-22T20:00:00Z',:'cust_n'::uuid,:'inv_d1'::uuid,500.00,'cheque','CHQ123');
 INSERT INTO public.payments(payment_no,payment_date,customer_id,invoice_id,amount,payment_mode) VALUES
  ('OLD-8','2026-05-31T19:00:00Z',:'cust_n'::uuid,:'inv_d1'::uuid,10.00,'cash');
-INSERT INTO public.payments(payment_no,payment_date,paid_on,customer_id,customer_name,amount,payment_mode) VALUES
- ('APP-44','2026-05-24T12:00:00+05:30','2026-05-24',:'cust_n'::uuid,'Pack Demo Traders',40.00,'bank_transfer');
+INSERT INTO public.payments(payment_no,payment_date,customer_id,customer_name,amount,payment_mode) VALUES
+ ('APP-44','2026-05-24T12:00:00+05:30',:'cust_n'::uuid,'Pack Demo Traders',40.00,'bank_transfer');
 INSERT INTO public.payments(payment_no,payment_date,paid_on,customer_id,invoice_id,amount,payment_mode,online_ref) VALUES
  ('APP-45','2026-05-24T12:00:00+05:30','2026-05-24',:'cust_n'::uuid,:'inv_d1'::uuid,60.00,'upi','UTR9');
-INSERT INTO public.payments(payment_no,payment_date,paid_on,customer_name,amount,payment_mode) VALUES
- ('APP-46','2026-05-25T12:00:00+05:30','2026-05-25','Walk-in Payer',15.00,'cash');
+INSERT INTO public.payments(payment_no,payment_date,customer_name,amount,payment_mode) VALUES
+ ('APP-46','2026-05-25T12:00:00+05:30','Walk-in Payer',15.00,'cash');
 SELECT set_config('session_replication_role','replica',true) AS x \gset
 INSERT INTO public.payments(payment_no,payment_date,paid_on,customer_id,invoice_id,amount,payment_mode,import_batch_id) VALUES
  ('IMP-R1','2026-05-26T12:00:00+05:30','2026-05-26',:'cust_n'::uuid,:'inv_d6'::uuid,100.00,'cash',:'batch'::uuid);
 SELECT set_config('session_replication_role','origin',true) AS x \gset
 SELECT warehouse_security.business_date(now()) AS today \gset
 SELECT make_date(CASE WHEN extract(month FROM :'today'::date) >= 4 THEN extract(year FROM :'today'::date)::int ELSE extract(year FROM :'today'::date)::int - 1 END, 4, 1) AS fy_start \gset
-INSERT INTO public.payments(payment_no,payment_date,paid_on,customer_id,amount,payment_mode) VALUES ('APP-99',now(),:'today'::date,:'cust_n'::uuid,5.00,'cash');
+INSERT INTO public.payments(payment_no,payment_date,customer_id,amount,payment_mode) VALUES ('APP-99',now(),:'cust_n'::uuid,5.00,'cash');
 
 -- The cancelled document SRT/16 (cancelled on 2026-05-18), by the real function.
 SELECT pg_temp.pk_as(:'admin_claims'::jsonb, format($q$SELECT public.cancel_invoice(%L::uuid,'Entered twice',NULL)$q$, :'inv_d7')) AS c7 \gset
@@ -399,10 +399,10 @@ SELECT pg_temp.pk_assert((pg_temp.pk_pay_of(:'pack_a'::jsonb,'APP-42')->>'cash_l
   AND (pg_temp.pk_pay_of(:'pack_a'::jsonb,'APP-46')->>'cash_large')='false', '[crit 5] cash 200000.00 is flagged, 199999.00 and 15.00 and a UPI payment are not');
 -- Payments: the day (paid_on, else the India date of payment_date), bank and reference, the customer, imported, the invoice number.
 SELECT pg_temp.pk_assert(pg_temp.pk_pay_of(:'pack_a'::jsonb,'OLD-7')->>'paid_on' = '2026-05-23' AND pg_temp.pk_pay_of(:'pack_a'::jsonb,'OLD-8') IS NULL
-  AND pg_temp.pk_pay_of(:'pack_a'::jsonb,'OLD-7')->>'bank' = 'Demo Bank' AND pg_temp.pk_pay_of(:'pack_a'::jsonb,'OLD-7')->>'reference' = 'CHQ123' AND pg_temp.pk_pay_of(:'pack_a'::jsonb,'OLD-7')->>'mode' = 'cheque'
+  AND pg_temp.pk_pay_of(:'pack_a'::jsonb,'OLD-7')->>'bank' IS NULL AND pg_temp.pk_pay_of(:'pack_a'::jsonb,'OLD-7')->>'reference' = 'CHQ123' AND pg_temp.pk_pay_of(:'pack_a'::jsonb,'OLD-7')->>'mode' = 'cheque'
   AND pg_temp.pk_pay_of(:'pack_a'::jsonb,'APP-45')->>'reference' = 'UTR9' AND pg_temp.pk_pay_of(:'pack_a'::jsonb,'APP-41')->>'invoice_number' = 'SRT/12'
   AND pg_temp.pk_pay_of(:'pack_a'::jsonb,'APP-41')->>'paid_on' = '2026-05-20' AND pg_temp.pk_pay_of(:'pack_a'::jsonb,'APP-41')->>'bank' IS NULL AND pg_temp.pk_pay_of(:'pack_a'::jsonb,'APP-41')->>'reference' IS NULL,
-  'payment day: older row dated by the India date of payment_date (2026-05-23; the one at 2026-06-01 India time is not in May); bank and reference for older rows, empty for app rows');
+  'payment day: older row dated by the India date of payment_date (2026-05-23; the one at 2026-06-01 India time is not in May); reference for older rows; bank is empty everywhere (payments.bank was dropped in migration 123)');
 SELECT pg_temp.pk_assert(pg_temp.pk_pay_of(:'pack_a'::jsonb,'APP-44')->>'invoice_id' IS NULL AND pg_temp.pk_pay_of(:'pack_a'::jsonb,'APP-44')->>'customer_id' = :'cust_n'
   AND pg_temp.pk_pay_of(:'pack_a'::jsonb,'APP-44')->>'customer_name' = 'Pack Demo Traders' AND pg_temp.pk_pay_of(:'pack_a'::jsonb,'APP-46')->>'customer_id' IS NULL
   AND pg_temp.pk_pay_of(:'pack_a'::jsonb,'APP-46')->>'customer_name' = 'Walk-in Payer' AND (pg_temp.pk_pay_of(:'pack_a'::jsonb,'IMP-R1')->>'imported')='true'
@@ -418,8 +418,8 @@ SELECT pg_temp.pk_assert((SELECT (s->>'start_bags')::int = 100 AND (s->>'receive
     FROM jsonb_array_elements(:'pack_a'::jsonb#>'{data,stock}') s WHERE s->>'gr_no' = 'PKG1')
   AND (SELECT (s->>'start_bags')::int = 0 AND (s->>'received_bags')::int = 40 AND (s->>'sent_bags')::int = 20 AND (s->>'end_bags')::int = 20 FROM jsonb_array_elements(:'pack_a'::jsonb#>'{data,stock}') s WHERE s->>'gr_no' = 'PKG2')
   AND (SELECT (s->>'start_bags')::int = 0 AND (s->>'received_bags')::int = 50 AND (s->>'sent_bags')::int = 18 AND (s->>'end_bags')::int = 32 FROM jsonb_array_elements(:'pack_a'::jsonb#>'{data,stock}') s WHERE s->>'gr_no' = 'PKG3')
-  AND (SELECT (s->>'start_bags')::int = 0 AND (s->>'received_bags')::int = 12 AND (s->>'sent_bags')::int = 12 AND (s->>'end_bags')::int = 0 FROM jsonb_array_elements(:'pack_a'::jsonb#>'{data,stock}') s WHERE s->>'gr_no' = 'PKG4'),
-  '[crit 6] PKG1 100/0/40/60 (20 bags left before May), PKG2 0/40/20/20, PKG3 0/50/18/32, PKG4 0/12/12/0');
+  AND (SELECT (s->>'start_bags')::int = 0 AND (s->>'received_bags')::int = 12 AND (s->>'sent_bags')::int = 1 AND (s->>'end_bags')::int = 11 FROM jsonb_array_elements(:'pack_a'::jsonb#>'{data,stock}') s WHERE s->>'gr_no' = 'PKG4'),
+  '[crit 6] PKG1 100/0/40/60 (20 bags left before May), PKG2 0/40/20/20, PKG3 0/50/18/32, PKG4 0/12/1/11 (SRT/18 is one bag at 100.00 a bag)');
 SELECT pg_temp.pk_assert((SELECT array_agg(s->>'gr_no' ORDER BY ord) FROM jsonb_array_elements(:'pack_a'::jsonb#>'{data,stock}') WITH ORDINALITY x(s, ord)) = ARRAY['PKG2','PKG1','PKG3','PKG4'],
   'stock order: customer name, GRN date, GRN number: '||(SELECT string_agg(s->>'gr_no', ',') FROM jsonb_array_elements(:'pack_a'::jsonb#>'{data,stock}') s));
 -- To = today: the end of every line equals the stock the app holds.
@@ -469,7 +469,7 @@ SELECT pg_temp.pk_assert(pg_temp.pk_canc_of(:'pack_b1'::jsonb,'SRT/20')->>'reaso
 SELECT pg_temp.pk_pack(:'admin_claims'::jsonb,'2026-06-01','2026-06-30') AS pack_b2 \gset
 SELECT pg_temp.pk_assert(pg_temp.pk_canc_of(:'pack_b2'::jsonb,'SRT/19')->>'reason' = 'exported', '[crit 14] B made again still carries SRT/19 (its own earlier record is not a pack before its period)');
 -- C: B made after the cancel carried SRT/19 already; and SRT/20.
-SELECT pg_temp.pk_as(:'admin_claims'::jsonb, $q$SELECT public.record_payment((SELECT id FROM public.invoice WHERE inv_no = 12 AND inv_prefix = 'SRT/'), '2026-07-03'::date, 7, 'cash')$q$) AS pay_july \gset
+SELECT pg_temp.pk_as(:'admin_claims'::jsonb, format($q$SELECT public.record_payment(%L::uuid, '2026-07-03'::date, 7, 'cash')$q$, :'inv_d2')) AS pay_july \gset
 SELECT pg_temp.pk_pack(:'admin_claims'::jsonb,'2026-07-01','2026-07-31') AS pack_c \gset
 SELECT pg_temp.pk_assert(:'pack_c'::jsonb->>'success'='true', '[crit 14] pack C (July) is made (it has a payment): '||left(:'pack_c',300)||' / '||left(:'pay_july',300));
 SELECT pg_temp.pk_assert(pg_temp.pk_canc_of(:'pack_c'::jsonb,'SRT/19') IS NULL AND pg_temp.pk_canc_of(:'pack_c'::jsonb,'SRT/20') IS NULL AND jsonb_array_length(:'pack_c'::jsonb#>'{data,cancellations}') = 0,
