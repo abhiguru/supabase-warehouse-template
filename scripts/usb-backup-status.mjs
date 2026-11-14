@@ -76,7 +76,7 @@ export function usbBackupWarning(state, {
   now = Date.now(),
   maxAgeDays = Number(process.env.WAREHOUSE_USB_BACKUP_MAX_AGE_DAYS || 7),
   etc = process.env.WAREHOUSE_USB_BACKUP_ETC || '/etc',
-  offsiteFresh = false,   // true: a checked off-site upload exists from the last 2 days; it counts as the off-host copy (the key copy rule still applies)
+  offsiteFresh = false,   // true: a checked off-site upload exists from the last 2 days; it counts as the off-host copy only where USB is not set up here (the key copy rule still applies)
   graceOver = true,   // false: the checker is in its first 7 days, so "no copy yet" is not said (a failed, stale or key-copy fault always is)
 } = {}) {
   const conf = read(resolve(etc, 'warehouse-usb-backup.conf'));
@@ -110,11 +110,19 @@ export function usbBackupWarning(state, {
     const problem = escrowProblem(state);
     if (problem) return `USB archives are encrypted but the backup key copy is not confirmed (${problem}); runs are refused until it is: run WAREHOUSE_STATE_DIR=${resolve(state)} bash scripts/backup-key-escrow.sh show`;
   }
-  // A checked off-site upload from the last 2 days is the off-host copy; the key copy is still required (the copy is encrypted with it).
-  if (offsiteFresh) {
-    const problem = escrowProblem(state);
-    return problem ? `The backup key copy is not confirmed (${problem}); the off-site copy is encrypted with the backup key and cannot be opened without it: run WAREHOUSE_STATE_DIR=${resolve(state)} bash scripts/backup-key-escrow.sh show` : null;
-  }
+  // With USB set up here, its checks are the same with or without the off-site copy (the USB rule is unchanged, and the saved images are
+  // copied to the USB drive only): a fresh off-site upload never hides a failed, stale or missing USB copy or its images problem. The
+  // off-site copy is encrypted with the backup key as well, so when it is fresh its key copy is checked too (when USB archives are
+  // encrypted the check above already did), and said beside any USB problem.
+  const usb = usbRunProblem(last, { now, maxAgeDays, graceOver });
+  const keyProblem = offsiteFresh ? escrowProblem(state) : null;
+  if (!keyProblem) return usb;
+  const keyText = `The backup key copy is not confirmed (${keyProblem}); the off-site copy is encrypted with the backup key and cannot be opened without it: run WAREHOUSE_STATE_DIR=${resolve(state)} bash scripts/backup-key-escrow.sh show`;
+  return usb ? `${usb} ${keyText}` : keyText;
+}
+
+// The checks of the last run of an installed USB backup (config/usb-backup.last), as they were before the off-site copy existed.
+function usbRunProblem(last, { now, maxAgeDays, graceOver }) {
   if (!last) return graceOver ? 'USB backup is set up but no copy has been made yet: attach the enrolled USB drive.' : null;
   const run = fields(last);
   if (run.result !== 'ok') return `The last USB backup failed at ${run.finished_utc || 'an unknown time'}: ${run.message || 'no detail'}. Run bash scripts/backup-usb.sh status.`;

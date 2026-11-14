@@ -998,9 +998,10 @@ export function checkBackups(ctx) {
     // The failed daily backup is reported only here (after two failing runs), with the job's own message.
     result('backups', 'backup_failed', !failed, `The last backup failed${last.message ? `: ${last.message}` : ''}`, last.message ?? ''),
   ];
-  // The only copy of the backups that survives the loss of this host is the USB drive. Weekly, never muted. Only "no copy yet" (USB never set
-  // up, or set up and never run) waits for the checker's first 7 days, the time to plug a drive in; a failed or stale copy and an
-  // unconfirmed key copy are said at once. The recorded decision not to keep a copy (usbBackupWarning) clears the first.
+  // The copies of the backups that survive the loss of this host are the USB drive and the optional off-site copy. Weekly, never muted. Only
+  // "no copy yet" (USB never set up, or set up and never run) waits for the checker's first 7 days, the time to plug a drive in; a failed or
+  // stale copy and an unconfirmed key copy are said at once. The recorded decision not to keep a copy, or a fresh off-site upload where USB is
+  // not set up, clears the first (usbBackupWarning); where USB is set up, its own checks stand whatever the off-site copy does.
   const offsite = offsiteStatus(ctx.state, now);
   const usb = usbBackupWarning(ctx.state, { now, etc: ctx.usbEtc, offsiteFresh: offsite.fresh, graceOver: now - ctx.data.firstRun > OFFHOST_GRACE_MS });
   out.push(result('backups', OFFHOST_ALERT, usb === null, usb ?? 'An off-host copy of the backups exists or is declined, or the checker is in its first 7 days', usb ?? '', { repeatHours: 168 }));
