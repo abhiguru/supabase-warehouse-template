@@ -891,3 +891,37 @@ test('the signature check script: wrong use is 2, a tree without docker/images-s
   } finally { rmSync(scratch, { recursive: true, force: true }); }
   assert.match(readFileSync(script, 'utf8'), /\^https:\/\/github\\\\\.com\/abhiguru\/supabase-warehouse-template\/\\\\\.github\/workflows\/release\\\\\.yml@refs\/tags\/v\[0-9\]/);
 });
+
+test('operator-install: the off-site drill step runs after the backup tools, skips with a warning (never fails, never installs) where rclone is missing, and the drill pins its image and removes its container', () => {
+  const ci = readFileSync(new URL('../.github/workflows/ci.yml', import.meta.url), 'utf8');
+  const job = ci.slice(ci.indexOf('\n  operator-install:\n') + 1).split(/\n  [a-z-]+:\n/)[0];
+  const names = [...job.matchAll(/^      - name: ([^\n]+)/gm)].map(m => m[1]);
+  const at = names.findIndex(n => n.startsWith('Off-site copy drill'));
+  assert.ok(at > 0, 'the step exists');
+  assert.match(names[at - 1], /^Backup tools/, 'right after the backup tools step');
+  assert.equal(names[at + 1], 'Prepare private operator state');
+  const start = job.indexOf(`      - name: ${names[at]}\n`);
+  const step = job.slice(start, job.indexOf('\n      - ', start + 10));
+  assert.doesNotMatch(step, /\$\{\{|secrets\.|continue-on-error|\|\| true/);
+  const script = /\n {8}run: \|\n((?: {10}[^\n]*\n)+)/.exec(step + '\n')[1].replace(/^ {10}/gm, '');
+  assert.doesNotMatch(script, /\bsudo\b|apt-get|apt install|pip |npm i/, 'the step installs nothing');
+  assert.match(script, /node --test tests\/offsite\.test\.mjs\nbash tests\/offsite-drill\.sh\n/);
+  assert.match(step, /\n {8}working-directory: backend$/);
+  // Without rclone on PATH: exit 0 and a warning annotation; the drill is never started.
+  const empty = mkdtempSync(join(tmpdir(), 'warehouse-ci-norclone-'));
+  try {
+    const r = spawnSync('/bin/bash', ['-c', script], { encoding: 'utf8', env: { PATH: empty } });
+    assert.equal(r.status, 0, r.stderr);
+    assert.match(r.stdout, /^::warning title=Off-site drill skipped::this runner has no rclone/m);
+    assert.doesNotMatch(r.stdout + r.stderr, /PASSED|FAILED/);
+  } finally { rmSync(empty, { recursive: true, force: true }); }
+  assert.match(readFileSync(new URL('../docs/DEVELOPER_HANDOFF.md', import.meta.url), 'utf8'), /`rclone` 1\.60 or newer for the off-site drill \(without it the drill is skipped with a warning/);
+  // The drill: image pinned by digest, loopback only, tmpfs data, no secrets from the environment, and the container removed by exact name on any exit.
+  const drill = readFileSync(new URL('./offsite-drill.sh', import.meta.url), 'utf8');
+  assert.match(drill, /^IMAGE="\$\{OFFSITE_DRILL_IMAGE:-[a-z0-9./-]+@sha256:[0-9a-f]{64}\}"$/m);
+  assert.match(drill, /-p "127\.0\.0\.1:\$PORT:9000"/);
+  assert.match(drill, /--tmpfs \/data:/);
+  assert.match(drill, /^trap cleanup EXIT$/m);
+  assert.match(drill, /docker rm -f "\$NAME"/);
+  assert.doesNotMatch(drill, /docker (system |image |container |volume )?prune|secrets\.|GITHUB_TOKEN|\$\{\{/);
+});

@@ -358,6 +358,19 @@ jobs:
             echo 'This runner needs the packages rsync and attr (docs/DEVELOPER_HANDOFF.md, "A self-hosted runner for operator-install").' >&2
             exit 1
           fi
+      - name: Off-site copy drill (a real S3 server in a container, WH-145)
+        # tests/offsite-drill.sh: the optional encrypted off-site copy against a throwaway S3-compatible container on 127.0.0.1
+        # (image pinned by digest in the script). Needs rclone 1.60 or newer on the runner (docs/DEVELOPER_HANDOFF.md). This step never
+        # installs anything and never fails for a missing rclone: it skips with a warning. tests/offsite.test.mjs also skips itself
+        # in `npm test` where rclone is missing (the validate job); here it runs whenever rclone is there.
+        run: |
+          if ! command -v rclone >/dev/null 2>&1; then
+            echo '::warning title=Off-site drill skipped::this runner has no rclone, so the off-site copy drill (tests/offsite-drill.sh) was skipped (docs/DEVELOPER_HANDOFF.md)'
+            exit 0
+          fi
+          node --test tests/offsite.test.mjs
+          bash tests/offsite-drill.sh
+        working-directory: backend
       - name: Prepare private operator state
         run: |
           mkdir -m 700 "$RUNNER_TEMP/core-backend-test-20260929"

@@ -57,7 +57,7 @@ import { centralKeyFault, gatewayPortText, letterheadProblem, readEnv, root as c
 import { LAN_SERVICE, describeAddresses, hostHasAddress, lanOrigin, lanSettings, probeLanKeys, probeLanSigner, readHostInterfaces } from './lan-common.mjs';
 import { redactServiceLog } from './service-diagnostics.mjs';
 import { MIN_VHDX_DRIVE_FREE_BYTES, MIN_VHDX_DRIVE_FREE_PERCENT, driveSpace, isWsl, statfsWithTimeout, vhdxDrive } from './wsl-host.mjs';
-import { usbBackupWarning, usbRotationNote } from './usb-backup-status.mjs';
+import { usbBackupWarning, usbRotationNote, offsiteStatus } from './usb-backup-status.mjs';
 import { ageText, sensorCheck, sensorLimitSeconds } from './sensors-check.mjs';
 import { RECORD_ALERT_POSTS_SQL, SENSOR_ALERTS_SQL, droppedFromLog, droppedSummary, refreshStretchesSql, sensorAlertMinutes, sensorAlerts, stretchAlertPosts } from './sensor-alerts.mjs';
 import { HEARTBEAT_URL_PATTERN, firstUrlLine, postSlackMessage, sensorTestMessage, testMessage } from './alert-webhook.mjs';
@@ -982,6 +982,7 @@ export function newestBackupMs(state) {
   return newest;
 }
 export const OFFHOST_ALERT = 'offhost_copy_missing';
+export const OFFSITE_ALERT = 'offsite_upload_failed';
 const OFFHOST_GRACE_MS = 7 * 24 * HOUR;
 export function checkBackups(ctx) {
   const now = ctx.now();
@@ -997,11 +998,16 @@ export function checkBackups(ctx) {
     // The failed daily backup is reported only here (after two failing runs), with the job's own message.
     result('backups', 'backup_failed', !failed, `The last backup failed${last.message ? `: ${last.message}` : ''}`, last.message ?? ''),
   ];
-  // The only copy of the backups that survives the loss of this host is the USB drive. Weekly, never muted. Only "no copy yet" (USB never set
-  // up, or set up and never run) waits for the checker's first 7 days, the time to plug a drive in; a failed or stale copy and an
-  // unconfirmed key copy are said at once. The recorded decision not to keep a copy (usbBackupWarning) clears the first.
-  const usb = usbBackupWarning(ctx.state, { now, etc: ctx.usbEtc, graceOver: now - ctx.data.firstRun > OFFHOST_GRACE_MS });
+  // The copies of the backups that survive the loss of this host are the USB drive and the optional off-site copy. Weekly, never muted. Only
+  // "no copy yet" (USB never set up, or set up and never run) waits for the checker's first 7 days, the time to plug a drive in; a failed or
+  // stale copy and an unconfirmed key copy are said at once. The recorded decision not to keep a copy, or a fresh off-site upload where USB is
+  // not set up, clears the first (usbBackupWarning); where USB is set up, its own checks stand whatever the off-site copy does.
+  const offsite = offsiteStatus(ctx.state, now);
+  const usb = usbBackupWarning(ctx.state, { now, etc: ctx.usbEtc, offsiteFresh: offsite.fresh, graceOver: now - ctx.data.firstRun > OFFHOST_GRACE_MS });
   out.push(result('backups', OFFHOST_ALERT, usb === null, usb ?? 'An off-host copy of the backups exists or is declined, or the checker is in its first 7 days', usb ?? '', { repeatHours: 168 }));
+  // The optional off-site copy (scripts/offsite.sh): nothing when it is off. A failed or unchecked upload says so on the first run that sees it and
+  // daily while it lasts. It never blocks the local backup, which has its own alerts above.
+  if (offsite.enabled) out.push(result('backups', OFFSITE_ALERT, offsite.problem === null, offsite.problem ?? 'The off-site copy was uploaded and checked within the last 2 days', offsite.problem ?? '', { repeatHours: 24 }));
   const ret = fieldsOf(ctx.readText(backupStatusPath(ctx.state, 'retention')));
   out.push(result('backups', 'retention_failed', ret.result !== 'failed', `The last retention clean-up failed${ret.message ? `: ${ret.message}` : ''}`, ret.message ?? ''));
   return out;

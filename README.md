@@ -18,46 +18,30 @@ Not supported: e-invoicing (IRN), statutory warehouse receipts, one view across 
 
 General warehouses are not the target yet. Tell us in an issue if you need it.
 
+## Before you start
+
+Arrange these before the install day. **Start the DLT registration first. It takes the longest.** Costs and lead times change: ask each
+provider.
+
+| What | Why it's needed | Who holds it | Lead time | Cost |
+|---|---|---|---|---|
+| A domain on Cloudflare, and a Cloudflare account | The Cloudflare Tunnel is the only way in; there is no certificate to buy | The facility owner | Minutes if the domain is already on Cloudflare; a domain transfer takes longer | Ask Cloudflare and your domain registrar |
+| An [MSG91](https://msg91.com) account with a DLT entity, a sender ID and an approved OTP template ([how](docs/OPERATOR_INSTALL.md#registering-sms-with-dlt)) | Sign-in codes are real SMS. Always needed, even when the facility also signs in through an association | The facility owner (the DLT entity is the business's) | The longest: ask MSG91 | Ask MSG91 |
+| A Slack workspace with an incoming webhook for alerts (a second one when sensors are used) | Alerts and the daily "Monitoring is alive" message | The facility owner or the technician | Minutes | Free plan is enough |
+| Optional: an outside heartbeat service such as healthchecks.io | Notices that the whole machine or the checker has died | The technician | Minutes | Ask the service |
+| The machine: a dedicated Ubuntu 24.04, x86-64, at least 4 vCPU, 8 GiB of memory, an SSD and 60 GB of disk ([Host prerequisites](docs/OPERATOR_INSTALL.md#host-prerequisites)) | Runs the whole facility | The facility owner | Depends on purchase | The hardware |
+| A USB drive formatted exFAT for backups, and a second person to hold a copy of the backup key | Backups on the same disk are lost with it; without the key the encrypted backups cannot be opened | The facility owner | Days if it must be bought | The drive |
+| The first administrator's mobile number, the facility's legal name, and the grievance officer's name, email and phone ([why](docs/PRIVACY_FOR_OPERATORS.md#setting-the-grievance-contact)), and Android 12 or newer phones with 4 GB of memory | The administrator signs in with an SMS code; the app needs that phone | The facility owner | None | None |
+
 ## Quickstart
 
-Prerequisites, all required:
+**Follow [docs/STANDARD_INSTALL.md](docs/STANDARD_INSTALL.md).** It is the short, numbered guide for one facility on Ubuntu 24.04: it
+takes a clean machine through the Docker and Node install, the private files (MSG91, Slack), the newest release, `setup.sh --operator`
+(with the SMS limits), the Cloudflare Tunnel, the warehouse network fallback, the USB backup drive and backup key, monitoring, and the
+app on the administrator's phone, and says what to see and what to do when a step fails. Anything it leaves out (several facilities
+on one host, Windows, sign-in through an association, the pooler, sensors, printing) is in the reference below.
 
-- A Linux x86-64 host or VM with Docker Engine + a Compose plugin whose `up` accepts `--wait-timeout`, Node.js 22.18+,
-  Git, OpenSSL and util-linux `flock`.
-- Real [MSG91](https://msg91.com) credentials (auth key, approved OTP Flow ID,
-  DLT entity ID, sender ID) in a mode-0600 file outside the checkout. There is
-  no local or fixed-OTP mode.
-- A Cloudflare Tunnel from your canonical HTTPS hostname to the gateway on
-  `127.0.0.1:18000`; it is the only supported ingress.
-- The first administrator's phone number, 12 digits with the `91` prefix.
-
-```bash
-(umask 022; git clone https://github.com/abhiguru/supabase-warehouse-template.git)
-cd supabase-warehouse-template
-# main is development: check out the newest release tag (not a -rc tag)
-(umask 022; git checkout --detach "$(git tag --list 'v[0-9]*' --sort=-v:refname | grep -v -- '-' | head -n 1)")
-bash setup.sh --operator \
-  --state-dir /srv/warehouse/acme \
-  --api-url https://warehouse.example.com \
-  --company 'Example Cold Storage' \
-  --provider-env /secure/warehouse-msg91.env \
-  --admin-phone 91XXXXXXXXXX \
-  --admin-name 'Warehouse Administrator' \
-  --alert-webhook-file /secure/warehouse-slack-webhook.txt \
-  --heartbeat-url-file /secure/warehouse-heartbeat-url.txt \
-  --letterhead-file /secure/letterhead.png   # or: --letterhead-file off (plain PDFs)
-export WAREHOUSE_STATE_DIR=/srv/warehouse/acme
-node scripts/doctor.mjs --local      # every service healthy on the loopback gateway
-# set the SMS ceiling first (required for a public install): docs/OPERATOR_INSTALL.md#authentication-and-otp-limits
-# start the cloudflared connector for your hostname (deploy/cloudflared-config.example.yml)
-node scripts/doctor.mjs              # the same instance answers through the public origin
-sudo bash scripts/watch-timer.sh install --state "$WAREHOUSE_STATE_DIR"   # the monitoring checker and the daily backup (sudo drops the environment, so name the state)
-```
-
-Then install the app, select the HTTPS origin and sign in as the administrator
-with a real SMS code.
-
-- Full guide (host setup, tunnel, backup and restore, key rotation, upgrades): [docs/OPERATOR_INSTALL.md](docs/OPERATOR_INSTALL.md)
+- Reference (every option; host setup, tunnel, backup and restore, key rotation, upgrades): [docs/OPERATOR_INSTALL.md](docs/OPERATOR_INSTALL.md)
 - Privacy under the 2023 Act, answering a person's request, the grievance contact: [docs/PRIVACY_FOR_OPERATORS.md](docs/PRIVACY_FOR_OPERATORS.md)
 - Something went wrong: [docs/TROUBLESHOOTING.md](docs/TROUBLESHOOTING.md)
 - What staff and customers may do: [docs/STAFF_GRN_POLICY.md](docs/STAFF_GRN_POLICY.md)
@@ -80,7 +64,7 @@ Point an AI coding agent at this repository and tell it to install the backend. 
    6. A Slack webhook file (`off` only for a test install).
    7. The ping URL of an external heartbeat, a dead-man switch such as healthchecks.io ([External heartbeat](docs/MONITORING.md#external-heartbeat-the-dead-man-switch)), given as a private file (`--heartbeat-url-file`), or `off`. An association member is told the URL of its association check; if the operator declines, doctor keeps a warning unless they record the decision.
    8. A letterhead file, or `off`.
-   9. Central sign-in, yes or no; if yes, the issuer and the key URL or file ([Central sign-in](docs/OPERATOR_INSTALL.md#central-sign-in)); if no, SMS sign-in only. If yes, also ask whether to require this facility's own SMS code at every central sign-in (`--central-local-code on`, default off; read the trade-off in [Central sign-in](docs/OPERATOR_INSTALL.md#central-sign-in)). Also ask whether a central sign-in alone may open an existing administrator's profile (`--central-admin-trust yes|no`, default yes: today's rule for members; no = administrators also enter a code this facility sends by SMS). A facility on central sign-in also needs its own SMS provider (`--provider-env`), so customers can still sign in when the central service can't send codes. The operator gives the association this facility's exact public origin (the `--api-url`) for its catalogue. The central identity service is not part of a facility install: the association's primary operator installs it once from its own repository (`central-identity-template`, private; ask the association). A facility needs only the issuer and the key set from the association.
+   9. Central sign-in, yes or no; if yes, the issuer and the key URL or file ([Central sign-in](docs/OPERATOR_INSTALL.md#central-sign-in)); if no, SMS sign-in only. If yes, also ask whether to require this facility's own SMS code at every central sign-in (`--central-local-code on`, default off; read the trade-off in [Central sign-in](docs/OPERATOR_INSTALL.md#central-sign-in)). Also ask whether a central sign-in alone may open an existing administrator's profile (`--central-admin-trust yes|no`, default yes: today's rule for members; no = administrators also enter a code this facility sends by SMS). A facility on central sign-in also needs its own SMS provider (`--provider-env`), so customers can still sign in when the central service can't send codes. The operator gives the association this facility's exact public origin (the `--api-url`) for its catalogue. The central identity service is not part of a facility install, and it is optional and open source ([central-identity-template](https://github.com/abhiguru/central-identity-template)): an association or group of facilities runs one, and its primary operator installs it once from that repository. A single facility does not need it. A facility that joins one needs only the issuer and the key set from the operator of that service.
    10. The SMS ceilings: SMS sends an hour (default 60) and a day (default 300) for the whole facility (`--sms-hourly-ceiling`, `--sms-daily-ceiling`; `otp_global_hourly_cap`, `otp_daily_provider_attempt_cap`).
    11. The host time zone, the facility's own.
    12. The state directory (absolute, outside the checkout; the guide uses `/srv/warehouse/<name>`).
