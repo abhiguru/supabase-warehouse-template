@@ -53,7 +53,7 @@ import { existsSync } from 'node:fs';
 const state = existsSync(scratch + '/state') ? scratch + '/state' : makeState(scratch);
 if (!existsSync(state + '/backups')) { writeEscrow(state); (await import('node:fs')).mkdirSync(state + '/backups', { mode: 0o700 }); }
 const dir = state + '/backups/' + night;
-makeBackup(dir, { format: 'warehouse-backup-v6', objects: ['documents/a.pdf/v1', 'photos/Rakesh Patel Cold Room/v2.jpg/v1', ...extra] });
+makeBackup(dir, { format: 'warehouse-backup-v6', objects: ['documents/a.pdf/v1', 'photos/Rakesh Patel Cold Room/v2.jpg/v1', 'photos/ગ્રાહક/v1.jpg/v1', 'photos/back\\\\slash.jpg/v1', 'photos/tab\\tname.jpg/v1', 'photos/-dash.jpg/v1', ...extra] });
 execFileSync('find', [dir, '-exec', 'touch', '-h', '-d', '@1700000000', '{}', '+']);
 EOF
 node "$work/fixture.mjs" "$work" warehouse-20261112T010000Z
@@ -84,9 +84,10 @@ sampler=$!
 off run "$state/backups/warehouse-20261112T010000Z" > "$work/run1.out" 2>&1 || { cat "$work/run1.out" >&2; fail 'night 1 failed'; }
 off run "$state/backups/warehouse-20261113T010000Z" > "$work/run2.out" 2>&1 || { cat "$work/run2.out" >&2; fail 'night 2 failed'; }
 kill "$sampler" 2>/dev/null || true; sampler=''
-grep -q 'files, 12 new' "$work/run1.out" || fail "night 1 did not send all: $(cat "$work/run1.out")"
+grep -Eq 'files, ([0-9]+) new' "$work/run1.out" && [[ "$(sed -nE 's/.*: ([0-9]+) files, ([0-9]+) new.*/\1 \1/p;' "$work/run1.out")" == "$(sed -nE 's/.*: ([0-9]+) files, ([0-9]+) new.*/\1 \2/p' "$work/run1.out")" ]] || fail "night 1 did not send all: $(cat "$work/run1.out")"
+total="$(sed -n 's/^files=//p' "$state/config/offsite.last")"   # the files of the last night (night 2)
 sent="$(sed -n 's/^files_sent=//p' "$state/config/offsite.last")"
-((sent > 0 && sent < 13)) || fail "night 2 sent $sent of 13 files"
+((sent > 0 && sent < total)) || fail "night 2 sent $sent of $total files"
 [[ ! -s "$work/proc.seen" ]] || fail "a credential was on a command line: $(head -c 300 "$work/proc.seen")"
 if grep -rq -e "$SECRET" "$work/on.out" "$work/run1.out" "$work/run2.out" "$state/config/offsite.conf" "$state/config/offsite.last" "$state/backups"; then fail 'the secret is in an output, the settings or a backup'; fi
 [[ "$(stat -c %a "$state/config/offsite.credentials")" == 600 ]] || fail 'credentials file is not 0600'
@@ -104,8 +105,15 @@ find "$work/dl" -type f | sed "s#$work/dl/##" | grep -Ev '^warehouse-offsite/k-[
 
 echo '4. fetch rebuilds the backup byte for byte; another key and wrong credentials get nothing'
 mkdir "$work/dest"; chmod 700 "$work/dest"
-off fetch --endpoint "$EP" --bucket "$BUCKET" --credentials-file "$work/cred" --backup-key "$state/config/backup.key" --dest "$work/dest" --backup warehouse-20261112T010000Z > /dev/null || fail 'fetch failed'
-diff -r "$state/backups/warehouse-20261112T010000Z" "$work/dest/warehouse-20261112T010000Z" || fail 'the fetched backup differs'
+for loc in C C.UTF-8; do   # names in Gujarati, with a backslash, a tab and a leading dash come back byte for byte in either locale
+  mkdir "$work/dest-$loc"; chmod 700 "$work/dest-$loc"
+  LC_ALL="$loc" off fetch --endpoint "$EP" --bucket "$BUCKET" --credentials-file "$work/cred" --backup-key "$state/config/backup.key" --dest "$work/dest-$loc" --backup warehouse-20261112T010000Z > /dev/null || fail "fetch failed under $loc"
+  LC_ALL=C diff -r "$state/backups/warehouse-20261112T010000Z" "$work/dest-$loc/warehouse-20261112T010000Z" || fail "the fetched backup differs under $loc"
+done
+echo '   off keeps the credentials file and says so; on again needs no options'
+off off | grep -q 'credentials stay in' || fail 'off did not say the credentials stay'
+[[ -f "$state/config/offsite.credentials" ]] || fail 'off removed the credentials file'
+off on > /dev/null || fail 'on again failed'
 printf '%s\n' "$(printf '11%.0s' $(seq 32))" > "$work/otherkey"; chmod 600 "$work/otherkey"
 if off fetch --endpoint "$EP" --bucket "$BUCKET" --credentials-file "$work/cred" --backup-key "$work/otherkey" --dest "$work/dest" 2>"$work/err"; then fail 'another key got a backup'; fi
 grep -q 'no backup made with this backup key' "$work/err" || fail 'wrong-key message'

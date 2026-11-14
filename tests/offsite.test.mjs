@@ -4,7 +4,7 @@
 // is tests/offsite-drill.sh (CI and by hand only).
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { mkdtempSync, mkdirSync, writeFileSync, readFileSync, existsSync, readdirSync, rmSync, statSync, utimesSync, lstatSync, cpSync, chmodSync } from 'node:fs';
+import { mkdtempSync, mkdirSync, writeFileSync, readFileSync, existsSync, readdirSync, rmSync, statSync, utimesSync, lstatSync, cpSync, chmodSync, symlinkSync } from 'node:fs';
 import { spawn, spawnSync } from 'node:child_process';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
@@ -402,4 +402,187 @@ test('restore-host --from-offsite rebuilds the backup from the bucket and restor
     assert.equal(r.status, 1); assert.match(r.all, /Could not rebuild the backup from the bucket/); assert.equal(existsSync(state3), false);
     assert.deepEqual(readdirSync(parent), ['acme']);
   } finally { await f.cleanup(); rmSync(scratch, { recursive: true, force: true }); }
+});
+
+// ---------------------------------------------------------------- the Medium fixes of the review, and the Lows
+
+// A signed manifest (and its one object) for a backup holding one file, made with the backup key outside offsite.sh, so that a test can
+// store in the bucket what a hostile or broken writer holding the key could: an object whose tar member is not the manifest's path.
+const FORGE = `set -euo pipefail
+source "$1/scripts/backup-key.sh"; backup_key_load "$2"
+sum="$(sha256sum < "$3" | cut -d' ' -f1)"; id="$(backup_hmac "$BACKUP_KEY" warehouse-offsite-object-v1 <<<"$sum")"
+backup_encrypt "$BACKUP_KEY" < "$3" > "$4"; fp="$(backup_key_fingerprint "$BACKUP_KEY")"
+printf 'warehouse-offsite-manifest-v1\\nbackup %s\\nkey %s\\nF 644 %s %s %s\\n' "$5" "$fp" "$(stat -c %s "$3")" "$id" "$6" > "$4.body"
+{ cat "$4.body"; printf 'mac %s\\n' "$(backup_hmac "$BACKUP_KEY" warehouse-offsite-manifest-v1 < "$4.body")"; } | backup_encrypt "$BACKUP_KEY" > "$7"
+printf '%s %s\\n' "$id" "$fp"`;
+
+test('fetch gives back names in Gujarati, with a backslash, a tab and a leading dash byte for byte, under LC_ALL=C and C.UTF-8', { skip }, async () => {
+  const f = await fixture();
+  try {
+    const odd = ['photos/ગ્રાહક ફોટો/v1.jpg/v1', 'photos/back\\slash.jpg/v1', 'photos/tab\tname.jpg/v1', 'photos/-dash.jpg/v1', 'photos/quote"and\'s.jpg/v1'];
+    const original = night(f.state, day(12), odd);
+    assert.equal((await f.on()).status, 0);
+    const key = join(f.state, 'config/backup.key');
+    for (const locale of ['C', 'C.UTF-8']) {
+      const r = await f.off(['run', original], { LC_ALL: locale, LANG: locale });
+      assert.equal(r.status, 0, `${locale}: ${r.all}`);
+      const dest = join(f.scratch, `dest-${locale}`); mkdirSync(dest, { mode: 0o700 });
+      const fetched = await f.off(['fetch', '--endpoint', f.s3.endpoint, '--bucket', BUCKET, '--credentials-file', f.cred, '--backup-key', key, '--dest', dest], { LC_ALL: locale, LANG: locale });
+      assert.equal(fetched.status, 0, `${locale}: ${fetched.all}`);
+      const got = join(dest, day(12));
+      assert.deepEqual(filesUnder(got), filesUnder(original), `${locale}: the same names`);
+      assert.equal(spawnSync('diff', ['-r', original, got], { env: { ...process.env, LC_ALL: 'C' } }).status, 0, `${locale}: identical content`);
+      for (const name of odd) assert.equal(readFileSync(join(got, 'storage/stub/stub', name), 'utf8'), `bytes of stub/stub/${name}`, `${locale}: ${JSON.stringify(name)}`);
+    }
+  } finally { await f.cleanup(); }
+});
+
+test('fetch refuses an object whose tar holds a path with .., an absolute path, another name than the manifest says, or two members, and writes nothing outside the folder', { skip }, async () => {
+  const f = await fixture();
+  try {
+    night(f.state, day(12));
+    assert.equal((await f.on()).status, 0);
+    assert.equal((await f.off(['run'])).status, 0);
+    const key = join(f.state, 'config/backup.key');
+    const keyed = [...f.s3.objects.keys()];
+    const prefix = keyed.find(k => k.includes('/backups/')).split('/').slice(0, 2).join('/');
+    const work = join(f.scratch, 'forge'); mkdirSync(work);
+    writeFileSync(join(work, 'evil.txt'), 'evil'); writeFileSync(join(work, 'other.txt'), 'other'); writeFileSync(join(work, 'second.txt'), 'second');
+    const outside = join(f.scratch, 'evil.txt'); const absolute = '/tmp/warehouse-offsite-abs-evil';
+    const cases = {
+      'a path with ..': ['--transform', 's,^,../,', 'evil.txt'],
+      'an absolute path': ['-P', '--transform', `s,^,${absolute}/,`, 'evil.txt'],
+      'another name than the manifest says': ['other.txt'],
+      'two members': ['evil.txt', 'second.txt'],
+    };
+    for (const [label, args] of Object.entries(cases)) {
+      const tar = join(work, 'x.tar');
+      const made = spawnSync('tar', [...args.filter(a => a !== 'evil.txt' && a !== 'other.txt' && a !== 'second.txt'), '-cf', tar, '-C', work, ...args.filter(a => /\.txt$/.test(a))], { encoding: 'utf8' });
+      assert.equal(made.status, 0, made.stderr);
+      const forged = spawnSync('bash', ['-c', FORGE, 'sh', repo, key, tar, join(work, 'obj.enc'), day(14), 'docs/a.txt', join(work, 'm.enc')], { encoding: 'utf8' });
+      assert.equal(forged.status, 0, forged.stderr);
+      const [id] = forged.stdout.trim().split(' ');
+      f.s3.objects.set(`${prefix}/objects/${id}`, { body: readFileSync(join(work, 'obj.enc')), modified: new Date() });
+      f.s3.objects.set(`${prefix}/backups/${day(14)}.manifest`, { body: readFileSync(join(work, 'm.enc')), modified: new Date() });
+      const dest = join(f.scratch, `dest-${label.replace(/\W+/g, '-')}`); mkdirSync(dest, { mode: 0o700 });
+      const r = await f.off(['fetch', '--endpoint', f.s3.endpoint, '--bucket', BUCKET, '--credentials-file', f.cred, '--backup-key', key, '--dest', dest, '--backup', day(14)]);
+      assert.equal(r.status, 1, `${label}: refused`);
+      assert.match(r.stderr, /holds a different path|stopped at/, label);
+      assert.equal(existsSync(outside), false, `${label}: nothing written beside the folder`);
+      assert.equal(existsSync(join(absolute, 'evil.txt')), false, `${label}: nothing written at the absolute path`);
+      assert.equal(existsSync(join(dest, day(14), 'docs/a.txt')), false, `${label}: the file was not unpacked`);
+    }
+  } finally { await f.cleanup(); rmSync('/tmp/warehouse-offsite-abs-evil', { recursive: true, force: true }); }
+});
+
+// The USB rules with an off-site copy that is fresh: USB set up here keeps its own checks; with no USB, the fresh copy is the off-host copy.
+test('a fresh off-site copy does not hide a failed, stale or image-less USB copy, and it satisfies the off-host rule only where USB is not set up', () => {
+  const scratch = mkdtempSync(join(tmpdir(), 'warehouse-offsite-usb-'));
+  try {
+    const state = makeState(scratch); writeEscrow(state);
+    const etc = join(scratch, 'etc'); mkdirSync(etc);
+    const now = Date.UTC(2026, 10, 14, 12);
+    const sec = ms => Math.floor(ms / 1000);
+    const fresh = { fresh: true };
+    const warn = (offsiteFresh = true) => usbBackupWarning(state, { now, etc, offsiteFresh, graceOver: true });
+    // No USB: the fresh upload is the off-host copy; without it the rule says no copy exists.
+    assert.equal(warn(true), null); assert.equal(warn(false), NO_OFFHOST_COPY);
+    // USB set up (encrypted archives, key copy confirmed).
+    writeFileSync(join(etc, 'warehouse-usb-backup.conf'), `STATE=${state}\nENCRYPT=yes\nENCRYPT_SET=typed\n`);
+    const last = fields => writeFileSync(join(state, 'config/usb-backup.last'), Object.entries({ result: 'ok', finished_utc: '2026-11-14T01:00:00Z', last_success_epoch: sec(now - 86400000), ...fields }).map(([k, v]) => `${k}=${v}`).join('\n') + '\n', { mode: 0o600 });
+    last({});
+    assert.equal(warn(true), null, 'a good USB copy and a fresh off-site copy: quiet');
+    last({ result: 'failed', message: 'the drive was full' });
+    assert.match(warn(true), /The last USB backup failed at 2026-11-14T01:00:00Z: the drive was full/);
+    last({ last_success_epoch: sec(now - 10 * 86400000) });
+    assert.match(warn(true), /The last successful USB backup is 10 days old/);
+    last({ images_problem: 'the images folder could not be copied' });
+    assert.match(warn(true), /copied the archive but not the saved images: the images folder could not be copied/);
+    rmSync(join(state, 'config/usb-backup.last'));
+    assert.match(warn(true), /USB backup is set up but no copy has been made yet/);
+    // The same texts with no off-site copy (the rule is unchanged by the feature).
+    last({ result: 'failed', message: 'the drive was full' });
+    assert.equal(warn(true), warn(false));
+    // The key copy rule is said beside a USB problem, not instead of it.
+    writeFileSync(join(etc, 'warehouse-usb-backup.conf'), `STATE=${state}\nENCRYPT=no\nENCRYPT_SET=typed\n`);
+    rmSync(join(state, 'config/backup-key.escrow'));
+    const both = warn(true);
+    assert.match(both, /The last USB backup failed/); assert.match(both, /off-site copy is encrypted with the backup key and cannot be opened without it/);
+    // The doctor sees the same text (doctor.mjs passes offsiteStatus(state).fresh).
+    assert.match(readFileSync(join(repo, 'scripts/doctor.mjs'), 'utf8'), /usbBackupWarning\(state, \{ offsiteFresh: offsiteStatus\(state\)\.fresh \}\)/);
+    void fresh;
+  } finally { rmSync(scratch, { recursive: true, force: true }); }
+});
+
+test('on --region alone keeps the stored settings and takes the new region; off leaves the credentials file and says so; a stale staging folder is removed and a linked decoy is not', { skip }, async () => {
+  const f = await fixture();
+  try {
+    night(f.state, day(12));
+    assert.equal((await f.on()).status, 0);
+    const conf = join(f.state, 'config/offsite.conf');
+    let r = await f.off(['off']);
+    assert.match(r.stdout, /credentials stay in .*offsite\.credentials/);
+    assert.ok(existsSync(join(f.state, 'config/offsite.credentials')), 'the credentials file stays');
+    r = await f.off(['on', '--region', 'eu-test-1']);
+    assert.equal(r.status, 0, r.all);
+    const text = readFileSync(conf, 'utf8');
+    assert.match(text, /^ENABLED=yes$/m); assert.match(text, /^REGION=eu-test-1$/m); assert.match(text, new RegExp(`^ENDPOINT=${f.s3.endpoint}$`, 'm')); assert.match(text, new RegExp(`^BUCKET=${BUCKET}$`, 'm'));
+    // A run killed earlier left a staging folder; a link of that name to a folder elsewhere is a decoy and stays.
+    const stale = join(f.state, 'backups/.offsite-work.AbC123'); mkdirSync(stale); writeFileSync(join(stale, 'file.tar'), 'left behind');
+    const decoy = join(f.scratch, 'decoy'); mkdirSync(decoy); writeFileSync(join(decoy, 'keep.txt'), 'mine');
+    symlinkSync(decoy, join(f.state, 'backups/.offsite-work.ZzZ999'));
+    r = await f.off(['run']);
+    assert.equal(r.status, 0, r.all);
+    assert.equal(existsSync(stale), false, 'the stale staging folder is gone');
+    assert.equal(readFileSync(join(decoy, 'keep.txt'), 'utf8'), 'mine', 'the decoy was not followed');
+    assert.ok(lstatSync(join(f.state, 'backups/.offsite-work.ZzZ999')).isSymbolicLink());
+    assert.deepEqual(readdirSync(join(f.state, 'backups')).filter(n => n.startsWith('.offsite-work.')), ['.offsite-work.ZzZ999'], 'the run leaves no staging of its own');
+  } finally { await f.cleanup(); }
+});
+
+test('the room checks refuse before anything is sent or downloaded, fetch --reserve-copies counts the copies the restore makes, and a bucket error keeps rclone\'s words', { skip }, async () => {
+  const f = await fixture();
+  try {
+    const original = night(f.state, day(12));
+    writeFileSync(join(original, 'storage/stub/stub/documents/a.pdf/v1'), Buffer.alloc(8 * 1048576, 7));   // one 8 MiB stored file
+    assert.equal((await f.on()).status, 0);
+    // df as the kernel would report a full disk: the free bytes are FAKE_AVAIL for every question (backup-storage.test.mjs does the same).
+    const bin = join(f.scratch, 'dfbin'); mkdirSync(bin);
+    writeFileSync(join(bin, 'df'), '#!/bin/sh\nprintf "Avail\\n%s\\n" "$FAKE_AVAIL"\n', { mode: 0o755 });
+    const env = avail => ({ PATH: `${bin}:${process.env.PATH}`, FAKE_AVAIL: String(avail) });
+    const MiB = 1048576;
+    // run: twice the largest file plus 64 MiB = 80 MiB.
+    let r = await f.off(['run'], env(50 * MiB));
+    assert.equal(r.status, 1); assert.match(r.stderr, /not enough free space in .*backups to prepare the upload: about 80 MiB are needed \(twice the largest file of warehouse-20261112T010000Z plus 64 MiB\), 50 MiB are free/);
+    assert.equal(f.s3.objects.size, 0, 'nothing was sent');
+    r = await f.off(['run'], env(500 * MiB)); assert.equal(r.status, 0, r.all);
+    // fetch: the backup (8 MiB and a few bytes) + the largest object twice + 1 GiB; with --reserve-copies 9 the backup nine more times.
+    const key = join(f.state, 'config/backup.key');
+    const dest = join(f.scratch, 'dest'); mkdirSync(dest, { mode: 0o700 });
+    const args = ['fetch', '--endpoint', f.s3.endpoint, '--bucket', BUCKET, '--credentials-file', f.cred, '--backup-key', key, '--dest', dest];
+    const before = f.s3.requests.filter(q => q.path.includes('/objects/')).length;
+    r = await f.off([...args, '--reserve-copies', '9'], env(1060 * MiB));
+    assert.equal(r.status, 1); assert.match(r.stderr, /Refusing: rebuilding warehouse-20261112T010000Z and restoring from it needs about 1\d\d\d MiB in .*dest, but only 1060 MiB are free\. .*Nothing was downloaded\./);
+    assert.equal(f.s3.requests.filter(q => q.path.includes('/objects/')).length, before, 'no object was downloaded');
+    assert.deepEqual(readdirSync(dest), [], 'nothing created');
+    r = await f.off([...args, '--reserve-copies', '10'], env(5000 * MiB)); assert.equal(r.status, 1); assert.match(r.stderr, /--reserve-copies must be a whole number from 0 to 9/);
+    r = await f.off(args, env(1060 * MiB)); assert.equal(r.status, 0, r.all);   // the same free space is enough without copies
+    // rclone's own words reach the message when the bucket refuses a request (a list failure under rclone 1.71 prints nothing at all, so the
+    // text is pinned on an upload).
+    night(f.state, day(13), ['photos/new/n.jpg/v1']);
+    f.s3.behaviour.quotaFull = true;
+    r = await f.off(['run']);
+    assert.equal(r.status, 1); assert.match(r.stderr, /the bucket refused the upload of a file: .*(403|QuotaExceeded|Forbidden)/); assert.doesNotMatch(r.stderr, /no detail/);
+  } finally { await f.cleanup(); }
+});
+
+test('on gives up on an endpoint nobody listens on within seconds', { skip }, async () => {
+  const f = await fixture();
+  try {
+    night(f.state, day(12));
+    const started = Date.now();
+    const r = await f.off(['on', '--endpoint', 'http://127.0.0.1:1', '--bucket', BUCKET, '--credentials-file', f.cred]);
+    assert.equal(r.status, 1); assert.match(r.stderr, /Check failed \(write\)/);
+    assert.ok(Date.now() - started < 40000, `took ${Date.now() - started} ms`);
+  } finally { await f.cleanup(); }
 });

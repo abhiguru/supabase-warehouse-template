@@ -166,3 +166,12 @@ test('the lines the guide says "You should see" are lines the scripts print', ()
     assert.ok(sources.includes(line), `no script prints "${line}", but the guide says it will`);
   }
 });
+
+test('the setup command of step 4 runs as printed (no file the technician may not have), and the optional heartbeat file is added by hand where it exists', () => {
+  const setup = commands.find(c => /bash setup\.sh --operator/.test(c));
+  assert.doesNotMatch(setup, /--heartbeat-url-file/, 'the optional heartbeat option is not in the command');
+  assert.match(guide, /If you made `heartbeat-url\.txt` in step 2 \(optional\), add `--heartbeat-url-file "\$HOME\/warehouse-private\/heartbeat-url\.txt"`/);
+  // Every file the command names is one step 2 makes (the letterhead is `off`).
+  for (const file of [...setup.matchAll(/\$HOME\/warehouse-private\/([a-z0-9.-]+)/g)].map(m => m[1])) assert.match(guide, new RegExp(`${file.replace('.', '\\.')}`), file);
+  for (const file of [...setup.matchAll(/\$HOME\/warehouse-private\/([a-z0-9.-]+)/g)].map(m => m[1])) assert.ok(['msg91.env', 'slack-webhook.txt'].includes(file), `${file} is made in step 2 unconditionally`);
+});
