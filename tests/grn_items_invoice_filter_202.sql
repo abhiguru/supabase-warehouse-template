@@ -164,6 +164,13 @@ SELECT pg_temp.gi_assert((:'rc_p'::jsonb#>>'{pagination,total_count}')::int = 1 
 
 -- 4. No filter, or a filter that leaves the key out, answers what it did before: the same answer as an unrelated filter, and the same as the partition.
 SELECT pg_temp.gi_assert(:'u_all'::jsonb = pg_temp.gi_items(:'admin_claims'::jsonb, jsonb_build_object('customer_ids', jsonb_build_array(:'customer_id'))), 'no filter equals a filter on the customer alone: the same data, pagination and aggregates');
+-- And the same as what the tables hold, which is all the list said before migration 202 (it ignored the key): every line of the three receipts, counted and summed from the tables.
+SELECT pg_temp.gi_assert((SELECT array_agg(e->>'grn_item_id' ORDER BY e->>'grn_item_id') FROM jsonb_array_elements(:'u_all'::jsonb->'data') e)
+    = (SELECT array_agg(t.id::text ORDER BY t.id::text) FROM public.goodsreceived_trl t JOIN public.goodsreceived g ON g.id = t.gr_id WHERE g.gr_no LIKE 'FLT%')
+  AND (:'u_all'::jsonb#>>'{pagination,total_count}')::int = (SELECT count(*) FROM public.goodsreceived_trl t JOIN public.goodsreceived g ON g.id = t.gr_id WHERE g.gr_no LIKE 'FLT%')
+  AND (:'u_all'::jsonb#>>'{aggregates,total_qty}')::numeric = (SELECT sum(t.qty) FROM public.goodsreceived_trl t JOIN public.goodsreceived g ON g.id = t.gr_id WHERE g.gr_no LIKE 'FLT%')
+  AND (:'u_all'::jsonb#>>'{aggregates,total_stock}')::numeric = (SELECT sum(t.stock) FROM public.goodsreceived_trl t JOIN public.goodsreceived g ON g.id = t.gr_id WHERE g.gr_no LIKE 'FLT%'),
+  'no filter lists every line of the receipts the tables hold, with their count, quantity and stock: the answer before migration 202');
 -- Each answer still carries the row fields the app reads (invoice_state of migration 165 among them).
 SELECT pg_temp.gi_assert((SELECT bool_and(e ? 'invoice_state' AND e ? 'grn_item_id' AND e ? 'imported' AND e ? 'qty' AND e ? 'stock') FROM jsonb_array_elements(:'u_all'::jsonb->'data') e), 'rows carry invoice_state, imported, qty and stock');
 SELECT pg_temp.gi_assert((SELECT string_agg(e->>'gr_no' || '=' || (e->>'invoice_state'), ',' ORDER BY e->>'gr_no') FROM (SELECT DISTINCT ON (e->>'gr_no') e FROM jsonb_array_elements(:'u_all'::jsonb->'data') e) x(e))
@@ -183,7 +190,7 @@ SELECT pg_temp.gi_assert(pg_temp.gi_list_grns(pg_temp.gi_list(:'admin_claims'::j
 UPDATE warehouse_security.charging_rule SET invoice_as_goods_leave = false WHERE id;
 SELECT pg_temp.gi_items(:'admin_claims'::jsonb, '{"invoiced":"partly_invoiced"}') AS off_p, pg_temp.gi_items(:'admin_claims'::jsonb, '{"invoiced":true}') AS off_t,
        pg_temp.gi_items(:'admin_claims'::jsonb, '{"invoiced":false}') AS off_f, pg_temp.gi_items(:'admin_claims'::jsonb, '{"invoiced":false,"page_by":"receipt"}', 1, 0) AS off_rc \gset
-SELECT pg_temp.gi_assert(pg_temp.gi_rows(:'off_t'::jsonb) = 'FLTA,FLTA,FLTC' OR pg_temp.gi_rows(:'off_t'::jsonb) = 'FLTA,FLTC', 'off: true lists the GRNs with a live invoice: '||:'off_t');
+SELECT pg_temp.gi_assert(pg_temp.gi_rows(:'off_t'::jsonb) = 'FLTA,FLTC', 'off: true lists the GRNs with a live invoice: '||:'off_t');
 SELECT pg_temp.gi_assert(pg_temp.gi_rows(:'off_f'::jsonb) = 'FLTB,FLTB' AND (:'off_f'::jsonb#>>'{pagination,total_count}')::int = 2, 'off: false lists the GRN without one: '||:'off_f');
 SELECT pg_temp.gi_assert(:'off_p'::jsonb->>'success' = 'true' AND jsonb_array_length(:'off_p'::jsonb->'data') = 0 AND (:'off_p'::jsonb#>>'{pagination,total_count}')::int = 0,
   'off: partly_invoiced is empty, with a total of 0: '||:'off_p');
