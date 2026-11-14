@@ -142,12 +142,14 @@ cleanup() { [[ -z "$scratch" ]] || rm -rf -- "$scratch"; [[ -z "$offsite_dir" ]]
 trap cleanup EXIT
 # --from-offsite: the backup is rebuilt from the bucket as an ordinary backup folder next to the new state (scripts/offsite.sh fetch decrypts
 # each object with the backup key and checks it against its name), and everything below treats it as a folder given by hand: the
-# signature, the list and the storage tree are checked against the backup key before anything is restored. The room needed is checked first.
+# signature, the list and the storage tree are checked against the backup key before anything is restored. The room needed is checked first:
+# fetch reads the backup's size from its list and refuses before any download unless the free space holds the backup twice (the rebuilt folder,
+# which is then moved into the new state, and the stored files restore.sh copies out of it) plus 1 GiB and the largest file twice.
 if [[ "$from_offsite" == true ]]; then
   free_bytes="$(df -B1 --output=avail -- "$parent" | tail -n 1 | tr -d ' ')"
-  echo "Fetching the backup from the bucket into $parent (the space needed is about twice the backup plus 1 GiB; free: $((${free_bytes:-0} / 1048576)) MiB)." >&2
+  echo "Fetching the backup from the bucket into $parent (the space needed is about twice the backup plus 1 GiB, checked before the download; free: $((${free_bytes:-0} / 1048576)) MiB)." >&2
   offsite_dir="$(mktemp -d -- "$parent/.restore-host-offsite.XXXXXX")"
-  fetch_args=(fetch --endpoint "$offsite_endpoint" --bucket "$offsite_bucket" --credentials-file "$offsite_cred" --backup-key "$keyfile" --dest "$offsite_dir")
+  fetch_args=(fetch --endpoint "$offsite_endpoint" --bucket "$offsite_bucket" --credentials-file "$offsite_cred" --backup-key "$keyfile" --dest "$offsite_dir" --reserve-copies 1)
   [[ -z "$offsite_region" ]] || fetch_args+=(--region "$offsite_region")
   [[ -z "$offsite_backup" ]] || fetch_args+=(--backup "$offsite_backup")
   source="$(bash "$ROOT/scripts/offsite.sh" "${fetch_args[@]}")" || die 'Could not rebuild the backup from the bucket (message above). Nothing was created.'
@@ -207,12 +209,15 @@ elif [[ -d "$source" && ! -L "$source" ]]; then
   backup="$(realpath -e -- "$source")"
   name="$(basename -- "$backup")"
   # The folder is copied into the new state, and restore.sh then copies the stored files once more into data/storage: twice its
-  # size, and a gigabyte to spare. Checked before anything is written, as for an archive.
+  # size, and a gigabyte to spare. Checked before anything is written, as for an archive. A folder rebuilt from the bucket is ours and
+  # is moved, not copied (same filesystem; on a failure it is removed either way), so only the restore's copy needs room.
   folder_bytes="$(du -sb -- "$backup" | cut -f1)"
   need_bytes=$(( ${folder_bytes:-0} * 2 + 1073741824 ))
+  how="copying $name into the new state and restoring from it" room='twice the backup plus 1 GiB'
+  [[ -z "$offsite_dir" ]] || { need_bytes=$(( ${folder_bytes:-0} + 1073741824 )); how="restoring from $name" room='the backup plus 1 GiB'; }
   free_bytes="$(df -B1 --output=avail -- "$parent" | tail -n 1 | tr -d ' ')"
   if [[ "$free_bytes" =~ ^[0-9]+$ ]] && ((free_bytes < need_bytes)); then
-    die "Refusing: copying $name into the new state and restoring from it needs about $((need_bytes / 1048576)) MiB in $parent (twice the backup plus 1 GiB), but only $((free_bytes / 1048576)) MiB are free. Free space there, or use a larger disk. Nothing was created."
+    die "Refusing: $how needs about $((need_bytes / 1048576)) MiB in $parent ($room), but only $((free_bytes / 1048576)) MiB are free. Free space there, or use a larger disk. Nothing was created."
   fi
 else
   die "Backup not found (a backup directory, a warehouse-<utc>.tar or a warehouse-<utc>.tar.enc): $source"
@@ -269,7 +274,7 @@ stage="$(mktemp -d -- "$state.restoring-XXXXXX")"
 trap 'cleanup; rm -rf -- "$stage"' EXIT
 for dir in config public data data/db data/storage backups; do mkdir -m 0700 "$stage/$dir"; done
 chmod 0700 "$stage"
-if [[ -n "$scratch" ]]; then mv -- "$backup" "$stage/backups/$name"; else cp -a -- "$backup" "$stage/backups/$name"; fi
+if [[ -n "$scratch" || -n "$offsite_dir" ]]; then mv -- "$backup" "$stage/backups/$name"; else cp -a -- "$backup" "$stage/backups/$name"; fi
 awk -v s="$state" '
   /^WAREHOUSE_DB_PATH=/ { print "WAREHOUSE_DB_PATH=" s "/data/db"; next }
   /^WAREHOUSE_STORAGE_PATH=/ { print "WAREHOUSE_STORAGE_PATH=" s "/data/storage"; next }

@@ -2170,14 +2170,22 @@ secret_access_key=<the secret>
 ```bash
 export WAREHOUSE_STATE_DIR=/srv/warehouse/<name>
 bash scripts/offsite.sh on --endpoint https://<the service's S3 address> --bucket <bucket> --credentials-file ~/offsite.cred [--region <r>] [--max-rate <MB/s>]
-shred -u ~/offsite.cred      # a copy is kept in $WAREHOUSE_STATE_DIR/config/offsite.credentials (mode 0600)
 bash scripts/offsite.sh run  # the first upload, by hand: it can take long; an interrupted run continues
 bash scripts/offsite.sh status
 ```
 
+The installation keeps its own copy of the credentials in `$WAREHOUSE_STATE_DIR/config/offsite.credentials` (mode 0600), but that copy is lost
+with the host. **Before you remove `~/offsite.cred`, put a copy of it, with the endpoint, the bucket name and your copy of the backup key, somewhere
+safe away from the host** (see "What is never in the bucket or a backup" below): a lost-host restore from the bucket needs all four. Then remove
+the file from the home folder (`shred -u ~/offsite.cred`).
+
 `on` writes, reads back and deletes a test object, and refuses a bucket that anyone can read where the service lets it tell (it names the
 check that failed: endpoint, bucket, credentials file, backup key copy, write, read, public bucket, delete). Plain `http://` is refused except to
-the host itself. `off` stops the uploads and leaves the bucket alone; `on` with no options turns it on again with the same bucket.
+the host itself. A check that cannot reach the endpoint gives up after about 10 seconds a request. `off` stops the uploads and leaves the bucket
+alone; it also leaves `config/offsite.credentials` in place, so that `on` with no options turns it on again with the same bucket (`on --region` or
+`--max-rate` alone changes only that). Delete that file yourself if the copy stays off. A run needs free space beside the backups for about twice
+the largest file of the backup and refuses with a message without it; a staging folder (`backups/.offsite-work.*`) left by a run that was killed
+is removed by the next run.
 
 **Each night**, after the backup, its verify, the pruning and the retention (so none of them waits for it), `watch-daily.sh` sends the backup
 that was just verified. A file the earlier night already sent is not sent again, so only new photos and the database dump travel. `--max-rate`
@@ -2202,8 +2210,10 @@ host you need them again: **keep a copy of the credentials, the endpoint, the bu
 (someone holding all four can read the backups: hold them like the key copy). If the credentials leak, revoke the access key at the provider and run `on` again.
 
 **Alerts.** `offsite_upload_failed` (daily while it lasts) on the first failed, unfinished or unchecked upload, or when none was checked for 2 days;
-the message names the cause (credentials, bucket full, network, a changed object). A failure never fails or delays the local backup. A checked upload
-from the last 2 days also satisfies `offhost_copy_missing` (the check for an unconfirmed key copy stays). `doctor` agrees.
+the message names the cause (credentials, bucket full, network, a changed object). A failure never fails or delays the local backup. Where no USB
+drive is set up, a checked upload from the last 2 days also satisfies `offhost_copy_missing` (the check for an unconfirmed key copy stays); where a
+USB drive is set up, its own checks (a failed, old or missing copy, saved images not copied) are said as before, whatever the bucket holds, because
+the saved images are on the drive only. `doctor` agrees.
 
 #### Recover a lost host from the off-site copy
 
@@ -2217,8 +2227,8 @@ npm run db:restore-host -- --state-dir /srv/warehouse/<name> --backup-key ~/back
   --from-offsite --offsite-endpoint https://<S3 address> --offsite-bucket <bucket> --offsite-credentials ~/offsite.cred [--offsite-region <r>] [--backup warehouse-<utc>]
 ```
 
-Without `--backup` the newest backup is used; a wrong name lists what the bucket holds. The backup is rebuilt next to the new state (about twice its
-size plus 1 GiB free is needed), every object is checked against its name, and then the restore is exactly the USB one: the signed file list and the
+Without `--backup` the newest backup is used; a wrong name lists what the bucket holds. The backup is rebuilt next to the new state and then moved
+into it (about twice its size plus 1 GiB free is needed, checked before anything is downloaded), every object is checked against its name, and then the restore is exactly the USB one: the signed file list and the
 storage tree are checked against the backup key before anything is restored, so a changed or swapped object in the bucket is refused. The saved
 images are not in the bucket (`--images` as in the USB recovery; otherwise they are pulled or built). Everything after step 2 is unchanged.
 

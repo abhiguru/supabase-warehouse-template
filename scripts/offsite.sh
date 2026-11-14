@@ -5,7 +5,8 @@
 #                          check the bucket (write, read, delete a test object; refuse one that anyone can read), store the
 #                          settings in <state>/config/offsite.conf and the credentials in <state>/config/offsite.credentials
 #                          (mode 0600), and turn the nightly upload on. After `off`, `on` with no options turns it on again.
-#   offsite.sh off         stop the uploads; the bucket and its contents are left alone
+#   offsite.sh off         stop the uploads; the bucket and its contents are left alone, and so is config/offsite.credentials
+#                          (for `on` again; delete it by hand if the copy stays off)
 #   offsite.sh status      the settings (never the credentials) and the result of the last upload; reads no network
 #   offsite.sh run [DIR]   upload one backup (default: the newest backup that authenticates), check it, apply the retention.
 #                          Run by scripts/watch-daily.sh after the backup of the night; run by hand for the first upload
@@ -16,8 +17,11 @@
 #                          --deep also downloads and decrypts every object and checks it against its name
 #   offsite.sh keep-list   reads backup names (warehouse-<utc>) on standard input, prints those the retention keeps (no network)
 #   offsite.sh fetch --endpoint URL --bucket NAME --credentials-file FILE --backup-key KEYFILE --dest DIR [--region R] [--backup NAME]
+#                    [--reserve-copies N]
 #                          rebuild one backup (default: the newest) as an ordinary backup directory DEST/<name> from the bucket;
-#                          needs no installation. scripts/restore-host.sh --from-offsite does this and then restores from it.
+#                          needs no installation. Refused before any download when DEST lacks the room for the backup (plus N more
+#                          copies of it the caller makes afterwards, default 0). scripts/restore-host.sh --from-offsite does this
+#                          (with N=1, for the stored files the restore copies) and then restores from it.
 #
 # How the copy is made. The tool that talks to the bucket is rclone (the S3 backend), which must be installed on the host; it only moves
 # bytes. Everything is encrypted here first, with the backup key and the cipher the USB archives use (scripts/backup-key.sh): the provider
@@ -51,7 +55,9 @@ source "$ROOT/scripts/backup-key.sh"
 
 KEEP_NIGHTLY=14 KEEP_MONTHS=12 GC_MIN_AGE=2d
 OFF_ENDPOINT='' OFF_BUCKET='' OFF_REGION='' OFF_RATE='' OFF_AKID='' OFF_SECRET=''
-WORK='' RC_ERR=''
+WORK='' RC_ERR='' LISTING=''
+# rclone's patience. `on` lowers it for its check, so an endpoint that cannot be reached is said in seconds, not minutes.
+RC_RETRIES=3 RC_LL_RETRIES=5 RC_CONTIMEOUT=30s RC_TIMEOUT=5m
 cleanup() { local s=$?; trap - EXIT; [[ -z "$WORK" ]] || rm -rf -- "$WORK"; exit "$s"; }
 trap cleanup EXIT
 
@@ -130,7 +136,7 @@ rc() {
         RCLONE_CONFIG_OFFSITE_ACCESS_KEY_ID="$OFF_AKID" RCLONE_CONFIG_OFFSITE_SECRET_ACCESS_KEY="$OFF_SECRET" RCLONE_CONFIG_OFFSITE_ENV_AUTH=false
       [[ -z "$OFF_REGION" ]] || export RCLONE_CONFIG_OFFSITE_REGION="$OFF_REGION"
     fi
-    exec rclone "$@" ${OFF_RATE:+--bwlimit "${OFF_RATE}M"} --retries 3 --low-level-retries 5 --contimeout 30s --timeout 5m -q
+    exec rclone "$@" ${OFF_RATE:+--bwlimit "${OFF_RATE}M"} --retries "$RC_RETRIES" --low-level-retries "$RC_LL_RETRIES" --contimeout "$RC_CONTIMEOUT" --timeout "$RC_TIMEOUT" -q
   ) 2>"$errf" || status=$?
   text="$(grep -v '^[[:space:]]*$' "$errf" 2>/dev/null | tail -n 1 | cut -c1-300 || true)"
   [[ -z "$OFF_SECRET" ]] || text="${text//"$OFF_SECRET"/***}"
@@ -148,8 +154,15 @@ remote_root() {
 }
 # BASE: this key's set in the bucket.
 set_base() { BASE="$(remote_root)/warehouse-offsite/k-$(backup_key_fingerprint "$BACKUP_KEY")"; }
-# "size path" lines of a remote folder (empty when it does not exist yet).
-remote_list() { rc lsf -R --files-only --format sp --separator ' ' "$@" 2>/dev/null || { [[ "${RC_ERR,,}" == *"not found"* || "${RC_ERR,,}" == *"directory"*"found"* ]] && return 0; return 1; }; }
+# LISTING: the "size path" lines of a remote folder (empty when it does not exist yet). Not called inside $(...), so that RC_ERR, the
+# reason of a failure, reaches the caller's message.
+remote_list() {
+  LISTING=''
+  if rc lsf -R --files-only --format sp --separator ' ' "$@" > "$WORK/list.out"; then LISTING="$(cat -- "$WORK/list.out")"; rm -f -- "$WORK/list.out"; return 0; fi
+  rm -f -- "$WORK/list.out"
+  [[ "${RC_ERR,,}" == *"not found"* || "${RC_ERR,,}" == *"directory"*"found"* ]] && return 0
+  return 1
+}
 
 # ---------------------------------------------------------------- status file
 status_file() { printf '%s/config/offsite.last\n' "$1"; }
@@ -206,7 +219,8 @@ verify_manifest() {
   local manifest="$1" mode="$2" idfile="${3:-}" line size id dow bad=0 checked=0 listing
   local -A have=() deep=()
   dow="$(date -u +%w)"
-  listing="$(remote_list "$BASE/objects")" || { echo "Could not list the bucket: $RC_ERR" >&2; return 1; }
+  remote_list "$BASE/objects" || { echo "Could not list the bucket: ${RC_ERR:-no detail}" >&2; return 1; }
+  listing="$LISTING"
   while read -r size id; do [[ -z "$id" ]] || have[$id]="$size"; done <<<"$listing"
   if [[ -n "$idfile" && -f "$idfile" ]]; then while read -r id; do [[ -z "$id" ]] || deep[$id]=1; done < "$idfile"; fi
   while IFS= read -r line; do
@@ -234,7 +248,7 @@ newest_backup() {
 }
 
 cmd_run() {
-  local state dir name now manifest plain have_file listing size id sum path mode line count=0 sent=0 sent_bytes=0 ptr kept
+  local state dir name now manifest plain have_file listing size id sum path mode line count=0 sent=0 sent_bytes=0 ptr kept largest need free
   state="$(. "$ROOT/scripts/operator-lock.sh"; operator_state)" || exit 1
   . "$ROOT/scripts/operator-lock.sh"
   [[ "$(conf_get "$state/config/offsite.conf" ENABLED)" == yes ]] || { echo 'The off-site copy is off.' >&2; exit 0; }
@@ -249,11 +263,23 @@ cmd_run() {
   dir="${dir%/}"; name="$(basename -- "$dir")"
   [[ "$name" =~ ^warehouse-[0-9]{8}T[0-9]{6}Z$ && -d "$dir" && ! -L "$dir" ]] || fail "not a backup directory: $dir"
   BACKUP_TREE=skip WAREHOUSE_BACKUP_KEY_FILE="$state/config/backup.key" backup_authenticate "$dir" false >/dev/null 2>&1 || fail "$name does not authenticate; it was not uploaded"
+  # A run that was killed (SIGKILL, power loss) left its staging folder: a packed file and the plain manifest. Under the operator lock
+  # no other run uses one, so this script's own leftovers are removed: folders only (find does not follow a link), owned by this user.
+  find "$state/backups" -mindepth 1 -maxdepth 1 -type d -name '.offsite-work.??????' -user "$(id -u)" -exec rm -rf -- {} + \
+    || fail "could not remove an earlier run's staging folder in $state/backups"
+  # Room for the staging: the largest file is packed and encrypted there at once (twice its size), with the manifest and 64 MiB to spare.
+  largest="$(find "$dir" -type f -printf '%s\n' | LC_ALL=C sort -n | tail -n 1)"
+  need=$(( ${largest:-0} * 2 + 67108864 ))
+  free="$(df -B1 --output=avail -- "$state/backups" | tail -n 1 | tr -d ' ')"
+  if [[ "$free" =~ ^[0-9]+$ ]] && ((free < need)); then
+    fail "not enough free space in $state/backups to prepare the upload: about $((need / 1048576)) MiB are needed (twice the largest file of $name plus 64 MiB), $((free / 1048576)) MiB are free"
+  fi
   make_work "$state/backups"
   set_base
   now="$(date +%s)"
 
-  listing="$(remote_list "$BASE/objects")" || fail "could not list the bucket: ${RC_ERR:-no detail} (check the credentials and the network)"
+  remote_list "$BASE/objects" || fail "could not list the bucket: ${RC_ERR:-no detail} (check the credentials and the network)"
+  listing="$LISTING"
   local -A have=()
   while read -r size id; do [[ -z "$id" ]] || have[$id]="$size"; done <<<"$listing"
 
@@ -313,7 +339,8 @@ cmd_run() {
 apply_retention() {
   local state="$1" current="$2" listing names kept n id line size drop count=0
   local -A used=()
-  listing="$(remote_list "$BASE/backups")" || { echo "could not list the backups in the bucket: $RC_ERR"; return 1; }
+  remote_list "$BASE/backups" || { echo "could not list the backups in the bucket: ${RC_ERR:-no detail}"; return 1; }
+  listing="$LISTING"
   names="$(sed -n 's/^[0-9]* \(warehouse-[0-9]\{8\}T[0-9]\{6\}Z\)\.manifest$/\1/p' <<<"$listing")"
   kept="$(keep_list <<<"$names")"
   grep -qx "$current" <<<"$kept" || { echo "the retention would not keep the backup just made ($current); nothing removed"; return 1; }
@@ -355,15 +382,16 @@ object_holds_only() {
   [[ "${verbose:0:1}" == - && "$verbose" != *$'\n'* ]]
 }
 cmd_fetch() {
-  local endpoint='' bucket='' region='' cred='' keyfile='' dest='' want='' names listing name n line mode size id path d tmpdir
+  local endpoint='' bucket='' region='' cred='' keyfile='' dest='' want='' reserve=0 names listing name n line mode size id path d tmpdir total largest need free
   while (($#)); do
     case "$1" in
       --endpoint) endpoint="${2:-}"; shift 2 ;; --bucket) bucket="${2:-}"; shift 2 ;; --region) region="${2:-}"; shift 2 ;;
       --credentials-file) cred="${2:-}"; shift 2 ;; --backup-key) keyfile="${2:-}"; shift 2 ;; --dest) dest="${2:-}"; shift 2 ;;
-      --backup) want="${2:-}"; shift 2 ;; *) die "Unknown option for fetch: $1" ;;
+      --backup) want="${2:-}"; shift 2 ;; --reserve-copies) reserve="${2:-}"; shift 2 ;; *) die "Unknown option for fetch: $1" ;;
     esac
   done
   [[ -n "$endpoint" && -n "$bucket" && -n "$cred" && -n "$keyfile" && -n "$dest" ]] || die 'fetch needs --endpoint, --bucket, --credentials-file, --backup-key and --dest.'
+  [[ "$reserve" =~ ^[0-9]$ ]] || die '--reserve-copies must be a whole number from 0 to 9.'
   valid_endpoint "$endpoint" && valid_bucket "$bucket" && valid_region "$region" || die 'The endpoint, bucket or region is not valid.'
   [[ "$dest" == /* && -d "$dest" && ! -L "$dest" ]] || die "--dest must be an existing absolute folder: $dest"
   OFF_ENDPOINT="$endpoint" OFF_BUCKET="$bucket" OFF_REGION="$region" OFF_RATE=''
@@ -372,7 +400,8 @@ cmd_fetch() {
   backup_key_load "$keyfile" || exit 1
   make_work "$dest"
   set_base
-  listing="$(remote_list "$BASE/backups")" || die "Could not list the bucket: $RC_ERR"
+  remote_list "$BASE/backups" || die "Could not list the bucket: ${RC_ERR:-no detail}"
+  listing="$LISTING"
   names="$(sed -n 's/^[0-9]* \(warehouse-[0-9]\{8\}T[0-9]\{6\}Z\)\.manifest$/\1/p' <<<"$listing" | LC_ALL=C sort)"
   [[ -n "$names" ]] || die 'The bucket holds no backup made with this backup key.'
   if [[ -n "$want" ]]; then
@@ -384,6 +413,14 @@ cmd_fetch() {
   rc cat "$BASE/backups/$name.manifest" > "$WORK/m.enc" || die "Could not download the manifest of $name: $RC_ERR"
   read_manifest "$WORK/m.enc" "$name" "$WORK/m.plain" || exit 1
   [[ ! -e "$dest/$name" ]] || die "$dest/$name already exists."
+  # Room, before anything is downloaded: the backup (the sizes in the manifest), the largest object twice while it is checked and
+  # unpacked, 1 GiB to spare, and the copies of the backup the caller still makes afterwards (--reserve-copies).
+  read -r total largest < <(awk '$1 == "F" { t += $3; if ($3 > m) m = $3 } END { printf "%.0f %.0f\n", t, m }' "$WORK/m.plain")
+  need=$(( total * (1 + reserve) + largest * 2 + 1073741824 ))
+  free="$(df -B1 --output=avail -- "$dest" | tail -n 1 | tr -d ' ')"
+  if [[ "$free" =~ ^[0-9]+$ ]] && ((free < need)); then
+    die "Refusing: rebuilding $name$([[ $reserve == 0 ]] || echo ' and restoring from it') needs about $((need / 1048576)) MiB in $dest, but only $((free / 1048576)) MiB are free. Free space there, or use a larger disk. Nothing was downloaded."
+  fi
   mkdir -- "$dest/$name"
   local -a dirs=()
   while IFS= read -r line; do
@@ -412,7 +449,7 @@ cmd_fetch() {
 
 # ---------------------------------------------------------------- on / off / status / list / verify
 cmd_on() {
-  local state endpoint='' bucket='' region='' cred='' rate='' conf probe tmp content got
+  local state endpoint='' bucket='' region='' cred='' rate='' conf probe tmp content got read_err
   state="$(. "$ROOT/scripts/operator-lock.sh"; operator_state)" || exit 1
   conf="$state/config/offsite.conf"
   while (($#)); do
@@ -424,7 +461,7 @@ cmd_on() {
   if [[ -z "$endpoint$bucket$cred" && -f "$conf" ]]; then
     # on again, same bucket and credentials as before.
     load_conf "$state" || exit 1
-    endpoint="$OFF_ENDPOINT" bucket="$OFF_BUCKET" region="$OFF_REGION" rate="${rate:-$OFF_RATE}"; cred="$state/config/offsite.credentials"
+    endpoint="$OFF_ENDPOINT" bucket="$OFF_BUCKET" region="${region:-$OFF_REGION}" rate="${rate:-$OFF_RATE}"; cred="$state/config/offsite.credentials"
   fi
   [[ -n "$endpoint" && -n "$bucket" && -n "$cred" ]] || die 'Usage: bash scripts/offsite.sh on --endpoint URL --bucket NAME --credentials-file FILE [--region R] [--max-rate MB/S]'
   valid_endpoint "$endpoint" || die 'Check failed (endpoint): it must be an https:// address (plain http is accepted only to this host).'
@@ -437,12 +474,15 @@ cmd_on() {
   backup_key_load "$state/config/backup.key" || exit 1
   backup_escrow_ok "$state" || die "Check failed (backup key copy): ${BACKUP_ESCROW_PROBLEM}. The copy in the bucket is encrypted with the backup key and cannot be opened without it: bash scripts/backup-key-escrow.sh show"
   make_work
+  # The check gives up on an endpoint it cannot reach after about 10 seconds a request (the nightly run keeps rclone's usual patience).
+  RC_RETRIES=1 RC_LL_RETRIES=1 RC_CONTIMEOUT=10s RC_TIMEOUT=60s
   probe="warehouse-offsite/test/$(head -c 12 /dev/urandom | od -An -tx1 | tr -d ' \n')"
   content="warehouse-offsite-test $(date -u +%Y-%m-%dT%H:%M:%SZ) $RANDOM$RANDOM"
   printf '%s\n' "$content" > "$WORK/probe"
   rc copyto "$WORK/probe" "$(remote_root)/$probe" || die "Check failed (write): the bucket refused a test object: ${RC_ERR:-no detail}. Check the endpoint, bucket name, region and that the key may write."
-  got="$(rc cat "$(remote_root)/$probe" || true)"
-  if [[ "$got" != "$content" ]]; then rc deletefile "$(remote_root)/$probe" || true; die "Check failed (read): the test object could not be read back: ${RC_ERR:-it differs}."; fi
+  got='' read_err='it differs'
+  if rc cat "$(remote_root)/$probe" > "$WORK/probe.back"; then got="$(cat -- "$WORK/probe.back")"; else read_err="${RC_ERR:-no detail}"; fi
+  if [[ "$got" != "$content" ]]; then rc deletefile "$(remote_root)/$probe" || true; die "Check failed (read): the test object could not be read back: $read_err."; fi
   if [[ -z "${WAREHOUSE_OFFSITE_TEST_DIR:-}" ]] && command -v curl >/dev/null 2>&1; then
     # Anonymous request for the test object (path style, then the bucket's own host). A public bucket is refused where it can be told.
     for url in "${endpoint%/}/$bucket/$probe" "https://$bucket.${endpoint#https://}/$probe"; do
@@ -470,6 +510,7 @@ cmd_off() {
   tmp="$(mktemp "$conf.XXXXXX")"
   sed 's/^ENABLED=.*/ENABLED=no/' "$conf" > "$tmp"; chmod 600 "$tmp"; mv -f -- "$tmp" "$conf"
   echo 'Off-site copy is off. The bucket and what it holds are untouched; bash scripts/offsite.sh on turns it on again.'
+  [[ ! -e "$state/config/offsite.credentials" ]] || echo "The bucket credentials stay in $state/config/offsite.credentials (mode 0600, never in a backup) so that on works again; delete that file if you will not turn the copy on again, and keep your own copy away from the host for a lost-host restore."
 }
 cmd_status() {
   local state conf last
@@ -492,12 +533,17 @@ open_bucket() {
   make_work
   set_base
 }
-cmd_list() { open_bucket; remote_list "$BASE/backups" | sed -n 's/^\([0-9]*\) \(warehouse-[0-9]\{8\}T[0-9]\{6\}Z\)\.manifest$/\2/p' | LC_ALL=C sort; }
+cmd_list() {
+  open_bucket
+  remote_list "$BASE/backups" || die "Could not list the bucket: ${RC_ERR:-no detail}"
+  sed -n 's/^\([0-9]*\) \(warehouse-[0-9]\{8\}T[0-9]\{6\}Z\)\.manifest$/\2/p' <<<"$LISTING" | LC_ALL=C sort
+}
 cmd_verify() {
   local deep=no name='' listing
   while (($#)); do case "$1" in --deep) deep=all; shift ;; warehouse-*) name="$1"; shift ;; *) die "Unknown option for verify: $1" ;; esac; done
   open_bucket
-  listing="$(remote_list "$BASE/backups")" || die "Could not list the bucket: $RC_ERR"
+  remote_list "$BASE/backups" || die "Could not list the bucket: ${RC_ERR:-no detail}"
+  listing="$LISTING"
   if [[ -z "$name" ]]; then name="$(sed -n 's/^[0-9]* \(warehouse-[0-9]\{8\}T[0-9]\{6\}Z\)\.manifest$/\1/p' <<<"$listing" | LC_ALL=C sort | tail -n 1)"; fi
   [[ -n "$name" ]] || die 'The bucket holds no backup made with this backup key.'
   rc cat "$BASE/backups/$name.manifest" > "$WORK/v.enc" || die "Could not download the manifest of $name: $RC_ERR"
