@@ -1004,6 +1004,8 @@ bash "$ROOT/tests/grn_edit_lock_order.sh" "$container"
 
 # Migrations 41, 44 and 46: the last-administrator rule and the one-invoice-per-
 # receipt rule under two users acting at the same moment.
+# WH-205: the last SQL suite (bills_need_gst_details) leaves the store without GST details, and these rules make a bill: register the store again.
+mig_psql < "$ROOT/tests/fixtures/gst_details.sql"
 bash "$ROOT/tests/concurrent_rules.sh" "$container"
 
 # Migration 127: a change of a numbering rule and a document save share the document lock; neither sees half of the other.
