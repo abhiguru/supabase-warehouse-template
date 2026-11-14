@@ -15,7 +15,9 @@ const serviceFunctions = new Set(['sweep-print-jobs']);
 // cancel-print-job is not in printFunctions: a job already on its way can still be stopped while printing is turned off.
 const allowed = new Set([...publicFunctions, ...serviceFunctions, 'get-config', ...printFunctions, 'cancel-print-job',
   'generate-grn-pdf', 'generate-dispatch-pdf', 'generate-invoice-pdf', 'generate-customer-stock-pdf', 'generate-report-pdf',
-  'generate-statement-pdf', 'generate-temperature-report-pdf']);
+  'generate-statement-pdf', 'generate-temperature-report-pdf',
+  // The accountant pack (WH-158): a zip answered in the body, nothing uploaded.
+  'generate-accountant-pack']);
 
 // The four document PDFs print the optional letterhead image (setup.sh --letterhead-file); the report PDFs do not.
 // The temperature report (WH-157) prints it too.
