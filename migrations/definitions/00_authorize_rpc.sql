@@ -45,6 +45,10 @@ BEGIN
   IF rpc = 'get_customer_dues' AND role_name NOT IN ('admin','supervisor') THEN
     RAISE EXCEPTION 'Administrator or supervisor required' USING ERRCODE = '42501';
   END IF;
+  -- The accountant pack (migration 204, WH-158): administrators and supervisors only.
+  IF rpc = 'get_accountant_pack' AND role_name NOT IN ('admin','supervisor') THEN
+    RAISE EXCEPTION 'Administrator or supervisor required' USING ERRCODE = '42501';
+  END IF;
   IF rpc = 'get_customer_statement' AND role_name NOT IN ('admin','supervisor','customer') THEN
     RAISE EXCEPTION 'Customer access denied' USING ERRCODE = '42501';
   END IF;
