@@ -279,15 +279,21 @@ The `kept_*` columns are not among the internal columns below: they hold what a 
 
 ## GST documents (migration 173)
 
-Nothing here applies until an administrator saves the facility's GST details (`set_gst_details`): before that every invoice is saved as
-`doc_type` `invoice`, with every figure, read, PDF and pre-printed print exactly as described above, and an item's GST treatment is not
-used. An invoice saved before the details keeps `invoice` and today's rules for good, edits included.
+Since migration 206 (WH-205) no new bill is made until an administrator saves the facility's GST details with a GSTIN
+(`set_gst_details`; a GSTIN is always required, and `registered: false` is refused): before that, and for a facility that saved them as not
+registered, `save_invoice` refuses every new bill with `GST_DETAILS_REQUIRED` (WH409; nothing written, no number used), whichever way it
+was started (the invoice form, the GRN's create-invoice button, goods invoiced as they leave). The rule is
+`warehouse_security.bills_allowed()`; `can_make_bills()` (administrators, supervisors, staff) and `get_gst_details` `data.bills_allowed`
+answer it. A resend of a bill saved before is still answered from its request code. Not affected: editing, cancelling, deleting and
+printing a bill already made, and bills imported from an old system (`import_history`). An invoice saved before the details (before this
+migration) keeps `doc_type` `invoice` and its rules for good, edits included, with every figure, read, PDF and pre-printed print exactly as
+described above.
 
 **Which document** (decided by the server at save and stored on the invoice):
 
 | Facility | Lines | Customer | Document |
 |---|---|---|---|
-| Not registered | any | any | `bill`: no tax on any line, no GSTIN or SAC |
+| Not registered (no new bill since migration 206; older bills keep it) | any | any | `bill`: no tax on any line, no GSTIN or SAC |
 | Registered | all exempt | any | `bill_of_supply` |
 | Registered | all taxable | any | `tax_invoice` |
 | Registered | mixed | no valid GSTIN | `invoice_cum_bos` (tax on the taxable lines only) |

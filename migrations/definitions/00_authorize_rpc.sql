@@ -89,6 +89,8 @@ BEGIN
     -- What became of a save whose answer was lost (migration 120).
     'get_submission_result',
     'save_invoice','update_invoice','get_next_invoice_number',
+    -- Whether a bill can be made yet (GST details saved with a GSTIN; migration 206).
+    'can_make_bills',
     'get_invoiceable_grns','get_invoices_list','get_invoice_data','get_invoice_detail',
     'get_invoice_items_detailed','get_customer_invoice_summary',
     'generate_invoice_data_for_grn_with_pricing',

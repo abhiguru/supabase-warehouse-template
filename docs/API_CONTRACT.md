@@ -177,9 +177,12 @@ supervisors and the invoice's customer. The service role and the database owner 
 ### GST documents (migration 173)
 
 - **Settings** (administrators): `get_gst_details()` answers `{success, data: {saved, registered, gstin, state_code, state_name,
-  legal_name, address, sac_storage, sac_labour, saved_at, saved_by, saved_by_name, states: [{code, name}]}}`; `saved` false means the
-  details were never saved and every document is made as before. `set_gst_details(p_details)` takes `{registered (boolean, required),
-  gstin (required when registered), address (required, up to 300), legal_name, sac_storage, sac_labour}` (a SAC is 4 to 8 digits, empty =
+  legal_name, address, sac_storage, sac_labour, saved_at, saved_by, saved_by_name, bills_allowed, states: [{code, name}]}}`; `saved`
+  false means the details were never saved. `bills_allowed` (migration 206) is true only when they are saved, registered and hold a valid
+  GSTIN; until then `save_invoice` refuses every new bill with `GST_DETAILS_REQUIRED` (WH409). `can_make_bills()` (administrators,
+  supervisors, staff) answers `{success, data: {allowed}}` with the same value. `set_gst_details(p_details)` takes `{registered (optional;
+  when sent it must be true, else 22023 "Bills need a GSTIN: enter the warehouse's GSTIN."), gstin (required), address (required, up to
+  300), legal_name, sac_storage, sac_labour}` (a SAC is 4 to 8 digits, empty =
   996721 / 996719; `legal_name` left out keeps the stored one, shared with the legal settings) and answers `{success, data}` as the getter.
   A bad value raises 22023 and changes nothing; each change writes one `audit_log` row (`facility_gst`).
 - **Items**: `items.gst_treatment` (`taxable` default, `exempt_agri`), read from the table; `set_item_gst_treatment(p_item_id,
