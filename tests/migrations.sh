@@ -522,7 +522,7 @@ test_files=(
   "$ROOT/tests/zero_charge_reason.sql"
   "$ROOT/tests/item_price_history.sql" "$ROOT/tests/invoice_column_grants.sql"
   "$ROOT/tests/central_login.sql" "$ROOT/tests/report_sort.sql"
-  "$ROOT/tests/report_pdf_retention.sql"
+  "$ROOT/tests/report_pdf_retention.sql" "$ROOT/tests/generated_pdf_sweep.sql"
   "$ROOT/tests/report_invoice_amounts.sql"
   "$ROOT/tests/report_invoice_paid.sql"
   "$ROOT/tests/report_to_date.sql" "$ROOT/tests/grn_list_end_day.sql"
