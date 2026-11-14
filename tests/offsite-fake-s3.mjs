@@ -1,14 +1,29 @@
 // A small stand-in for an S3-compatible bucket server, for tests/offsite.test.mjs (WH-145). It speaks the few calls rclone makes for
 // scripts/offsite.sh: put, get, head and delete of one object, the multi-object delete, and the version 2 listing with a prefix and a
-// delimiter. It checks nothing about the signature except the access key id (the "Credential=<id>/" part of the Authorization header), so a
-// test can give it the one key it accepts and see a wrong one refused with 403. It keeps every object in memory and records every request
+// delimiter. It checks the access key id (the "Credential=<id>/" part of the Authorization header) and, when given secretKey, the SigV4 signature, so a
+// test can see a wrong key or a wrong secret refused with 403. It keeps every object in memory and records every request
 // (method, path, authorization header) so that a test can look for secrets on the wire. Loopback only; no real storage is involved.
 import { createServer } from 'node:http';
-import { createHash } from 'node:crypto';
+import { createHash, createHmac } from 'node:crypto';
+const hmac = (key, data) => createHmac('sha256', key).update(data).digest();
+// SigV4 as the AWS SDK and rclone compute it for a path-style request (single encoding of the path, query sorted by name).
+function signatureMatches(req, secret) {
+  const m = /Credential=([^/]+)\/(\d{8})\/([^/]+)\/s3\/aws4_request, SignedHeaders=([^,]+), Signature=([0-9a-f]{64})/.exec(String(req.headers.authorization ?? ''));
+  if (!m) return false;
+  const [, , date, region, signed, signature] = m;
+  const [path, query = ''] = req.url.split('?');
+  const canonicalQuery = query ? query.split('&').map(p => (p.includes('=') ? p : `${p}=`)).sort().join('&') : '';
+  const headers = signed.split(';').map(h => `${h}:${String(req.headers[h] ?? '').trim().replace(/\s+/g, ' ')}\n`).join('');
+  const canonical = [req.method, path, canonicalQuery, headers, signed, req.headers['x-amz-content-sha256'] ?? 'UNSIGNED-PAYLOAD'].join('\n');
+  const scope = `${date}/${region}/s3/aws4_request`;
+  const toSign = ['AWS4-HMAC-SHA256', req.headers['x-amz-date'], scope, createHash('sha256').update(canonical).digest('hex')].join('\n');
+  const key = hmac(hmac(hmac(hmac(`AWS4${secret}`, date), region), 's3'), 'aws4_request');
+  return hmac(key, toSign).toString('hex') === signature;
+}
 const md5 = body => createHash('md5').update(body).digest('hex');
 const etagOf = o => `"${md5(o.body)}"`;
 
-export async function startFakeS3({ accessKey = 'FAKEACCESSKEY01', bucket = 'warehouse-offsite-test' } = {}) {
+export async function startFakeS3({ accessKey = 'FAKEACCESSKEY01', secretKey = null, bucket = 'warehouse-offsite-test' } = {}) {
   const objects = new Map();      // key -> { body: Buffer, modified: Date }
   const requests = [];
   const behaviour = { refuse: null, quotaFull: false };   // refuse: a status to answer every request with; quotaFull: refuse puts with 403 QuotaExceeded
@@ -42,6 +57,7 @@ export async function startFakeS3({ accessKey = 'FAKEACCESSKEY01', bucket = 'war
       if (behaviour.refuse) return error(res, behaviour.refuse, 'Refused', 'refused by the test');
       const id = /Credential=([^/]+)\//.exec(authorization)?.[1];
       if (id !== accessKey) return error(res, 403, 'InvalidAccessKeyId', 'The access key id you provided does not exist');
+      if (secretKey && !signatureMatches(req, secretKey)) return error(res, 403, 'SignatureDoesNotMatch', 'The request signature we calculated does not match');
       const [, key = ''] = /^[^/]+\/?(.*)$/.exec(path) ?? [];
       if (path.split('/')[0] !== bucket) return error(res, 404, 'NoSuchBucket', 'The specified bucket does not exist');
       if (req.method === 'POST' && url.searchParams.has('delete')) {

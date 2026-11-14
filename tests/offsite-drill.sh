@@ -129,11 +129,15 @@ alert | grep -q '"problem":null' || fail 'the alert did not clear'
 # One byte changed in every object of the bucket: the deep check names it.
 mkdir "$work/objs" "$work/bad"; objects="$(rcl lsf -R --files-only "t:$BUCKET" | grep '/objects/')"
 rcl copy "t:$BUCKET" "$work/objs" --include '*/objects/*'
-while IFS= read -r o; do cp "$work/objs/$o" "$work/bad/$(basename "$o")"; printf '\x01' >> "$work/bad/$(basename "$o")"; done <<<"$objects"
+while IFS= read -r o; do
+  b="$work/bad/$(basename "$o")"; last="$(tail -c 1 "$work/objs/$o" | od -An -tu1 | tr -d ' ')"
+  head -c -1 "$work/objs/$o" > "$b"; printf "\\x$(printf '%02x' $((last ^ 1)))" >> "$b"   # one byte flipped in place: the size is the same
+  [[ "$(stat -c %s "$b")" == "$(stat -c %s "$work/objs/$o")" ]] || fail 'the changed copy has another size'
+done <<<"$objects"
 first="$(head -n 1 <<<"$objects")"
 prefix="${first%/objects/*}"
 rcl copy "$work/bad" "t:$BUCKET/$prefix/objects" --ignore-times
 if off verify --deep > "$work/deep.out" 2>&1; then fail 'verify --deep passed a changed object'; fi
-grep -q 'Wrong size\|not what its name says\|does not decrypt' "$work/deep.out" || fail "deep check message: $(cat "$work/deep.out")"
+grep -q 'not what its name says\|does not decrypt' "$work/deep.out" || fail "deep check message: $(cat "$work/deep.out")"
 [[ "$(backups_hash)" == "$local_before" ]] || fail 'a local backup changed (tamper)'
 echo 'OFFSITE DRILL PASSED'

@@ -54,7 +54,7 @@ async function fixture({ credentialsMode = 0o600, accessKey = KEYID } = {}) {
   const scratch = mkdtempSync(join(tmpdir(), 'warehouse-offsite-'));
   const state = makeState(scratch); writeEscrow(state);
   mkdirSync(join(state, 'backups'), { mode: 0o700 });
-  const s3 = await startFakeS3({ accessKey: KEYID, bucket: BUCKET });
+  const s3 = await startFakeS3({ accessKey: KEYID, secretKey: SECRET, bucket: BUCKET });
   const cred = join(scratch, 'offsite-credentials');
   writeFileSync(cred, `access_key_id=${accessKey}\nsecret_access_key=${SECRET}\n`, { mode: credentialsMode });
   chmodSync(cred, credentialsMode);
@@ -110,6 +110,10 @@ test('on refuses half-given or unusable settings, and a bucket or key that does 
     writeFileSync(f.cred, `access_key_id=WRONGACCESSKEY1\nsecret_access_key=${SECRET}\n`, { mode: 0o600 });
     r = await f.on();
     assert.equal(r.status, 1); assert.match(r.stderr, /Check failed \(write\)/); assert.ok(!r.all.includes(SECRET));
+    // The right key id with a wrong secret: the stand-in checks the SigV4 signature, so it answers 403 too.
+    writeFileSync(f.cred, `access_key_id=${KEYID}\nsecret_access_key=WRONGsecretKeyValue123456\n`, { mode: 0o600 });
+    r = await f.on();
+    assert.equal(r.status, 1); assert.match(r.stderr, /Check failed \(write\)/); assert.ok(!r.all.includes('WRONGsecretKeyValue123456') && !r.all.includes(SECRET));
     writeFileSync(f.cred, `access_key_id=${KEYID}\nsecret_access_key=${SECRET}\n`, { mode: 0o600 });
     // A bucket that does not exist, and one that refuses writes (quota).
     r = await f.off(['on', '--endpoint', f.s3.endpoint, '--bucket', 'nosuchbucket', '--credentials-file', f.cred]);
