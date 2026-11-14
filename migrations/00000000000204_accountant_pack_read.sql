@@ -16,7 +16,7 @@
 --    storage = taxable_value - labour. An imported line: storage = issued_storage_amount, labour = taxable_value - storage (migration
 --    189). A document made before GST details (doc_type 'invoice', not imported): storage as get_invoice_detail reads it, labour as
 --    above, rate = the line's tax %. The stored header tax (CGST, SGST, IGST; tax_amount for 'invoice') is shared over the rows in
---    proportion to taxable x rate (accountant_split). Round-off = total - (taxable + exempt + tax - discount).
+--    proportion to taxable x rate (accountant_split); a head with no stored amount is null. Round-off = total - (taxable + exempt + tax - discount).
 --  * warehouse_security.accountant_pack_cancellations(from, to, now): the cancellations a pack carries (contract D6): a cancelled app
 --    document (not imported) (a) dated in the period: in_period; (b) dated before From and cancelled in the period: cancelled_in_period;
 --    (c) dated before From, when a recorded pack covering its date was made before the cancel and no pack of a period between its date and
@@ -152,7 +152,7 @@ CREATE FUNCTION warehouse_security.accountant_pack_documents(p_from date, p_to d
      WHERE o.v <> 0 OR o.rn = 1
      GROUP BY o.invoice_id),
   sp AS (
-    SELECT s.*, d.doc_type,
+    SELECT s.*, d.doc_type, d.cgst_amount, d.sgst_amount, d.igst_amount,
            warehouse_security.accountant_split(d.cgst_amount, s.weights) AS cgst,
            warehouse_security.accountant_split(d.sgst_amount, s.weights) AS sgst,
            warehouse_security.accountant_split(d.igst_amount, s.weights) AS igst,
@@ -161,10 +161,14 @@ CREATE FUNCTION warehouse_security.accountant_pack_documents(p_from date, p_to d
   r AS (
     SELECT sp.invoice_id, n,
            sp.kinds[n] AS kind, sp.exempts[n] AS exempt, sp.rates[n] AS rate, sp.vals[n] AS v,
-           CASE WHEN sp.doc_type = 'invoice' THEN NULL ELSE sp.cgst[n] END AS cgst,
-           CASE WHEN sp.doc_type = 'invoice' THEN NULL ELSE sp.sgst[n] END AS sgst,
-           CASE WHEN sp.doc_type = 'invoice' THEN NULL ELSE sp.igst[n] END AS igst,
-           CASE WHEN sp.doc_type = 'invoice' THEN sp.tax[n] ELSE (sp.cgst[n] + sp.sgst[n] + sp.igst[n])::numeric(12,2) END AS tax
+           -- A head the document does not carry (IGST of an intra-state document, every head of a bill of supply) is null: an empty
+           -- cell in the register, as the contract's example row shows. 'invoice' documents carry their tax as one figure.
+           CASE WHEN sp.doc_type = 'invoice' OR sp.cgst_amount IS NULL THEN NULL ELSE sp.cgst[n] END AS cgst,
+           CASE WHEN sp.doc_type = 'invoice' OR sp.sgst_amount IS NULL THEN NULL ELSE sp.sgst[n] END AS sgst,
+           CASE WHEN sp.doc_type = 'invoice' OR sp.igst_amount IS NULL THEN NULL ELSE sp.igst[n] END AS igst,
+           CASE WHEN sp.doc_type = 'invoice' THEN sp.tax[n]
+                ELSE (CASE WHEN sp.cgst_amount IS NULL THEN 0 ELSE sp.cgst[n] END + CASE WHEN sp.sgst_amount IS NULL THEN 0 ELSE sp.sgst[n] END
+                      + CASE WHEN sp.igst_amount IS NULL THEN 0 ELSE sp.igst[n] END)::numeric(12,2) END AS tax
       FROM sp CROSS JOIN LATERAL generate_subscripts(sp.vals, 1) n),
   rj AS (
     SELECT r.invoice_id, sum(r.v) AS v_sum, sum(r.tax) AS tax_sum,
