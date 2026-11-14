@@ -326,9 +326,12 @@ administrator's mobile number and the SMS code that arrives.
 
 ## 11. First-use checks, then done
 
-Run the [First-use checks](OPERATOR_INSTALL.md#first-use-checks) with fictional data and owned phones. On the administrator's phone,
-open Help, then Connection, stand on the warehouse Wi-Fi and tap **Check now**: it should show **Reachable** (the fallback address from
-step 7).
+On the administrator's phone, in this order:
+
+1. Enter the store's GST number: Settings → Warehouse tools → **GST details**. It is required. The app makes no bill until it is saved.
+2. Run the [First-use checks](OPERATOR_INSTALL.md#first-use-checks) with fictional data and owned phones.
+3. Open Help, then Connection, stand on the warehouse Wi-Fi and tap **Check now**: it should show **Reachable** (the fallback address
+   from step 7).
 
 **The owner now has:** a facility at `https://warehouse.example.com`, the administrator signed in, alerts and a daily backup, a USB
 copy of the backups, and a confirmed copy of the backup key.
