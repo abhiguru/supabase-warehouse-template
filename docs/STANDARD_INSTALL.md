@@ -146,7 +146,6 @@ bash setup.sh --operator \
   --admin-phone 91XXXXXXXXXX \
   --admin-name 'Administrator Name' \
   --alert-webhook-file "$HOME/warehouse-private/slack-webhook.txt" \
-  --heartbeat-url-file "$HOME/warehouse-private/heartbeat-url.txt" \
   --letterhead-file off \
   --legal-name 'Example Cold Storage Pvt Ltd' --legal-city Ahmedabad --legal-state Gujarat \
   --grievance-name 'Grievance Officer Name' --grievance-email grievance@example.in --grievance-phone '+91 98765 43210' \
@@ -156,7 +155,8 @@ bash setup.sh --operator \
 
 The six `--legal-*` and `--grievance-*` values are printed in the app's terms and privacy pages: use the facility's own
 (the legal name, the city and state of its courts, and its grievance officer; [Setting the grievance contact](PRIVACY_FOR_OPERATORS.md#setting-the-grievance-contact)).
-Leave out `--heartbeat-url-file` if you have none (the doctor then warns). Use `--letterhead-file "$HOME/warehouse-private/letterhead.png"`
+If you made `heartbeat-url.txt` in step 2 (optional), add `--heartbeat-url-file "$HOME/warehouse-private/heartbeat-url.txt"`
+to the command; without it the doctor warns. Use `--letterhead-file "$HOME/warehouse-private/letterhead.png"`
 instead of `off` for a letterhead. `--api-url` is the facility's permanent address and cannot be renamed later. It is the HTTPS
 address only (no path, no port), and it must be the hostname you will route in step 6. Do not look the name up with `dig` or
 `ping` before step 6.
