@@ -579,10 +579,17 @@ test_files=(
   "$ROOT/tests/invoice_date_rules_182_184.sql"
   "$ROOT/tests/import_past_years_180.sql" "$ROOT/tests/grn_range_print_186.sql" "$ROOT/tests/dues_and_form_agree_187_188.sql"
   "$ROOT/tests/dispatch_range_print_189.sql" "$ROOT/tests/invoice_number_taken_190.sql"
-  "$ROOT/tests/grn_items_invoice_filter_202.sql"
+  "$ROOT/tests/grn_items_invoice_filter_202.sql" "$ROOT/tests/grn_invoice_state_once_198.sql" "$ROOT/tests/bills_need_gst_details.sql"
   "$ROOT/tests/accountant_pack.sql"
 )
 for test_sql in "${test_files[@]}"; do
+  # WH-205: bills need saved GST details with a GSTIN; every suite starts from a registered store (the suites that test the state set their own).
+  # The GST-details suite itself starts from a database that never saved them: the fixture's keys are removed for it.
+  if [[ "$test_sql" == */bills_need_gst_details.sql ]]; then
+    mig_psql -c "UPDATE public.system_settings SET value = (value::jsonb - 'gstSavedAt' - 'gstSavedBy' - 'gstRegistered' - 'gstin')::text WHERE key = 'facility_legal'"
+  else
+    mig_psql < "$ROOT/tests/fixtures/gst_details.sql"
+  fi
   docker exec -i -e PGPASSWORD=disposable-test-database-only "$container" psql -X -q -U supabase_admin -d postgres -v ON_ERROR_STOP=1 < "$test_sql"
 done
 # With the storage policies in place (configure-storage.sql ran above), the plan is still a no-op: nothing in it drops or rewrites them.
@@ -997,6 +1004,8 @@ bash "$ROOT/tests/grn_edit_lock_order.sh" "$container"
 
 # Migrations 41, 44 and 46: the last-administrator rule and the one-invoice-per-
 # receipt rule under two users acting at the same moment.
+# WH-205: the last SQL suite (bills_need_gst_details) leaves the store without GST details, and these rules make a bill: register the store again.
+mig_psql < "$ROOT/tests/fixtures/gst_details.sql"
 bash "$ROOT/tests/concurrent_rules.sh" "$container"
 
 # Migration 127: a change of a numbering rule and a document save share the document lock; neither sees half of the other.

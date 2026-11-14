@@ -70,6 +70,10 @@ assert.ok(!(await api('/rest/v1/customers?select=id')).ok, 'anonymous customer r
 const admin = login('919888888871', 'Core Demo Administrator');
 assert.equal(admin.action, 'login');
 const adminToken = admin.session.access_token;
+// Bills need the facility's GST details (WH-205): the administrator saves them through the real RPC, as an operator does on install day.
+// A fictional GSTIN in the same state (24, Gujarat) as the customers keeps the tax split CGST/SGST and the figures below unchanged.
+good(await rpc('set_gst_details', adminToken, { p_details: { registered: true, gstin: '24AAAAA0000A1Z5',
+  address: '1 Demo Road, Demo City', legal_name: 'Fictional Core Warehouse' } }), 'save the GST details');
 const createdA = good(await rpc('create_customer', adminToken, { p_name: 'Backend Test Customer A', p_mobile: '9888888872' }), 'create A');
 const createdB = good(await rpc('create_customer', adminToken, { p_name: 'Backend Test Customer B', p_mobile: '9888888873' }), 'create B');
 const a = mustUuid(createdA.data.customer_id), b = mustUuid(createdB.data.customer_id);

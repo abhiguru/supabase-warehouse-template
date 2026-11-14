@@ -128,7 +128,7 @@ INSERT INTO ra_rpc(name,staff,customer) VALUES
  ('check_dispatch_exists',true,'no'),('get_next_dispatch_number',true,'no'),('get_dispatch_autocomplete',true,'no'),
  ('get_dispatch_list_with_items',true,'no'),
  ('get_all_dispatch_items',true,'no'),('get_all_dispatch_activity',true,'no'),('get_recent_dispatched_orders',true,'no'),
- ('save_invoice',true,'no'),('update_invoice',true,'no'),('get_next_invoice_number',true,'no'),
+ ('save_invoice',true,'no'),('can_make_bills',true,'no'),('update_invoice',true,'no'),('get_next_invoice_number',true,'no'),
  ('get_invoiceable_grns',true,'no'),('get_invoices_list',true,'no'),
  ('generate_invoice_data_for_grn_with_pricing',true,'no'),
  -- migration 120: what became of a save whose answer was lost (the caller's own saved answers only)
