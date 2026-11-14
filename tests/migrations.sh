@@ -583,6 +583,13 @@ test_files=(
   "$ROOT/tests/accountant_pack.sql"
 )
 for test_sql in "${test_files[@]}"; do
+  # WH-205: bills need saved GST details with a GSTIN; every suite starts from a registered store (the suites that test the state set their own).
+  # The GST-details suite itself starts from a database that never saved them: the fixture's keys are removed for it.
+  if [[ "$test_sql" == */bills_need_gst_details.sql ]]; then
+    mig_psql -c "UPDATE public.system_settings SET value = (value::jsonb - 'gstSavedAt' - 'gstSavedBy' - 'gstRegistered' - 'gstin')::text WHERE key = 'facility_legal'"
+  else
+    mig_psql < "$ROOT/tests/fixtures/gst_details.sql"
+  fi
   docker exec -i -e PGPASSWORD=disposable-test-database-only "$container" psql -X -q -U supabase_admin -d postgres -v ON_ERROR_STOP=1 < "$test_sql"
 done
 # With the storage policies in place (configure-storage.sql ran above), the plan is still a no-op: nothing in it drops or rewrites them.

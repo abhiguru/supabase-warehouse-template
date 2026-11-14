@@ -267,7 +267,7 @@ SELECT pg_temp.gd_assert(NOT pg_temp.gd_saved(), 'the import did not save GST de
 SELECT pg_temp.gd_assert(to_regprocedure('warehouse_security.bills_allowed()') IS NOT NULL, 'warehouse_security.bills_allowed() exists');
 SELECT pg_temp.gd_assert(NOT has_function_privilege('authenticated', 'warehouse_security.bills_allowed()', 'EXECUTE')
   AND NOT has_function_privilege('anon', 'warehouse_security.bills_allowed()', 'EXECUTE'), 'bills_allowed is not granted to a client role');
-SELECT pg_temp.gd_assert((SELECT count(*) FROM pg_proc WHERE prosrc LIKE '%GST_DETAILS_REQUIRED%') = 1
+SELECT pg_temp.gd_assert((SELECT count(*) FROM pg_proc WHERE prosrc LIKE '%GST_DETAILS_REQUIRED%' AND pronamespace <> pg_my_temp_schema()) = 1
   AND (SELECT prosrc LIKE '%bills_allowed%' FROM pg_proc WHERE proname = 'save_invoice_internal' AND prosrc LIKE '%GST_DETAILS_REQUIRED%'), 'the refusal code lives in save_invoice_internal, which calls bills_allowed()');
 -- Every function that inserts a bill calls the shared rule, apart from the imports (outside the rule) and the second document of a split save
 -- (inside a save that passed the gate).
