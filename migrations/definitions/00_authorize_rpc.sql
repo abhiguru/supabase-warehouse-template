@@ -24,6 +24,8 @@ BEGIN
   -- (migration 172), and the pairing codes and server alerts of a local-only facility (migration 170): administrators only.
   IF rpc IN ('clear_user_central_identity','update_sensor_device','set_service_account','set_document_numbering',
              'get_charging_rule','set_charging_rule','set_record_payments',
+             -- The ledger names of the accountant export (migration 203, WH-158).
+             'get_accountant_ledgers','set_accountant_ledgers',
              'make_pairing_code','get_server_alerts',
              -- The connection history (migration 188, WH-177): the per-day figures of the phones' gaps.
              'get_connection_history',
@@ -41,6 +43,10 @@ BEGIN
   -- What every customer owes (migration 176): administrators and supervisors only. A customer's statement (migration 176):
   -- administrators, supervisors and a customer account for its own customers (the get_customer_% rule below); staff never.
   IF rpc = 'get_customer_dues' AND role_name NOT IN ('admin','supervisor') THEN
+    RAISE EXCEPTION 'Administrator or supervisor required' USING ERRCODE = '42501';
+  END IF;
+  -- The accountant pack (migration 204, WH-158): administrators and supervisors only.
+  IF rpc = 'get_accountant_pack' AND role_name NOT IN ('admin','supervisor') THEN
     RAISE EXCEPTION 'Administrator or supervisor required' USING ERRCODE = '42501';
   END IF;
   IF rpc = 'get_customer_statement' AND role_name NOT IN ('admin','supervisor','customer') THEN

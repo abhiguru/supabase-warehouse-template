@@ -522,7 +522,7 @@ test_files=(
   "$ROOT/tests/zero_charge_reason.sql"
   "$ROOT/tests/item_price_history.sql" "$ROOT/tests/invoice_column_grants.sql"
   "$ROOT/tests/central_login.sql" "$ROOT/tests/report_sort.sql"
-  "$ROOT/tests/report_pdf_retention.sql"
+  "$ROOT/tests/report_pdf_retention.sql" "$ROOT/tests/generated_pdf_sweep.sql"
   "$ROOT/tests/report_invoice_amounts.sql"
   "$ROOT/tests/report_invoice_paid.sql"
   "$ROOT/tests/report_to_date.sql" "$ROOT/tests/grn_list_end_day.sql"
@@ -580,6 +580,7 @@ test_files=(
   "$ROOT/tests/import_past_years_180.sql" "$ROOT/tests/grn_range_print_186.sql" "$ROOT/tests/dues_and_form_agree_187_188.sql"
   "$ROOT/tests/dispatch_range_print_189.sql" "$ROOT/tests/invoice_number_taken_190.sql"
   "$ROOT/tests/grn_items_invoice_filter_202.sql"
+  "$ROOT/tests/accountant_pack.sql"
 )
 for test_sql in "${test_files[@]}"; do
   docker exec -i -e PGPASSWORD=disposable-test-database-only "$container" psql -X -q -U supabase_admin -d postgres -v ON_ERROR_STOP=1 < "$test_sql"

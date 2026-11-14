@@ -115,6 +115,7 @@ INSERT INTO ra_rpc(name,staff,customer) VALUES
  ('get_gst_details',false,'no'),('set_gst_details',false,'no'),('set_facility_legal',false,'no'),('set_item_gst_treatment',false,'no'),
  ('preview_invoice_documents',true,'no'),('make_pairing_code',false,'no'),('get_server_alerts',false,'no'),
  ('get_customer_dues',false,'no'),('get_customer_statement',false,'own'),
+ ('get_accountant_ledgers',false,'no'),('set_accountant_ledgers',false,'no'),('get_accountant_pack',false,'no'),
  ('get_grn_prefixes_with_stock',true,'no'),('get_all_grn_activity',true,'no'),
  ('search_customers',true,'no'),('get_supervisors',true,'no'),('get_vehicle_suggestions',true,'no'),
  ('register_grn_image_upload',true,'no'),('confirm_grn_image_upload',true,'no'),

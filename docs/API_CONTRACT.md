@@ -1863,6 +1863,16 @@ still a 200 `{success:false, error_code:'DEVICE_NOT_FOUND'|'INVALID_PERIOD'}`.
 `record_sensor_reading` and `update_sensor` were dropped: they were granted to
 the service role only and nothing called them.
 
+### The accountant pack (migrations 203 and 204, WH-158)
+- `get_accountant_ledgers()` and `set_accountant_ledgers(p_ledgers jsonb)` (administrators only): the 13 ledger names the Tally files use,
+  `{success:true, data:{ledgers, defaults, saved}}` (set adds `changed`). Set takes exactly the 13 keys, each trimmed, 1-60 characters, no
+  control characters; refusals `LEDGER_KEYS`, `LEDGER_NAME_REQUIRED`, `LEDGER_NAME_TOO_LONG`, `LEDGER_NAME_INVALID` (with `field`). A change
+  writes one `audit_log` row (`accountant_export`).
+- `get_accountant_pack(p_from date, p_to date)` (administrators and supervisors): every figure of the pack in one read, read by
+  `generate-accountant-pack` with the caller's token; each answer is recorded in `warehouse_security.accountant_packs`. A 200
+  `{success:false, error, error_code, reason}` for `INVALID_PERIOD`, `PERIOD_ACROSS_YEARS` and `NOTHING_IN_PERIOD`. The answer's shape is in
+  the header of migration 204 and the WH-158 contract.
+
 ### Payments: capability and integrity (migration 139)
 
 - `capabilities.payments` in `get-public-config` (from the state's `instance.json`, set with

@@ -10,7 +10,13 @@ The operator branch implements five mobile endpoints:
 | generate-customer-stock-pdf | `{ "customer_id": "<uuid>" }` |
 | generate-statement-pdf | `{ "customer_id": "<uuid>" }` (migration 176: `get_customer_statement` with the caller's token; staff refused, 403) |
 
-Each requires a valid, active custom user session and returns
+`generate-accountant-pack` (`{ "from_date": "YYYY-MM-DD", "to_date": "YYYY-MM-DD" }`, WH-158, migration 204) is not a PDF: it answers the
+accountant pack itself, a zip (`application/zip`, `Cache-Control: no-store`), built from `get_accountant_pack` read with the caller's token
+(administrators and supervisors). Nothing is uploaded. Refusals are `{ success: false, error, code }`: 400 `INVALID_REQUEST`, 403
+`PACK_FORBIDDEN`, 400 `INVALID_PERIOD` or `PERIOD_ACROSS_YEARS`, 404 `NOTHING_IN_PERIOD`, 400 `PACK_TOO_LONG` (read timeout, more than 50,000
+CSV rows, or a zip over 25 MB), 503 `PACK_UNAVAILABLE`.
+
+Each of the five PDF endpoints requires a valid, active custom user session and returns
 `{ success, pdf_url, expires_in, document }`. Customer access follows assignment
 RLS. A document outside the caller's scope returns 404. The business reads use
 the caller JWT; the server key reads the warehouse branding setting and performs
@@ -119,7 +125,8 @@ there is no direct client-read policy. Signed links are bearer capabilities:
 do not log, share publicly, or send them to unrelated services.
 
 Every request stores a new file `<kind>/<document id>/<random>.pdf`
-(reports: `report/<report>/<customer id or all>/<random>.pdf`); the link
+(reports: `report/<report>/<customer id or all>/<random>.pdf`; statements and temperature reports: `statement/<customer id>/<random>.pdf` and
+`temperature-report/<sensor id>/<random>.pdf`); the link
 expiring does not delete it. `npm run retention:apply` removes generated PDFs
 older than the `generated_documents` policy (7 days by default, far longer than
 the one-hour link), and `npm run retention:preview` shows how many it would
