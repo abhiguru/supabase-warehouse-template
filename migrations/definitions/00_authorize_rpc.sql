@@ -24,6 +24,8 @@ BEGIN
   -- (migration 172), and the pairing codes and server alerts of a local-only facility (migration 170): administrators only.
   IF rpc IN ('clear_user_central_identity','update_sensor_device','set_service_account','set_document_numbering',
              'get_charging_rule','set_charging_rule','set_record_payments',
+             -- The ledger names of the accountant export (migration 203, WH-158).
+             'get_accountant_ledgers','set_accountant_ledgers',
              'make_pairing_code','get_server_alerts',
              -- The connection history (migration 188, WH-177): the per-day figures of the phones' gaps.
              'get_connection_history',
