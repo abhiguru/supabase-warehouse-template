@@ -268,8 +268,9 @@ cmd_run() {
     fi
     [[ -f "$dir/$path" && ! -L "$dir/$path" ]] || fail "$path in $name is not a plain file"
     count=$((count + 1))
+    # --no-unquote: the name is taken as it is (GNU tar would otherwise read a backslash in it as an escape and miss the file).
     tar --xattrs --xattrs-include='user.*' --format=posix --pax-option=delete=atime,delete=ctime --numeric-owner --owner=0 --group=0 \
-      --no-recursion -C "$dir" -cf "$WORK/file.tar" -- "$path" || fail "could not pack $path"
+      --no-recursion --no-unquote -C "$dir" -cf "$WORK/file.tar" -- "$path" || fail "could not pack $path"
     sum="$(sha256sum < "$WORK/file.tar" | cut -d' ' -f1)"; size="$(stat -c %s -- "$WORK/file.tar")"
     id="$(object_id "$sum")"; mode="$(stat -c %a -- "$dir/$path")"
     if [[ -z "${have[$id]:-}" || "${have[$id]}" != "$((size + 16))" ]]; then
@@ -342,6 +343,17 @@ apply_retention() {
 }
 
 # ---------------------------------------------------------------- fetch (restore side)
+# object_holds_only TAR PATH: the one-file tar holds exactly one member, a plain file named PATH (PATH is a checked relative path with
+# no line break, valid_relpath), so unpacking it writes nothing else. The names are listed literally (not with GNU tar's default
+# escapes, which depend on the locale: a backslash or a Gujarati name would not compare), and the "x" after the listing keeps a
+# trailing line break of a member name from being dropped by $(...); a second member or a name with a line break gives more lines.
+object_holds_only() {
+  local tar="$1" path="$2" names verbose
+  names="$(tar --quoting-style=literal -tf "$tar"; printf x)" || return 1
+  [[ "$names" == "$path"$'\n'x ]] || return 1
+  verbose="$(tar --quoting-style=literal -tvf "$tar")" || return 1
+  [[ "${verbose:0:1}" == - && "$verbose" != *$'\n'* ]]
+}
 cmd_fetch() {
   local endpoint='' bucket='' region='' cred='' keyfile='' dest='' want='' names listing name n line mode size id path d tmpdir
   while (($#)); do
@@ -386,7 +398,7 @@ cmd_fetch() {
         valid_relpath "$path" || die 'The manifest names an unusable path.'
         mkdir -p -- "$dest/$name/$(dirname -- "$path")"
         fetch_object "$id" "$WORK/f.tar" || die "Restore from the bucket stopped at $path."
-        [[ "$(tar -tf "$WORK/f.tar")" == "$path" ]] || die "An object in the bucket holds a different path than the manifest says ($path)."
+        object_holds_only "$WORK/f.tar" "$path" || die "An object in the bucket holds a different path than the manifest says ($path)."
         tar --no-same-owner -p --xattrs --xattrs-include='user.*' -C "$dest/$name" -xf "$WORK/f.tar" || die "Could not unpack $path."
         rm -f -- "$WORK/f.tar" ;;
     esac
