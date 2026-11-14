@@ -125,7 +125,8 @@ there is no direct client-read policy. Signed links are bearer capabilities:
 do not log, share publicly, or send them to unrelated services.
 
 Every request stores a new file `<kind>/<document id>/<random>.pdf`
-(reports: `report/<report>/<customer id or all>/<random>.pdf`); the link
+(reports: `report/<report>/<customer id or all>/<random>.pdf`; statements and temperature reports: `statement/<customer id>/<random>.pdf` and
+`temperature-report/<sensor id>/<random>.pdf`); the link
 expiring does not delete it. `npm run retention:apply` removes generated PDFs
 older than the `generated_documents` policy (7 days by default, far longer than
 the one-hour link), and `npm run retention:preview` shows how many it would
