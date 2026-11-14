@@ -31,7 +31,7 @@ provider.
 | Optional: an outside heartbeat service such as healthchecks.io | Notices that the whole machine or the checker has died | The technician | Minutes | Ask the service |
 | The machine: a dedicated Ubuntu 24.04, x86-64, at least 4 vCPU, 8 GiB of memory, an SSD and 60 GB of disk ([Host prerequisites](docs/OPERATOR_INSTALL.md#host-prerequisites)) | Runs the whole facility | The facility owner | Depends on purchase | The hardware |
 | A USB drive formatted exFAT for backups, and a second person to hold a copy of the backup key | Backups on the same disk are lost with it; without the key the encrypted backups cannot be opened | The facility owner | Days if it must be bought | The drive |
-| The first administrator's mobile number, and Android 12 or newer phones with 4 GB of memory | The administrator signs in with an SMS code; the app needs that phone | The facility owner | None | None |
+| The first administrator's mobile number, the facility's legal name, and the grievance officer's name, email and phone ([why](docs/PRIVACY_FOR_OPERATORS.md#setting-the-grievance-contact)), and Android 12 or newer phones with 4 GB of memory | The administrator signs in with an SMS code; the app needs that phone | The facility owner | None | None |
 
 ## Quickstart
 

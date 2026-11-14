@@ -148,10 +148,14 @@ bash setup.sh --operator \
   --alert-webhook-file "$HOME/warehouse-private/slack-webhook.txt" \
   --heartbeat-url-file "$HOME/warehouse-private/heartbeat-url.txt" \
   --letterhead-file off \
+  --legal-name 'Example Cold Storage Pvt Ltd' --legal-city Ahmedabad --legal-state Gujarat \
+  --grievance-name 'Grievance Officer Name' --grievance-email grievance@example.in --grievance-phone '+91 98765 43210' \
   --sms-hourly-ceiling 60 \
   --sms-daily-ceiling 300
 ```
 
+The six `--legal-*` and `--grievance-*` values are printed in the app's terms and privacy pages: use the facility's own
+(the legal name, the city and state of its courts, and its grievance officer; [Setting the grievance contact](PRIVACY_FOR_OPERATORS.md#setting-the-grievance-contact)).
 Leave out `--heartbeat-url-file` if you have none (the doctor then warns). Use `--letterhead-file "$HOME/warehouse-private/letterhead.png"`
 instead of `off` for a letterhead. `--api-url` is the facility's permanent address and cannot be renamed later. It is the HTTPS
 address only (no path, no port), and it must be the hostname you will route in step 6. Do not look the name up with `dig` or
@@ -337,5 +341,5 @@ the app. During an internet outage the app works on the warehouse Wi-Fi, but a p
 - **Upgrades:** `bash upgrade.sh vX.Y.Z` from the checkout, with `WAREHOUSE_STATE_DIR` set ([Rerun and upgrade](OPERATOR_INSTALL.md#rerun-and-upgrade)).
 - **Backups:** plug the enrolled drive in; check with `bash scripts/backup-usb.sh status`
   ([USB backup drive](OPERATOR_INSTALL.md#usb-backup-drive)). Everything about restore is in [Backup and restore](OPERATOR_INSTALL.md#backup-and-restore).
-- **Off-site copy (optional):** a second copy of the backups in a cloud bucket; it needs `rclone` installed ([Off-site copy](OPERATOR_INSTALL.md#off-site-copy-optional)). That section is added by WH-145, so the link resolves once both are in one batch.
+- **Off-site copy (optional):** a second copy of the backups in a cloud bucket; it needs `rclone` installed ([Off-site copy](OPERATOR_INSTALL.md#off-site-copy-optional)).
 - **Help:** [SUPPORT.md](../SUPPORT.md) (say your release, `git describe --tags`, and attach the output of `node scripts/doctor.mjs`).
