@@ -57,6 +57,12 @@ BEGIN
     RETURN warehouse_security.grn_rate_failure('registration_too_long',
       'Registration can have at most 20 characters', jsonb_build_object('limit', 20));
   END IF;
+  -- WH-237: the sender name and the supervisor name are stored without white space at either end (white space inside is kept), and
+  -- one that is empty or only white space is stored as NULL. warehouse_security.trimmed_reason trims exactly the characters
+  -- warehouse_security.is_blank_text treats as blank, so the WH-231 checks below answer as they did. update_grn.sql stores a name
+  -- that an edit sends the same way.
+  p_sender_name := warehouse_security.trimmed_reason(p_sender_name);
+  p_supervisor_name := warehouse_security.trimmed_reason(p_supervisor_name);
     -- The list-refresh lock comes before any row lock (migration 46).
     PERFORM pg_advisory_xact_lock(71040);
       -- IDEMPOTENCY CHECK: Return cached response if key exists

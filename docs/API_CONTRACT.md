@@ -1430,6 +1430,8 @@ Arabic-Indic digits into 0-9; `save_grn` and `update_grn` store `rack` and `pack
 
 The vehicle number (`registration`) of `save_grn`, `update_grn`, `create_dispatch_with_stock_check` and `update_dispatch_smart` is cleaned the same way (migration 130 and the definition files): spaces, tabs, line breaks and non-breaking spaces at either end are removed, each run of white space inside becomes one space (`GJ01   AB1234` is stored as `GJ01 AB1234`), and a blank value is stored as NULL. The 20-character limit counts the cleaned value. On `update_grn` and `update_dispatch_smart`, a vehicle that is sent blank clears the stored one (NULL); a call that leaves the vehicle out (parameter omitted, key absent, or JSON null on a dispatch) keeps it. Rows already stored are not converted.
 
+The sender name (`p_sender_name`) and the supervisor name (`p_supervisor_name`) of `save_grn` and `update_grn` are stored without white space at either end (the characters `SENDER_REQUIRED` and `SUPERVISOR_REQUIRED` count as blank: spaces, tabs, line breaks, non-breaking and zero-width spaces); white space inside is kept (`  Ramesh  Patel ` is stored as `Ramesh  Patel`), and a name that is empty or only white space is stored as NULL, never as `''` (WH-237). On `update_grn` a name left out (NULL) keeps the stored one, and the edit rules of the two refusals judge the trimmed value. Rows already stored are not converted.
+
 ### GRN lists by receipt, and low stock (migration 98, 2026-10-18)
 
 `get_all_grn_items(p_date_from, p_date_to, p_filters, p_sort_by, p_sort_order, p_limit, p_offset)` (staff;
