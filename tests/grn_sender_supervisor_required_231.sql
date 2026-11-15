@@ -123,15 +123,15 @@ SELECT pg_temp.s_assert(:'mark_tab_nbsp'::jsonb->>'reason' = 'SENDER_REQUIRED', 
 SELECT pg_temp.s_assert((SELECT count(*) FROM public.goodsreceived) = :grn_x AND (SELECT count(*) FROM public.goodsreceived_trl) = :line_x
   AND (SELECT count(*) FROM public.idempotency_keys) = :key_x AND NOT EXISTS (SELECT 1 FROM public.goodsreceived WHERE gr_no = 'S231F'),
   'the refused calls wrote no GRN, no line and no request key');
--- fas-sync's path: the same number and key save now (neither was used up), with the sender empty.
+-- fas-sync's path: the same number and key save now (neither was used up), with the sender stored as NULL (WH-237).
 SELECT pg_temp.s_save_as('fas', 'S231F', :'cust'::uuid, :'cumin'::uuid, '', true, 'Fixture Supervisor', 'wh231-f') AS fas_empty \gset
 SELECT pg_temp.s_save_as('fas', 'S231G', :'cust'::uuid, :'cumin'::uuid, NULL, true, 'Fixture Supervisor', 'wh231-g') AS fas_null \gset
 SELECT pg_temp.s_save_as('fas', 'S231H', :'cust'::uuid, :'cumin'::uuid, E'  \t ', true, 'Fixture Supervisor', 'wh231-h') AS fas_spaces \gset
 SELECT pg_temp.s_assert(:'fas_empty'::jsonb->>'success' = 'true' AND :'fas_null'::jsonb->>'success' = 'true' AND :'fas_spaces'::jsonb->>'success' = 'true',
   'fas-sync''s path saves a new GRN with a blank sender: ' || :'fas_empty' || :'fas_null' || :'fas_spaces');
-SELECT pg_temp.s_assert((SELECT sender_name IS NULL OR btrim(sender_name, E' \t\r\n ') = '' FROM public.goodsreceived WHERE gr_no = 'S231F')
+SELECT pg_temp.s_assert((SELECT sender_name IS NULL FROM public.goodsreceived WHERE gr_no = 'S231F')
   AND (SELECT sender_name IS NULL FROM public.goodsreceived WHERE gr_no = 'S231G')
-  AND (SELECT sender_name IS NULL OR btrim(sender_name, E' \t\r\n ') = '' FROM public.goodsreceived WHERE gr_no = 'S231H')
+  AND (SELECT sender_name IS NULL FROM public.goodsreceived WHERE gr_no = 'S231H')
   AND (SELECT count(*) FROM public.goodsreceived WHERE gr_no IN ('S231F', 'S231G', 'S231H')) = 3
   AND (SELECT count(*) FROM public.goodsreceived_trl t JOIN public.goodsreceived g ON g.id = t.gr_id WHERE g.gr_no IN ('S231F', 'S231G', 'S231H')) = 3
   AND (SELECT bool_and(supervisor_name = 'Fixture Supervisor' AND supervisor_id IS NOT NULL) FROM public.goodsreceived WHERE gr_no IN ('S231F', 'S231G', 'S231H')),

@@ -20,8 +20,7 @@ BEGIN
     WHERE p.mobile = warehouse_security.normalize_phone(phone) ORDER BY s.created_at DESC LIMIT 1;
   RETURN claims;
 END $$;
--- Blank means NULL or nothing left after trimming: two stored blanks are alike for these checks (an edit that sends '' may store '' for NULL: WH-237).
-CREATE FUNCTION pg_temp.e_norm(v text) RETURNS text LANGUAGE sql IMMUTABLE AS $$ SELECT COALESCE(NULLIF(btrim(v, E' \t\r\n '), ''), '<blank>') $$;
+-- Since WH-237 a sent blank name is stored as NULL, so the stored values are compared exactly (tests/grn_names_trimmed_237.sql covers the trimming).
 -- Put the stored sender and supervisor of a GRN in a given state (a direct write, as the superuser: save_grn cannot make these any more).
 CREATE FUNCTION pg_temp.e_put(p_no text, p_sender text, p_sid uuid, p_sname text) RETURNS void LANGUAGE sql AS $$
   UPDATE public.goodsreceived SET sender_name = p_sender, supervisor_id = p_sid, supervisor_name = p_sname WHERE gr_no = p_no $$;
@@ -61,8 +60,8 @@ BEGIN
       PERFORM pg_temp.e_assert(g.sender_name IS NOT DISTINCT FROM (v_row_before->>'sender_name') AND g.supervisor_id IS NOT DISTINCT FROM (v_row_before->>'supervisor_id')::uuid
         AND g.supervisor_name IS NOT DISTINCT FROM (v_row_before->>'supervisor_name'), p_label || ': sender and supervisor untouched, not even NULL to empty');
     ELSE
-      PERFORM pg_temp.e_assert(pg_temp.e_norm(g.sender_name) = pg_temp.e_norm(p_e_sender) AND g.supervisor_id IS NOT DISTINCT FROM p_e_sid
-        AND pg_temp.e_norm(g.supervisor_name) = pg_temp.e_norm(p_e_sname),
+      PERFORM pg_temp.e_assert(g.sender_name IS NOT DISTINCT FROM p_e_sender AND g.supervisor_id IS NOT DISTINCT FROM p_e_sid
+        AND g.supervisor_name IS NOT DISTINCT FROM p_e_sname,
         p_label || ': stored sender/supervisor are as expected: ' || to_jsonb(g)::text);
     END IF;
   ELSE
@@ -123,9 +122,10 @@ SELECT pg_temp.e_try('NULL sender, sent white space', 'plain', 'E233', E'  \t ',
 SELECT pg_temp.e_try('NULL sender, sent empty with the API login', 'api', 'E233', '', NULL, NULL, 'ok', NULL, :'p1'::uuid, 'Sup One');
 SELECT pg_temp.e_put('E233', '', :'p1'::uuid, 'Sup One');
 SELECT pg_temp.e_try('empty-string sender, not sent', 'plain', 'E233', NULL, NULL, NULL, 'ok', '', :'p1'::uuid, 'Sup One');
-SELECT pg_temp.e_try('empty-string sender, sent empty', 'fas', 'E233', '', NULL, NULL, 'ok', '', :'p1'::uuid, 'Sup One');
+-- WH-237: a sent blank is stored as NULL, not as ''.
+SELECT pg_temp.e_try('empty-string sender, sent empty', 'fas', 'E233', '', NULL, NULL, 'ok', NULL, :'p1'::uuid, 'Sup One');
 SELECT pg_temp.e_put('E233', E'   ', :'p1'::uuid, 'Sup One');
-SELECT pg_temp.e_try('white-space sender, sent empty', 'plain', 'E233', '', NULL, NULL, 'ok', '', :'p1'::uuid, 'Sup One');
+SELECT pg_temp.e_try('white-space sender, sent empty', 'plain', 'E233', '', NULL, NULL, 'ok', NULL, :'p1'::uuid, 'Sup One');
 SELECT pg_temp.e_put('E233', NULL, :'p1'::uuid, 'Sup One');
 SELECT pg_temp.e_try('NULL sender filled', 'plain', 'E233', 'Now Filled', NULL, NULL, 'ok', 'Now Filled', :'p1'::uuid, 'Sup One');
 SELECT pg_temp.e_put('E233', '', :'p1'::uuid, 'Sup One');
