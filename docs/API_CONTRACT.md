@@ -566,7 +566,7 @@ and `save_invoice_internal` rolls the whole block back and answers it (nothing i
 | `GRN_PHOTO_REQUIRED` | `delete_grn_image`, `update_grn` | `gr_no` (and `grn_id`, `image_id` from `delete_grn_image`) | A GRN needs at least one photo. Add another before deleting this one. |
 | `DISPATCH_NUMBER_SPACES` | dispatch create, `update_dispatch_smart` (a changed number), `check_dispatch_exists` | `number` | A dispatch number can't contain spaces. |
 | `GRN_NUMBER_SPACES` | `save_grn` | `gr_no` | A GRN number can't contain spaces. |
-| `SENDER_REQUIRED` | `save_grn` (a new GRN: the sender name is NULL or blank) | none | Sender name is required |
+| `SENDER_REQUIRED` | `save_grn` (a new GRN: the sender name is NULL or blank). A GRN that `fas-sync` creates is exempt and saves with the sender empty, only when both hold: the connection's login (`session_user`) is `supabase_admin`, and the transaction has `fas.session` set and not blank. A call through the API, or from a `fas-sync` target whose `write_user` is not `supabase_admin`, is refused as usual; `SUPERVISOR_REQUIRED` has no exemption. | none | Sender name is required |
 | `SUPERVISOR_REQUIRED` | `save_grn` (a new GRN: no supervisor id, or the supervisor name is NULL or blank) | none | Supervisor is required |
 | `DISPATCH_BEFORE_GRN` | dispatch create, `update_dispatch_smart` | `date`, `gr_no`, `grn_date` (the latest GRN day among the lots) | The dispatch date {date} is before GRN {gr_no} ({grn_date}). |
 | `GRN_DATE_AFTER_DISPATCH` | `update_grn` | `gr_no`, `date`, `first_dispatch_date`, `dispatch_no` | GRN {gr_no} can't be dated {date}: dispatch {no} took goods from it on {first}. |

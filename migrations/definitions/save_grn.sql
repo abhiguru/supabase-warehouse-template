@@ -157,7 +157,19 @@ BEGIN
       -- WH-231: a new GRN has a sender name and a supervisor, as the app's form requires. Empty is NULL, or blank after trimming
       -- white space (spaces, tabs, line breaks, non-breaking spaces). Edits (update_grn, WH-230) and the history import (WH-180, which
       -- writes the tables itself and never calls this function) are not held to it. Nothing is written or numbered before this.
-      IF warehouse_security.is_blank_text(p_sender_name) THEN
+      -- fas-sync's exemption (WH-231): a GRN that fas-sync creates from FAS with no sender is saved with the sender empty, like an
+      -- imported one (the same old-system data). Only the sender check is skipped; the supervisor check below has no exemption.
+      -- fas-sync is recognised by two things together, and both are needed:
+      --   1. session_user is supabase_admin: the login of the connection (SET ROLE and SECURITY DEFINER do not change it). fas-sync
+      --      writes with psql on a direct installer connection; the API logs in as authenticator, and nothing a client sends through
+      --      it can change the login, so the exemption cannot be claimed through the API.
+      --   2. fas.session is set and not blank: fas-sync sets it for the transaction of each push before it acts as its profile. It
+      --      tells fas-sync apart from an installer's own psql call on the same login, which stays refused. A setting local to a
+      --      transaction reads as '' once that transaction ends, so blank counts as not set.
+      -- The same two lines guard the same exemption in update_grn.sql when it gains this check (WH-233); change both files together.
+      IF warehouse_security.is_blank_text(p_sender_name)
+         AND NOT (session_user = 'supabase_admin'
+                  AND NOT warehouse_security.is_blank_text(current_setting('fas.session', true))) THEN
           RETURN warehouse_security.refuse('SENDER_REQUIRED', 'Sender name is required', '{}'::jsonb);
       END IF;
       IF p_supervisor_id IS NULL OR warehouse_security.is_blank_text(p_supervisor_name) THEN
