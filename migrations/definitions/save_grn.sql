@@ -154,6 +154,16 @@ BEGIN
           );
       END IF;
 
+      -- WH-231: a new GRN has a sender name and a supervisor, as the app's form requires. Empty is NULL, or blank after trimming
+      -- white space (spaces, tabs, line breaks, non-breaking spaces). Edits (update_grn, WH-230) and the history import (WH-180, which
+      -- writes the tables itself and never calls this function) are not held to it. Nothing is written or numbered before this.
+      IF warehouse_security.is_blank_text(p_sender_name) THEN
+          RETURN warehouse_security.refuse('SENDER_REQUIRED', 'Sender name is required', '{}'::jsonb);
+      END IF;
+      IF p_supervisor_id IS NULL OR warehouse_security.is_blank_text(p_supervisor_name) THEN
+          RETURN warehouse_security.refuse('SUPERVISOR_REQUIRED', 'Supervisor is required', '{}'::jsonb);
+      END IF;
+
       IF jsonb_array_length(p_items) = 0 THEN
           RETURN jsonb_build_object(
               'success', false,
