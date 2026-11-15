@@ -1,5 +1,7 @@
 -- WH-231: save_grn refuses a NEW GRN with no sender name or no supervisor (SENDER_REQUIRED / SUPERVISOR_REQUIRED, WH409), and writes nothing.
 --   An edit of an existing GRN that has neither (update_grn, WH-230) is not held to the rule; the history import (WH-180) never calls save_grn.
+--   Exempt: a GRN that fas-sync creates may have no sender (not the supervisor): save_grn recognises it by session_user = supabase_admin AND a
+--   non-blank fas.session setting; the API's login (authenticator) and a connection without the mark are refused (tested at the end).
 -- Fictional data; runs only in migrations.sh's disposable, network-disabled database; rolls back.
 \set ON_ERROR_STOP on
 BEGIN;
@@ -24,6 +26,23 @@ LANGUAGE sql AS $$
     p_sender_name=>p_sender, p_supervisor_id=>CASE WHEN p_sup THEN (SELECT id FROM public.user_profiles WHERE NOT is_service_account ORDER BY created_at LIMIT 1) END, p_supervisor_name=>p_supname,
     p_pricing_mode=>'MONTHLY', p_idempotency_key=>p_key,
     p_items=>jsonb_build_array(jsonb_build_object('item_id', p_item, 'item_name', 'Sender Rule Cumin', 'packaging', 'Bag', 'qty', 2, 'weight', 10))) $$;
+
+-- One save_grn call with the connection and the mark chosen: plain = the superuser's connection with no mark; fas = the same with fas-sync's mark
+-- (fas.session, local to the transaction, cleared again after the call); api = the mark AND the API's login (authenticator); a mode starting
+-- with 'mark:' sets the rest as the mark text (blank, white space ...). The role is authenticated, as in the calls above.
+CREATE FUNCTION pg_temp.s_save_as(p_mode text, p_no text, p_cust uuid, p_item uuid, p_sender text, p_sup boolean, p_supname text, p_key text) RETURNS jsonb
+LANGUAGE plpgsql AS $$
+DECLARE v_res jsonb;
+BEGIN
+  PERFORM set_config('fas.session', CASE WHEN p_mode = 'plain' THEN '' WHEN p_mode LIKE 'mark:%' THEN substr(p_mode, 6) ELSE gen_random_uuid()::text END, true);
+  IF p_mode = 'api' THEN SET SESSION AUTHORIZATION authenticator; END IF;
+  SET LOCAL ROLE authenticated;
+  v_res := pg_temp.s_save(p_no, p_cust, p_item, p_sender, p_sup, p_supname, p_key);
+  RESET ROLE;
+  IF p_mode = 'api' THEN RESET SESSION AUTHORIZATION; END IF;
+  PERFORM set_config('fas.session', '', true);
+  RETURN v_res;
+END $$;
 
 INSERT INTO warehouse_security.auth_config(key, value) VALUES
  ('jwt_secret', 'isolated-test-secret-not-for-any-deployment-12345'), ('auth_mode', 'operator'), ('demo_auth_enabled', 'false')
@@ -80,6 +99,70 @@ SELECT pg_temp.s_assert(:'edited'::jsonb->>'success' = 'true' AND COALESCE(:'edi
 SELECT pg_temp.s_assert((SELECT sender_name IS NULL AND supervisor_id IS NULL AND note = 'Edited without sender or supervisor' FROM public.goodsreceived WHERE gr_no = 'S231E'),
   'the edit saved and the empty fields stayed empty');
 
+-- ===== fas-sync's exemption (rework 1): only the sender check, only on fas-sync's own path =====
+SELECT pg_temp.s_assert(coalesce(current_setting('fas.session', true), '') = '' AND session_user = 'supabase_admin', 'no mark is set before this part; the login is supabase_admin');
+SELECT count(*) AS grn_x FROM public.goodsreceived \gset
+SELECT count(*) AS line_x FROM public.goodsreceived_trl \gset
+SELECT count(*) AS key_x FROM public.idempotency_keys \gset
+-- Refused: no mark on the superuser's connection (sender '' or NULL), the mark with the API's login, a blank or white-space mark.
+SELECT pg_temp.s_save_as('plain', 'S231F', :'cust'::uuid, :'cumin'::uuid, '', true, 'Fixture Supervisor', 'wh231-f') AS plain_empty \gset
+SELECT pg_temp.s_save_as('plain', 'S231F', :'cust'::uuid, :'cumin'::uuid, NULL, true, 'Fixture Supervisor', 'wh231-f') AS plain_null \gset
+SELECT pg_temp.s_save_as('api', 'S231F', :'cust'::uuid, :'cumin'::uuid, '', true, 'Fixture Supervisor', 'wh231-f') AS api_empty \gset
+SELECT pg_temp.s_save_as('api', 'S231F', :'cust'::uuid, :'cumin'::uuid, NULL, true, 'Fixture Supervisor', 'wh231-f') AS api_null \gset
+SELECT pg_temp.s_save_as('mark:', 'S231F', :'cust'::uuid, :'cumin'::uuid, '', true, 'Fixture Supervisor', 'wh231-f') AS mark_empty \gset
+SELECT pg_temp.s_save_as(E'mark:  ', 'S231F', :'cust'::uuid, :'cumin'::uuid, '', true, 'Fixture Supervisor', 'wh231-f') AS mark_spaces \gset
+SELECT pg_temp.s_save_as(E'mark:\t  ', 'S231F', :'cust'::uuid, :'cumin'::uuid, '', true, 'Fixture Supervisor', 'wh231-f') AS mark_tab_nbsp \gset
+SELECT pg_temp.s_assert(:'plain_empty'::jsonb->>'reason' = 'SENDER_REQUIRED' AND :'plain_empty'::jsonb->>'success' = 'false', 'no mark, sender empty: refused: ' || :'plain_empty');
+SELECT pg_temp.s_assert(:'plain_null'::jsonb->>'reason' = 'SENDER_REQUIRED' AND :'plain_null'::jsonb->>'success' = 'false', 'no mark, sender NULL: refused: ' || :'plain_null');
+SELECT pg_temp.s_assert(:'api_empty'::jsonb->>'reason' = 'SENDER_REQUIRED' AND :'api_empty'::jsonb->>'success' = 'false'
+  AND :'api_empty'::jsonb->>'error_code' = 'WH409', 'the mark with the API login, sender empty: refused: ' || :'api_empty');
+SELECT pg_temp.s_assert(:'api_null'::jsonb->>'reason' = 'SENDER_REQUIRED' AND :'api_null'::jsonb->>'success' = 'false', 'the mark with the API login, sender NULL: refused: ' || :'api_null');
+SELECT pg_temp.s_assert(:'mark_empty'::jsonb->>'reason' = 'SENDER_REQUIRED', 'an empty mark does not exempt: ' || :'mark_empty');
+SELECT pg_temp.s_assert(:'mark_spaces'::jsonb->>'reason' = 'SENDER_REQUIRED', 'a white-space mark does not exempt: ' || :'mark_spaces');
+SELECT pg_temp.s_assert(:'mark_tab_nbsp'::jsonb->>'reason' = 'SENDER_REQUIRED', 'a tab and non-breaking-space mark does not exempt: ' || :'mark_tab_nbsp');
+SELECT pg_temp.s_assert((SELECT count(*) FROM public.goodsreceived) = :grn_x AND (SELECT count(*) FROM public.goodsreceived_trl) = :line_x
+  AND (SELECT count(*) FROM public.idempotency_keys) = :key_x AND NOT EXISTS (SELECT 1 FROM public.goodsreceived WHERE gr_no = 'S231F'),
+  'the refused calls wrote no GRN, no line and no request key');
+-- fas-sync's path: the same number and key save now (neither was used up), with the sender empty.
+SELECT pg_temp.s_save_as('fas', 'S231F', :'cust'::uuid, :'cumin'::uuid, '', true, 'Fixture Supervisor', 'wh231-f') AS fas_empty \gset
+SELECT pg_temp.s_save_as('fas', 'S231G', :'cust'::uuid, :'cumin'::uuid, NULL, true, 'Fixture Supervisor', 'wh231-g') AS fas_null \gset
+SELECT pg_temp.s_save_as('fas', 'S231H', :'cust'::uuid, :'cumin'::uuid, E'  \t ', true, 'Fixture Supervisor', 'wh231-h') AS fas_spaces \gset
+SELECT pg_temp.s_assert(:'fas_empty'::jsonb->>'success' = 'true' AND :'fas_null'::jsonb->>'success' = 'true' AND :'fas_spaces'::jsonb->>'success' = 'true',
+  'fas-sync''s path saves a new GRN with a blank sender: ' || :'fas_empty' || :'fas_null' || :'fas_spaces');
+SELECT pg_temp.s_assert((SELECT sender_name IS NULL OR btrim(sender_name, E' \t\r\n ') = '' FROM public.goodsreceived WHERE gr_no = 'S231F')
+  AND (SELECT sender_name IS NULL FROM public.goodsreceived WHERE gr_no = 'S231G')
+  AND (SELECT sender_name IS NULL OR btrim(sender_name, E' \t\r\n ') = '' FROM public.goodsreceived WHERE gr_no = 'S231H')
+  AND (SELECT count(*) FROM public.goodsreceived WHERE gr_no IN ('S231F', 'S231G', 'S231H')) = 3
+  AND (SELECT count(*) FROM public.goodsreceived_trl t JOIN public.goodsreceived g ON g.id = t.gr_id WHERE g.gr_no IN ('S231F', 'S231G', 'S231H')) = 3
+  AND (SELECT bool_and(supervisor_name = 'Fixture Supervisor' AND supervisor_id IS NOT NULL) FROM public.goodsreceived WHERE gr_no IN ('S231F', 'S231G', 'S231H')),
+  'the fas-sync GRNs are stored with the sender empty, each with its line and its supervisor');
+-- The supervisor check has no exemption: on fas-sync's path a missing id or a blank name is refused, and nothing is saved.
+SELECT pg_temp.s_save_as('fas', 'S231I', :'cust'::uuid, :'cumin'::uuid, '', false, 'Fixture Supervisor', 'wh231-i') AS fas_nosup \gset
+SELECT pg_temp.s_save_as('fas', 'S231I', :'cust'::uuid, :'cumin'::uuid, '', true, '  ', 'wh231-i') AS fas_blanksup \gset
+SELECT pg_temp.s_save_as('fas', 'S231I', :'cust'::uuid, :'cumin'::uuid, '', false, NULL, 'wh231-i') AS fas_neither \gset
+SELECT pg_temp.s_save_as('fas', 'S231I', :'cust'::uuid, :'cumin'::uuid, 'Fixture Sender', false, 'Fixture Supervisor', 'wh231-i') AS fas_nosup_sender \gset
+SELECT pg_temp.s_save_as('plain', 'S231I', :'cust'::uuid, :'cumin'::uuid, '', false, 'Fixture Supervisor', 'wh231-i') AS plain_nosup \gset
+SELECT pg_temp.s_assert(:'fas_nosup'::jsonb->>'reason' = 'SUPERVISOR_REQUIRED' AND :'fas_nosup'::jsonb->>'success' = 'false'
+  AND :'fas_nosup'::jsonb->>'message' = 'Supervisor is required', 'fas-sync''s path, blank sender, no supervisor id: SUPERVISOR_REQUIRED: ' || :'fas_nosup');
+SELECT pg_temp.s_assert(:'fas_blanksup'::jsonb->>'reason' = 'SUPERVISOR_REQUIRED' AND :'fas_blanksup'::jsonb->>'success' = 'false', 'fas-sync''s path, blank supervisor name: ' || :'fas_blanksup');
+SELECT pg_temp.s_assert(:'fas_neither'::jsonb->>'reason' = 'SUPERVISOR_REQUIRED', 'fas-sync''s path, no sender and no supervisor: the supervisor is refused: ' || :'fas_neither');
+SELECT pg_temp.s_assert(:'fas_nosup_sender'::jsonb->>'reason' = 'SUPERVISOR_REQUIRED', 'fas-sync''s path, sender given, no supervisor id: ' || :'fas_nosup_sender');
+SELECT pg_temp.s_assert(:'plain_nosup'::jsonb->>'reason' = 'SENDER_REQUIRED', 'no mark: the sender is still named first: ' || :'plain_nosup');
+SELECT pg_temp.s_assert(NOT EXISTS (SELECT 1 FROM public.goodsreceived WHERE gr_no = 'S231I')
+  AND (SELECT count(*) FROM public.goodsreceived) = :grn_x + 3 AND (SELECT count(*) FROM public.goodsreceived_trl) = :line_x + 3
+  AND (SELECT count(*) FROM public.idempotency_keys) = :key_x + 3, 'the supervisor refusals wrote nothing');
+-- A filled sender on fas-sync's path and with the API login saves as before.
+SELECT pg_temp.s_save_as('fas', 'S231J', :'cust'::uuid, :'cumin'::uuid, 'Fixture Sender', true, 'Fixture Supervisor', 'wh231-j') AS fas_full \gset
+SELECT pg_temp.s_save_as('api', 'S231K', :'cust'::uuid, :'cumin'::uuid, 'Fixture Sender', true, 'Fixture Supervisor', 'wh231-k') AS api_full \gset
+SELECT pg_temp.s_assert(:'fas_full'::jsonb->>'success' = 'true' AND :'api_full'::jsonb->>'success' = 'true', 'a full GRN still saves on both paths: ' || :'fas_full' || :'api_full');
+-- The marks did not outlive their calls: a blank sender is refused again.
+SELECT pg_temp.s_assert(coalesce(current_setting('fas.session', true), '') = '', 'no mark is left set after this part');
+SET LOCAL ROLE authenticated;
+SELECT pg_temp.s_save('S231L', :'cust'::uuid, :'cumin'::uuid, NULL, true, 'Fixture Supervisor', 'wh231-l') AS after_marks \gset
+RESET ROLE;
+SELECT pg_temp.s_assert(:'after_marks'::jsonb->>'reason' = 'SENDER_REQUIRED', 'after the marked calls a blank sender is refused again: ' || :'after_marks');
+
 -- The history import writes the tables itself and never goes through save_grn (its loading is run by import_past_years_180.sql).
 SELECT pg_temp.s_assert(position('save_grn' IN pg_get_functiondef('public.import_history(jsonb, boolean)'::regprocedure)) = 0, 'import_history does not call save_grn');
 ROLLBACK;
+\echo 'GRN sender and supervisor required (WH-231, with the fas-sync exemption) checks passed.'
