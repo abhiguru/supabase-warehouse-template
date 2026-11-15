@@ -89,7 +89,7 @@ SELECT pg_temp.nt_assert(:'imported'::jsonb->>'success' = 'true' AND pg_temp.nt_
 SELECT pg_temp.nt_assert((SELECT inv_prefix = 'INV' AND inv_no = 25 FROM public.invoice WHERE import_batch_id IS NOT NULL), 'the imported invoice is INV + 25');
 
 -- ===== app saves =====
-SELECT pg_temp.nt_as(:'admin_claims'::jsonb, format($q$SELECT public.save_grn(p_gr_no=>'A0002',p_date=>%L::timestamptz,p_customer_id=>%L::uuid,p_customer_name=>'x',p_pricing_mode=>'MONTHLY',
+SELECT pg_temp.nt_as(:'admin_claims'::jsonb, format($q$SELECT public.save_grn(p_sender_name=>'Fixture Sender',p_supervisor_id=>(SELECT id FROM public.user_profiles WHERE NOT is_service_account ORDER BY created_at LIMIT 1),p_supervisor_name=>'Fixture Supervisor',p_gr_no=>'A0002',p_date=>%L::timestamptz,p_customer_id=>%L::uuid,p_customer_name=>'x',p_pricing_mode=>'MONTHLY',
   p_idempotency_key=>'nt-g2',p_items=>jsonb_build_array(jsonb_build_object('item_id',%L,'item_name','Number Taken Potato','packaging','Bag','qty',30,'weight',50,'rack','R1')))$q$,
   (:'today'::date - 40)::text || 'T12:00:00Z', :'cust', :'item_id')) AS g2 \gset
 SELECT pg_temp.nt_assert(:'g2'::jsonb->>'success' = 'true', 'an app GRN: ' || :'g2');

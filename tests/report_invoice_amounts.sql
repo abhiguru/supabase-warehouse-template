@@ -66,7 +66,7 @@ CREATE FUNCTION pg_temp.ria_invoice(p_no integer, p_customer uuid, p_customer_na
 RETURNS void LANGUAGE plpgsql AS $$
 DECLARE trl_id uuid; grn_id uuid; line_id uuid; saved jsonb;
 BEGIN
-  PERFORM pg_temp.ria_assert(public.save_grn(p_gr_no => 'RIAG' || p_no, p_date => (p_grn_day || 'T12:00:00Z')::timestamptz,
+  PERFORM pg_temp.ria_assert(public.save_grn(p_sender_name=>'Fixture Sender',p_supervisor_id=>(SELECT id FROM public.user_profiles WHERE NOT is_service_account ORDER BY created_at LIMIT 1),p_supervisor_name=>'Fixture Supervisor',p_gr_no => 'RIAG' || p_no, p_date => (p_grn_day || 'T12:00:00Z')::timestamptz,
       p_customer_id => p_customer, p_customer_name => p_customer_name, p_pricing_mode => 'MONTHLY',
       p_idempotency_key => 'report-invoice-amounts-g' || p_no,
       p_items => jsonb_build_array(jsonb_build_object('item_id', p_item, 'item_name', 'Invoice Amounts Fennel', 'packaging', 'Bag',

@@ -115,7 +115,7 @@ INSERT INTO public.users_customers_new(user_profile_id, customer_id, active)
 
 SELECT set_config('request.jwt.claims', :'admin_claims', true);
 SET LOCAL ROLE authenticated;
-SELECT pg_temp.did_assert(public.save_grn(p_gr_no => r.gr_no, p_date => '2026-08-14T12:00:00Z'::timestamptz,
+SELECT pg_temp.did_assert(public.save_grn(p_sender_name=>'Fixture Sender',p_supervisor_id=>(SELECT id FROM public.user_profiles WHERE NOT is_service_account ORDER BY created_at LIMIT 1),p_supervisor_name=>'Fixture Supervisor',p_gr_no => r.gr_no, p_date => '2026-08-14T12:00:00Z'::timestamptz,
   p_customer_id => r.customer, p_customer_name => r.customer_name, p_idempotency_key => 'report-dispatch-id-' || r.gr_no,
   p_items => jsonb_build_array(jsonb_build_object('item_id', :'fennel', 'item_name', 'Dispatch Id Fennel', 'packaging', 'Bag',
     'qty', 100, 'weight', 5)))->>'success' = 'true', 'fixture receipt ' || r.gr_no)

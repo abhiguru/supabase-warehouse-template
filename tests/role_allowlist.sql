@@ -386,7 +386,7 @@ SELECT pg_temp.ra_assert(public.assign_customer_to_user('919888888935',:'alpha':
   AND public.assign_customer_to_user('919888888935',:'beta'::uuid,'Role matrix fixture'),'customer login assigned to Alpha and Beta');
 SELECT pg_temp.ra_assert(public.replace_item_rates(:'item_id'::uuid,:'gamma'::uuid,'monthly','2026-01-01'::date,
  jsonb_build_array(jsonb_build_object('weight_min',0,'weight_max',100,'unit_price',5,'labour_rate',2,'tax_percent',5)))->>'success'='true','Gamma''s monthly price');
-SELECT pg_temp.ra_assert(public.save_grn(p_gr_no=>'RM'||c.code,p_date=>'2026-04-01T12:00:00Z',p_customer_id=>c.id,
+SELECT pg_temp.ra_assert(public.save_grn(p_sender_name=>'Fixture Sender',p_gr_no=>'RM'||c.code,p_date=>'2026-04-01T12:00:00Z',p_customer_id=>c.id,
  p_customer_name=>'Role Matrix '||c.label,p_supervisor_id=>:'supervisor_profile'::uuid,p_supervisor_name=>'Role Matrix Supervisor',
  p_pricing_mode=>'MONTHLY',p_idempotency_key=>'role-matrix-'||c.code,
  p_items=>jsonb_build_array(jsonb_build_object('item_id',:'item_id','item_name','Role Matrix Rice',

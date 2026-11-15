@@ -45,10 +45,10 @@ INSERT INTO public.items(name,packaging) VALUES ('GRN83 Ginger','Bag') RETURNING
 -- an active business gets a GRN; B gets one while still active (the existing GRN to edit later)
 SELECT set_config('request.jwt.claims',:'admin_claims',true);
 SET LOCAL ROLE authenticated;
-SELECT public.save_grn(p_gr_no=>'G83A',p_date=>now(),p_customer_id=>:'cust_a'::uuid,p_customer_name=>'GRN83 Active',
+SELECT public.save_grn(p_sender_name=>'Fixture Sender',p_supervisor_id=>(SELECT id FROM public.user_profiles WHERE NOT is_service_account ORDER BY created_at LIMIT 1),p_supervisor_name=>'Fixture Supervisor',p_gr_no=>'G83A',p_date=>now(),p_customer_id=>:'cust_a'::uuid,p_customer_name=>'GRN83 Active',
   p_items=>jsonb_build_array(jsonb_build_object('item_id',:'item_id','item_name','GRN83 Ginger','packaging','Bag','qty',1,'weight',10,'rack','A1')),
   p_idempotency_key=>'g83-a') AS save_a \gset
-SELECT public.save_grn(p_gr_no=>'G83B',p_date=>now(),p_customer_id=>:'cust_b'::uuid,p_customer_name=>'GRN83 Later deactivated',
+SELECT public.save_grn(p_sender_name=>'Fixture Sender',p_supervisor_id=>(SELECT id FROM public.user_profiles WHERE NOT is_service_account ORDER BY created_at LIMIT 1),p_supervisor_name=>'Fixture Supervisor',p_gr_no=>'G83B',p_date=>now(),p_customer_id=>:'cust_b'::uuid,p_customer_name=>'GRN83 Later deactivated',
   p_items=>jsonb_build_array(jsonb_build_object('item_id',:'item_id','item_name','GRN83 Ginger','packaging','Bag','qty',2,'weight',10,'rack','A2')),
   p_idempotency_key=>'g83-b') AS save_b \gset
 RESET ROLE;
@@ -60,12 +60,12 @@ UPDATE public.customers SET active=false WHERE id=:'cust_b'::uuid;
 -- admin and staff: a new GRN for deactivated B is refused with the exact text, nothing is inserted
 SELECT set_config('request.jwt.claims',:'admin_claims',true);
 SET LOCAL ROLE authenticated;
-SELECT pg_temp.g83_call(format($q$SELECT public.save_grn(p_gr_no=>'G83X1',p_date=>now(),p_customer_id=>%L::uuid,p_customer_name=>'GRN83 Later deactivated',
+SELECT pg_temp.g83_call(format($q$SELECT public.save_grn(p_sender_name=>'Fixture Sender',p_supervisor_id=>(SELECT id FROM public.user_profiles WHERE NOT is_service_account ORDER BY created_at LIMIT 1),p_supervisor_name=>'Fixture Supervisor',p_gr_no=>'G83X1',p_date=>now(),p_customer_id=>%L::uuid,p_customer_name=>'GRN83 Later deactivated',
   p_idempotency_key=>'g83-x1')$q$,:'cust_b')) AS refuse_admin \gset
 RESET ROLE;
 SELECT set_config('request.jwt.claims',:'staff_claims',true);
 SET LOCAL ROLE authenticated;
-SELECT pg_temp.g83_call(format($q$SELECT public.save_grn(p_gr_no=>'G83X2',p_date=>now(),p_customer_id=>%L::uuid,p_customer_name=>'GRN83 Later deactivated',
+SELECT pg_temp.g83_call(format($q$SELECT public.save_grn(p_sender_name=>'Fixture Sender',p_supervisor_id=>(SELECT id FROM public.user_profiles WHERE NOT is_service_account ORDER BY created_at LIMIT 1),p_supervisor_name=>'Fixture Supervisor',p_gr_no=>'G83X2',p_date=>now(),p_customer_id=>%L::uuid,p_customer_name=>'GRN83 Later deactivated',
   p_idempotency_key=>'g83-x2')$q$,:'cust_b')) AS refuse_staff \gset
 RESET ROLE;
 SELECT pg_temp.g83_assert(

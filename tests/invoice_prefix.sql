@@ -44,7 +44,7 @@ SELECT id AS customer_id FROM public.customers WHERE name='Prefix Demo Customer'
 SELECT id AS item_id FROM public.items WHERE name='Prefix Demo Potatoes' \gset
 SELECT public.replace_item_rates(:'item_id'::uuid,:'customer_id'::uuid,'monthly','2026-01-01'::date,jsonb_build_array(jsonb_build_object('weight_min',0,'weight_max',100,'unit_price',5,'labour_rate',2,'tax_percent',5))) AS price \gset
 SELECT pg_temp.pf_assert(:'price'::jsonb->>'success'='true','fictional price creation');
-SELECT public.save_grn(p_gr_no=>'PFXA',p_date=>'2026-04-01T12:00:00Z',p_customer_id=>:'customer_id'::uuid,
+SELECT public.save_grn(p_sender_name=>'Fixture Sender',p_supervisor_id=>(SELECT id FROM public.user_profiles WHERE NOT is_service_account ORDER BY created_at LIMIT 1),p_supervisor_name=>'Fixture Supervisor',p_gr_no=>'PFXA',p_date=>'2026-04-01T12:00:00Z',p_customer_id=>:'customer_id'::uuid,
  p_customer_name=>'Prefix Demo Customer',p_pricing_mode=>'MONTHLY',p_idempotency_key=>'pfx-receipt',
  p_items=>jsonb_build_array(jsonb_build_object('item_id',:'item_id','item_name','Prefix Demo Potatoes',
  'packaging','Bag','qty',100,'weight',10,'rack','DEMO'))) AS grn \gset
@@ -127,7 +127,7 @@ CREATE FUNCTION pg_temp.update_invoice_doc(p_id uuid, doc jsonb) RETURNS jsonb L
     SELECT jsonb_build_object('grn_item_id', (SELECT d.gr_trl_id FROM public.dispatch_trl d WHERE d.id = (i->>'disp_trl_id')::uuid), 'duration', 1) || i
     FROM jsonb_array_elements(doc->'items') i)) $$;
 SET LOCAL ROLE authenticated;
-SELECT public.save_grn(p_gr_no=>'PFXC',p_date=>'2023-04-10T12:00:00Z',p_customer_id=>:'customer_id'::uuid,
+SELECT public.save_grn(p_sender_name=>'Fixture Sender',p_supervisor_id=>(SELECT id FROM public.user_profiles WHERE NOT is_service_account ORDER BY created_at LIMIT 1),p_supervisor_name=>'Fixture Supervisor',p_gr_no=>'PFXC',p_date=>'2023-04-10T12:00:00Z',p_customer_id=>:'customer_id'::uuid,
  p_customer_name=>'Prefix Demo Customer',p_pricing_mode=>'MONTHLY',p_idempotency_key=>'pfx-old-receipt',
  p_items=>jsonb_build_array(jsonb_build_object('item_id',:'item_id','item_name','Prefix Demo Potatoes',
  'packaging','Bag','qty',10,'weight',10,'rack','DEMO'))) AS old_grn \gset

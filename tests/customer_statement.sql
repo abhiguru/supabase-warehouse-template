@@ -42,7 +42,7 @@ SELECT public.replace_item_rates(:'item_id'::uuid, :'customer_id'::uuid, 'monthl
 SELECT pg_temp.st_assert(:'price'::jsonb->>'success' = 'true', 'fictional price creation');
 SELECT to_char((now() AT TIME ZONE 'Asia/Kolkata')::date - 40, 'YYYY-MM-DD') || 'T12:00:00Z' AS received_on,
        to_char((now() AT TIME ZONE 'Asia/Kolkata')::date - 20, 'YYYY-MM-DD') || 'T12:00:00Z' AS left_on \gset
-SELECT public.save_grn(p_gr_no => 'STMT1', p_date => :'received_on', p_customer_id => :'customer_id'::uuid, p_customer_name => 'Statement Demo Customer',
+SELECT public.save_grn(p_sender_name=>'Fixture Sender',p_supervisor_id=>(SELECT id FROM public.user_profiles WHERE NOT is_service_account ORDER BY created_at LIMIT 1),p_supervisor_name=>'Fixture Supervisor',p_gr_no => 'STMT1', p_date => :'received_on', p_customer_id => :'customer_id'::uuid, p_customer_name => 'Statement Demo Customer',
   p_pricing_mode => 'MONTHLY', p_idempotency_key => 'stmt-receipt',
   p_items => jsonb_build_array(jsonb_build_object('item_id', :'item_id', 'item_name', 'Statement Demo Potatoes', 'packaging', 'Bag', 'qty', 10, 'weight', 10, 'rack', 'DEMO'))) AS grn \gset
 SELECT pg_temp.st_assert(:'grn'::jsonb->>'success' = 'true', 'receipt creation: ' || :'grn');

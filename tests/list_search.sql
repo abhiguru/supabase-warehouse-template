@@ -58,15 +58,15 @@ SELECT set_config('request.jwt.claims', :'admin_claims', true);
 SET LOCAL ROLE authenticated;
 -- SRB9: Lakeview, garlic, package PKG-RED, rack R7, vehicle GJ01SR0001.
 -- SRB10: Lakeview, onion.   SRB100: Hilltop, garlic, package PKG_50%.
-SELECT pg_temp.search_assert((public.save_grn(p_gr_no => 'SRB9', p_date => now() - interval '3 days', p_customer_id => :'lakeview'::uuid,
+SELECT pg_temp.search_assert((public.save_grn(p_sender_name=>'Fixture Sender',p_supervisor_id=>(SELECT id FROM public.user_profiles WHERE NOT is_service_account ORDER BY created_at LIMIT 1),p_supervisor_name=>'Fixture Supervisor',p_gr_no => 'SRB9', p_date => now() - interval '3 days', p_customer_id => :'lakeview'::uuid,
   p_customer_name => 'Search Lakeview Spices', p_registration => 'GJ01SR0001', p_idempotency_key => 'search-srb9',
   p_items => jsonb_build_array(jsonb_build_object('item_id', :'garlic', 'item_name', 'Search Garlic', 'packaging', 'Bag',
     'qty', 10, 'weight', 5, 'package_mark', 'PKG-RED', 'rack', 'R7'))))->>'success' = 'true', 'fixture SRB9');
-SELECT pg_temp.search_assert((public.save_grn(p_gr_no => 'SRB10', p_date => now() - interval '2 days', p_customer_id => :'lakeview'::uuid,
+SELECT pg_temp.search_assert((public.save_grn(p_sender_name=>'Fixture Sender',p_supervisor_id=>(SELECT id FROM public.user_profiles WHERE NOT is_service_account ORDER BY created_at LIMIT 1),p_supervisor_name=>'Fixture Supervisor',p_gr_no => 'SRB10', p_date => now() - interval '2 days', p_customer_id => :'lakeview'::uuid,
   p_customer_name => 'Search Lakeview Spices', p_idempotency_key => 'search-srb10',
   p_items => jsonb_build_array(jsonb_build_object('item_id', :'onion', 'item_name', 'Search Onion', 'packaging', 'Bag',
     'qty', 10, 'weight', 5))))->>'success' = 'true', 'fixture SRB10');
-SELECT pg_temp.search_assert((public.save_grn(p_gr_no => 'SRB100', p_date => now() - interval '1 day', p_customer_id => :'hilltop'::uuid,
+SELECT pg_temp.search_assert((public.save_grn(p_sender_name=>'Fixture Sender',p_supervisor_id=>(SELECT id FROM public.user_profiles WHERE NOT is_service_account ORDER BY created_at LIMIT 1),p_supervisor_name=>'Fixture Supervisor',p_gr_no => 'SRB100', p_date => now() - interval '1 day', p_customer_id => :'hilltop'::uuid,
   p_customer_name => 'Search Hilltop Mart', p_idempotency_key => 'search-srb100',
   p_items => jsonb_build_array(jsonb_build_object('item_id', :'garlic', 'item_name', 'Search Garlic', 'packaging', 'Bag',
     'qty', 10, 'weight', 5, 'package_mark', 'PKG_50%'))))->>'success' = 'true', 'fixture SRB100');

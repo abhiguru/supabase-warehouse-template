@@ -48,7 +48,7 @@ CREATE FUNCTION pg_temp.sp_rate(p_item text, p_rent numeric) RETURNS jsonb LANGU
   SELECT jsonb_build_object('scope','grn','item_id',pg_temp.sp_item(p_item),'weight_min',0,'weight_max',50,'unit_price',p_rent,'labour_rate',2,'tax_percent',5) $$;
 -- save_grn with or without p_rates (SQL NULL leaves the parameter out).
 CREATE FUNCTION pg_temp.sp_save(claims jsonb, p_no text, p_customer uuid, p_items jsonb, p_rates jsonb) RETURNS jsonb LANGUAGE sql AS $$
-  SELECT pg_temp.sp_as(claims, format($q$SELECT public.save_grn(p_gr_no=>%L,p_date=>%L::timestamptz,p_customer_id=>%L::uuid,
+  SELECT pg_temp.sp_as(claims, format($q$SELECT public.save_grn(p_sender_name=>'Fixture Sender',p_supervisor_id=>(SELECT id FROM public.user_profiles WHERE NOT is_service_account ORDER BY created_at LIMIT 1),p_supervisor_name=>'Fixture Supervisor',p_gr_no=>%L,p_date=>%L::timestamptz,p_customer_id=>%L::uuid,
     p_customer_name=>'x',p_pricing_mode=>'MONTHLY',p_items=>%L::jsonb%s)$q$, p_no, (current_date-12)::text||'T12:00:00Z', p_customer, p_items,
     CASE WHEN p_rates IS NULL THEN '' ELSE format(',p_rates=>%L::jsonb',p_rates) END)) $$;
 CREATE FUNCTION pg_temp.sp_lines(p_gr_no text) RETURNS jsonb LANGUAGE sql AS $$

@@ -66,12 +66,12 @@ INSERT INTO public.items(name,packaging) VALUES ('Effects Rice','Bag') RETURNING
 -- Two GRNs of one customer: Onions 20 and Garlic 30 on the first, Rice 10 on the second. The order asks for 10, 6 and 8.
 SELECT set_config('request.jwt.claims',:'admin_claims',true);
 SET LOCAL ROLE authenticated;
-SELECT public.save_grn(p_gr_no=>'EFFA',p_date=>'2026-04-01T12:00:00Z',p_customer_id=>:'customer_a'::uuid,p_customer_name=>'Effects Customer A',
+SELECT public.save_grn(p_sender_name=>'Fixture Sender',p_supervisor_id=>(SELECT id FROM public.user_profiles WHERE NOT is_service_account ORDER BY created_at LIMIT 1),p_supervisor_name=>'Fixture Supervisor',p_gr_no=>'EFFA',p_date=>'2026-04-01T12:00:00Z',p_customer_id=>:'customer_a'::uuid,p_customer_name=>'Effects Customer A',
  p_items=>jsonb_build_array(
   jsonb_build_object('item_id',:'onion_item','item_name','Effects Onions','packaging','Bag','qty',20,'weight',10,'rack','R1','package_mark','X0001'),
   jsonb_build_object('item_id',:'garlic_item','item_name','Effects Garlic','packaging','Bag','qty',30,'weight',10,'rack','R2','package_mark','X0002')),
  p_idempotency_key=>'effects-grn-a') AS grn_a_answer \gset
-SELECT public.save_grn(p_gr_no=>'EFFB',p_date=>'2026-04-01T12:00:00Z',p_customer_id=>:'customer_a'::uuid,p_customer_name=>'Effects Customer A',
+SELECT public.save_grn(p_sender_name=>'Fixture Sender',p_supervisor_id=>(SELECT id FROM public.user_profiles WHERE NOT is_service_account ORDER BY created_at LIMIT 1),p_supervisor_name=>'Fixture Supervisor',p_gr_no=>'EFFB',p_date=>'2026-04-01T12:00:00Z',p_customer_id=>:'customer_a'::uuid,p_customer_name=>'Effects Customer A',
  p_items=>jsonb_build_array(
   jsonb_build_object('item_id',:'rice_item','item_name','Effects Rice','packaging','Bag','qty',10,'weight',10,'rack','R3','package_mark','X0003')),
  p_idempotency_key=>'effects-grn-b') AS grn_b_answer \gset

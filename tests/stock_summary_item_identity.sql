@@ -56,7 +56,7 @@ SET LOCAL ROLE authenticated;
 CREATE FUNCTION pg_temp.ssi_receive(p_no text, p_day text, p_name text, p_bags integer, p_customer uuid, p_item uuid) RETURNS void
 LANGUAGE plpgsql AS $$
 BEGIN
-  PERFORM pg_temp.ssi_assert(public.save_grn(p_gr_no => p_no, p_date => (p_day || 'T12:00:00Z')::timestamptz, p_customer_id => p_customer,
+  PERFORM pg_temp.ssi_assert(public.save_grn(p_sender_name=>'Fixture Sender',p_supervisor_id=>(SELECT id FROM public.user_profiles WHERE NOT is_service_account ORDER BY created_at LIMIT 1),p_supervisor_name=>'Fixture Supervisor',p_gr_no => p_no, p_date => (p_day || 'T12:00:00Z')::timestamptz, p_customer_id => p_customer,
     p_customer_name => 'Stock Identity Willow Cold', p_pricing_mode => 'MONTHLY', p_idempotency_key => 'stock-identity-' || p_no,
     p_items => jsonb_build_array(jsonb_build_object('item_id', p_item, 'item_name', p_name, 'packaging', 'Bag',
       'qty', p_bags, 'weight', 5)))->>'success' = 'true', 'fixture receipt ' || p_no);

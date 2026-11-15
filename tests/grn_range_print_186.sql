@@ -52,7 +52,7 @@ SELECT pg_temp.rp_login('9888888921') AS admin_claims \gset
 INSERT INTO public.customers(name,mobile) VALUES ('Range Print Customer','9888888922') RETURNING id AS customer \gset
 INSERT INTO public.items(name,packaging) VALUES ('Range Print Potato','Bag') RETURNING id AS item_id \gset
 -- Four app GRNs, A0002 and A0004 then deleted.
-SELECT string_agg(n || ':' || (pg_temp.rp_as(:'admin_claims'::jsonb, format($q$SELECT public.save_grn(p_gr_no=>%L,p_date=>now(),p_customer_id=>%L::uuid,p_customer_name=>'Range Print Customer',
+SELECT string_agg(n || ':' || (pg_temp.rp_as(:'admin_claims'::jsonb, format($q$SELECT public.save_grn(p_sender_name=>'Fixture Sender',p_supervisor_id=>(SELECT id FROM public.user_profiles WHERE NOT is_service_account ORDER BY created_at LIMIT 1),p_supervisor_name=>'Fixture Supervisor',p_gr_no=>%L,p_date=>now(),p_customer_id=>%L::uuid,p_customer_name=>'Range Print Customer',
   p_pricing_mode=>'MONTHLY',p_idempotency_key=>%L,p_items=>jsonb_build_array(jsonb_build_object('item_id',%L,'item_name','Range Print Potato','packaging','Bag','qty',10,'weight',50,'rack','R1')))$q$,
   n, :'customer', 'rp-' || n, :'item_id'))->>'success'), ',') AS saved
   FROM unnest(ARRAY['A0001','A0002','A0004','A0005','A0006']) n \gset

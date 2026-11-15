@@ -59,7 +59,7 @@ SELECT pg_temp.inc_assert(public.create_customer('Ceiling Customer','9888888853'
 SELECT pg_temp.inc_assert(public.create_item('Ceiling Onions','Bag')->>'success'='true','catalog item');
 SELECT id AS customer_id FROM public.customers WHERE name='Ceiling Customer' \gset
 SELECT id AS item_id FROM public.items WHERE name='Ceiling Onions' \gset
-SELECT pg_temp.inc_assert(public.save_grn(p_gr_no=>'INCA',p_date=>'2024-04-01T12:00:00Z',p_customer_id=>:'customer_id'::uuid,
+SELECT pg_temp.inc_assert(public.save_grn(p_sender_name=>'Fixture Sender',p_supervisor_id=>(SELECT id FROM public.user_profiles WHERE NOT is_service_account ORDER BY created_at LIMIT 1),p_supervisor_name=>'Fixture Supervisor',p_gr_no=>'INCA',p_date=>'2024-04-01T12:00:00Z',p_customer_id=>:'customer_id'::uuid,
  p_customer_name=>'Ceiling Customer',p_pricing_mode=>'MONTHLY',
  p_items=>jsonb_build_array(jsonb_build_object('item_id',:'item_id','item_name','Ceiling Onions','packaging','Bag','qty',10,'weight',5)))->>'success'='true','receipt INCA');
 RESET ROLE;

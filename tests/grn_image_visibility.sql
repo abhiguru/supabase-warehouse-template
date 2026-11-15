@@ -78,7 +78,7 @@ INSERT INTO public.users_customers_new(user_profile_id, customer_id, active)
 -- The receipt and photo a, as the administrator.
 SELECT set_config('request.jwt.claims', :'admin_claims', true);
 SET LOCAL ROLE authenticated;
-SELECT pg_temp.giv_assert(public.save_grn(p_gr_no => 'W2PH', p_date => '2026-04-01T12:00:00Z', p_customer_id => :'hazel'::uuid,
+SELECT pg_temp.giv_assert(public.save_grn(p_sender_name=>'Fixture Sender',p_supervisor_id=>(SELECT id FROM public.user_profiles WHERE NOT is_service_account ORDER BY created_at LIMIT 1),p_supervisor_name=>'Fixture Supervisor',p_gr_no => 'W2PH', p_date => '2026-04-01T12:00:00Z', p_customer_id => :'hazel'::uuid,
   p_customer_name => 'Photo Rule Hazel Cold', p_pricing_mode => 'MONTHLY', p_idempotency_key => 'photo-rule-grn',
   p_items => jsonb_build_array(
     jsonb_build_object('item_id', :'garlic', 'item_name', 'Photo Rule Garlic', 'packaging', 'Bag', 'qty', 10, 'weight', 5, 'package_mark', 'L1'),
@@ -168,7 +168,7 @@ SELECT pg_temp.giv_assert(jsonb_array_length(:'reader_details'::jsonb#>'{data,gr
 SELECT id AS admin_profile FROM public.user_profiles WHERE mobile = '919888886901' \gset
 SELECT set_config('request.jwt.claims', :'admin_claims', true);
 SET LOCAL ROLE authenticated;
-SELECT pg_temp.giv_assert(public.save_grn(p_gr_no => 'W2P' || x, p_date => '2026-04-02T12:00:00Z', p_customer_id => :'hazel'::uuid,
+SELECT pg_temp.giv_assert(public.save_grn(p_sender_name=>'Fixture Sender',p_supervisor_id=>(SELECT id FROM public.user_profiles WHERE NOT is_service_account ORDER BY created_at LIMIT 1),p_supervisor_name=>'Fixture Supervisor',p_gr_no => 'W2P' || x, p_date => '2026-04-02T12:00:00Z', p_customer_id => :'hazel'::uuid,
   p_customer_name => 'Photo Rule Hazel Cold', p_pricing_mode => 'MONTHLY', p_idempotency_key => 'photo-rule-grn-' || x,
   p_items => jsonb_build_array(
     jsonb_build_object('item_id', :'garlic', 'item_name', 'Photo Rule Garlic', 'packaging', 'Bag', 'qty', 4, 'weight', 5, 'package_mark', x)))->>'success' = 'true',

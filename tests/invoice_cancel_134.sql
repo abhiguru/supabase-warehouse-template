@@ -66,7 +66,7 @@ SELECT pg_temp.ic_assert(public.replace_item_rates(:'item_id'::uuid,:'north'::uu
 RESET ROLE;
 SELECT set_config('request.jwt.claims',:'admin_claims',true);
 SET LOCAL ROLE authenticated;
-SELECT pg_temp.ic_assert(public.save_grn(p_gr_no=>'CN1',p_date=>'2026-04-01T12:00:00Z',p_customer_id=>:'north'::uuid,
+SELECT pg_temp.ic_assert(public.save_grn(p_sender_name=>'Fixture Sender',p_supervisor_id=>(SELECT id FROM public.user_profiles WHERE NOT is_service_account ORDER BY created_at LIMIT 1),p_supervisor_name=>'Fixture Supervisor',p_gr_no=>'CN1',p_date=>'2026-04-01T12:00:00Z',p_customer_id=>:'north'::uuid,
  p_customer_name=>'Cancel Test North',p_pricing_mode=>'ONE_TIME',p_idempotency_key=>'cancel-test-grn-1',
  p_items=>jsonb_build_array(jsonb_build_object('item_id',:'item_id','item_name','Cancel Test Garlic',
  'packaging','Bag','qty',20,'weight',10,'rack','RC1')))->>'success'='true','receipt CN1');
@@ -87,7 +87,7 @@ SELECT (:'saved1'::jsonb->>'invoice_id') AS inv1 \gset
 RESET ROLE;
 SELECT set_config('request.jwt.claims',:'admin_claims',true);
 SET LOCAL ROLE authenticated;
-SELECT pg_temp.ic_assert(public.save_grn(p_gr_no=>'CN2',p_date=>'2026-04-01T12:00:00Z',p_customer_id=>:'north'::uuid,
+SELECT pg_temp.ic_assert(public.save_grn(p_sender_name=>'Fixture Sender',p_supervisor_id=>(SELECT id FROM public.user_profiles WHERE NOT is_service_account ORDER BY created_at LIMIT 1),p_supervisor_name=>'Fixture Supervisor',p_gr_no=>'CN2',p_date=>'2026-04-01T12:00:00Z',p_customer_id=>:'north'::uuid,
  p_customer_name=>'Cancel Test North',p_pricing_mode=>'ONE_TIME',p_idempotency_key=>'cancel-test-grn-2',
  p_items=>jsonb_build_array(jsonb_build_object('item_id',:'item_id','item_name','Cancel Test Garlic',
  'packaging','Bag','qty',20,'weight',10,'rack','RC2')))->>'success'='true','receipt CN2');

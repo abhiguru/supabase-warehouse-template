@@ -99,7 +99,7 @@ INSERT INTO public.users_customers_new(user_profile_id,customer_id,active)
  SELECT id,:'orchard'::uuid,true FROM public.user_profiles WHERE mobile='919888888604';
 SELECT jsonb_build_object('item_id',:'item_id','item_name','Consistency Apples','packaging','Box','qty',20,'weight',5) AS line \gset
 CREATE FUNCTION pg_temp.dw_save(gr_no text, customer uuid, sent_name text, lines jsonb, key text) RETURNS jsonb LANGUAGE sql AS $$
-  SELECT public.save_grn(p_gr_no=>gr_no,p_date=>'2026-04-01T12:00:00Z',p_customer_id=>customer,p_customer_name=>sent_name,
+  SELECT public.save_grn(p_sender_name=>'Fixture Sender',p_supervisor_id=>(SELECT id FROM public.user_profiles WHERE NOT is_service_account ORDER BY created_at LIMIT 1),p_supervisor_name=>'Fixture Supervisor',p_gr_no=>gr_no,p_date=>'2026-04-01T12:00:00Z',p_customer_id=>customer,p_customer_name=>sent_name,
     p_pricing_mode=>'MONTHLY',p_items=>lines,p_idempotency_key=>key) $$;
 
 -- 3 to 5. Receipt creation, as staff one.

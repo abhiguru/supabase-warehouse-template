@@ -116,7 +116,7 @@ SELECT pg_temp.ir_assert(:'cc'::jsonb->>'success'='true','customer: '||:'cc');
 SELECT id AS orchard FROM public.customers WHERE name='IR Orchard' \gset
 SELECT pg_temp.ir_as(:'admin_claims'::jsonb,$q$SELECT public.create_item('IR Guava','Bag')$q$) AS gv \gset
 SELECT (:'gv'::jsonb#>>'{data,id}')::uuid AS guava \gset
-SELECT pg_temp.ir_as(:'admin_claims'::jsonb,format($q$SELECT public.save_grn(p_gr_no=>'IR-1',p_date=>%L::timestamptz,p_customer_id=>%L::uuid,
+SELECT pg_temp.ir_as(:'admin_claims'::jsonb,format($q$SELECT public.save_grn(p_sender_name=>'Fixture Sender',p_supervisor_id=>(SELECT id FROM public.user_profiles WHERE NOT is_service_account ORDER BY created_at LIMIT 1),p_supervisor_name=>'Fixture Supervisor',p_gr_no=>'IR-1',p_date=>%L::timestamptz,p_customer_id=>%L::uuid,
   p_customer_name=>'x',p_pricing_mode=>'MONTHLY',p_items=>%L::jsonb)$q$,(current_date-3)::text||'T12:00:00Z',:'orchard',
   jsonb_build_array(jsonb_build_object('item_id',:'guava','item_name','IR Guava','packaging','Bag','qty',2,'weight',10,'rack','R1')))) AS sg \gset
 SELECT pg_temp.ir_assert(:'sg'::jsonb->>'success'='true','GRN with one line of the item: '||:'sg');

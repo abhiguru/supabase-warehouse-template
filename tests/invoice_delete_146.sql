@@ -60,7 +60,7 @@ SELECT id AS north FROM public.customers WHERE name='Delete Test North' \gset
 SELECT id AS item_id FROM public.items WHERE name='Delete Test Garlic' \gset
 SELECT pg_temp.d_assert(public.assign_customer_to_user('919877777764',:'north'::uuid,'Delete test fixture'),'customer login assigned');
 SELECT pg_temp.d_assert(public.replace_item_rates(:'item_id'::uuid,:'north'::uuid,'monthly','2026-01-01'::date,jsonb_build_array(jsonb_build_object('weight_min',0,'weight_max',100,'unit_price',5,'labour_rate',2,'tax_percent',5)))->>'success'='true','price');
-SELECT pg_temp.d_assert(public.save_grn(p_gr_no=>n.no::varchar,p_date=>'2026-04-01T12:00:00Z',p_customer_id=>:'north'::uuid,
+SELECT pg_temp.d_assert(public.save_grn(p_sender_name=>'Fixture Sender',p_supervisor_id=>(SELECT id FROM public.user_profiles WHERE NOT is_service_account ORDER BY created_at LIMIT 1),p_supervisor_name=>'Fixture Supervisor',p_gr_no=>n.no::varchar,p_date=>'2026-04-01T12:00:00Z',p_customer_id=>:'north'::uuid,
  p_customer_name=>'Delete Test North',p_pricing_mode=>'ONE_TIME',p_idempotency_key=>'delete-grn-'||n.no,
  p_items=>jsonb_build_array(jsonb_build_object('item_id',:'item_id','item_name','Delete Test Garlic','packaging','Bag','qty',20,'weight',10,'rack','D-'||n.no)))->>'success'='true','receipt '||n.no)
 FROM (VALUES ('DL1'),('DL2')) n(no);

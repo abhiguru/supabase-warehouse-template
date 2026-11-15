@@ -103,7 +103,7 @@ DECLARE r jsonb; v_id uuid;
 BEGIN
   PERFORM set_config('request.jwt.claims', current_setting('pk.admin_claims'), true);
   EXECUTE 'SET LOCAL ROLE authenticated';
-  r := public.save_grn(p_gr_no=>p_no, p_date=>(p_date || 'T12:00:00Z')::timestamptz, p_customer_id=>p_cust, p_customer_name=>p_name, p_pricing_mode=>'MONTHLY',
+  r := public.save_grn(p_sender_name=>'Fixture Sender',p_supervisor_id=>(SELECT id FROM public.user_profiles WHERE NOT is_service_account ORDER BY created_at LIMIT 1),p_supervisor_name=>'Fixture Supervisor',p_gr_no=>p_no, p_date=>(p_date || 'T12:00:00Z')::timestamptz, p_customer_id=>p_cust, p_customer_name=>p_name, p_pricing_mode=>'MONTHLY',
     p_idempotency_key=>'pk-grn-' || p_no,
     p_items=>jsonb_build_array(jsonb_build_object('item_id',(SELECT id FROM public.items WHERE name='Pack Demo Jeera'),'item_name','Pack Demo Jeera',
       'packaging','Bag','qty',p_qty,'weight',p_weight,'rack','PK' || p_no)));

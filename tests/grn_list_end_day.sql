@@ -81,7 +81,7 @@ INSERT INTO public.users_customers_new(user_profile_id, customer_id, active)
 
 SELECT set_config('request.jwt.claims', :'admin_claims', true);
 SET LOCAL ROLE authenticated;
-SELECT pg_temp.gl_assert(public.save_grn(p_gr_no => r.gr_no, p_date => (r.day::text || 'T' || r.at || '+05:30')::timestamptz,
+SELECT pg_temp.gl_assert(public.save_grn(p_sender_name=>'Fixture Sender',p_supervisor_id=>(SELECT id FROM public.user_profiles WHERE NOT is_service_account ORDER BY created_at LIMIT 1),p_supervisor_name=>'Fixture Supervisor',p_gr_no => r.gr_no, p_date => (r.day::text || 'T' || r.at || '+05:30')::timestamptz,
   p_customer_id => :'quince'::uuid, p_customer_name => 'GRN List Day Quince Cold', p_idempotency_key => 'grn-list-end-day-' || r.gr_no,
   p_items => jsonb_build_array(jsonb_build_object('item_id', :'turmeric', 'item_name', 'GRN List Day Turmeric', 'packaging', 'Bag',
     'qty', r.qty, 'weight', 5)))->>'success' = 'true', 'fixture receipt ' || r.gr_no)
@@ -140,7 +140,7 @@ SELECT pg_temp.gl_assert(pg_temp.gl_numbers(public.get_grn_list(NULL, :'end_day'
   'staff, receipts with only an end day (up to E) and only a start day (from S)');
 -- Migration 87: a total weight above int4 is summed as numeric, not an overflow error.
 -- One more receipt: 250000 bags of 9999 kg (the most a line weighs since WH-56) = 2499750000 kg (an int4 product would overflow).
-SELECT pg_temp.gl_assert(public.save_grn(p_gr_no => 'GLEW1', p_date => (:'end_day'::date::text || 'T10:00:00+05:30')::timestamptz,
+SELECT pg_temp.gl_assert(public.save_grn(p_sender_name=>'Fixture Sender',p_supervisor_id=>(SELECT id FROM public.user_profiles WHERE NOT is_service_account ORDER BY created_at LIMIT 1),p_supervisor_name=>'Fixture Supervisor',p_gr_no => 'GLEW1', p_date => (:'end_day'::date::text || 'T10:00:00+05:30')::timestamptz,
   p_customer_id => :'quince'::uuid, p_customer_name => 'GRN List Day Quince Cold', p_idempotency_key => 'grn-list-end-day-GLEW1',
   p_items => jsonb_build_array(jsonb_build_object('item_id', :'turmeric', 'item_name', 'GRN List Day Turmeric', 'packaging', 'Bag',
     'qty', 250000, 'weight', 9999)))->>'success' = 'true', 'fixture receipt GLEW1 with a huge weight');

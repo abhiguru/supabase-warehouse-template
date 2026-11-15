@@ -175,11 +175,11 @@ SELECT id AS customer_id FROM public.customers WHERE name='Write Guard Customer'
 SELECT id AS item_id FROM public.items WHERE name='Write Guard Potatoes' \gset
 SELECT pg_temp.guard_assert(public.assign_customer_to_user('919888888824',:'customer_id'::uuid,'Write guard fixture'),'customer login assigned');
 SELECT pg_temp.guard_assert(public.replace_item_rates(:'item_id'::uuid,:'customer_id'::uuid,'monthly','2026-01-01'::date,jsonb_build_array(jsonb_build_object('weight_min',0,'weight_max',100,'unit_price',5,'labour_rate',2,'tax_percent',5)))->>'success'='true','monthly price');
-SELECT pg_temp.guard_assert(public.save_grn(p_gr_no=>'WGA',p_date=>'2026-04-01T12:00:00Z',p_customer_id=>:'customer_id'::uuid,
+SELECT pg_temp.guard_assert(public.save_grn(p_sender_name=>'Fixture Sender',p_supervisor_id=>(SELECT id FROM public.user_profiles WHERE NOT is_service_account ORDER BY created_at LIMIT 1),p_supervisor_name=>'Fixture Supervisor',p_gr_no=>'WGA',p_date=>'2026-04-01T12:00:00Z',p_customer_id=>:'customer_id'::uuid,
  p_customer_name=>'Write Guard Customer',p_pricing_mode=>'MONTHLY',p_idempotency_key=>'write-guard-a',
  p_items=>jsonb_build_array(jsonb_build_object('item_id',:'item_id','item_name','Write Guard Potatoes',
  'packaging','Bag','qty',100,'weight',10,'rack','R1')))->>'success'='true','receipt WGA');
-SELECT pg_temp.guard_assert(public.save_grn(p_gr_no=>'WGB',p_date=>'2026-04-01T12:00:00Z',p_customer_id=>:'customer_id'::uuid,
+SELECT pg_temp.guard_assert(public.save_grn(p_sender_name=>'Fixture Sender',p_supervisor_id=>(SELECT id FROM public.user_profiles WHERE NOT is_service_account ORDER BY created_at LIMIT 1),p_supervisor_name=>'Fixture Supervisor',p_gr_no=>'WGB',p_date=>'2026-04-01T12:00:00Z',p_customer_id=>:'customer_id'::uuid,
  p_customer_name=>'Write Guard Customer',p_pricing_mode=>'MONTHLY',p_idempotency_key=>'write-guard-b',
  p_items=>jsonb_build_array(jsonb_build_object('item_id',:'item_id','item_name','Write Guard Potatoes',
  'packaging','Bag','qty',10,'weight',10,'rack','R2')))->>'success'='true','receipt WGB');

@@ -80,14 +80,14 @@ SELECT id AS item_id FROM public.items WHERE name='Filter Demo Potatoes' \gset
 SELECT id AS item2_id FROM public.items WHERE name='Filter Demo Onions' \gset
 SELECT public.replace_item_rates(:'item_id'::uuid,:'customer_id'::uuid,'monthly','2026-01-01'::date,jsonb_build_array(jsonb_build_object('weight_min',0,'weight_max',100,'unit_price',5,'labour_rate',2,'tax_percent',5))) AS price \gset
 SELECT pg_temp.gi_assert(:'price'::jsonb->>'success'='true','price creation');
-SELECT public.save_grn(p_gr_no=>'FLTA',p_date=>'2026-04-01T12:00:00Z',p_customer_id=>:'customer_id'::uuid,p_customer_name=>'Filter Demo Customer',
+SELECT public.save_grn(p_sender_name=>'Fixture Sender',p_supervisor_id=>(SELECT id FROM public.user_profiles WHERE NOT is_service_account ORDER BY created_at LIMIT 1),p_supervisor_name=>'Fixture Supervisor',p_gr_no=>'FLTA',p_date=>'2026-04-01T12:00:00Z',p_customer_id=>:'customer_id'::uuid,p_customer_name=>'Filter Demo Customer',
  p_pricing_mode=>'MONTHLY',p_idempotency_key=>'flt-a',p_items=>jsonb_build_array(jsonb_build_object('item_id',:'item_id','item_name','Filter Demo Potatoes',
  'packaging','Bag','qty',10,'weight',10,'rack','F1'))) AS grn_a \gset
-SELECT public.save_grn(p_gr_no=>'FLTB',p_date=>'2026-04-02T12:00:00Z',p_customer_id=>:'customer_id'::uuid,p_customer_name=>'Filter Demo Customer',
+SELECT public.save_grn(p_sender_name=>'Fixture Sender',p_supervisor_id=>(SELECT id FROM public.user_profiles WHERE NOT is_service_account ORDER BY created_at LIMIT 1),p_supervisor_name=>'Fixture Supervisor',p_gr_no=>'FLTB',p_date=>'2026-04-02T12:00:00Z',p_customer_id=>:'customer_id'::uuid,p_customer_name=>'Filter Demo Customer',
  p_pricing_mode=>'MONTHLY',p_idempotency_key=>'flt-b',p_items=>jsonb_build_array(
  jsonb_build_object('item_id',:'item_id','item_name','Filter Demo Potatoes','packaging','Bag','qty',6,'weight',10,'rack','F2'),
  jsonb_build_object('item_id',:'item2_id','item_name','Filter Demo Onions','packaging','Bag','qty',7,'weight',20,'rack','F3'))) AS grn_b \gset
-SELECT public.save_grn(p_gr_no=>'FLTC',p_date=>'2026-04-03T12:00:00Z',p_customer_id=>:'customer_id'::uuid,p_customer_name=>'Filter Demo Customer',
+SELECT public.save_grn(p_sender_name=>'Fixture Sender',p_supervisor_id=>(SELECT id FROM public.user_profiles WHERE NOT is_service_account ORDER BY created_at LIMIT 1),p_supervisor_name=>'Fixture Supervisor',p_gr_no=>'FLTC',p_date=>'2026-04-03T12:00:00Z',p_customer_id=>:'customer_id'::uuid,p_customer_name=>'Filter Demo Customer',
  p_pricing_mode=>'MONTHLY',p_idempotency_key=>'flt-c',p_items=>jsonb_build_array(jsonb_build_object('item_id',:'item_id','item_name','Filter Demo Potatoes',
  'packaging','Bag','qty',5,'weight',10,'rack','F4'))) AS grn_c \gset
 SELECT pg_temp.gi_assert(:'grn_a'::jsonb->>'success'='true' AND :'grn_b'::jsonb->>'success'='true' AND :'grn_c'::jsonb->>'success'='true','three receipts saved');

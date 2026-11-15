@@ -40,7 +40,7 @@ CREATE FUNCTION pg_temp.g_invoice(p_no integer, p_mode text, p_customer uuid, p_
 RETURNS void LANGUAGE plpgsql AS $$
 DECLARE trl_id uuid; grn_id uuid; line_id uuid; saved jsonb;
 BEGIN
-  PERFORM pg_temp.g_assert(public.save_grn(p_gr_no => 'GOR' || p_no, p_date => '2026-06-01T06:00:00Z'::timestamptz,
+  PERFORM pg_temp.g_assert(public.save_grn(p_sender_name=>'Fixture Sender',p_supervisor_id=>(SELECT id FROM public.user_profiles WHERE NOT is_service_account ORDER BY created_at LIMIT 1),p_supervisor_name=>'Fixture Supervisor',p_gr_no => 'GOR' || p_no, p_date => '2026-06-01T06:00:00Z'::timestamptz,
       p_customer_id => p_customer, p_customer_name => 'Print Range Laurel Cold', p_pricing_mode => p_mode,
       p_idempotency_key => 'grn-one-rule-g' || p_no,
       p_items => jsonb_build_array(jsonb_build_object('item_id', p_item, 'item_name', 'Print Range Cumin', 'packaging', 'Bag',
@@ -125,7 +125,7 @@ SELECT pg_temp.g_assert(position('warehouse_security.grn_invoice_state(g.id) = '
   'apply_grn_rates reads the live-invoice rule');
 
 -- ===== WH-111: update_grn needs a line list =====
-SELECT pg_temp.g_assert(public.save_grn(p_gr_no => 'GOR7304', p_date => '2026-06-01T06:00:00Z'::timestamptz, p_customer_id => :'laurel'::uuid,
+SELECT pg_temp.g_assert(public.save_grn(p_sender_name=>'Fixture Sender',p_supervisor_id=>(SELECT id FROM public.user_profiles WHERE NOT is_service_account ORDER BY created_at LIMIT 1),p_supervisor_name=>'Fixture Supervisor',p_gr_no => 'GOR7304', p_date => '2026-06-01T06:00:00Z'::timestamptz, p_customer_id => :'laurel'::uuid,
     p_customer_name => 'Grn Rule Laurel Cold', p_pricing_mode => 'MONTHLY', p_idempotency_key => 'grn-one-rule-g7304',
     p_items => jsonb_build_array(jsonb_build_object('item_id', :'cumin', 'item_name', 'Grn Rule Cumin', 'packaging', 'Bag', 'qty', 3, 'weight', 9999),
       jsonb_build_object('item_id', :'cumin', 'item_name', 'Grn Rule Cumin', 'packaging', 'Bag', 'qty', 4, 'weight', 20)))->>'success' = 'true',
@@ -152,7 +152,7 @@ SELECT pg_temp.g_assert(:'full_list'::jsonb->>'success' = 'true' AND (SELECT not
 -- ===== WH-56: a weight over 9999 =====
 -- new GRN
 SET LOCAL ROLE authenticated;
-SELECT pg_temp.g_try(format('SELECT public.save_grn(p_gr_no=>%L, p_date=>%L::timestamptz, p_customer_id=>%L::uuid, p_customer_name=>%L, p_pricing_mode=>%L, p_idempotency_key=>%L, p_items=>%L::jsonb)',
+SELECT pg_temp.g_try(format('SELECT public.save_grn(p_sender_name=>''Fixture Sender'',p_supervisor_id=>(SELECT id FROM public.user_profiles WHERE NOT is_service_account ORDER BY created_at LIMIT 1),p_supervisor_name=>''Fixture Supervisor'',p_gr_no=>%L, p_date=>%L::timestamptz, p_customer_id=>%L::uuid, p_customer_name=>%L, p_pricing_mode=>%L, p_idempotency_key=>%L, p_items=>%L::jsonb)',
   'GOR7305', '2026-06-01T06:00:00Z', :'laurel', 'Grn Rule Laurel Cold', 'MONTHLY', 'grn-one-rule-g7305',
   jsonb_build_array(jsonb_build_object('item_id', :'cumin', 'item_name', 'Grn Rule Cumin', 'packaging', 'Bag', 'qty', 3, 'weight', 10000))::text)) AS save_over \gset
 RESET ROLE;

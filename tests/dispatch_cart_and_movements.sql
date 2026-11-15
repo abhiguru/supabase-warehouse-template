@@ -60,7 +60,7 @@ SELECT pg_temp.dcm_assert(public.create_item('Cart Movement Garlic','Bag')->>'su
 SELECT id AS customer_id FROM public.customers WHERE name='Cart Movement Customer' \gset
 SELECT id AS item_id FROM public.items WHERE name='Cart Movement Potatoes' \gset
 SELECT id AS garlic_id FROM public.items WHERE name='Cart Movement Garlic' \gset
-SELECT pg_temp.dcm_assert(public.save_grn(p_gr_no=>'DCM1',p_date=>'2026-04-01T12:00:00Z',p_customer_id=>:'customer_id'::uuid,
+SELECT pg_temp.dcm_assert(public.save_grn(p_sender_name=>'Fixture Sender',p_supervisor_id=>(SELECT id FROM public.user_profiles WHERE NOT is_service_account ORDER BY created_at LIMIT 1),p_supervisor_name=>'Fixture Supervisor',p_gr_no=>'DCM1',p_date=>'2026-04-01T12:00:00Z',p_customer_id=>:'customer_id'::uuid,
  p_customer_name=>'Cart Movement Customer',p_pricing_mode=>'MONTHLY',
  p_items=>(SELECT jsonb_agg(jsonb_build_object('item_id',CASE WHEN m='G' THEN :'garlic_id' ELSE :'item_id' END,
    'item_name',CASE WHEN m='G' THEN 'Cart Movement Garlic' ELSE 'Cart Movement Potatoes' END,
@@ -277,7 +277,7 @@ SELECT pg_temp.dcm_assert(pg_temp.dcm_moves(:'lot_i'::uuid)='dispatch -6 10>4 (d
 SET LOCAL ROLE authenticated;
 SELECT pg_temp.dcm_assert(public.create_customer('Cart Movement Second Customer','9888888883')->>'success'='true','second customer');
 SELECT id AS customer2 FROM public.customers WHERE name='Cart Movement Second Customer' \gset
-SELECT pg_temp.dcm_assert(public.save_grn(p_gr_no=>'DCM2',p_date=>'2026-04-02T12:00:00Z',p_customer_id=>:'customer2'::uuid,
+SELECT pg_temp.dcm_assert(public.save_grn(p_sender_name=>'Fixture Sender',p_supervisor_id=>(SELECT id FROM public.user_profiles WHERE NOT is_service_account ORDER BY created_at LIMIT 1),p_supervisor_name=>'Fixture Supervisor',p_gr_no=>'DCM2',p_date=>'2026-04-02T12:00:00Z',p_customer_id=>:'customer2'::uuid,
  p_customer_name=>'Cart Movement Second Customer',p_pricing_mode=>'MONTHLY',
  p_items=>(SELECT jsonb_agg(jsonb_build_object('item_id',:'item_id','item_name','Cart Movement Potatoes',
    'packaging','Bag','qty',10,'weight',5,'rack','R2','package_mark',m)) FROM unnest(ARRAY['J','K','L']) AS l(m)))->>'success'='true','receipt DCM2');

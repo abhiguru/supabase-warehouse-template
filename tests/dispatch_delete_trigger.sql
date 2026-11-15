@@ -41,7 +41,7 @@ SELECT pg_temp.ddt_assert(public.create_customer('Delete Trigger Customer','9888
 SELECT pg_temp.ddt_assert(public.create_item('Delete Trigger Potatoes','Bag')->>'success'='true','catalog item');
 SELECT id AS customer_id FROM public.customers WHERE name='Delete Trigger Customer' \gset
 SELECT id AS item_id FROM public.items WHERE name='Delete Trigger Potatoes' \gset
-SELECT pg_temp.ddt_assert(public.save_grn(p_gr_no=>'DDT1',p_date=>'2026-04-01T12:00:00Z',p_customer_id=>:'customer_id'::uuid,
+SELECT pg_temp.ddt_assert(public.save_grn(p_sender_name=>'Fixture Sender',p_supervisor_id=>(SELECT id FROM public.user_profiles WHERE NOT is_service_account ORDER BY created_at LIMIT 1),p_supervisor_name=>'Fixture Supervisor',p_gr_no=>'DDT1',p_date=>'2026-04-01T12:00:00Z',p_customer_id=>:'customer_id'::uuid,
  p_customer_name=>'Delete Trigger Customer',p_pricing_mode=>'MONTHLY',
  p_items=>(SELECT jsonb_agg(jsonb_build_object('item_id',:'item_id','item_name','Delete Trigger Potatoes',
    'packaging','Bag','qty',q,'weight',5,'rack','R1','package_mark',m))

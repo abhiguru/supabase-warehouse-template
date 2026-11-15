@@ -39,7 +39,7 @@ SELECT warehouse_security.apply_document_numbering('grn', '{"scheme":"free"}', N
 
 SELECT set_config('request.jwt.claims',:'admin_claims',true);
 SET LOCAL ROLE authenticated;
-SELECT public.save_grn(p_gr_no => 'PP1', p_date => now(), p_customer_id => :'customer_id'::uuid, p_customer_name => 'Pending Photos Customer',
+SELECT public.save_grn(p_sender_name=>'Fixture Sender',p_supervisor_id=>(SELECT id FROM public.user_profiles WHERE NOT is_service_account ORDER BY created_at LIMIT 1),p_supervisor_name=>'Fixture Supervisor',p_gr_no => 'PP1', p_date => now(), p_customer_id => :'customer_id'::uuid, p_customer_name => 'Pending Photos Customer',
   p_items => jsonb_build_array(jsonb_build_object('item_id', :'item_id', 'item_name', 'Pending Photos Potatoes',
     'packaging', 'Bag', 'qty', 10, 'weight', 50, 'rack', '1', 'package_mark', 'MK1'))) AS saved \gset
 RESET ROLE;

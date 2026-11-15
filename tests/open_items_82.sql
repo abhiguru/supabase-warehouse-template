@@ -147,7 +147,7 @@ INSERT INTO public.users_customers_new(user_profile_id,customer_id,active)
  SELECT p.id,:'cust_d'::uuid,true FROM public.user_profiles p WHERE p.mobile='919555560202';
 SELECT set_config('request.jwt.claims',:'admin_claims',true);
 SET LOCAL ROLE authenticated;
-SELECT public.save_grn(p_gr_no=>'OI82A',p_date=>now(),p_customer_id=>:'cust_d'::uuid,p_customer_name=>'Open Items D with data',
+SELECT public.save_grn(p_sender_name=>'Fixture Sender',p_supervisor_id=>(SELECT id FROM public.user_profiles WHERE NOT is_service_account ORDER BY created_at LIMIT 1),p_supervisor_name=>'Fixture Supervisor',p_gr_no=>'OI82A',p_date=>now(),p_customer_id=>:'cust_d'::uuid,p_customer_name=>'Open Items D with data',
   p_items=>jsonb_build_array(jsonb_build_object('item_id',:'item_id','item_name','Open Items Ginger','packaging','Bag','qty',7,'weight',10,'rack','A1')),
   p_idempotency_key=>'oi82-d') AS save_d \gset
 SELECT public.get_or_create_cart(:'cust_e'::uuid) AS cart_e \gset
@@ -162,7 +162,7 @@ UPDATE public.orders SET status='DISPATCHED' WHERE customer_id=:'cust_g'::uuid;
 -- second GRN of D, made while D is still active (migration 83: a deactivated business gets no NEW GRN)
 SELECT set_config('request.jwt.claims',:'admin_claims',true);
 SET LOCAL ROLE authenticated;
-SELECT public.save_grn(p_gr_no=>'OI82B',p_date=>now(),p_customer_id=>:'cust_d'::uuid,p_customer_name=>'Open Items D with data',
+SELECT public.save_grn(p_sender_name=>'Fixture Sender',p_supervisor_id=>(SELECT id FROM public.user_profiles WHERE NOT is_service_account ORDER BY created_at LIMIT 1),p_supervisor_name=>'Fixture Supervisor',p_gr_no=>'OI82B',p_date=>now(),p_customer_id=>:'cust_d'::uuid,p_customer_name=>'Open Items D with data',
   p_items=>jsonb_build_array(jsonb_build_object('item_id',:'item_id','item_name','Open Items Ginger','packaging','Bag','qty',3,'weight',10,'rack','A2')),
   p_idempotency_key=>'oi82-d2') AS save_d2 \gset
 RESET ROLE;
@@ -199,7 +199,7 @@ SELECT pg_temp.oi_assert((:'sca_off_again'::jsonb->>'success')='true' AND (:'sca
 -- a DELETED one is refused for GRN and for both dispatch overloads
 SELECT set_config('request.jwt.claims',:'admin_claims',true);
 SET LOCAL ROLE authenticated;
-SELECT pg_temp.oi_call(format($q$SELECT public.save_grn(p_gr_no=>'OI82Q',p_date=>now(),p_customer_id=>%L::uuid,p_customer_name=>'Open Items Q deleted',
+SELECT pg_temp.oi_call(format($q$SELECT public.save_grn(p_sender_name=>'Fixture Sender',p_supervisor_id=>(SELECT id FROM public.user_profiles WHERE NOT is_service_account ORDER BY created_at LIMIT 1),p_supervisor_name=>'Fixture Supervisor',p_gr_no=>'OI82Q',p_date=>now(),p_customer_id=>%L::uuid,p_customer_name=>'Open Items Q deleted',
   p_idempotency_key=>'oi82-q')$q$,:'cust_q')) AS save_q \gset
 SELECT pg_temp.oi_call(format($q$SELECT public.create_dispatch_with_stock_check(%L::jsonb,ARRAY[]::jsonb[],false,0,'oi82-dq')$q$,
   jsonb_build_object('disp_no','OI82DQ','disp_date',now(),'customer_id',:'cust_q','customer_name','Open Items Q deleted')::text)) AS disp_q5 \gset

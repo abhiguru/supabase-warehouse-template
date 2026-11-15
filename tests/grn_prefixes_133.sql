@@ -40,7 +40,7 @@ SET LOCAL ROLE authenticated;
 CREATE FUNCTION pg_temp.gpx_save(n text, cust uuid, cname text) RETURNS void LANGUAGE plpgsql AS $$
 DECLARE r jsonb;
 BEGIN
-  r := public.save_grn(p_gr_no=>n,p_date=>now(),p_customer_id=>cust,p_customer_name=>cname,
+  r := public.save_grn(p_sender_name=>'Fixture Sender',p_supervisor_id=>(SELECT id FROM public.user_profiles WHERE NOT is_service_account ORDER BY created_at LIMIT 1),p_supervisor_name=>'Fixture Supervisor',p_gr_no=>n,p_date=>now(),p_customer_id=>cust,p_customer_name=>cname,
     p_items=>jsonb_build_array(jsonb_build_object('item_id',current_setting('gpx.item')::uuid,'item_name','Prefix Onions','packaging','Bag','qty',10,'weight',40,'rack','A1','package_mark','P'||n)),
     p_idempotency_key=>'gpx-'||cname||n);
   PERFORM pg_temp.gpx_assert(r->>'success'='true','save '||n||': '||r);

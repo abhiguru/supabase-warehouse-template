@@ -58,7 +58,7 @@ DECLARE k integer; lot uuid; made jsonb;
 BEGIN
   FOR k IN 1..25 LOOP
     PERFORM pg_temp.oi_as_admin();
-    made := public.save_grn(p_gr_no=>'GP'||lpad(k::text,2,'0'), p_date=>format('2026-07-%s T06:00:00Z', lpad(k::text,2,'0'))::timestamptz,
+    made := public.save_grn(p_sender_name=>'Fixture Sender',p_supervisor_id=>(SELECT id FROM public.user_profiles WHERE NOT is_service_account ORDER BY created_at LIMIT 1),p_supervisor_name=>'Fixture Supervisor',p_gr_no=>'GP'||lpad(k::text,2,'0'), p_date=>format('2026-07-%s T06:00:00Z', lpad(k::text,2,'0'))::timestamptz,
       p_customer_id=>current_setting('oi.picker_customer')::uuid, p_customer_name=>'Open Items Picker Customer', p_pricing_mode=>'MONTHLY',
       p_items=>jsonb_build_array(jsonb_build_object('item_id',current_setting('oi.picker_item'),'item_name','Open Items Picker Item',
         'packaging','Bag','qty',10,'weight',5,'rack','R1','package_mark','P'||k)));
@@ -125,7 +125,7 @@ SELECT pg_temp.oi_assert(public.create_customer('Open Items Lines Customer','988
 RESET ROLE;
 SELECT id AS lines_customer FROM public.customers WHERE name='Open Items Lines Customer' \gset
 SELECT pg_temp.oi_as_admin();
-SELECT pg_temp.oi_assert(public.save_grn(p_gr_no=>'LO1',p_date=>'2026-06-01T06:00:00Z',p_customer_id=>:'lines_customer'::uuid,
+SELECT pg_temp.oi_assert(public.save_grn(p_sender_name=>'Fixture Sender',p_supervisor_id=>(SELECT id FROM public.user_profiles WHERE NOT is_service_account ORDER BY created_at LIMIT 1),p_supervisor_name=>'Fixture Supervisor',p_gr_no=>'LO1',p_date=>'2026-06-01T06:00:00Z',p_customer_id=>:'lines_customer'::uuid,
  p_customer_name=>'Open Items Lines Customer',p_pricing_mode=>'MONTHLY',
  p_items=>(SELECT jsonb_agg(jsonb_build_object('item_id',:'picker_item','item_name','Open Items Picker Item',
    'packaging','Bag','qty',10,'weight',5,'rack','R1','package_mark','L'||n) ORDER BY n) FROM generate_series(1,4) n))->>'success'='true','receipt LO1');
@@ -159,7 +159,7 @@ END $$;
 SELECT pg_temp.oi_assert(pg_temp.oi_dispatch_lots(:'lod1'::uuid) = 'L3,L1,L4,L2', 'get_dispatch_details: lines in the order given: ' || pg_temp.oi_dispatch_lots(:'lod1'::uuid));
 -- A dispatch edit that adds two lots in one statement keeps the existing lines and appends them in the order given.
 SELECT pg_temp.oi_as_admin();
-SELECT pg_temp.oi_assert(public.save_grn(p_gr_no=>'LO2',p_date=>'2026-06-02T06:00:00Z',p_customer_id=>:'lines_customer'::uuid,
+SELECT pg_temp.oi_assert(public.save_grn(p_sender_name=>'Fixture Sender',p_supervisor_id=>(SELECT id FROM public.user_profiles WHERE NOT is_service_account ORDER BY created_at LIMIT 1),p_supervisor_name=>'Fixture Supervisor',p_gr_no=>'LO2',p_date=>'2026-06-02T06:00:00Z',p_customer_id=>:'lines_customer'::uuid,
  p_customer_name=>'Open Items Lines Customer',p_pricing_mode=>'MONTHLY',
  p_items=>(SELECT jsonb_agg(jsonb_build_object('item_id',:'picker_item','item_name','Open Items Picker Item',
    'packaging','Bag','qty',10,'weight',5,'rack','R1','package_mark','M'||n) ORDER BY n) FROM generate_series(1,2) n))->>'success'='true','receipt LO2');
@@ -266,7 +266,7 @@ SELECT pg_temp.oi_assert((SELECT string_agg(l->>'grn_items_package_mark', ',' OR
 -- a dispatch and an invoice take W1 then W2, and the line ids are then set by hand: W1 (older) fffffff0-1234-..., W2 (newer)
 -- 00000010-1235-.... Plain id order puts W2 first; timestamp order puts W1 first, which is the saved order.
 SELECT pg_temp.oi_as_admin();
-SELECT pg_temp.oi_assert(public.save_grn(p_gr_no=>'LO3',p_date=>'2026-06-03T06:00:00Z',p_customer_id=>:'lines_customer'::uuid,
+SELECT pg_temp.oi_assert(public.save_grn(p_sender_name=>'Fixture Sender',p_supervisor_id=>(SELECT id FROM public.user_profiles WHERE NOT is_service_account ORDER BY created_at LIMIT 1),p_supervisor_name=>'Fixture Supervisor',p_gr_no=>'LO3',p_date=>'2026-06-03T06:00:00Z',p_customer_id=>:'lines_customer'::uuid,
  p_customer_name=>'Open Items Lines Customer',p_pricing_mode=>'MONTHLY',
  p_items=>(SELECT jsonb_agg(jsonb_build_object('item_id',:'picker_item','item_name','Open Items Picker Item',
    'packaging','Bag','qty',10,'weight',5,'rack','R1','package_mark','W'||n) ORDER BY n) FROM generate_series(1,2) n))->>'success'='true','receipt LO3');
@@ -390,10 +390,10 @@ RESET ROLE;
 SELECT id AS tie_zulu FROM public.customers WHERE name='Open Items Tie Zulu' \gset
 SELECT id AS tie_alpha FROM public.customers WHERE name='Open Items Tie Alpha' \gset
 SELECT pg_temp.oi_as_admin();
-SELECT pg_temp.oi_assert(public.save_grn(p_gr_no=>'SAB',p_date=>'2026-05-01T06:00:00Z',p_customer_id=>:'tie_zulu'::uuid,p_customer_name=>'Open Items Tie Zulu',p_pricing_mode=>'MONTHLY',
+SELECT pg_temp.oi_assert(public.save_grn(p_sender_name=>'Fixture Sender',p_supervisor_id=>(SELECT id FROM public.user_profiles WHERE NOT is_service_account ORDER BY created_at LIMIT 1),p_supervisor_name=>'Fixture Supervisor',p_gr_no=>'SAB',p_date=>'2026-05-01T06:00:00Z',p_customer_id=>:'tie_zulu'::uuid,p_customer_name=>'Open Items Tie Zulu',p_pricing_mode=>'MONTHLY',
  p_items=>jsonb_build_array(jsonb_build_object('item_id',:'picker_item','item_name','Open Items Tie Item','packaging','Bag','qty',5,'weight',7,'rack','R1','package_mark','T1'),
                             jsonb_build_object('item_id',:'picker_item','item_name','Open Items Tie Item','packaging','Bag','qty',5,'weight',7,'rack','R1','package_mark','T2')))->>'success'='true','receipt SAB');
-SELECT pg_temp.oi_assert(public.save_grn(p_gr_no=>'SAA',p_date=>'2026-05-01T06:00:00Z',p_customer_id=>:'tie_zulu'::uuid,p_customer_name=>'Open Items Tie Zulu',p_pricing_mode=>'MONTHLY',
+SELECT pg_temp.oi_assert(public.save_grn(p_sender_name=>'Fixture Sender',p_supervisor_id=>(SELECT id FROM public.user_profiles WHERE NOT is_service_account ORDER BY created_at LIMIT 1),p_supervisor_name=>'Fixture Supervisor',p_gr_no=>'SAA',p_date=>'2026-05-01T06:00:00Z',p_customer_id=>:'tie_zulu'::uuid,p_customer_name=>'Open Items Tie Zulu',p_pricing_mode=>'MONTHLY',
  p_items=>jsonb_build_array(jsonb_build_object('item_id',:'picker_item','item_name','Open Items Tie Item','packaging','Bag','qty',5,'weight',7,'rack','R1','package_mark','T3'),
                             jsonb_build_object('item_id',:'picker_item','item_name','Open Items Tie Item','packaging','Bag','qty',5,'weight',7,'rack','R1','package_mark','T4')))->>'success'='true','receipt SAA');
 RESET ROLE;
@@ -401,13 +401,13 @@ SELECT id AS tie_mike FROM public.customers WHERE name='Open Items Tie Mike' \gs
 SELECT id AS tie_kilo FROM public.customers WHERE name='Open Items Tie Kilo' \gset
 SELECT id AS tie_charlie FROM public.customers WHERE name='Open Items Tie Charlie' \gset
 SELECT pg_temp.oi_as_admin();
-SELECT pg_temp.oi_assert(public.save_grn(p_gr_no=>'SAD',p_date=>'2026-05-01T06:00:00Z',p_customer_id=>:'tie_mike'::uuid,p_customer_name=>'Open Items Tie Mike',p_pricing_mode=>'MONTHLY',
+SELECT pg_temp.oi_assert(public.save_grn(p_sender_name=>'Fixture Sender',p_supervisor_id=>(SELECT id FROM public.user_profiles WHERE NOT is_service_account ORDER BY created_at LIMIT 1),p_supervisor_name=>'Fixture Supervisor',p_gr_no=>'SAD',p_date=>'2026-05-01T06:00:00Z',p_customer_id=>:'tie_mike'::uuid,p_customer_name=>'Open Items Tie Mike',p_pricing_mode=>'MONTHLY',
  p_items=>jsonb_build_array(jsonb_build_object('item_id',:'picker_item','item_name','Open Items Tie Item','packaging','Bag','qty',5,'weight',7,'rack','R1','package_mark','T6')))->>'success'='true','receipt SAD');
-SELECT pg_temp.oi_assert(public.save_grn(p_gr_no=>'SAE',p_date=>'2026-05-01T06:00:00Z',p_customer_id=>:'tie_kilo'::uuid,p_customer_name=>'Open Items Tie Kilo',p_pricing_mode=>'MONTHLY',
+SELECT pg_temp.oi_assert(public.save_grn(p_sender_name=>'Fixture Sender',p_supervisor_id=>(SELECT id FROM public.user_profiles WHERE NOT is_service_account ORDER BY created_at LIMIT 1),p_supervisor_name=>'Fixture Supervisor',p_gr_no=>'SAE',p_date=>'2026-05-01T06:00:00Z',p_customer_id=>:'tie_kilo'::uuid,p_customer_name=>'Open Items Tie Kilo',p_pricing_mode=>'MONTHLY',
  p_items=>jsonb_build_array(jsonb_build_object('item_id',:'picker_item','item_name','Open Items Tie Item','packaging','Bag','qty',5,'weight',7,'rack','R1','package_mark','T7')))->>'success'='true','receipt SAE');
-SELECT pg_temp.oi_assert(public.save_grn(p_gr_no=>'SAF',p_date=>'2026-05-01T06:00:00Z',p_customer_id=>:'tie_charlie'::uuid,p_customer_name=>'Open Items Tie Charlie',p_pricing_mode=>'MONTHLY',
+SELECT pg_temp.oi_assert(public.save_grn(p_sender_name=>'Fixture Sender',p_supervisor_id=>(SELECT id FROM public.user_profiles WHERE NOT is_service_account ORDER BY created_at LIMIT 1),p_supervisor_name=>'Fixture Supervisor',p_gr_no=>'SAF',p_date=>'2026-05-01T06:00:00Z',p_customer_id=>:'tie_charlie'::uuid,p_customer_name=>'Open Items Tie Charlie',p_pricing_mode=>'MONTHLY',
  p_items=>jsonb_build_array(jsonb_build_object('item_id',:'picker_item','item_name','Open Items Tie Item','packaging','Bag','qty',5,'weight',7,'rack','R1','package_mark','T8')))->>'success'='true','receipt SAF');
-SELECT pg_temp.oi_assert(public.save_grn(p_gr_no=>'SAC',p_date=>'2026-05-01T06:00:00Z',p_customer_id=>:'tie_alpha'::uuid,p_customer_name=>'Open Items Tie Alpha',p_pricing_mode=>'MONTHLY',
+SELECT pg_temp.oi_assert(public.save_grn(p_sender_name=>'Fixture Sender',p_supervisor_id=>(SELECT id FROM public.user_profiles WHERE NOT is_service_account ORDER BY created_at LIMIT 1),p_supervisor_name=>'Fixture Supervisor',p_gr_no=>'SAC',p_date=>'2026-05-01T06:00:00Z',p_customer_id=>:'tie_alpha'::uuid,p_customer_name=>'Open Items Tie Alpha',p_pricing_mode=>'MONTHLY',
  p_items=>jsonb_build_array(jsonb_build_object('item_id',:'picker_item','item_name','Open Items Tie Item','packaging','Bag','qty',5,'weight',7,'rack','R1','package_mark','T5')))->>'success'='true','receipt SAC');
 RESET ROLE;
 -- search_customer_items_for_order (paged by 1): receipt number, then lot id, behind the weight and name.

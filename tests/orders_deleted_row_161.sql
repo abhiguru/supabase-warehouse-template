@@ -36,14 +36,14 @@ INSERT INTO public.customers(name,mobile) VALUES ('Order Reuse Customer Three','
 INSERT INTO public.items(name,packaging) VALUES ('Order Reuse Onions','Bag') RETURNING id AS onion \gset
 SELECT set_config('request.jwt.claims',:'admin_claims',true);
 SET LOCAL ROLE authenticated;
-SELECT pg_temp.o_assert(public.save_grn(p_gr_no=>'ORU1',p_date=>'2026-04-01T12:00:00Z',p_customer_id=>:'cust1'::uuid,p_customer_name=>'Order Reuse Customer One',
+SELECT pg_temp.o_assert(public.save_grn(p_sender_name=>'Fixture Sender',p_supervisor_id=>(SELECT id FROM public.user_profiles WHERE NOT is_service_account ORDER BY created_at LIMIT 1),p_supervisor_name=>'Fixture Supervisor',p_gr_no=>'ORU1',p_date=>'2026-04-01T12:00:00Z',p_customer_id=>:'cust1'::uuid,p_customer_name=>'Order Reuse Customer One',
  p_items=>jsonb_build_array(jsonb_build_object('item_id',:'onion','item_name','Order Reuse Onions','packaging','Bag','qty',20,'weight',10,'rack','R1'),
    jsonb_build_object('item_id',:'onion','item_name','Order Reuse Onions','packaging','Bag','qty',20,'weight',10,'rack','R2')),
  p_idempotency_key=>'order-reuse-g1')->>'success'='true','receipt for customer one');
-SELECT pg_temp.o_assert(public.save_grn(p_gr_no=>'ORU2',p_date=>'2026-04-01T12:00:00Z',p_customer_id=>:'cust2'::uuid,p_customer_name=>'Order Reuse Customer Two',
+SELECT pg_temp.o_assert(public.save_grn(p_sender_name=>'Fixture Sender',p_supervisor_id=>(SELECT id FROM public.user_profiles WHERE NOT is_service_account ORDER BY created_at LIMIT 1),p_supervisor_name=>'Fixture Supervisor',p_gr_no=>'ORU2',p_date=>'2026-04-01T12:00:00Z',p_customer_id=>:'cust2'::uuid,p_customer_name=>'Order Reuse Customer Two',
  p_items=>jsonb_build_array(jsonb_build_object('item_id',:'onion','item_name','Order Reuse Onions','packaging','Bag','qty',20,'weight',10,'rack','R1')),
  p_idempotency_key=>'order-reuse-g2')->>'success'='true','receipt for customer two');
-SELECT pg_temp.o_assert(public.save_grn(p_gr_no=>'ORU3',p_date=>'2026-04-01T12:00:00Z',p_customer_id=>:'cust3'::uuid,p_customer_name=>'Order Reuse Customer Three',
+SELECT pg_temp.o_assert(public.save_grn(p_sender_name=>'Fixture Sender',p_supervisor_id=>(SELECT id FROM public.user_profiles WHERE NOT is_service_account ORDER BY created_at LIMIT 1),p_supervisor_name=>'Fixture Supervisor',p_gr_no=>'ORU3',p_date=>'2026-04-01T12:00:00Z',p_customer_id=>:'cust3'::uuid,p_customer_name=>'Order Reuse Customer Three',
  p_items=>jsonb_build_array(jsonb_build_object('item_id',:'onion','item_name','Order Reuse Onions','packaging','Bag','qty',20,'weight',10,'rack','R1')),
  p_idempotency_key=>'order-reuse-g3')->>'success'='true','receipt for customer three');
 RESET ROLE;

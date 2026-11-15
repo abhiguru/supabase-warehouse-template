@@ -39,7 +39,7 @@ END $$;
 CREATE FUNCTION pg_temp.st_grn(claims jsonb, no text, qty integer, customer uuid, item uuid) RETURNS uuid LANGUAGE plpgsql AS $$
 DECLARE a jsonb;
 BEGIN
-  a := pg_temp.st_as(claims, format($f$SELECT public.save_grn(p_gr_no=>%L,p_date=>'2026-04-01T12:00:00Z',p_customer_id=>%L::uuid,p_customer_name=>'State Demo Customer',
+  a := pg_temp.st_as(claims, format($f$SELECT public.save_grn(p_sender_name=>'Fixture Sender',p_supervisor_id=>(SELECT id FROM public.user_profiles WHERE NOT is_service_account ORDER BY created_at LIMIT 1),p_supervisor_name=>'Fixture Supervisor',p_gr_no=>%L,p_date=>'2026-04-01T12:00:00Z',p_customer_id=>%L::uuid,p_customer_name=>'State Demo Customer',
     p_pricing_mode=>'MONTHLY',p_idempotency_key=>%L,p_items=>jsonb_build_array(jsonb_build_object('item_id',%L,'item_name','State Demo Potatoes','packaging','Bag','qty',%s,'weight',10,'rack','S1')))$f$,
     no, customer, 'st-'||no, item, qty));
   PERFORM pg_temp.st_assert(a->>'success'='true','receipt '||no||' saved: '||a);
