@@ -86,7 +86,7 @@ SELECT pg_temp.zc_assert(public.create_item('Zero Charge Onions','Bag')->>'succe
 SELECT id AS customer_id FROM public.customers WHERE name='Zero Charge Customer' \gset
 SELECT id AS item_id FROM public.items WHERE name='Zero Charge Onions' \gset
 SELECT pg_temp.zc_assert(public.replace_item_rates(:'item_id'::uuid,:'customer_id'::uuid,'monthly','2026-01-01'::date,jsonb_build_array(jsonb_build_object('weight_min',0,'weight_max',100,'unit_price',5,'labour_rate',2,'tax_percent',5)))->>'success'='true','monthly price');
-SELECT pg_temp.zc_assert(public.save_grn(p_gr_no=>'ZC'||r.code,p_date=>'2026-04-01T12:00:00Z',p_customer_id=>:'customer_id'::uuid,
+SELECT pg_temp.zc_assert(public.save_grn(p_sender_name=>'Fixture Sender',p_supervisor_id=>(SELECT id FROM public.user_profiles WHERE NOT is_service_account ORDER BY created_at LIMIT 1),p_supervisor_name=>'Fixture Supervisor',p_gr_no=>'ZC'||r.code,p_date=>'2026-04-01T12:00:00Z',p_customer_id=>:'customer_id'::uuid,
  p_customer_name=>'Zero Charge Customer',p_pricing_mode=>r.mode,p_idempotency_key=>'zero-charge-'||r.code,
  p_items=>jsonb_build_array(jsonb_build_object('item_id',:'item_id','item_name','Zero Charge Onions',
  'packaging','Bag','qty',r.qty,'weight',10,'rack','R'||r.code)))->>'success'='true','receipt ZC'||r.code)

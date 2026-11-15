@@ -53,7 +53,7 @@ SELECT id AS admin_profile FROM public.user_profiles WHERE mobile = '91988888895
 SELECT warehouse_security.business_date(now()) AS today \gset
 INSERT INTO public.customers(name,mobile) VALUES ('Dispatch Range Customer','9888888952') RETURNING id AS customer \gset
 INSERT INTO public.items(name,packaging) VALUES ('Dispatch Range Potato','Bag') RETURNING id AS item_id \gset
-SELECT pg_temp.dp_as(:'admin_claims'::jsonb, format($q$SELECT public.save_grn(p_gr_no=>'A0001',p_date=>now(),p_customer_id=>%L::uuid,p_customer_name=>'x',p_pricing_mode=>'MONTHLY',
+SELECT pg_temp.dp_as(:'admin_claims'::jsonb, format($q$SELECT public.save_grn(p_sender_name=>'Fixture Sender',p_supervisor_id=>(SELECT id FROM public.user_profiles WHERE NOT is_service_account ORDER BY created_at LIMIT 1),p_supervisor_name=>'Fixture Supervisor',p_gr_no=>'A0001',p_date=>now(),p_customer_id=>%L::uuid,p_customer_name=>'x',p_pricing_mode=>'MONTHLY',
   p_idempotency_key=>'dp-g1',p_items=>jsonb_build_array(jsonb_build_object('item_id',%L,'item_name','Dispatch Range Potato','packaging','Bag','qty',100,'weight',50,'rack','R1')))$q$,
   :'customer', :'item_id')) AS g1 \gset
 SELECT pg_temp.dp_assert(:'g1'::jsonb->>'success' = 'true', 'the GRN: ' || :'g1');

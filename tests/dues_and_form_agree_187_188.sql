@@ -160,7 +160,7 @@ SELECT pg_temp.wc_assert(:'r1'::jsonb->>'success' = 'true' AND :'r2'::jsonb->>'s
   'rates saved: ' || :'r1' || :'r2' || :'r3' || :'r4');
 -- A GRN save and a dispatch, as the app makes them. Dates are days before today.
 CREATE FUNCTION pg_temp.wc_grn(p_claims jsonb, p_no text, p_days integer, p_customer uuid, p_mode text, p_lines jsonb, p_rates jsonb DEFAULT NULL) RETURNS jsonb LANGUAGE sql AS $$
-  SELECT pg_temp.wc_as(p_claims, format($q$SELECT public.save_grn(p_gr_no=>%L,p_date=>%L::timestamptz,p_customer_id=>%L::uuid,p_customer_name=>'x',p_pricing_mode=>%L,
+  SELECT pg_temp.wc_as(p_claims, format($q$SELECT public.save_grn(p_sender_name=>'Fixture Sender',p_supervisor_id=>(SELECT id FROM public.user_profiles WHERE NOT is_service_account ORDER BY created_at LIMIT 1),p_supervisor_name=>'Fixture Supervisor',p_gr_no=>%L,p_date=>%L::timestamptz,p_customer_id=>%L::uuid,p_customer_name=>'x',p_pricing_mode=>%L,
     p_idempotency_key=>%L,p_items=>%L::jsonb,p_rates=>%L::jsonb)$q$, p_no, (warehouse_security.business_date(now()) - p_days)::text || 'T12:00:00Z', p_customer, p_mode, 'wc-' || p_no, p_lines, p_rates)) $$;
 CREATE FUNCTION pg_temp.wc_line(p_item uuid, p_name text, p_qty integer, p_weight integer) RETURNS jsonb LANGUAGE sql AS $$
   SELECT jsonb_build_object('item_id',p_item,'item_name',p_name,'packaging','Bag','qty',p_qty,'weight',p_weight,'rack','R1') $$;

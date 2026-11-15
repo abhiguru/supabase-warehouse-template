@@ -197,16 +197,16 @@ SELECT pg_temp.ip_assert(pg_temp.ip_raises('INSERT INTO public.goodsreceived SEL
 UPDATE ip_copy SET date = (SELECT date FROM public.goodsreceived WHERE id = :'grn1'::uuid), import_batch_id = NULL;
 SELECT set_config('warehouse.import', '', true);
 -- An app GRN with a number an imported GRN holds is refused by save_grn (and an app duplicate of an app number too).
-SELECT pg_temp.ip_as(:'admin_claims'::jsonb, format($q$SELECT public.save_grn(p_gr_no=>'A0001',p_date=>now(),p_customer_id=>%L::uuid,p_customer_name=>'Import Demo Traders',
+SELECT pg_temp.ip_as(:'admin_claims'::jsonb, format($q$SELECT public.save_grn(p_sender_name=>'Fixture Sender',p_supervisor_id=>(SELECT id FROM public.user_profiles WHERE NOT is_service_account ORDER BY created_at LIMIT 1),p_supervisor_name=>'Fixture Supervisor',p_gr_no=>'A0001',p_date=>now(),p_customer_id=>%L::uuid,p_customer_name=>'Import Demo Traders',
   p_pricing_mode=>'MONTHLY',p_idempotency_key=>'ip-dup-imported',p_items=>jsonb_build_array(jsonb_build_object('item_id',%L,'item_name','Import Demo Potato','packaging','Bag','qty',5,'weight',50,'rack','X1')))$q$,
   :'trader', :'item_id')) AS dup_imported \gset
 SELECT pg_temp.ip_assert(:'dup_imported'::jsonb->>'success' IS DISTINCT FROM 'true', 'save_grn refuses a number an imported GRN holds: ' || :'dup_imported');
 SELECT pg_temp.ip_assert((SELECT count(*) FROM public.goodsreceived WHERE gr_no = 'A0001' AND import_batch_id IS NULL) = 0, 'no app GRN took the imported number');
-SELECT pg_temp.ip_as(:'admin_claims'::jsonb, format($q$SELECT public.save_grn(p_gr_no=>'A0002',p_date=>now(),p_customer_id=>%L::uuid,p_customer_name=>'Import Demo Traders',
+SELECT pg_temp.ip_as(:'admin_claims'::jsonb, format($q$SELECT public.save_grn(p_sender_name=>'Fixture Sender',p_supervisor_id=>(SELECT id FROM public.user_profiles WHERE NOT is_service_account ORDER BY created_at LIMIT 1),p_supervisor_name=>'Fixture Supervisor',p_gr_no=>'A0002',p_date=>now(),p_customer_id=>%L::uuid,p_customer_name=>'Import Demo Traders',
   p_pricing_mode=>'MONTHLY',p_idempotency_key=>'ip-app-1',p_items=>jsonb_build_array(jsonb_build_object('item_id',%L,'item_name','Import Demo Potato','packaging','Bag','qty',20,'weight',50,'rack','X1')))$q$,
   :'trader', :'item_id')) AS app1 \gset
 SELECT pg_temp.ip_assert(:'app1'::jsonb->>'success' = 'true', 'an app GRN is saved: ' || :'app1');
-SELECT pg_temp.ip_as(:'admin_claims'::jsonb, format($q$SELECT public.save_grn(p_gr_no=>'A0002',p_date=>now(),p_customer_id=>%L::uuid,p_customer_name=>'Import Demo Traders',
+SELECT pg_temp.ip_as(:'admin_claims'::jsonb, format($q$SELECT public.save_grn(p_sender_name=>'Fixture Sender',p_supervisor_id=>(SELECT id FROM public.user_profiles WHERE NOT is_service_account ORDER BY created_at LIMIT 1),p_supervisor_name=>'Fixture Supervisor',p_gr_no=>'A0002',p_date=>now(),p_customer_id=>%L::uuid,p_customer_name=>'Import Demo Traders',
   p_pricing_mode=>'MONTHLY',p_idempotency_key=>'ip-app-2',p_items=>jsonb_build_array(jsonb_build_object('item_id',%L,'item_name','Import Demo Potato','packaging','Bag','qty',21,'weight',50,'rack','X1')))$q$,
   :'trader', :'item_id')) AS app_dup \gset
 SELECT pg_temp.ip_assert(:'app_dup'::jsonb->>'success' IS DISTINCT FROM 'true', 'an app duplicate number is refused: ' || :'app_dup');

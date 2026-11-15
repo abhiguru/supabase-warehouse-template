@@ -183,7 +183,7 @@ SELECT pg_temp.ist_assert(pg_temp.ist_figures(public.get_all_grn_activity('2026-
   AND pg_temp.ist_figures(public.get_all_dispatch_activity('2026-08-01', '2026-11-30')->'summary', 'total_dispatches', 'total_quantity') = '0/0'
   AND pg_temp.ist_figures(public.get_customer_invoice_summary(NULL, '2026-08-01', '2026-11-30')#>'{data,summary}', 'total_invoices', 'total_amount') = '0/0',
   'the months around the fixture are empty before it');
-SELECT pg_temp.ist_assert(public.save_grn(p_gr_no => r.gr_no, p_date => r.at,
+SELECT pg_temp.ist_assert(public.save_grn(p_sender_name=>'Fixture Sender',p_supervisor_id=>(SELECT id FROM public.user_profiles WHERE NOT is_service_account ORDER BY created_at LIMIT 1),p_supervisor_name=>'Fixture Supervisor',p_gr_no => r.gr_no, p_date => r.at,
   p_customer_id => :'saffron'::uuid, p_customer_name => 'IST Day Report Saffron Cold', p_idempotency_key => 'report-ist-day-' || r.gr_no,
   p_items => jsonb_build_array(jsonb_build_object('item_id', :'cardamom', 'item_name', 'IST Day Report Cardamom', 'packaging', 'Bag',
     'qty', r.qty, 'weight', 5)))->>'success' = 'true', 'fixture receipt ' || r.gr_no)

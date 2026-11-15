@@ -60,7 +60,7 @@ END $$;
 
 SELECT set_config('request.jwt.claims',:'admin_claims',true);
 SET LOCAL ROLE authenticated;
-SELECT public.save_grn(p_gr_no=>'CNT1',p_date=>now(),p_customer_id=>:'customer_id'::uuid,p_customer_name=>'Counts Customer',
+SELECT public.save_grn(p_sender_name=>'Fixture Sender',p_supervisor_id=>(SELECT id FROM public.user_profiles WHERE NOT is_service_account ORDER BY created_at LIMIT 1),p_supervisor_name=>'Fixture Supervisor',p_gr_no=>'CNT1',p_date=>now(),p_customer_id=>:'customer_id'::uuid,p_customer_name=>'Counts Customer',
  p_items=>jsonb_build_array(jsonb_build_object('item_id',:'onion_id','item_name','Counts Onions','packaging','Bag','qty',100,'weight',40,'rack','A8','package_mark','X0001')),
  p_idempotency_key=>'counts-receipt') AS receipt \gset
 RESET ROLE;
@@ -128,10 +128,10 @@ INSERT INTO public.customers(name,mobile) VALUES ('Counts Customer B','988888887
 INSERT INTO public.customers(name,mobile) VALUES ('Counts Customer C','9888888873') RETURNING id AS cust_c \gset
 SELECT set_config('request.jwt.claims',:'admin_claims',true);
 SET LOCAL ROLE authenticated;
-SELECT public.save_grn(p_gr_no=>'CNT2',p_date=>now(),p_customer_id=>:'cust_b'::uuid,p_customer_name=>'Counts Customer B',
+SELECT public.save_grn(p_sender_name=>'Fixture Sender',p_supervisor_id=>(SELECT id FROM public.user_profiles WHERE NOT is_service_account ORDER BY created_at LIMIT 1),p_supervisor_name=>'Fixture Supervisor',p_gr_no=>'CNT2',p_date=>now(),p_customer_id=>:'cust_b'::uuid,p_customer_name=>'Counts Customer B',
  p_items=>jsonb_build_array(jsonb_build_object('item_id',:'onion_id','item_name','Counts Onions','packaging','Bag','qty',100,'weight',40,'rack','A9','package_mark','X0002')),
  p_idempotency_key=>'counts-receipt-b') AS receipt_b \gset
-SELECT public.save_grn(p_gr_no=>'CNT3',p_date=>now(),p_customer_id=>:'cust_c'::uuid,p_customer_name=>'Counts Customer C',
+SELECT public.save_grn(p_sender_name=>'Fixture Sender',p_supervisor_id=>(SELECT id FROM public.user_profiles WHERE NOT is_service_account ORDER BY created_at LIMIT 1),p_supervisor_name=>'Fixture Supervisor',p_gr_no=>'CNT3',p_date=>now(),p_customer_id=>:'cust_c'::uuid,p_customer_name=>'Counts Customer C',
  p_items=>jsonb_build_array(jsonb_build_object('item_id',:'onion_id','item_name','Counts Onions','packaging','Bag','qty',100,'weight',40,'rack','A10','package_mark','X0003')),
  p_idempotency_key=>'counts-receipt-c') AS receipt_c \gset
 RESET ROLE;

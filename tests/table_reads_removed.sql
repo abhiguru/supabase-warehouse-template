@@ -88,7 +88,7 @@ SELECT id AS customer_id FROM public.customers WHERE name='Table Reads Customer'
 SELECT id AS item_id FROM public.items WHERE name='Table Reads Potatoes' \gset
 SELECT pg_temp.tr_assert(public.assign_customer_to_user('919888888933',:'customer_id'::uuid,'Table reads fixture'),'customer login assigned');
 SELECT pg_temp.tr_assert(public.replace_item_rates(:'item_id'::uuid,:'customer_id'::uuid,'monthly','2026-01-01'::date,jsonb_build_array(jsonb_build_object('weight_min',0,'weight_max',100,'unit_price',5,'labour_rate',2,'tax_percent',5)))->>'success'='true','rates');
-SELECT pg_temp.tr_assert(public.save_grn(p_gr_no=>'TRA',p_date=>'2026-04-01T12:00:00Z',p_customer_id=>:'customer_id'::uuid,
+SELECT pg_temp.tr_assert(public.save_grn(p_sender_name=>'Fixture Sender',p_supervisor_id=>(SELECT id FROM public.user_profiles WHERE NOT is_service_account ORDER BY created_at LIMIT 1),p_supervisor_name=>'Fixture Supervisor',p_gr_no=>'TRA',p_date=>'2026-04-01T12:00:00Z',p_customer_id=>:'customer_id'::uuid,
  p_customer_name=>'Table Reads Customer',p_pricing_mode=>'MONTHLY',p_idempotency_key=>'table-reads-a',
  p_items=>jsonb_build_array(jsonb_build_object('item_id',:'item_id','item_name','Table Reads Potatoes',
  'packaging','Bag','qty',10,'weight',10,'rack','R1')))->>'success'='true','receipt TRA');

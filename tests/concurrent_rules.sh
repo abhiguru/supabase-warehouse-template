@@ -120,7 +120,7 @@ SELECT set_config('request.jwt.claims',:'claims',false);
 SET ROLE authenticated;
 SELECT public.create_customer('Concurrent Rule Customer','9888888895')->>'success';
 SELECT public.create_item('Concurrent Rule Potatoes','Bag')->>'success';
-SELECT public.save_grn(p_gr_no=>'CONCA',p_date=>'2026-04-01T12:00:00Z',
+SELECT public.save_grn(p_sender_name=>'Fixture Sender',p_supervisor_id=>(SELECT id FROM public.user_profiles WHERE NOT is_service_account ORDER BY created_at LIMIT 1),p_supervisor_name=>'Fixture Supervisor',p_gr_no=>'CONCA',p_date=>'2026-04-01T12:00:00Z',
   p_customer_id=>(SELECT id FROM public.customers WHERE name='Concurrent Rule Customer'),p_customer_name=>'Concurrent Rule Customer',
   p_pricing_mode=>'MONTHLY',p_idempotency_key=>'concurrent-rule-receipt',
   p_items=>jsonb_build_array(jsonb_build_object('item_id',(SELECT id FROM public.items WHERE name='Concurrent Rule Potatoes'),
@@ -238,7 +238,7 @@ call_as "$claims_one" "$(grn_rate_call -20 3)" > "$scratch/grn-rate-base"
 [[ "$(answer "$scratch/grn-rate-base")" == *'"success": true'* ]] || { echo "Concurrent GRN rate: the base rate was not set: $(answer "$scratch/grn-rate-base")" >&2; exit 1; }
 grn_save_call() {
   cat <<SQL
-public.save_grn(p_gr_no=>'CONCB',p_date=>(CURRENT_DATE - 2)::text::timestamptz + interval '12 hours',
+public.save_grn(p_sender_name=>'Fixture Sender',p_supervisor_id=>(SELECT id FROM public.user_profiles WHERE NOT is_service_account ORDER BY created_at LIMIT 1),p_supervisor_name=>'Fixture Supervisor',p_gr_no=>'CONCB',p_date=>(CURRENT_DATE - 2)::text::timestamptz + interval '12 hours',
   p_customer_id=>(SELECT id FROM public.customers WHERE name='Concurrent Rule Customer'),p_customer_name=>'Concurrent Rule Customer',
   p_pricing_mode=>'MONTHLY',
   p_items=>jsonb_build_array(jsonb_build_object('item_id','$grn_item'::uuid,'item_name','Concurrent Grn Rate Item','packaging','Bag','qty',1,'weight',10,'rack','R1')),
@@ -309,12 +309,12 @@ echo 'Concurrent role and status change: a supervisor acting while an administra
 psql_exec -v claims="$claims_one" > "$scratch/fixture87" <<'SQL'
 SELECT set_config('request.jwt.claims',:'claims',false);
 SET ROLE authenticated;
-SELECT public.save_grn(p_gr_no=>'CONCC',p_date=>'2026-04-01T12:00:00Z',
+SELECT public.save_grn(p_sender_name=>'Fixture Sender',p_supervisor_id=>(SELECT id FROM public.user_profiles WHERE NOT is_service_account ORDER BY created_at LIMIT 1),p_supervisor_name=>'Fixture Supervisor',p_gr_no=>'CONCC',p_date=>'2026-04-01T12:00:00Z',
   p_customer_id=>(SELECT id FROM public.customers WHERE name='Concurrent Rule Customer'),p_customer_name=>'Concurrent Rule Customer',
   p_pricing_mode=>'MONTHLY',p_idempotency_key=>'concurrent-rule-cart-lot',
   p_items=>jsonb_build_array(jsonb_build_object('item_id',(SELECT id FROM public.items WHERE name='Concurrent Rule Potatoes'),
     'item_name','Concurrent Rule Potatoes','packaging','Bag','qty',100,'weight',10,'rack','R2')))->>'success';
-SELECT public.save_grn(p_gr_no=>'CONCD',p_date=>'2026-04-01T12:00:00Z',
+SELECT public.save_grn(p_sender_name=>'Fixture Sender',p_supervisor_id=>(SELECT id FROM public.user_profiles WHERE NOT is_service_account ORDER BY created_at LIMIT 1),p_supervisor_name=>'Fixture Supervisor',p_gr_no=>'CONCD',p_date=>'2026-04-01T12:00:00Z',
   p_customer_id=>(SELECT id FROM public.customers WHERE name='Concurrent Rule Customer'),p_customer_name=>'Concurrent Rule Customer',
   p_pricing_mode=>'MONTHLY',p_idempotency_key=>'concurrent-rule-retry-lot',
   p_items=>jsonb_build_array(jsonb_build_object('item_id',(SELECT id FROM public.items WHERE name='Concurrent Rule Potatoes'),
@@ -489,7 +489,7 @@ INSERT INTO public.customers(name,mobile) VALUES ('Concurrent Dup Customer','988
 INSERT INTO public.items(name,packaging) VALUES ('Concurrent Dup Item','Bag');
 SQL
 dup_grn_call() { # number, key, day
-  echo "public.save_grn(p_gr_no=>'$1',p_date=>'$3T12:00:00Z',p_customer_id=>(SELECT id FROM public.customers WHERE name='Concurrent Dup Customer'),p_customer_name=>'Concurrent Dup Customer',p_pricing_mode=>'MONTHLY',p_idempotency_key=>'$2',p_warn_duplicate=>true,p_items=>jsonb_build_array(jsonb_build_object('item_id',(SELECT id FROM public.items WHERE name='Concurrent Dup Item'),'item_name','Concurrent Dup Item','packaging','Bag','qty',100,'weight',10)))"
+  echo "public.save_grn(p_sender_name=>'Fixture Sender',p_supervisor_id=>(SELECT id FROM public.user_profiles WHERE NOT is_service_account ORDER BY created_at LIMIT 1),p_supervisor_name=>'Fixture Supervisor',p_gr_no=>'$1',p_date=>'$3T12:00:00Z',p_customer_id=>(SELECT id FROM public.customers WHERE name='Concurrent Dup Customer'),p_customer_name=>'Concurrent Dup Customer',p_pricing_mode=>'MONTHLY',p_idempotency_key=>'$2',p_warn_duplicate=>true,p_items=>jsonb_build_array(jsonb_build_object('item_id',(SELECT id FROM public.items WHERE name='Concurrent Dup Item'),'item_name','Concurrent Dup Item','packaging','Bag','qty',100,'weight',10)))"
 }
 dup_disp_call() { # number, key, receipt number of the lot
   echo "public.create_dispatch_with_stock_check(jsonb_build_object('disp_no','$1','disp_date','2026-05-02','customer_id',(SELECT id FROM public.customers WHERE name='Concurrent Dup Customer'),'customer_name','Concurrent Dup Customer','supervisor_id','$admin_one','supervisor_name','Concurrent Administrator One','registration','GJ01DUP0001','warn_duplicate',true),ARRAY[jsonb_build_object('gr_trl_id',(SELECT t.id FROM public.goodsreceived_trl t JOIN public.goodsreceived g ON g.id=t.gr_id WHERE g.gr_no='$3'),'disp_qty',1)],0,'$2')"

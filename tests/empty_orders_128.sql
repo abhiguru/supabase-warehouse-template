@@ -57,13 +57,13 @@ INSERT INTO public.items(name,packaging) VALUES ('Empty Orders Rice','Bag') RETU
 
 SELECT set_config('request.jwt.claims',:'admin_claims',true);
 SET LOCAL ROLE authenticated;
-SELECT public.save_grn(p_gr_no=>'EMPA',p_date=>'2026-04-01T12:00:00Z',p_customer_id=>:'customer_a'::uuid,p_customer_name=>'Empty Orders Customer A',
+SELECT public.save_grn(p_sender_name=>'Fixture Sender',p_supervisor_id=>(SELECT id FROM public.user_profiles WHERE NOT is_service_account ORDER BY created_at LIMIT 1),p_supervisor_name=>'Fixture Supervisor',p_gr_no=>'EMPA',p_date=>'2026-04-01T12:00:00Z',p_customer_id=>:'customer_a'::uuid,p_customer_name=>'Empty Orders Customer A',
  p_items=>jsonb_build_array(
   jsonb_build_object('item_id',:'onion_item','item_name','Empty Orders Onions','packaging','Bag','qty',20,'weight',10,'rack','R1'),
   jsonb_build_object('item_id',:'garlic_item','item_name','Empty Orders Garlic','packaging','Bag','qty',10,'weight',10,'rack','R2'),
   jsonb_build_object('item_id',:'bean_item','item_name','Empty Orders Beans','packaging','Bag','qty',10,'weight',10,'rack','R3')),
  p_idempotency_key=>'empty-grn-a') AS grn_a_answer \gset
-SELECT public.save_grn(p_gr_no=>'EMPB',p_date=>'2026-04-01T12:00:00Z',p_customer_id=>:'customer_b'::uuid,p_customer_name=>'Empty Orders Customer B',
+SELECT public.save_grn(p_sender_name=>'Fixture Sender',p_supervisor_id=>(SELECT id FROM public.user_profiles WHERE NOT is_service_account ORDER BY created_at LIMIT 1),p_supervisor_name=>'Fixture Supervisor',p_gr_no=>'EMPB',p_date=>'2026-04-01T12:00:00Z',p_customer_id=>:'customer_b'::uuid,p_customer_name=>'Empty Orders Customer B',
  p_items=>jsonb_build_array(
   jsonb_build_object('item_id',:'rice_item','item_name','Empty Orders Rice','packaging','Bag','qty',10,'weight',10,'rack','R4')),
  p_idempotency_key=>'empty-grn-b') AS grn_b_answer \gset

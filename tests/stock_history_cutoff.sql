@@ -42,7 +42,7 @@ SELECT pg_temp.shc_assert(public.create_customer('Cutoff Customer','9888888872')
 SELECT pg_temp.shc_assert(public.create_item('Cutoff Onions','Bag')->>'success'='true','catalog item');
 SELECT id AS customer_id FROM public.customers WHERE name='Cutoff Customer' \gset
 SELECT id AS item_id FROM public.items WHERE name='Cutoff Onions' \gset
-SELECT pg_temp.shc_assert(public.save_grn(p_gr_no=>'SHC1',p_date=>'2026-04-01T12:00:00Z',p_customer_id=>:'customer_id'::uuid,
+SELECT pg_temp.shc_assert(public.save_grn(p_sender_name=>'Fixture Sender',p_supervisor_id=>(SELECT id FROM public.user_profiles WHERE NOT is_service_account ORDER BY created_at LIMIT 1),p_supervisor_name=>'Fixture Supervisor',p_gr_no=>'SHC1',p_date=>'2026-04-01T12:00:00Z',p_customer_id=>:'customer_id'::uuid,
  p_customer_name=>'Cutoff Customer',p_pricing_mode=>'MONTHLY',
  p_items=>jsonb_build_array(jsonb_build_object('item_id',:'item_id','item_name','Cutoff Onions','packaging','Bag','qty',10,'weight',5)))->>'success'='true','receipt SHC1');
 SELECT t.id AS lot_10 FROM public.goodsreceived_trl t JOIN public.goodsreceived g ON g.id=t.gr_id WHERE g.gr_no='SHC1' \gset
@@ -58,7 +58,7 @@ SELECT (public.get_customer_stock_analysis_v2(:'customer_id'::uuid,'2026-04-15T2
 SELECT pg_temp.shc_assert(:'april_item'='10','the item row says 10 as well: ' || :'april_item');
 
 -- A second lot of 5 received the same day and wholly dispatched on 2026-06-01.
-SELECT pg_temp.shc_assert(public.save_grn(p_gr_no=>'SHC2',p_date=>'2026-04-01T12:00:00Z',p_customer_id=>:'customer_id'::uuid,
+SELECT pg_temp.shc_assert(public.save_grn(p_sender_name=>'Fixture Sender',p_supervisor_id=>(SELECT id FROM public.user_profiles WHERE NOT is_service_account ORDER BY created_at LIMIT 1),p_supervisor_name=>'Fixture Supervisor',p_gr_no=>'SHC2',p_date=>'2026-04-01T12:00:00Z',p_customer_id=>:'customer_id'::uuid,
  p_customer_name=>'Cutoff Customer',p_pricing_mode=>'MONTHLY',
  p_items=>jsonb_build_array(jsonb_build_object('item_id',:'item_id','item_name','Cutoff Onions','packaging','Bag','qty',5,'weight',5)))->>'success'='true','receipt SHC2');
 SELECT t.id AS lot_5 FROM public.goodsreceived_trl t JOIN public.goodsreceived g ON g.id=t.gr_id WHERE g.gr_no='SHC2' \gset

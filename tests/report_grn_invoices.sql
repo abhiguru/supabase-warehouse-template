@@ -140,7 +140,7 @@ INSERT INTO public.users_customers_new(user_profile_id, customer_id, active)
 
 SELECT set_config('request.jwt.claims', :'admin_claims', true);
 SET LOCAL ROLE authenticated;
-SELECT pg_temp.gi_assert(public.save_grn(p_gr_no => r.gr_no, p_date => (r.day || 'T12:00:00Z')::timestamptz,
+SELECT pg_temp.gi_assert(public.save_grn(p_sender_name=>'Fixture Sender',p_supervisor_id=>(SELECT id FROM public.user_profiles WHERE NOT is_service_account ORDER BY created_at LIMIT 1),p_supervisor_name=>'Fixture Supervisor',p_gr_no => r.gr_no, p_date => (r.day || 'T12:00:00Z')::timestamptz,
   p_customer_id => r.customer, p_customer_name => r.customer_name, p_idempotency_key => 'report-grn-invoices-' || r.gr_no,
   p_items => jsonb_build_array(jsonb_build_object('item_id', :'cumin', 'item_name', 'Grn Invoices Cumin', 'packaging', 'Bag',
     'qty', r.bags, 'weight', 10)))->>'success' = 'true', 'fixture receipt ' || r.gr_no)

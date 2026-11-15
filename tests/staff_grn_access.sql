@@ -57,7 +57,7 @@ INSERT INTO public.users_customers_new(user_profile_id,customer_id,active)
  SELECT id,:'customer_a'::uuid,true FROM public.user_profiles WHERE mobile='919888888864';
 SELECT set_config('request.jwt.claims',:'admin_claims',true);
 SET LOCAL ROLE authenticated;
-SELECT public.save_grn(p_gr_no=>'STAFFA',p_date=>now(),p_customer_id=>:'customer_a'::uuid,
+SELECT public.save_grn(p_sender_name=>'Fixture Sender',p_supervisor_id=>(SELECT id FROM public.user_profiles WHERE NOT is_service_account ORDER BY created_at LIMIT 1),p_supervisor_name=>'Fixture Supervisor',p_gr_no=>'STAFFA',p_date=>now(),p_customer_id=>:'customer_a'::uuid,
  p_customer_name=>'GRN Policy A',p_items=>jsonb_build_array(jsonb_build_object(
  'item_id',:'item_id','item_name','GRN Policy Potatoes','packaging','Bag','qty',10,'weight',5)),
  p_idempotency_key=>'staff-policy-admin-receipt') AS admin_receipt \gset
@@ -78,7 +78,7 @@ SELECT pg_temp.grn_assert(public.get_next_grn_number() IS NOT NULL,'number sugge
 RESET ROLE;
 SELECT warehouse_security.apply_document_numbering('grn', '{"scheme":"free"}', NULL) \gset free_
 SET LOCAL ROLE authenticated;
-SELECT public.save_grn(p_gr_no=>'STAFFB',p_date=>now(),p_customer_id=>:'customer_b'::uuid,
+SELECT public.save_grn(p_sender_name=>'Fixture Sender',p_supervisor_id=>(SELECT id FROM public.user_profiles WHERE NOT is_service_account ORDER BY created_at LIMIT 1),p_supervisor_name=>'Fixture Supervisor',p_gr_no=>'STAFFB',p_date=>now(),p_customer_id=>:'customer_b'::uuid,
  p_customer_name=>'GRN Policy B',p_items=>jsonb_build_array(jsonb_build_object(
  'item_id',:'item_id','item_name','GRN Policy Potatoes','packaging','Bag','qty',10,'weight',5)),
  p_idempotency_key=>'staff-policy-staff-receipt') AS staff_receipt \gset

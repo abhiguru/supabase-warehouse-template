@@ -91,10 +91,10 @@ SELECT id AS potatoes FROM public.items WHERE name='Decision Potatoes' \gset
 SELECT id AS onions FROM public.items WHERE name='Decision Onions' \gset
 -- DG1  A  dispatched-not-invoiced lot (potatoes 100, 5 dispatched on DDX1 dated 2026-05-02), a second lot nothing touches
 -- DGI  A  potatoes 10, fully dispatched on DDI (2026-05-02) and invoiced 92001: the invoiced GRN, lot and dispatch
-SELECT pg_temp.rd_assert(public.save_grn(p_gr_no=>'DG1',p_date=>'2026-04-01T12:00:00Z',p_customer_id=>:'ca'::uuid,p_customer_name=>'Decision Customer A',
+SELECT pg_temp.rd_assert(public.save_grn(p_sender_name=>'Fixture Sender',p_supervisor_id=>(SELECT id FROM public.user_profiles WHERE NOT is_service_account ORDER BY created_at LIMIT 1),p_supervisor_name=>'Fixture Supervisor',p_gr_no=>'DG1',p_date=>'2026-04-01T12:00:00Z',p_customer_id=>:'ca'::uuid,p_customer_name=>'Decision Customer A',
  p_pricing_mode=>'MONTHLY',p_items=>jsonb_build_array(pg_temp.rd_new_line(:'potatoes','Decision Potatoes',100,'DG1-P'),
   pg_temp.rd_new_line(:'onions','Decision Onions',20,'DG1-O')))->>'success'='true','receipt DG1');
-SELECT pg_temp.rd_assert(public.save_grn(p_gr_no=>'DGI',p_date=>'2026-04-01T12:00:00Z',p_customer_id=>:'ca'::uuid,p_customer_name=>'Decision Customer A',
+SELECT pg_temp.rd_assert(public.save_grn(p_sender_name=>'Fixture Sender',p_supervisor_id=>(SELECT id FROM public.user_profiles WHERE NOT is_service_account ORDER BY created_at LIMIT 1),p_supervisor_name=>'Fixture Supervisor',p_gr_no=>'DGI',p_date=>'2026-04-01T12:00:00Z',p_customer_id=>:'ca'::uuid,p_customer_name=>'Decision Customer A',
  p_pricing_mode=>'MONTHLY',p_items=>jsonb_build_array(pg_temp.rd_new_line(:'potatoes','Decision Potatoes',10,'DGI-P')))->>'success'='true','receipt DGI');
 RESET ROLE;
 SELECT id AS grn_1 FROM public.goodsreceived WHERE gr_no='DG1' \gset
@@ -351,7 +351,7 @@ SELECT pg_temp.rd_assert(:'grn_date_same'::jsonb->>'success'='true','twin: the s
 -- ===========================================================================
 SELECT set_config('request.jwt.claims',:'admin_claims',true);
 SET LOCAL ROLE authenticated;
-SELECT pg_temp.rd_assert(public.save_grn(p_gr_no=>'DG3',p_date=>'2026-04-01T12:00:00Z',p_customer_id=>:'ca'::uuid,p_customer_name=>'Decision Customer A',
+SELECT pg_temp.rd_assert(public.save_grn(p_sender_name=>'Fixture Sender',p_supervisor_id=>(SELECT id FROM public.user_profiles WHERE NOT is_service_account ORDER BY created_at LIMIT 1),p_supervisor_name=>'Fixture Supervisor',p_gr_no=>'DG3',p_date=>'2026-04-01T12:00:00Z',p_customer_id=>:'ca'::uuid,p_customer_name=>'Decision Customer A',
  p_pricing_mode=>'MONTHLY',p_items=>jsonb_build_array(pg_temp.rd_new_line(:'onions','Decision Onions',30,'DG3-O')))->>'success'='true','receipt DG3');
 RESET ROLE;
 SELECT id AS grn_3 FROM public.goodsreceived WHERE gr_no='DG3' \gset
@@ -443,7 +443,7 @@ SELECT pg_temp.rd_assert(:'grn_on_day'::jsonb->>'success'='true' AND (SELECT war
 -- ===========================================================================
 SELECT set_config('request.jwt.claims',:'admin_claims',true);
 SET LOCAL ROLE authenticated;
-SELECT pg_temp.rd_assert(public.save_grn(p_gr_no=>'DG4',p_date=>'2026-04-01T12:00:00Z',p_customer_id=>:'cb'::uuid,p_customer_name=>'Decision Customer B',
+SELECT pg_temp.rd_assert(public.save_grn(p_sender_name=>'Fixture Sender',p_supervisor_id=>(SELECT id FROM public.user_profiles WHERE NOT is_service_account ORDER BY created_at LIMIT 1),p_supervisor_name=>'Fixture Supervisor',p_gr_no=>'DG4',p_date=>'2026-04-01T12:00:00Z',p_customer_id=>:'cb'::uuid,p_customer_name=>'Decision Customer B',
  p_pricing_mode=>'MONTHLY',p_items=>jsonb_build_array(pg_temp.rd_new_line(:'potatoes','Decision Potatoes',100,'DG4-P'),
   pg_temp.rd_new_line(:'onions','Decision Onions',50,'DG4-O')))->>'success'='true','receipt DG4');
 RESET ROLE;
@@ -554,9 +554,9 @@ SELECT id AS ce FROM public.customers WHERE name='Decision Customer E' \gset
 SELECT id AS cf FROM public.customers WHERE name='Decision Customer F' \gset
 SELECT set_config('request.jwt.claims',:'admin_claims',true);
 SET LOCAL ROLE authenticated;
-SELECT pg_temp.rd_assert(public.save_grn(p_gr_no=>'DG5',p_date=>'2026-04-01T12:00:00Z',p_customer_id=>:'ce'::uuid,p_customer_name=>'Decision Customer E',
+SELECT pg_temp.rd_assert(public.save_grn(p_sender_name=>'Fixture Sender',p_supervisor_id=>(SELECT id FROM public.user_profiles WHERE NOT is_service_account ORDER BY created_at LIMIT 1),p_supervisor_name=>'Fixture Supervisor',p_gr_no=>'DG5',p_date=>'2026-04-01T12:00:00Z',p_customer_id=>:'ce'::uuid,p_customer_name=>'Decision Customer E',
  p_pricing_mode=>'MONTHLY',p_items=>jsonb_build_array(pg_temp.rd_new_line(:'potatoes','Decision Potatoes',40,'DG5-P'),pg_temp.rd_new_line(:'onions','Decision Onions',40,'DG5-O')))->>'success'='true','receipt DG5');
-SELECT pg_temp.rd_assert(public.save_grn(p_gr_no=>'DG6',p_date=>'2026-04-01T12:00:00Z',p_customer_id=>:'cf'::uuid,p_customer_name=>'Decision Customer F',
+SELECT pg_temp.rd_assert(public.save_grn(p_sender_name=>'Fixture Sender',p_supervisor_id=>(SELECT id FROM public.user_profiles WHERE NOT is_service_account ORDER BY created_at LIMIT 1),p_supervisor_name=>'Fixture Supervisor',p_gr_no=>'DG6',p_date=>'2026-04-01T12:00:00Z',p_customer_id=>:'cf'::uuid,p_customer_name=>'Decision Customer F',
  p_pricing_mode=>'MONTHLY',p_items=>jsonb_build_array(pg_temp.rd_new_line(:'potatoes','Decision Potatoes',40,'DG6-P')))->>'success'='true','receipt DG6');
 RESET ROLE;
 SELECT id AS lot_5p FROM public.goodsreceived_trl WHERE package_mark='DG5-P' \gset
@@ -624,7 +624,7 @@ SELECT pg_temp.rd_assert(:'e_after'::jsonb->>'reason'='ORDER_CHANGED' AND NOT EX
 -- ===========================================================================
 SELECT set_config('request.jwt.claims',:'admin_claims',true);
 SET LOCAL ROLE authenticated;
-SELECT pg_temp.rd_assert(public.save_grn(p_gr_no=>'DG7',p_date=>'2026-04-01T12:00:00Z',p_customer_id=>:'ca'::uuid,p_customer_name=>'Decision Customer A',
+SELECT pg_temp.rd_assert(public.save_grn(p_sender_name=>'Fixture Sender',p_supervisor_id=>(SELECT id FROM public.user_profiles WHERE NOT is_service_account ORDER BY created_at LIMIT 1),p_supervisor_name=>'Fixture Supervisor',p_gr_no=>'DG7',p_date=>'2026-04-01T12:00:00Z',p_customer_id=>:'ca'::uuid,p_customer_name=>'Decision Customer A',
  p_pricing_mode=>'MONTHLY',p_items=>jsonb_build_array(pg_temp.rd_new_line(:'potatoes','Decision Potatoes',10,'DG7-P')))->>'success'='true','receipt DG7');
 RESET ROLE;
 SELECT id AS grn_7 FROM public.goodsreceived WHERE gr_no='DG7' \gset
@@ -696,12 +696,12 @@ SELECT warehouse_security.apply_document_numbering('grn', '{"scheme":"letters"}'
 SELECT set_config('request.jwt.claims',:'admin_claims',true);
 SET LOCAL ROLE authenticated;
 SELECT pg_temp.rd_assert(public.get_next_grn_number()='A0001','with no series GRN the suggestion is A0001: '||public.get_next_grn_number());
-SELECT pg_temp.rd_assert(public.save_grn(p_gr_no=>'M0001',p_date=>'2026-04-01T12:00:00Z',p_customer_id=>:'ca'::uuid,p_customer_name=>'Decision Customer A',
+SELECT pg_temp.rd_assert(public.save_grn(p_sender_name=>'Fixture Sender',p_supervisor_id=>(SELECT id FROM public.user_profiles WHERE NOT is_service_account ORDER BY created_at LIMIT 1),p_supervisor_name=>'Fixture Supervisor',p_gr_no=>'M0001',p_date=>'2026-04-01T12:00:00Z',p_customer_id=>:'ca'::uuid,p_customer_name=>'Decision Customer A',
  p_pricing_mode=>'MONTHLY',p_items=>jsonb_build_array(pg_temp.rd_new_line(:'potatoes','Decision Potatoes',1,'SERIES-1')))->>'success'='true','GRN M0001');
-SELECT pg_temp.rd_assert(public.save_grn(p_gr_no=>'K0007',p_date=>'2026-04-01T12:00:00Z',p_customer_id=>:'ca'::uuid,p_customer_name=>'Decision Customer A',
+SELECT pg_temp.rd_assert(public.save_grn(p_sender_name=>'Fixture Sender',p_supervisor_id=>(SELECT id FROM public.user_profiles WHERE NOT is_service_account ORDER BY created_at LIMIT 1),p_supervisor_name=>'Fixture Supervisor',p_gr_no=>'K0007',p_date=>'2026-04-01T12:00:00Z',p_customer_id=>:'ca'::uuid,p_customer_name=>'Decision Customer A',
  p_pricing_mode=>'MONTHLY',p_items=>jsonb_build_array(pg_temp.rd_new_line(:'potatoes','Decision Potatoes',1,'SERIES-2')))->>'success'='true','GRN K0007, entered last');
 SELECT public.get_next_grn_number() AS next_after_older_letter \gset
-SELECT pg_temp.rd_assert(public.save_grn(p_gr_no=>'M1000',p_date=>'2026-04-01T12:00:00Z',p_customer_id=>:'ca'::uuid,p_customer_name=>'Decision Customer A',
+SELECT pg_temp.rd_assert(public.save_grn(p_sender_name=>'Fixture Sender',p_supervisor_id=>(SELECT id FROM public.user_profiles WHERE NOT is_service_account ORDER BY created_at LIMIT 1),p_supervisor_name=>'Fixture Supervisor',p_gr_no=>'M1000',p_date=>'2026-04-01T12:00:00Z',p_customer_id=>:'ca'::uuid,p_customer_name=>'Decision Customer A',
  p_pricing_mode=>'MONTHLY',p_items=>jsonb_build_array(pg_temp.rd_new_line(:'potatoes','Decision Potatoes',1,'SERIES-3')))->>'success'='true','GRN M1000');
 SELECT public.get_next_grn_number() AS next_after_full_series \gset
 RESET ROLE;
@@ -714,7 +714,7 @@ SELECT warehouse_security.apply_document_numbering('grn', '{"scheme":"free"}', N
 -- ===========================================================================
 SELECT set_config('request.jwt.claims',:'admin_claims',true);
 SET LOCAL ROLE authenticated;
-SELECT public.save_grn(p_gr_no=>'DG8',p_date=>'2026-04-01T12:00:00Z',p_customer_id=>:'ca'::uuid,p_customer_name=>'Decision Customer A',p_pricing_mode=>'MONTHLY',
+SELECT public.save_grn(p_sender_name=>'Fixture Sender',p_supervisor_id=>(SELECT id FROM public.user_profiles WHERE NOT is_service_account ORDER BY created_at LIMIT 1),p_supervisor_name=>'Fixture Supervisor',p_gr_no=>'DG8',p_date=>'2026-04-01T12:00:00Z',p_customer_id=>:'ca'::uuid,p_customer_name=>'Decision Customer A',p_pricing_mode=>'MONTHLY',
  p_items=>jsonb_build_array(pg_temp.rd_new_line(:'potatoes','Decision Potatoes',10,'DG8-P')),
  p_rates=>jsonb_build_array(jsonb_build_object('scope','grn','item_id',:'potatoes','weight_min',0,'weight_max',10,'unit_price',7,'labour_rate',2,'tax_percent',5))) AS g8 \gset
 RESET ROLE;
@@ -766,7 +766,7 @@ CREATE FUNCTION pg_temp.rd_lines_without(p_grn uuid, p_mark text) RETURNS jsonb 
   SELECT COALESCE(jsonb_agg(e),'[]'::jsonb) FROM jsonb_array_elements(pg_temp.rd_lines(p_grn)) e WHERE e->>'package_mark' IS DISTINCT FROM p_mark $$;
 SELECT set_config('request.jwt.claims',:'admin_claims',true);
 SET LOCAL ROLE authenticated;
-SELECT pg_temp.rd_assert(public.save_grn(p_gr_no=>'DG9',p_date=>'2026-04-01T12:00:00Z',p_customer_id=>:'cc'::uuid,p_customer_name=>'Decision Customer C',p_pricing_mode=>'MONTHLY',
+SELECT pg_temp.rd_assert(public.save_grn(p_sender_name=>'Fixture Sender',p_supervisor_id=>(SELECT id FROM public.user_profiles WHERE NOT is_service_account ORDER BY created_at LIMIT 1),p_supervisor_name=>'Fixture Supervisor',p_gr_no=>'DG9',p_date=>'2026-04-01T12:00:00Z',p_customer_id=>:'cc'::uuid,p_customer_name=>'Decision Customer C',p_pricing_mode=>'MONTHLY',
  p_items=>jsonb_build_array(pg_temp.rd_new_line(:'potatoes','Decision Potatoes',10,'DG9-1'),pg_temp.rd_new_line(:'onions','Decision Onions',10,'DG9-2'),
    pg_temp.rd_new_line(:'potatoes','Decision Potatoes',10,'DG9-3')))->>'success'='true','receipt DG9');
 RESET ROLE;
@@ -809,7 +809,7 @@ CREATE FUNCTION pg_temp.rd_audit_trl(p_action text, p_grn uuid) RETURNS integer 
   SELECT count(*)::integer FROM public.audit_log WHERE table_name='goodsreceived_trl' AND action=p_action AND COALESCE(new_data,old_data)->>'gr_id'=p_grn::text $$;
 SELECT set_config('request.jwt.claims',:'admin_claims',true);
 SET LOCAL ROLE authenticated;
-SELECT public.save_grn(p_gr_no=>'DG10',p_date=>'2026-04-01T12:00:00Z',p_customer_id=>:'ca'::uuid,p_customer_name=>'Decision Customer A',p_pricing_mode=>'MONTHLY',
+SELECT public.save_grn(p_sender_name=>'Fixture Sender',p_supervisor_id=>(SELECT id FROM public.user_profiles WHERE NOT is_service_account ORDER BY created_at LIMIT 1),p_supervisor_name=>'Fixture Supervisor',p_gr_no=>'DG10',p_date=>'2026-04-01T12:00:00Z',p_customer_id=>:'ca'::uuid,p_customer_name=>'Decision Customer A',p_pricing_mode=>'MONTHLY',
  p_items=>jsonb_build_array(pg_temp.rd_new_line(:'potatoes','Decision Potatoes',10,'DG10-P'),pg_temp.rd_new_line(:'onions','Decision Onions',5,'DG10-O'))) AS g10 \gset
 RESET ROLE;
 SELECT id AS grn_10 FROM public.goodsreceived WHERE gr_no='DG10' \gset
@@ -852,7 +852,7 @@ SELECT pg_temp.rd_assert(:'d10'::jsonb->>'success'='true' AND (SELECT out_of_sto
 -- A delete keeps a copy of the GRN and each line.
 SELECT set_config('request.jwt.claims',:'admin_claims',true);
 SET LOCAL ROLE authenticated;
-SELECT public.save_grn(p_gr_no=>'DG11',p_date=>'2026-04-01T12:00:00Z',p_customer_id=>:'ca'::uuid,p_customer_name=>'Decision Customer A',p_pricing_mode=>'MONTHLY',
+SELECT public.save_grn(p_sender_name=>'Fixture Sender',p_supervisor_id=>(SELECT id FROM public.user_profiles WHERE NOT is_service_account ORDER BY created_at LIMIT 1),p_supervisor_name=>'Fixture Supervisor',p_gr_no=>'DG11',p_date=>'2026-04-01T12:00:00Z',p_customer_id=>:'ca'::uuid,p_customer_name=>'Decision Customer A',p_pricing_mode=>'MONTHLY',
  p_items=>jsonb_build_array(pg_temp.rd_new_line(:'potatoes','Decision Potatoes',4,'DG11-P'),pg_temp.rd_new_line(:'onions','Decision Onions',2,'DG11-O'))) AS g11 \gset
 RESET ROLE;
 SELECT id AS grn_11 FROM public.goodsreceived WHERE gr_no='DG11' \gset
@@ -870,9 +870,9 @@ SELECT pg_temp.rd_assert(:'g11_deleted'::jsonb->>'success'='true' AND NOT EXISTS
 -- ===========================================================================
 SELECT set_config('request.jwt.claims',:'admin_claims',true);
 SET LOCAL ROLE authenticated;
-SELECT public.save_grn(p_gr_no=>'DG12',p_date=>'2026-04-01T12:00:00Z',p_customer_id=>:'ca'::uuid,p_customer_name=>'Decision Customer A',p_pricing_mode=>'MONTHLY',
+SELECT public.save_grn(p_sender_name=>'Fixture Sender',p_supervisor_id=>(SELECT id FROM public.user_profiles WHERE NOT is_service_account ORDER BY created_at LIMIT 1),p_supervisor_name=>'Fixture Supervisor',p_gr_no=>'DG12',p_date=>'2026-04-01T12:00:00Z',p_customer_id=>:'ca'::uuid,p_customer_name=>'Decision Customer A',p_pricing_mode=>'MONTHLY',
  p_registration=>repeat('R',21),p_items=>jsonb_build_array(pg_temp.rd_new_line(:'potatoes','Decision Potatoes',4,'DG12-P'))) AS reg_long \gset
-SELECT public.save_grn(p_gr_no=>'DG12',p_date=>'2026-04-01T12:00:00Z',p_customer_id=>:'ca'::uuid,p_customer_name=>'Decision Customer A',p_pricing_mode=>'MONTHLY',
+SELECT public.save_grn(p_sender_name=>'Fixture Sender',p_supervisor_id=>(SELECT id FROM public.user_profiles WHERE NOT is_service_account ORDER BY created_at LIMIT 1),p_supervisor_name=>'Fixture Supervisor',p_gr_no=>'DG12',p_date=>'2026-04-01T12:00:00Z',p_customer_id=>:'ca'::uuid,p_customer_name=>'Decision Customer A',p_pricing_mode=>'MONTHLY',
  p_registration=>repeat('R',20),p_items=>jsonb_build_array(
    pg_temp.rd_new_line(:'potatoes','Decision Potatoes',4,U&'\0AE7\0AE8')||jsonb_build_object('rack',U&'R\0AE7','package_mark',U&'\0AE7\0AE8'))) AS reg_ok \gset
 RESET ROLE;
@@ -898,7 +898,7 @@ SELECT pg_temp.rd_assert(:'upd_reg_ok'::jsonb->>'success'='true' AND (SELECT rac
 -- ===========================================================================
 SELECT set_config('request.jwt.claims',:'admin_claims',true);
 SET LOCAL ROLE authenticated;
-SELECT pg_temp.rd_assert(public.save_grn(p_gr_no=>'DG13',p_date=>'2026-04-01T12:00:00Z',p_customer_id=>:'cd'::uuid,p_customer_name=>'Decision Customer D',p_pricing_mode=>'MONTHLY',
+SELECT pg_temp.rd_assert(public.save_grn(p_sender_name=>'Fixture Sender',p_supervisor_id=>(SELECT id FROM public.user_profiles WHERE NOT is_service_account ORDER BY created_at LIMIT 1),p_supervisor_name=>'Fixture Supervisor',p_gr_no=>'DG13',p_date=>'2026-04-01T12:00:00Z',p_customer_id=>:'cd'::uuid,p_customer_name=>'Decision Customer D',p_pricing_mode=>'MONTHLY',
  p_items=>jsonb_build_array(pg_temp.rd_new_line(:'potatoes','Decision Potatoes',20,'DG13-P'),pg_temp.rd_new_line(:'onions','Decision Onions',20,'DG13-O')))->>'success'='true','receipt DG13');
 RESET ROLE;
 SELECT id AS lot_13p FROM public.goodsreceived_trl WHERE package_mark='DG13-P' \gset
@@ -913,7 +913,7 @@ SELECT public.get_or_create_cart(:'cd'::uuid) AS cart_d \gset
 SELECT public.add_item_to_order(:'cart_d'::uuid,:'lot_13o'::uuid,3) AS d_add \gset
 SELECT public.update_order_item_quantity((:'d_add'::jsonb#>>'{data,order_item_id}')::uuid,4) AS d_change \gset
 SELECT public.delete_dispatch_with_order_cleanup((:'d13'::jsonb->>'dispatch_id')::uuid,:'admin_profile'::uuid) AS d13_delete \gset
-SELECT pg_temp.rd_raises(format($q$SELECT public.save_grn(p_gr_no=>'DG13B',p_date=>'2026-04-01T12:00:00Z',p_customer_id=>%L::uuid,p_customer_name=>'Decision Customer D',p_pricing_mode=>'MONTHLY',
+SELECT pg_temp.rd_raises(format($q$SELECT public.save_grn(p_sender_name=>'Fixture Sender',p_supervisor_id=>(SELECT id FROM public.user_profiles WHERE NOT is_service_account ORDER BY created_at LIMIT 1),p_supervisor_name=>'Fixture Supervisor',p_gr_no=>'DG13B',p_date=>'2026-04-01T12:00:00Z',p_customer_id=>%L::uuid,p_customer_name=>'Decision Customer D',p_pricing_mode=>'MONTHLY',
  p_items=>%L::jsonb)$q$,:'cd',jsonb_build_array(pg_temp.rd_new_line(:'potatoes','Decision Potatoes',1,'DG13-N'))::text),'%deactivated%') AS d_new_grn_refused \gset
 RESET ROLE;
 SELECT pg_temp.rd_assert(:'d13'::jsonb->>'success'='true' AND :'d13_edit'::jsonb->>'success'='true' AND :'d13_delete'::jsonb->>'success'='true',
@@ -950,7 +950,7 @@ SELECT pg_temp.rd_assert(:'total_ok'::jsonb->>'success'='true' AND :'total_none'
 -- The 3-argument save: refused, nothing saved; then saved with the total the refusal named
 SELECT set_config('request.jwt.claims',:'admin_claims',true);
 SET LOCAL ROLE authenticated;
-SELECT pg_temp.rd_assert(public.save_grn(p_gr_no=>'DG14',p_date=>'2026-04-01T12:00:00Z',p_customer_id=>:'ca'::uuid,p_customer_name=>'Decision Customer A',p_pricing_mode=>'MONTHLY',
+SELECT pg_temp.rd_assert(public.save_grn(p_sender_name=>'Fixture Sender',p_supervisor_id=>(SELECT id FROM public.user_profiles WHERE NOT is_service_account ORDER BY created_at LIMIT 1),p_supervisor_name=>'Fixture Supervisor',p_gr_no=>'DG14',p_date=>'2026-04-01T12:00:00Z',p_customer_id=>:'ca'::uuid,p_customer_name=>'Decision Customer A',p_pricing_mode=>'MONTHLY',
  p_items=>jsonb_build_array(pg_temp.rd_new_line(:'potatoes','Decision Potatoes',6,'DG14-P')))->>'success'='true','receipt DG14');
 RESET ROLE;
 SELECT id AS grn_14 FROM public.goodsreceived WHERE gr_no='DG14' \gset

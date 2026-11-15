@@ -221,7 +221,7 @@ SELECT id AS north FROM public.customers WHERE name='Rate129 North Orchard' \gse
 SELECT pg_temp.r9_assert(:'fennel_made'='true' AND :'unpriced_made'='true' AND :'north_made'='true','fixture: items and a customer');
 -- A GRN of the item dated 300 days ago, checked for rates ([] = check only): before the item has any rate it is RATE_MISSING.
 CREATE FUNCTION pg_temp.r9_grn(p_no text, p_item uuid, p_name text, p_day date, p_customer uuid) RETURNS jsonb LANGUAGE sql AS $$
-  SELECT pg_temp.r9_call(format($q$SELECT public.save_grn(p_gr_no=>%L,p_date=>%L::timestamptz,p_customer_id=>%L::uuid,p_customer_name=>'Rate129 North Orchard',
+  SELECT pg_temp.r9_call(format($q$SELECT public.save_grn(p_sender_name=>'Fixture Sender',p_supervisor_id=>(SELECT id FROM public.user_profiles WHERE NOT is_service_account ORDER BY created_at LIMIT 1),p_supervisor_name=>'Fixture Supervisor',p_gr_no=>%L,p_date=>%L::timestamptz,p_customer_id=>%L::uuid,p_customer_name=>'Rate129 North Orchard',
     p_pricing_mode=>'MONTHLY',p_rates=>'[]'::jsonb,p_items=>jsonb_build_array(jsonb_build_object('item_id',%L::uuid,'item_name',%L,'packaging','Bag','qty',5,'weight',10)))$q$,
     p_no,p_day::text||'T12:00:00Z',p_customer,p_item,p_name)) $$;
 SELECT set_config('request.jwt.claims',:'admin_claims',true);

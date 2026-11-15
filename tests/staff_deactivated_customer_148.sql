@@ -58,7 +58,7 @@ INSERT INTO public.users_customers_new(user_profile_id,customer_id,active)
 -- Stock and an open order for each of the three customers, made while they are all still active.
 SELECT set_config('request.jwt.claims',:'admin_claims',true);
 SET LOCAL ROLE authenticated;
-SELECT pg_temp.sd_assert(public.save_grn(p_gr_no=>n.no::varchar,p_date=>now(),p_customer_id=>n.c::uuid,p_customer_name=>n.nm::varchar,
+SELECT pg_temp.sd_assert(public.save_grn(p_sender_name=>'Fixture Sender',p_supervisor_id=>(SELECT id FROM public.user_profiles WHERE NOT is_service_account ORDER BY created_at LIMIT 1),p_supervisor_name=>'Fixture Supervisor',p_gr_no=>n.no::varchar,p_date=>now(),p_customer_id=>n.c::uuid,p_customer_name=>n.nm::varchar,
  p_items=>jsonb_build_array(jsonb_build_object('item_id',:'item_id','item_name','Dormant Test Onions','packaging','Bag','qty',10,'weight',12)),
  p_idempotency_key=>'dormant-148-'||n.no)->>'success'='true','receipt '||n.no)
 FROM (VALUES ('DM1',:'dormant','Dormant Test Customer'),('DM2',:'livecust','Dormant Test Active Customer'),('DM3',:'gone','Dormant Test Gone Customer')) n(no,c,nm);
@@ -142,7 +142,7 @@ SET LOCAL ROLE authenticated;
 SELECT public.user_accessible_customers() AS staff_list \gset
 RESET ROLE;
 SELECT pg_temp.sd_assert(NOT (:'staff_list'::text LIKE '%'||:'dormant'||'%') AND :'staff_list'::text LIKE '%'||:'livecust'||'%','user_accessible_customers() still lists active customers only: '||:'staff_list');
-SELECT pg_temp.sd_as(:'admin_claims'::jsonb,format($q$SELECT public.save_grn(p_gr_no=>'DM9',p_date=>now(),p_customer_id=>%L::uuid,p_customer_name=>'Dormant Test Customer',
+SELECT pg_temp.sd_as(:'admin_claims'::jsonb,format($q$SELECT public.save_grn(p_sender_name=>'Fixture Sender',p_supervisor_id=>(SELECT id FROM public.user_profiles WHERE NOT is_service_account ORDER BY created_at LIMIT 1),p_supervisor_name=>'Fixture Supervisor',p_gr_no=>'DM9',p_date=>now(),p_customer_id=>%L::uuid,p_customer_name=>'Dormant Test Customer',
   p_items=>jsonb_build_array(jsonb_build_object('item_id',%L,'item_name','Dormant Test Onions','packaging','Bag','qty',1,'weight',12)),p_idempotency_key=>'dormant-148-new')$q$,:'dormant',:'item_id')) AS new_grn \gset
 SELECT pg_temp.sd_assert(((:'new_grn'::jsonb->>'success'='false') OR (:'new_grn'::jsonb->>'raised' LIKE 'This business is deactivated.%')) AND NOT EXISTS (SELECT 1 FROM public.goodsreceived WHERE gr_no='DM9'),'a new GRN for a deactivated customer is still refused: '||:'new_grn');
 ROLLBACK;

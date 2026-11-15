@@ -55,13 +55,13 @@ SELECT id AS cust FROM public.customers WHERE name='Packaging Test Customer' \gs
 SELECT id AS item_id FROM public.items WHERE name='Packaging Test Garlic' \gset
 SELECT pg_temp.pk_assert(public.replace_item_rates(:'item_id'::uuid,:'cust'::uuid,'monthly','2026-01-01'::date,jsonb_build_array(jsonb_build_object('weight_min',0,'weight_max',100,'unit_price',5,'labour_rate',2,'tax_percent',5)))->>'success'='true','rate');
 -- PK1 is dispatched in full and invoiced; PK2 keeps stock. The lots carry different packaging words on purpose (PK3 'Box' next to PK2 'Bag').
-SELECT pg_temp.pk_assert(public.save_grn(p_gr_no=>'PK1',p_date=>'2026-04-01T12:00:00Z',p_customer_id=>:'cust'::uuid,p_customer_name=>'Packaging Test Customer',
+SELECT pg_temp.pk_assert(public.save_grn(p_sender_name=>'Fixture Sender',p_supervisor_id=>(SELECT id FROM public.user_profiles WHERE NOT is_service_account ORDER BY created_at LIMIT 1),p_supervisor_name=>'Fixture Supervisor',p_gr_no=>'PK1',p_date=>'2026-04-01T12:00:00Z',p_customer_id=>:'cust'::uuid,p_customer_name=>'Packaging Test Customer',
  p_pricing_mode=>'ONE_TIME',p_idempotency_key=>'pk-grn-1',p_items=>jsonb_build_array(jsonb_build_object('item_id',:'item_id','item_name','Packaging Test Garlic',
  'packaging','Box','qty',20,'weight',10,'rack','PK1')))->>'success'='true','receipt PK1');
-SELECT pg_temp.pk_assert(public.save_grn(p_gr_no=>'PK2',p_date=>'2026-04-01T12:00:00Z',p_customer_id=>:'cust'::uuid,p_customer_name=>'Packaging Test Customer',
+SELECT pg_temp.pk_assert(public.save_grn(p_sender_name=>'Fixture Sender',p_supervisor_id=>(SELECT id FROM public.user_profiles WHERE NOT is_service_account ORDER BY created_at LIMIT 1),p_supervisor_name=>'Fixture Supervisor',p_gr_no=>'PK2',p_date=>'2026-04-01T12:00:00Z',p_customer_id=>:'cust'::uuid,p_customer_name=>'Packaging Test Customer',
  p_pricing_mode=>'ONE_TIME',p_idempotency_key=>'pk-grn-2',p_items=>jsonb_build_array(jsonb_build_object('item_id',:'item_id','item_name','Packaging Test Garlic',
  'packaging','Bag','qty',20,'weight',10,'rack','PK2')))->>'success'='true','receipt PK2');
-SELECT pg_temp.pk_assert(public.save_grn(p_gr_no=>'PK3',p_date=>'2026-04-01T12:00:00Z',p_customer_id=>:'cust'::uuid,p_customer_name=>'Packaging Test Customer',
+SELECT pg_temp.pk_assert(public.save_grn(p_sender_name=>'Fixture Sender',p_supervisor_id=>(SELECT id FROM public.user_profiles WHERE NOT is_service_account ORDER BY created_at LIMIT 1),p_supervisor_name=>'Fixture Supervisor',p_gr_no=>'PK3',p_date=>'2026-04-01T12:00:00Z',p_customer_id=>:'cust'::uuid,p_customer_name=>'Packaging Test Customer',
  p_pricing_mode=>'ONE_TIME',p_idempotency_key=>'pk-grn-3',p_items=>jsonb_build_array(jsonb_build_object('item_id',:'item_id','item_name','Packaging Test Garlic',
  'packaging','Bag','qty',20,'weight',10,'rack','PK3')))->>'success'='true','receipt PK3');
 SELECT id AS grn1 FROM public.goodsreceived WHERE gr_no='PK1' \gset
@@ -98,7 +98,7 @@ SELECT public.get_customer_activity_detail(:'cust'::uuid,'2026-05-01'::date,'202
 -- Lots PK2 and PK3 are both Bag: one word. Add a Box lot with stock for the same item name: the word is then null (mixed), never a guess.
 SELECT pg_temp.pk_assert(:'adet'::jsonb->>'success'='true' AND jsonb_array_length(COALESCE(:'adet'::jsonb#>'{data,top_stock_items}', :'adet'::jsonb->'top_stock_items'))=1
   AND COALESCE(:'adet'::jsonb#>>'{data,top_stock_items,0,packaging}', :'adet'::jsonb#>>'{top_stock_items,0,packaging}')='Bag','top stock row says Bag: '||:'adet');
-SELECT pg_temp.pk_assert(public.save_grn(p_gr_no=>'PK4',p_date=>'2026-04-01T12:00:00Z',p_customer_id=>:'cust'::uuid,p_customer_name=>'Packaging Test Customer',
+SELECT pg_temp.pk_assert(public.save_grn(p_sender_name=>'Fixture Sender',p_supervisor_id=>(SELECT id FROM public.user_profiles WHERE NOT is_service_account ORDER BY created_at LIMIT 1),p_supervisor_name=>'Fixture Supervisor',p_gr_no=>'PK4',p_date=>'2026-04-01T12:00:00Z',p_customer_id=>:'cust'::uuid,p_customer_name=>'Packaging Test Customer',
  p_pricing_mode=>'ONE_TIME',p_idempotency_key=>'pk-grn-4',p_items=>jsonb_build_array(jsonb_build_object('item_id',:'item_id','item_name','Packaging Test Garlic',
  'packaging','Box','qty',5,'weight',10,'rack','PK4')))->>'success'='true','receipt PK4');
 SELECT public.get_customer_activity_detail(:'cust'::uuid,'2026-05-01'::date,'2026-05-31'::date) AS adet2 \gset

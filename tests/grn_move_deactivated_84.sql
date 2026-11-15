@@ -48,13 +48,13 @@ INSERT INTO public.items(name,packaging) VALUES ('GRN84 Ginger','Bag') RETURNING
 -- GRN1 and GRN2 belong to active A; GRN3 belongs to D (deactivated afterwards)
 SELECT set_config('request.jwt.claims',:'admin_claims',true);
 SET LOCAL ROLE authenticated;
-SELECT public.save_grn(p_gr_no=>'G84A1',p_date=>now(),p_customer_id=>:'cust_a'::uuid,p_customer_name=>'GRN84 Active',
+SELECT public.save_grn(p_sender_name=>'Fixture Sender',p_supervisor_id=>(SELECT id FROM public.user_profiles WHERE NOT is_service_account ORDER BY created_at LIMIT 1),p_supervisor_name=>'Fixture Supervisor',p_gr_no=>'G84A1',p_date=>now(),p_customer_id=>:'cust_a'::uuid,p_customer_name=>'GRN84 Active',
   p_items=>jsonb_build_array(jsonb_build_object('item_id',:'item_id','item_name','GRN84 Ginger','packaging','Bag','qty',1,'weight',10,'rack','A1')),
   p_idempotency_key=>'g84-a1') AS save_1 \gset
-SELECT public.save_grn(p_gr_no=>'G84A2',p_date=>now(),p_customer_id=>:'cust_a'::uuid,p_customer_name=>'GRN84 Active',
+SELECT public.save_grn(p_sender_name=>'Fixture Sender',p_supervisor_id=>(SELECT id FROM public.user_profiles WHERE NOT is_service_account ORDER BY created_at LIMIT 1),p_supervisor_name=>'Fixture Supervisor',p_gr_no=>'G84A2',p_date=>now(),p_customer_id=>:'cust_a'::uuid,p_customer_name=>'GRN84 Active',
   p_items=>jsonb_build_array(jsonb_build_object('item_id',:'item_id','item_name','GRN84 Ginger','packaging','Bag','qty',1,'weight',10,'rack','A2')),
   p_idempotency_key=>'g84-a2') AS save_2 \gset
-SELECT public.save_grn(p_gr_no=>'G84D1',p_date=>now(),p_customer_id=>:'cust_d'::uuid,p_customer_name=>'GRN84 Later deactivated',
+SELECT public.save_grn(p_sender_name=>'Fixture Sender',p_supervisor_id=>(SELECT id FROM public.user_profiles WHERE NOT is_service_account ORDER BY created_at LIMIT 1),p_supervisor_name=>'Fixture Supervisor',p_gr_no=>'G84D1',p_date=>now(),p_customer_id=>:'cust_d'::uuid,p_customer_name=>'GRN84 Later deactivated',
   p_items=>jsonb_build_array(jsonb_build_object('item_id',:'item_id','item_name','GRN84 Ginger','packaging','Bag','qty',2,'weight',10,'rack','A3')),
   p_idempotency_key=>'g84-d1') AS save_3 \gset
 RESET ROLE;

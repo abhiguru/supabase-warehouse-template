@@ -42,13 +42,13 @@ SELECT pg_temp.di_assert(public.create_item('Dispatch Order Barley','Bag')->>'su
 SELECT id AS customer_id FROM public.customers WHERE name='Dispatch Order Customer' \gset
 SELECT id AS item_a FROM public.items WHERE name='Dispatch Order Millet' \gset
 SELECT id AS item_b FROM public.items WHERE name='Dispatch Order Barley' \gset
-SELECT pg_temp.di_assert(public.save_grn(p_gr_no=>'DIO1',p_date=>'2026-04-01T12:00:00Z',p_customer_id=>:'customer_id'::uuid,
+SELECT pg_temp.di_assert(public.save_grn(p_sender_name=>'Fixture Sender',p_supervisor_id=>(SELECT id FROM public.user_profiles WHERE NOT is_service_account ORDER BY created_at LIMIT 1),p_supervisor_name=>'Fixture Supervisor',p_gr_no=>'DIO1',p_date=>'2026-04-01T12:00:00Z',p_customer_id=>:'customer_id'::uuid,
  p_customer_name=>'Dispatch Order Customer',p_pricing_mode=>'MONTHLY',
  p_items=>(SELECT jsonb_agg(jsonb_build_object('item_id',CASE WHEN n % 2 = 0 THEN :'item_a' ELSE :'item_b' END,
    'item_name',CASE WHEN n % 2 = 0 THEN 'Dispatch Order Millet' ELSE 'Dispatch Order Barley' END,
    'packaging','Bag','qty',20 + (n * 7) % 5,'weight',5,'rack','R1','package_mark','L' || n))
    FROM generate_series(1,6) AS n))->>'success'='true','receipt DIO1');
-SELECT pg_temp.di_assert(public.save_grn(p_gr_no=>'DIO2',p_date=>'2026-03-01T12:00:00Z',p_customer_id=>:'customer_id'::uuid,
+SELECT pg_temp.di_assert(public.save_grn(p_sender_name=>'Fixture Sender',p_supervisor_id=>(SELECT id FROM public.user_profiles WHERE NOT is_service_account ORDER BY created_at LIMIT 1),p_supervisor_name=>'Fixture Supervisor',p_gr_no=>'DIO2',p_date=>'2026-03-01T12:00:00Z',p_customer_id=>:'customer_id'::uuid,
  p_customer_name=>'Dispatch Order Customer',p_pricing_mode=>'MONTHLY',
  p_items=>(SELECT jsonb_agg(jsonb_build_object('item_id',CASE WHEN n % 2 = 0 THEN :'item_a' ELSE :'item_b' END,
    'item_name',CASE WHEN n % 2 = 0 THEN 'Dispatch Order Millet' ELSE 'Dispatch Order Barley' END,

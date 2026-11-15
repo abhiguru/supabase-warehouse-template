@@ -60,7 +60,7 @@ SELECT set_config('request.jwt.claims', :'admin_claims', true);
 SET LOCAL ROLE authenticated;
 CREATE FUNCTION pg_temp.rp_save(gr_no text, customer uuid, customer_name text, at timestamptz, lines integer) RETURNS void LANGUAGE plpgsql AS $$
 BEGIN
-  PERFORM pg_temp.rp_assert((public.save_grn(p_gr_no => gr_no, p_date => at, p_customer_id => customer, p_customer_name => customer_name,
+  PERFORM pg_temp.rp_assert((public.save_grn(p_sender_name=>'Fixture Sender',p_supervisor_id=>(SELECT id FROM public.user_profiles WHERE NOT is_service_account ORDER BY created_at LIMIT 1),p_supervisor_name=>'Fixture Supervisor',p_gr_no => gr_no, p_date => at, p_customer_id => customer, p_customer_name => customer_name,
     p_idempotency_key => 'rp-' || gr_no,
     p_items => (SELECT jsonb_agg(jsonb_build_object('item_id', current_setting('test.rp_garlic'), 'item_name', 'Receipt Pages Garlic',
       'packaging', 'Bag', 'qty', 100, 'weight', 5, 'package_mark', gr_no || '-' || n) ORDER BY n) FROM generate_series(1, lines) AS n)))->>'success' = 'true',

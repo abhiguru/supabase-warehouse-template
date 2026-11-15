@@ -530,7 +530,8 @@ These are the rules the app's forms already apply; the server did not.
 - A receipt's `customer_name` is taken from the customer record when the
   receipt is created and when it moves to another customer. The name the client
   sends is ignored; a later rename of the customer still does not rewrite old
-  receipts. Sender and supervisor names and the receipt date are stored as sent.
+  receipts. Sender and supervisor names are stored trimmed at both ends, and a
+  blank one as NULL (WH-237); the receipt date is stored as sent.
 - An idempotency key answers only the function and the user that stored it.
   Every stored request answer (`save_grn`, `update_grn`, dispatch creation and the
   `request_key` saves) is kept for 7 days (migration 120; `save_grn` was one hour
@@ -591,8 +592,9 @@ as a new row. That is one line, not two, but under a new id, and it fails with
 #### Still open from the first review
 
 - **Names and dates on a receipt.** Migration 46 takes `customer_name` from the
-  customer record. `sender_name` and `supervisor_name` are still stored as the
-  client sends them, and any date is accepted, past or future. Binding the two
+  customer record. `sender_name` and `supervisor_name` are still the client's
+  text, stored trimmed at both ends with a blank one as NULL (WH-237), and any
+  date is accepted, past or future. Binding the two
   names needs a decision on which name of the record to store (`name` or
   `display_name`), and a limit on dates needs one on how far back a receipt may
   be entered.

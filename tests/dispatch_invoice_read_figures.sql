@@ -79,19 +79,19 @@ INSERT INTO public.users_customers_new(user_profile_id, customer_id, active)
 
 SELECT set_config('request.jwt.claims', :'admin_claims', true);
 SET LOCAL ROLE authenticated;
-SELECT pg_temp.dirf_assert(public.save_grn(p_gr_no => 'W2G1', p_date => '2026-04-01T12:00:00Z', p_customer_id => :'juniper'::uuid,
+SELECT pg_temp.dirf_assert(public.save_grn(p_sender_name=>'Fixture Sender',p_supervisor_id=>(SELECT id FROM public.user_profiles WHERE NOT is_service_account ORDER BY created_at LIMIT 1),p_supervisor_name=>'Fixture Supervisor',p_gr_no => 'W2G1', p_date => '2026-04-01T12:00:00Z', p_customer_id => :'juniper'::uuid,
   p_customer_name => 'Read Figures Juniper Cold', p_pricing_mode => 'MONTHLY', p_idempotency_key => 'read-figures-g1',
   p_items => jsonb_build_array(
     jsonb_build_object('item_id', :'potatoes', 'item_name', 'Read Figures Potatoes', 'qty', 10, 'weight', 5, 'package_mark', 'A'),
     jsonb_build_object('item_id', :'potatoes', 'item_name', 'Read Figures Potatoes', 'qty', 10, 'weight', 5, 'package_mark', 'B')))->>'success' = 'true',
   'fixture receipt W2G1');
-SELECT pg_temp.dirf_assert(public.save_grn(p_gr_no => 'W2G' || n, p_date => '2026-04-02T12:00:00Z', p_customer_id => :'juniper'::uuid,
+SELECT pg_temp.dirf_assert(public.save_grn(p_sender_name=>'Fixture Sender',p_supervisor_id=>(SELECT id FROM public.user_profiles WHERE NOT is_service_account ORDER BY created_at LIMIT 1),p_supervisor_name=>'Fixture Supervisor',p_gr_no => 'W2G' || n, p_date => '2026-04-02T12:00:00Z', p_customer_id => :'juniper'::uuid,
   p_customer_name => 'Read Figures Juniper Cold', p_pricing_mode => 'MONTHLY', p_idempotency_key => 'read-figures-g' || n,
   p_items => jsonb_build_array(
     jsonb_build_object('item_id', :'potatoes', 'item_name', 'Read Figures Potatoes', 'qty', 20, 'weight', 5, 'package_mark', 'M' || n)))->>'success' = 'true',
   'fixture receipt W2G' || n)
 FROM generate_series(2, 3) AS n;
-SELECT pg_temp.dirf_assert(public.save_grn(p_gr_no => 'W2G4', p_date => '2026-04-03T12:00:00Z', p_customer_id => :'juniper'::uuid,
+SELECT pg_temp.dirf_assert(public.save_grn(p_sender_name=>'Fixture Sender',p_supervisor_id=>(SELECT id FROM public.user_profiles WHERE NOT is_service_account ORDER BY created_at LIMIT 1),p_supervisor_name=>'Fixture Supervisor',p_gr_no => 'W2G4', p_date => '2026-04-03T12:00:00Z', p_customer_id => :'juniper'::uuid,
   p_customer_name => 'Read Figures Juniper Cold', p_pricing_mode => 'ONE_TIME', p_idempotency_key => 'read-figures-g4',
   p_items => jsonb_build_array(
     jsonb_build_object('item_id', :'potatoes', 'item_name', 'Read Figures Potatoes', 'qty', 10, 'weight', 5, 'package_mark', 'O')))->>'success' = 'true',

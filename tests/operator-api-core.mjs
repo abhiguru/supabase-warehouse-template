@@ -106,7 +106,7 @@ assert.equal((await api(`/rest/v1/customers?id=eq.${b}&select=id`, tokenA)).data
 const deniedUpdate = await api(`/rest/v1/customers?id=eq.${b}`, tokenA, { name: 'Unauthorized edit' }, 'PATCH');
 assert.ok(!deniedUpdate.ok || (await api(`/rest/v1/customers?id=eq.${b}&select=name`, adminToken)).data[0].name === 'Backend Test Customer B', 'A cannot mutate B');
 
-const receipt = good(await rpc('save_grn', adminToken, { p_gr_no: 'A0901', p_date: '2026-04-01T12:00:00Z',
+const receipt = good(await rpc('save_grn', adminToken, { p_sender_name: 'Fixture Sender', p_supervisor_id: admin.user.id, p_supervisor_name: 'Fixture Supervisor', p_gr_no: 'A0901', p_date: '2026-04-01T12:00:00Z',
   p_customer_id: a, p_customer_name: 'Backend Test Customer A', p_pricing_mode: 'MONTHLY',
   p_idempotency_key: 'backend-test-receipt-a',
   p_items: [{ item_id: item, item_name: 'Backend Test Potatoes', packaging: 'Bag', qty: 100, weight: 10, rack: 'TEST' }] }), 'receipt');
@@ -241,7 +241,7 @@ await document('generate-grn-pdf', { gr_no: 'A0901' });
 await document('generate-dispatch-pdf', { disp_no: 'I0901' });
 await document('generate-invoice-pdf', { inv_no: 20260929, fin_year: 2026 });
 await document('generate-customer-stock-pdf', { customer_id: a });
-good(await rpc('save_grn', adminToken, { p_gr_no: 'A0902', p_date: '2026-04-01T12:00:00Z',
+good(await rpc('save_grn', adminToken, { p_sender_name: 'Fixture Sender', p_supervisor_id: admin.user.id, p_supervisor_name: 'Fixture Supervisor', p_gr_no: 'A0902', p_date: '2026-04-01T12:00:00Z',
   p_customer_id: a, p_customer_name: 'Backend Test Customer A', p_pricing_mode: 'MONTHLY',
   p_items: [{ item_id: item, item_name: 'Backend Test Potatoes', packaging: 'Bag', qty: 10, weight: 10, rack: 'RACE' }] }), 'concurrency receipt');
 const raceGrn = mustUuid((await api('/rest/v1/goodsreceived?gr_no=eq.A0902&select=id', adminToken)).data[0].id);

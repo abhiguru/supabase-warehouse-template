@@ -133,7 +133,7 @@ SELECT pg_temp.td_assert(pg_temp.td_figures(public.get_all_grn_activity(:'day_be
   AND pg_temp.td_figures(public.get_customer_grn_activity(NULL, :'day_before', :'next_day')#>'{data,summary}', 'total_grns', 'total_quantity') = '0/0'
   AND pg_temp.td_figures(public.get_customer_invoice_summary(NULL, :'day_before', :'next_day')#>'{data,summary}', 'total_invoices', 'total_amount') = '0/0',
   'the period and the days around it are empty before the fixture');
-SELECT pg_temp.td_assert(public.save_grn(p_gr_no => r.gr_no, p_date => (r.day::text || 'T' || r.at || '+05:30')::timestamptz,
+SELECT pg_temp.td_assert(public.save_grn(p_sender_name=>'Fixture Sender',p_supervisor_id=>(SELECT id FROM public.user_profiles WHERE NOT is_service_account ORDER BY created_at LIMIT 1),p_supervisor_name=>'Fixture Supervisor',p_gr_no => r.gr_no, p_date => (r.day::text || 'T' || r.at || '+05:30')::timestamptz,
   p_customer_id => r.customer, p_customer_name => r.customer_name, p_idempotency_key => 'report-to-date-' || r.gr_no,
   p_items => jsonb_build_array(jsonb_build_object('item_id', :'ginger', 'item_name', 'End Day Report Ginger', 'packaging', 'Bag',
     'qty', r.qty, 'weight', 5)))->>'success' = 'true', 'fixture receipt ' || r.gr_no)

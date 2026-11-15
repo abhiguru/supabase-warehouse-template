@@ -58,11 +58,11 @@ SELECT pg_temp.img_assert(public.create_item('Image Rule Onions','Bag')->>'succe
 SELECT id AS customer_a FROM public.customers WHERE name='Image Rule Customer A' \gset
 SELECT id AS customer_b FROM public.customers WHERE name='Image Rule Customer B' \gset
 SELECT id AS item_id FROM public.items WHERE name='Image Rule Onions' \gset
-SELECT pg_temp.img_assert(public.save_grn(p_gr_no=>'IMGA',p_date=>'2026-04-01T12:00:00Z',p_customer_id=>:'customer_a'::uuid,
+SELECT pg_temp.img_assert(public.save_grn(p_sender_name=>'Fixture Sender',p_supervisor_id=>(SELECT id FROM public.user_profiles WHERE NOT is_service_account ORDER BY created_at LIMIT 1),p_supervisor_name=>'Fixture Supervisor',p_gr_no=>'IMGA',p_date=>'2026-04-01T12:00:00Z',p_customer_id=>:'customer_a'::uuid,
  p_customer_name=>'Image Rule Customer A',p_idempotency_key=>'image-rule-a',
  p_items=>jsonb_build_array(jsonb_build_object('item_id',:'item_id','item_name','Image Rule Onions',
  'packaging','Bag','qty',20,'weight',10,'rack','R1')))->>'success'='true','receipt IMGA');
-SELECT pg_temp.img_assert(public.save_grn(p_gr_no=>'IMGB',p_date=>'2026-04-01T12:00:00Z',p_customer_id=>:'customer_b'::uuid,
+SELECT pg_temp.img_assert(public.save_grn(p_sender_name=>'Fixture Sender',p_supervisor_id=>(SELECT id FROM public.user_profiles WHERE NOT is_service_account ORDER BY created_at LIMIT 1),p_supervisor_name=>'Fixture Supervisor',p_gr_no=>'IMGB',p_date=>'2026-04-01T12:00:00Z',p_customer_id=>:'customer_b'::uuid,
  p_customer_name=>'Image Rule Customer B',p_idempotency_key=>'image-rule-b',
  p_items=>jsonb_build_array(jsonb_build_object('item_id',:'item_id','item_name','Image Rule Onions',
  'packaging','Bag','qty',20,'weight',10,'rack','R2')))->>'success'='true','receipt IMGB');
@@ -116,7 +116,7 @@ SELECT pg_temp.img_assert(pg_temp.img_refused(format(
  'SELECT public.upload_grn_image(%L::uuid,''header'',%L,''x.webp'',32,''image/webp'')',:'grn_b',:'path_a'),
  '%Image path does not belong to this GRN%'),'upload_grn_image refuses another receipt''s path');
 SELECT pg_temp.img_assert(pg_temp.img_refused(format(
- 'SELECT public.save_grn(p_gr_no=>''IMGX'',p_date=>now(),p_customer_id=>%L::uuid,p_customer_name=>''Image Rule Customer B'',p_items=>%L::jsonb,p_images=>%L::jsonb)',
+ 'SELECT public.save_grn(p_sender_name=>''Fixture Sender'',p_supervisor_id=>(SELECT id FROM public.user_profiles WHERE NOT is_service_account ORDER BY created_at LIMIT 1),p_supervisor_name=>''Fixture Supervisor'',p_gr_no=>''IMGX'',p_date=>now(),p_customer_id=>%L::uuid,p_customer_name=>''Image Rule Customer B'',p_items=>%L::jsonb,p_images=>%L::jsonb)',
  :'customer_b',jsonb_build_array(jsonb_build_object('item_id',:'item_id','item_name','Image Rule Onions','packaging','Bag','qty',1,'weight',1)),
  jsonb_build_array(jsonb_build_object('image_type','header','storage_path',:'path_a'))),
  '%Image path does not belong to this GRN%'),'save_grn refuses another receipt''s path');

@@ -94,7 +94,7 @@ SELECT set_config('gd.admin_claims', :'admin_claims', true) AS s1, set_config('g
 CREATE FUNCTION pg_temp.gd_grn(p_no text, p_item uuid, p_name text) RETURNS uuid LANGUAGE plpgsql AS $$
 DECLARE a jsonb; v uuid;
 BEGIN
-  a := pg_temp.gd_as(current_setting('gd.admin_claims')::jsonb, format($q$SELECT public.save_grn(p_gr_no=>%L,p_date=>%L::timestamptz,p_customer_id=>%L::uuid,p_customer_name=>'Gst Required Customer',
+  a := pg_temp.gd_as(current_setting('gd.admin_claims')::jsonb, format($q$SELECT public.save_grn(p_sender_name=>'Fixture Sender',p_supervisor_id=>(SELECT id FROM public.user_profiles WHERE NOT is_service_account ORDER BY created_at LIMIT 1),p_supervisor_name=>'Fixture Supervisor',p_gr_no=>%L,p_date=>%L::timestamptz,p_customer_id=>%L::uuid,p_customer_name=>'Gst Required Customer',
     p_pricing_mode=>'MONTHLY',p_idempotency_key=>%L,p_items=>jsonb_build_array(jsonb_build_object('item_id',%L,'item_name',%L,'packaging','Bag','qty',50,'weight',10,'rack','R1')))$q$,
     p_no, (current_setting('gd.today')::date - 60)::text || 'T12:00:00Z', current_setting('gd.cust'), 'gd-' || p_no, p_item, p_name));
   PERFORM pg_temp.gd_assert(a->>'success' = 'true', 'GRN ' || p_no || ': ' || a);

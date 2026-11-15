@@ -43,7 +43,7 @@ CREATE FUNCTION pg_temp.pir_invoice(p_no integer, p_mode text, p_customer uuid, 
 RETURNS void LANGUAGE plpgsql AS $$
 DECLARE trl_id uuid; grn_id uuid; line_id uuid; saved jsonb;
 BEGIN
-  PERFORM pg_temp.pir_assert(public.save_grn(p_gr_no => 'PIRG' || p_no, p_date => '2026-06-01T06:00:00Z'::timestamptz,
+  PERFORM pg_temp.pir_assert(public.save_grn(p_sender_name=>'Fixture Sender',p_supervisor_id=>(SELECT id FROM public.user_profiles WHERE NOT is_service_account ORDER BY created_at LIMIT 1),p_supervisor_name=>'Fixture Supervisor',p_gr_no => 'PIRG' || p_no, p_date => '2026-06-01T06:00:00Z'::timestamptz,
       p_customer_id => p_customer, p_customer_name => 'Print Range Laurel Cold', p_pricing_mode => p_mode,
       p_idempotency_key => 'print-invoice-range-g' || p_no,
       p_items => jsonb_build_array(jsonb_build_object('item_id', p_item, 'item_name', 'Print Range Cumin', 'packaging', 'Bag',

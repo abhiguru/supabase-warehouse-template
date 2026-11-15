@@ -62,7 +62,7 @@ CREATE FUNCTION pg_temp.gr_items(p_gr_no text) RETURNS jsonb LANGUAGE sql AS $$
            'weight',t.weight,'rack',t.rack,'package_mark',t.package_mark) ORDER BY t.id)
   FROM public.goodsreceived_trl t JOIN public.goodsreceived g ON g.id=t.gr_id WHERE g.gr_no=p_gr_no $$;
 CREATE FUNCTION pg_temp.gr_save(claims jsonb, p_no text, p_day date, p_customer uuid, p_mode text, p_items jsonb, p_rates jsonb) RETURNS jsonb LANGUAGE sql AS $$
-  SELECT pg_temp.gr_as(claims, format($q$SELECT public.save_grn(p_gr_no=>%L,p_date=>%L::timestamptz,p_customer_id=>%L::uuid,
+  SELECT pg_temp.gr_as(claims, format($q$SELECT public.save_grn(p_sender_name=>'Fixture Sender',p_supervisor_id=>(SELECT id FROM public.user_profiles WHERE NOT is_service_account ORDER BY created_at LIMIT 1),p_supervisor_name=>'Fixture Supervisor',p_gr_no=>%L,p_date=>%L::timestamptz,p_customer_id=>%L::uuid,
     p_customer_name=>'x',p_pricing_mode=>%L,p_items=>%L::jsonb,p_rates=>%L::jsonb)$q$, p_no, p_day::text||'T12:00:00Z', p_customer, p_mode, p_items, p_rates)) $$;
 CREATE FUNCTION pg_temp.gr_upd(claims jsonb, p_no text, p_rates jsonb) RETURNS jsonb LANGUAGE sql AS $$
   SELECT pg_temp.gr_as(claims, format($q$SELECT public.update_grn(p_grn_id=>%L::uuid,p_items=>%L::jsonb,p_rates=>%L::jsonb)$q$,
@@ -195,7 +195,7 @@ DELETE FROM public.goodsreceived WHERE gr_no='GRN-FUT';
 -- 4. p_rates NULL: as before (a GRN with an unpriced line still saves; old calls still work). These calls are
 -- staff's: since migration 90 staff may still save and update a GRN, but only without p_rates (section 4b).
 -- ---------------------------------------------------------------------------
-SELECT pg_temp.gr_as(:'staff_claims'::jsonb,format($q$SELECT public.save_grn(p_gr_no=>'GRN-OLD',p_date=>%L::timestamptz,p_customer_id=>%L::uuid,
+SELECT pg_temp.gr_as(:'staff_claims'::jsonb,format($q$SELECT public.save_grn(p_sender_name=>'Fixture Sender',p_supervisor_id=>(SELECT id FROM public.user_profiles WHERE NOT is_service_account ORDER BY created_at LIMIT 1),p_supervisor_name=>'Fixture Supervisor',p_gr_no=>'GRN-OLD',p_date=>%L::timestamptz,p_customer_id=>%L::uuid,
   p_customer_name=>'x',p_pricing_mode=>'MONTHLY',p_items=>%L::jsonb)$q$,:'dm12'||'T12:00:00Z',:'orchard',jsonb_build_array(pg_temp.gr_line('GR Plum',3,10)))) AS old_call \gset
 SELECT pg_temp.gr_assert(:'old_call'::jsonb->>'success'='true' AND pg_temp.gr_own('GRN-OLD')='(none)','the call without p_rates saves a GRN with an unpriced line: '||:'old_call');
 SELECT pg_temp.gr_save(:'staff_claims'::jsonb,'GRN-NULL',:'dm12'::date,:'orchard'::uuid,'MONTHLY',jsonb_build_array(pg_temp.gr_line('GR Plum',3,10)),NULL) AS null_call \gset

@@ -36,7 +36,7 @@ INSERT INTO public.items(name,packaging) VALUES ('History Chillies','Bag') RETUR
 -- One GRN with two lines that differ in quantity, weight and rack.
 SELECT set_config('request.jwt.claims',:'admin_claims',true);
 SET LOCAL ROLE authenticated;
-SELECT public.save_grn(p_gr_no=>'HIST1',p_date=>now(),p_customer_id=>:'customer_id'::uuid,p_customer_name=>'History Customer',
+SELECT public.save_grn(p_sender_name=>'Fixture Sender',p_supervisor_id=>(SELECT id FROM public.user_profiles WHERE NOT is_service_account ORDER BY created_at LIMIT 1),p_supervisor_name=>'Fixture Supervisor',p_gr_no=>'HIST1',p_date=>now(),p_customer_id=>:'customer_id'::uuid,p_customer_name=>'History Customer',
  p_items=>jsonb_build_array(
   jsonb_build_object('item_id',:'onion_id','item_name','History Onions','packaging','Bag','qty',144,'weight',40,'rack','A8','package_mark','M1'),
   jsonb_build_object('item_id',:'chilli_id','item_name','History Chillies','packaging','Bag','qty',93,'weight',25,'rack','A5','package_mark','M2')),

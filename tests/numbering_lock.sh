@@ -66,7 +66,7 @@ save_zz() {
   psql_exec -At -v claims="$claims" <<'SQL'
 SELECT set_config('request.jwt.claims',:'claims',false) AS _ \gset
 SET ROLE authenticated;
-SELECT public.save_grn(p_gr_no=>'ZZ-1',p_date=>'2026-04-01T12:00:00Z',p_customer_id=>(SELECT id FROM public.customers WHERE name='Numbering Lock Customer'),
+SELECT public.save_grn(p_sender_name=>'Fixture Sender',p_supervisor_id=>(SELECT id FROM public.user_profiles WHERE NOT is_service_account ORDER BY created_at LIMIT 1),p_supervisor_name=>'Fixture Supervisor',p_gr_no=>'ZZ-1',p_date=>'2026-04-01T12:00:00Z',p_customer_id=>(SELECT id FROM public.customers WHERE name='Numbering Lock Customer'),
   p_customer_name=>'Numbering Lock Customer',p_items=>jsonb_build_array(jsonb_build_object(
   'item_id',(SELECT id FROM public.items WHERE name='Numbering Lock Potatoes'),'item_name','Numbering Lock Potatoes','packaging','Bag','qty',10,'weight',5)))->>'reason';
 SQL

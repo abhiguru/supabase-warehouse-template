@@ -53,7 +53,7 @@ CREATE FUNCTION pg_temp.ir_grn(p_gr_no text) RETURNS uuid LANGUAGE sql AS $$ SEL
 CREATE FUNCTION pg_temp.ir_line(p_item text, p_qty integer, p_weight integer) RETURNS jsonb LANGUAGE sql AS $$
   SELECT jsonb_strip_nulls(jsonb_build_object('item_id',pg_temp.ir_item(p_item),'item_name',p_item,'packaging','Bag','qty',p_qty,'weight',p_weight,'rack','R1')) $$;
 CREATE FUNCTION pg_temp.ir_save(claims jsonb, p_no text, p_day date, p_customer uuid, p_mode text, p_items jsonb) RETURNS jsonb LANGUAGE sql AS $$
-  SELECT pg_temp.ir_as(claims, format($q$SELECT public.save_grn(p_gr_no=>%L,p_date=>%L::timestamptz,p_customer_id=>%L::uuid,
+  SELECT pg_temp.ir_as(claims, format($q$SELECT public.save_grn(p_sender_name=>'Fixture Sender',p_supervisor_id=>(SELECT id FROM public.user_profiles WHERE NOT is_service_account ORDER BY created_at LIMIT 1),p_supervisor_name=>'Fixture Supervisor',p_gr_no=>%L,p_date=>%L::timestamptz,p_customer_id=>%L::uuid,
     p_customer_name=>'x',p_pricing_mode=>%L,p_items=>%L::jsonb)$q$, p_no, p_day::text||'T12:00:00Z', p_customer, p_mode, p_items)) $$;
 -- The call under test, as a caller.
 CREATE FUNCTION pg_temp.ir_get(claims jsonb, p_gr_no text) RETURNS jsonb LANGUAGE sql AS $$

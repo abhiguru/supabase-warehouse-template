@@ -66,13 +66,13 @@ SELECT id AS potatoes FROM public.items WHERE name='Fix Potatoes' \gset
 SELECT id AS onions FROM public.items WHERE name='Fix Onions' \gset
 CREATE FUNCTION pg_temp.rf_line(item uuid, name text, qty integer, mark text) RETURNS jsonb LANGUAGE sql AS $$
   SELECT jsonb_build_object('item_id',item,'item_name',name,'packaging','Bag','qty',qty,'weight',10,'rack','R1','package_mark',mark) $$;
-SELECT pg_temp.rf_assert(public.save_grn(p_gr_no=>'FXA',p_date=>'2026-04-01T12:00:00Z',p_customer_id=>:'customer_a'::uuid,
+SELECT pg_temp.rf_assert(public.save_grn(p_sender_name=>'Fixture Sender',p_supervisor_id=>(SELECT id FROM public.user_profiles WHERE NOT is_service_account ORDER BY created_at LIMIT 1),p_supervisor_name=>'Fixture Supervisor',p_gr_no=>'FXA',p_date=>'2026-04-01T12:00:00Z',p_customer_id=>:'customer_a'::uuid,
  p_customer_name=>'Fix Customer A',p_pricing_mode=>'MONTHLY',
  p_items=>jsonb_build_array(pg_temp.rf_line(:'potatoes','Fix Potatoes',100,'FXA-P'),pg_temp.rf_line(:'onions','Fix Onions',60,'FXA-O')))->>'success'='true','receipt FXA');
-SELECT pg_temp.rf_assert(public.save_grn(p_gr_no=>'FXI',p_date=>'2026-04-01T12:00:00Z',p_customer_id=>:'customer_a'::uuid,
+SELECT pg_temp.rf_assert(public.save_grn(p_sender_name=>'Fixture Sender',p_supervisor_id=>(SELECT id FROM public.user_profiles WHERE NOT is_service_account ORDER BY created_at LIMIT 1),p_supervisor_name=>'Fixture Supervisor',p_gr_no=>'FXI',p_date=>'2026-04-01T12:00:00Z',p_customer_id=>:'customer_a'::uuid,
  p_customer_name=>'Fix Customer A',p_pricing_mode=>'MONTHLY',
  p_items=>jsonb_build_array(pg_temp.rf_line(:'potatoes','Fix Potatoes',10,'FXI-P'),pg_temp.rf_line(:'onions','Fix Onions',10,'FXI-O')))->>'success'='true','receipt FXI');
-SELECT pg_temp.rf_assert(public.save_grn(p_gr_no=>'FXK',p_date=>'2026-04-01T12:00:00Z',p_customer_id=>:'customer_a'::uuid,
+SELECT pg_temp.rf_assert(public.save_grn(p_sender_name=>'Fixture Sender',p_supervisor_id=>(SELECT id FROM public.user_profiles WHERE NOT is_service_account ORDER BY created_at LIMIT 1),p_supervisor_name=>'Fixture Supervisor',p_gr_no=>'FXK',p_date=>'2026-04-01T12:00:00Z',p_customer_id=>:'customer_a'::uuid,
  p_customer_name=>'Fix Customer A',p_pricing_mode=>'MONTHLY',
  p_items=>jsonb_build_array(pg_temp.rf_line(:'onions','Fix Onions',3,'FXK-O')))->>'success'='true','receipt FXK');
 RESET ROLE;
@@ -116,9 +116,9 @@ SELECT pg_temp.rf_assert(:'deleted'::jsonb->>'success'='true' AND :'after_delete
 -- The same for a receipt.
 SELECT set_config('request.jwt.claims',:'admin_claims',true);
 SET LOCAL ROLE authenticated;
-SELECT public.save_grn(p_gr_no=>'FXG1',p_date=>'2026-04-02T12:00:00Z',p_customer_id=>:'customer_a'::uuid,p_customer_name=>'Fix Customer A',
+SELECT public.save_grn(p_sender_name=>'Fixture Sender',p_supervisor_id=>(SELECT id FROM public.user_profiles WHERE NOT is_service_account ORDER BY created_at LIMIT 1),p_supervisor_name=>'Fixture Supervisor',p_gr_no=>'FXG1',p_date=>'2026-04-02T12:00:00Z',p_customer_id=>:'customer_a'::uuid,p_customer_name=>'Fix Customer A',
  p_pricing_mode=>'MONTHLY',p_idempotency_key=>'fx-grn-key',p_items=>jsonb_build_array(pg_temp.rf_line(:'potatoes','Fix Potatoes',7,'FXG1'))) AS grn_first \gset
-SELECT public.save_grn(p_gr_no=>'FXG1',p_date=>'2026-04-02T12:00:00Z',p_customer_id=>:'customer_a'::uuid,p_customer_name=>'Fix Customer A',
+SELECT public.save_grn(p_sender_name=>'Fixture Sender',p_supervisor_id=>(SELECT id FROM public.user_profiles WHERE NOT is_service_account ORDER BY created_at LIMIT 1),p_supervisor_name=>'Fixture Supervisor',p_gr_no=>'FXG1',p_date=>'2026-04-02T12:00:00Z',p_customer_id=>:'customer_a'::uuid,p_customer_name=>'Fix Customer A',
  p_pricing_mode=>'MONTHLY',p_idempotency_key=>'fx-grn-key',p_items=>jsonb_build_array(pg_temp.rf_line(:'potatoes','Fix Potatoes',7,'FXG1'))) AS grn_replay \gset
 RESET ROLE;
 SELECT pg_temp.rf_assert(:'grn_first'::jsonb->>'success'='true' AND :'grn_replay'::jsonb#>>'{data,grn_id}'=:'grn_first'::jsonb#>>'{data,grn_id}'
@@ -126,7 +126,7 @@ SELECT pg_temp.rf_assert(:'grn_first'::jsonb->>'success'='true' AND :'grn_replay
 SELECT set_config('request.jwt.claims',:'admin_claims',true);
 SET LOCAL ROLE authenticated;
 SELECT public.delete_grn_safe((:'grn_first'::jsonb#>>'{data,grn_id}')::uuid) AS grn_deleted \gset
-SELECT public.save_grn(p_gr_no=>'FXG1',p_date=>'2026-04-02T12:00:00Z',p_customer_id=>:'customer_a'::uuid,p_customer_name=>'Fix Customer A',
+SELECT public.save_grn(p_sender_name=>'Fixture Sender',p_supervisor_id=>(SELECT id FROM public.user_profiles WHERE NOT is_service_account ORDER BY created_at LIMIT 1),p_supervisor_name=>'Fixture Supervisor',p_gr_no=>'FXG1',p_date=>'2026-04-02T12:00:00Z',p_customer_id=>:'customer_a'::uuid,p_customer_name=>'Fix Customer A',
  p_pricing_mode=>'MONTHLY',p_idempotency_key=>'fx-grn-key',p_items=>jsonb_build_array(pg_temp.rf_line(:'potatoes','Fix Potatoes',7,'FXG1'))) AS grn_again \gset
 RESET ROLE;
 SELECT pg_temp.rf_assert(:'grn_deleted'::jsonb->>'success'='true' AND :'grn_again'::jsonb->>'success'='true'
@@ -388,7 +388,7 @@ CREATE FUNCTION pg_temp.rf_rows(cust uuid, item uuid) RETURNS jsonb LANGUAGE sql
      AND r.effective_from<='2026-04-03' AND COALESCE(r.effective_to,'infinity'::date)>='2026-04-03' $$;
 SELECT set_config('request.jwt.claims',:'admin_claims',true);
 SET LOCAL ROLE authenticated;
-SELECT public.save_grn(p_gr_no=>'FXR1',p_date=>'2026-04-03T12:00:00Z',p_customer_id=>:'customer_a'::uuid,p_customer_name=>'Fix Customer A',p_pricing_mode=>'MONTHLY',
+SELECT public.save_grn(p_sender_name=>'Fixture Sender',p_supervisor_id=>(SELECT id FROM public.user_profiles WHERE NOT is_service_account ORDER BY created_at LIMIT 1),p_supervisor_name=>'Fixture Supervisor',p_gr_no=>'FXR1',p_date=>'2026-04-03T12:00:00Z',p_customer_id=>:'customer_a'::uuid,p_customer_name=>'Fix Customer A',p_pricing_mode=>'MONTHLY',
  p_items=>jsonb_build_array(pg_temp.rf_line(:'potatoes','Fix Potatoes',5,'FXR1')),p_rates=>jsonb_build_array(pg_temp.rf_rate(:'potatoes',7))) AS seen_first \gset
 RESET ROLE;
 SELECT pg_temp.rf_rows(:'customer_a'::uuid,:'potatoes'::uuid) AS rows_1 \gset
@@ -396,7 +396,7 @@ SELECT pg_temp.rf_assert(:'seen_first'::jsonb->>'success'='true' AND jsonb_array
 -- A sheet that lists no row while one is in force is stale: refused, nothing saved.
 SELECT set_config('request.jwt.claims',:'admin_claims',true);
 SET LOCAL ROLE authenticated;
-SELECT public.save_grn(p_gr_no=>'FXR2',p_date=>'2026-04-03T12:00:00Z',p_customer_id=>:'customer_a'::uuid,p_customer_name=>'Fix Customer A',p_pricing_mode=>'MONTHLY',
+SELECT public.save_grn(p_sender_name=>'Fixture Sender',p_supervisor_id=>(SELECT id FROM public.user_profiles WHERE NOT is_service_account ORDER BY created_at LIMIT 1),p_supervisor_name=>'Fixture Supervisor',p_gr_no=>'FXR2',p_date=>'2026-04-03T12:00:00Z',p_customer_id=>:'customer_a'::uuid,p_customer_name=>'Fix Customer A',p_pricing_mode=>'MONTHLY',
  p_items=>jsonb_build_array(pg_temp.rf_line(:'potatoes','Fix Potatoes',5,'FXR2')),p_rates=>jsonb_build_array(pg_temp.rf_rate(:'potatoes',9,'[]'::jsonb))) AS seen_stale \gset
 RESET ROLE;
 SELECT pg_temp.rf_assert(:'seen_stale'::jsonb->>'success'='false' AND :'seen_stale'::jsonb->>'error_code'='STALE_RATES' AND :'seen_stale'::jsonb->>'reason'='STALE_RATES'
@@ -406,7 +406,7 @@ SELECT pg_temp.rf_assert(:'seen_stale'::jsonb->>'success'='false' AND :'seen_sta
 -- The sheet that listed the row is current: saved.
 SELECT set_config('request.jwt.claims',:'admin_claims',true);
 SET LOCAL ROLE authenticated;
-SELECT public.save_grn(p_gr_no=>'FXR2',p_date=>'2026-04-03T12:00:00Z',p_customer_id=>:'customer_a'::uuid,p_customer_name=>'Fix Customer A',p_pricing_mode=>'MONTHLY',
+SELECT public.save_grn(p_sender_name=>'Fixture Sender',p_supervisor_id=>(SELECT id FROM public.user_profiles WHERE NOT is_service_account ORDER BY created_at LIMIT 1),p_supervisor_name=>'Fixture Supervisor',p_gr_no=>'FXR2',p_date=>'2026-04-03T12:00:00Z',p_customer_id=>:'customer_a'::uuid,p_customer_name=>'Fix Customer A',p_pricing_mode=>'MONTHLY',
  p_items=>jsonb_build_array(pg_temp.rf_line(:'potatoes','Fix Potatoes',5,'FXR2')),p_rates=>jsonb_build_array(pg_temp.rf_rate(:'potatoes',9,:'rows_1'::jsonb))) AS seen_ok \gset
 RESET ROLE;
 SELECT pg_temp.rf_rows(:'customer_a'::uuid,:'potatoes'::uuid) AS rows_2 \gset
@@ -415,7 +415,7 @@ SELECT pg_temp.rf_assert(:'seen_ok'::jsonb->>'success'='true' AND EXISTS (SELECT
 -- A malformed seen_ids is refused by name.
 SELECT set_config('request.jwt.claims',:'admin_claims',true);
 SET LOCAL ROLE authenticated;
-SELECT public.save_grn(p_gr_no=>'FXR3',p_date=>'2026-04-03T12:00:00Z',p_customer_id=>:'customer_a'::uuid,p_customer_name=>'Fix Customer A',p_pricing_mode=>'MONTHLY',
+SELECT public.save_grn(p_sender_name=>'Fixture Sender',p_supervisor_id=>(SELECT id FROM public.user_profiles WHERE NOT is_service_account ORDER BY created_at LIMIT 1),p_supervisor_name=>'Fixture Supervisor',p_gr_no=>'FXR3',p_date=>'2026-04-03T12:00:00Z',p_customer_id=>:'customer_a'::uuid,p_customer_name=>'Fix Customer A',p_pricing_mode=>'MONTHLY',
  p_items=>jsonb_build_array(pg_temp.rf_line(:'potatoes','Fix Potatoes',5,'FXR3')),p_rates=>jsonb_build_array(pg_temp.rf_rate(:'potatoes',9,'["not-a-uuid"]'::jsonb))) AS seen_bad \gset
 RESET ROLE;
 SELECT pg_temp.rf_assert(:'seen_bad'::jsonb->>'success'='false' AND :'seen_bad'::jsonb->>'error_code'='INVALID_BANDS' AND NOT EXISTS (SELECT 1 FROM public.goodsreceived WHERE gr_no='FXR3'),

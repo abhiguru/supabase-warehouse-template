@@ -92,7 +92,7 @@ SELECT id AS i_boxcrate FROM public.items WHERE name='Rule BoxCrate' \gset
 
 CREATE FUNCTION pg_temp.pr_grn(no text, lots jsonb) RETURNS void LANGUAGE plpgsql AS $$
 BEGIN
-  PERFORM pg_temp.pr_assert(public.save_grn(p_gr_no=>no::varchar,p_date=>(('2026-04-'||CASE WHEN right(no,1) IN ('3','7') THEN '01' ELSE (10+right(no,1)::int)::text END||'T12:00:00Z')::timestamptz),p_customer_id=>(SELECT id FROM public.customers WHERE name='Packaging Rule Customer'),
+  PERFORM pg_temp.pr_assert(public.save_grn(p_sender_name=>'Fixture Sender',p_supervisor_id=>(SELECT id FROM public.user_profiles WHERE NOT is_service_account ORDER BY created_at LIMIT 1),p_supervisor_name=>'Fixture Supervisor',p_gr_no=>no::varchar,p_date=>(('2026-04-'||CASE WHEN right(no,1) IN ('3','7') THEN '01' ELSE (10+right(no,1)::int)::text END||'T12:00:00Z')::timestamptz),p_customer_id=>(SELECT id FROM public.customers WHERE name='Packaging Rule Customer'),
     p_customer_name=>'Packaging Rule Customer',p_pricing_mode=>'ONE_TIME',p_idempotency_key=>'pr-'||no,p_items=>lots)->>'success'='true','receipt '||no);
 END $$;
 CREATE FUNCTION pg_temp.pr_lot(item_id uuid, name text, packaging text, rack text) RETURNS jsonb LANGUAGE sql AS $$
@@ -151,7 +151,7 @@ BEGIN
 END $$;
 CREATE FUNCTION pg_temp.pr_grn_for(cname text, no text, lots jsonb) RETURNS void LANGUAGE plpgsql AS $$
 BEGIN
-  PERFORM pg_temp.pr_assert(public.save_grn(p_gr_no=>('S'||substr(md5(no),1,10))::varchar,p_date=>'2026-04-01T12:00:00Z'::timestamptz,p_customer_id=>(SELECT id FROM public.customers WHERE name=cname),
+  PERFORM pg_temp.pr_assert(public.save_grn(p_sender_name=>'Fixture Sender',p_supervisor_id=>(SELECT id FROM public.user_profiles WHERE NOT is_service_account ORDER BY created_at LIMIT 1),p_supervisor_name=>'Fixture Supervisor',p_gr_no=>('S'||substr(md5(no),1,10))::varchar,p_date=>'2026-04-01T12:00:00Z'::timestamptz,p_customer_id=>(SELECT id FROM public.customers WHERE name=cname),
     p_customer_name=>cname::varchar,p_pricing_mode=>'ONE_TIME',p_idempotency_key=>'pr6-'||no,p_items=>lots)->>'success'='true','receipt '||no);
 END $$;
 SELECT pg_temp.pr_assert(public.create_item('Rule Six '||n,'Bag')->>'success'='true','catalog item six '||n) FROM generate_series(1,6) n;

@@ -138,10 +138,10 @@ SELECT pg_temp.bl_assert(:'s_mixed'='active' AND :'s_supervisor'='active' AND :'
 UPDATE public.user_profiles SET is_service_account=true WHERE id IN (:'sync_id'::uuid,:'other_sync_id'::uuid);
 SELECT set_config('request.jwt.claims',:'admin_claims',true);
 SET LOCAL ROLE authenticated;
-SELECT pg_temp.bl_call(format($q$SELECT public.save_grn(p_gr_no=>'BL80X',p_date=>now(),p_customer_id=>%L::uuid,p_customer_name=>'Backlog Business One',
+SELECT pg_temp.bl_call(format($q$SELECT public.save_grn(p_sender_name=>'Fixture Sender',p_supervisor_name=>'Fixture Supervisor',p_gr_no=>'BL80X',p_date=>now(),p_customer_id=>%L::uuid,p_customer_name=>'Backlog Business One',
   p_supervisor_id=>%L::uuid,p_items=>jsonb_build_array(jsonb_build_object('item_id',%L,'item_name','Backlog Ginger','packaging','Bag','qty',1,'weight',1)),
   p_idempotency_key=>'bl80-sa')$q$,:'customer_one',:'sync_id',:'item_id')) AS save_sa \gset
-SELECT public.save_grn(p_gr_no=>'BL80A',p_date=>now(),p_customer_id=>:'customer_one'::uuid,p_customer_name=>'Backlog Business One',
+SELECT public.save_grn(p_sender_name=>'Fixture Sender',p_supervisor_name=>'Fixture Supervisor',p_gr_no=>'BL80A',p_date=>now(),p_customer_id=>:'customer_one'::uuid,p_customer_name=>'Backlog Business One',
   p_supervisor_id=>:'person_id'::uuid,p_pricing_mode=>'MONTHLY',
   p_items=>jsonb_build_array(jsonb_build_object('item_id',:'item_id','item_name','Backlog Ginger','packaging','Bag','qty',10,'weight',12,'rack','A1'),
                              jsonb_build_object('item_id',:'item_id','item_name','Backlog Ginger Small','packaging','Bag','qty',4,'weight',5,'rack','A2')),
@@ -155,11 +155,11 @@ SELECT pg_temp.bl_assert(:'save_person'::jsonb->>'success'='true' AND (SELECT su
 -- naming another service account is not.
 SELECT set_config('request.jwt.claims',:'sync_claims',true);
 SET LOCAL ROLE authenticated;
-SELECT public.save_grn(p_gr_no=>'BL80S',p_date=>now(),p_customer_id=>:'customer_one'::uuid,p_customer_name=>'Backlog Business One',
+SELECT public.save_grn(p_sender_name=>'Fixture Sender',p_supervisor_name=>'Fixture Supervisor',p_gr_no=>'BL80S',p_date=>now(),p_customer_id=>:'customer_one'::uuid,p_customer_name=>'Backlog Business One',
   p_supervisor_id=>:'sync_id'::uuid,p_pricing_mode=>'MONTHLY',
   p_items=>jsonb_build_array(jsonb_build_object('item_id',:'item_id','item_name','Backlog Ginger','packaging','Bag','qty',2,'weight',3,'rack','A3')),
   p_idempotency_key=>'bl80-self') AS save_self \gset
-SELECT pg_temp.bl_call(format($q$SELECT public.save_grn(p_gr_no=>'BL80Y',p_date=>now(),p_customer_id=>%L::uuid,p_customer_name=>'Backlog Business One',
+SELECT pg_temp.bl_call(format($q$SELECT public.save_grn(p_sender_name=>'Fixture Sender',p_supervisor_name=>'Fixture Supervisor',p_gr_no=>'BL80Y',p_date=>now(),p_customer_id=>%L::uuid,p_customer_name=>'Backlog Business One',
   p_supervisor_id=>%L::uuid,p_items=>jsonb_build_array(jsonb_build_object('item_id',%L,'item_name','Backlog Ginger','packaging','Bag','qty',1,'weight',1)),
   p_idempotency_key=>'bl80-other')$q$,:'customer_one',:'other_sync_id',:'item_id')) AS save_other \gset
 RESET ROLE;

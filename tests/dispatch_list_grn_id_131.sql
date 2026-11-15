@@ -35,7 +35,7 @@ INSERT INTO public.items(name, packaging) VALUES ('Dispatch Grn Id Cumin', 'Bag'
 
 SELECT set_config('request.jwt.claims', :'admin_claims', true);
 SET LOCAL ROLE authenticated;
-SELECT pg_temp.dg_assert(public.save_grn(p_gr_no => 'DGI1', p_date => now(), p_customer_id => :'cust'::uuid,
+SELECT pg_temp.dg_assert(public.save_grn(p_sender_name=>'Fixture Sender',p_supervisor_id=>(SELECT id FROM public.user_profiles WHERE NOT is_service_account ORDER BY created_at LIMIT 1),p_supervisor_name=>'Fixture Supervisor',p_gr_no => 'DGI1', p_date => now(), p_customer_id => :'cust'::uuid,
   p_customer_name => 'Dispatch Grn Id Cold', p_idempotency_key => 'dispatch-grn-id-DGI1',
   p_items => jsonb_build_array(jsonb_build_object('item_id', :'cumin', 'item_name', 'Dispatch Grn Id Cumin', 'packaging', 'Bag',
     'qty', 40, 'weight', 25, 'package_mark', 'MK1', 'rack', 'F1/C4')))->>'success' = 'true', 'fixture receipt DGI1');

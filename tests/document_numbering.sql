@@ -452,7 +452,7 @@ SELECT pg_temp.nd_assert(NOT EXISTS (SELECT 1 FROM unnest(ARRAY['authenticated',
 
 -- 12. The GRN save refuses a number outside the rule, with the pattern; what it accepts.
 CREATE FUNCTION pg_temp.nd_grn(p_number text, p_date timestamptz DEFAULT '2026-06-01T12:00:00Z') RETURNS jsonb LANGUAGE sql AS $$
-  SELECT public.save_grn(p_gr_no => p_number, p_date => p_date, p_customer_id => current_setting('test.nd_customer')::uuid, p_customer_name => 'Numbering Customer',
+  SELECT public.save_grn(p_sender_name=>'Fixture Sender',p_supervisor_id=>(SELECT id FROM public.user_profiles WHERE NOT is_service_account ORDER BY created_at LIMIT 1),p_supervisor_name=>'Fixture Supervisor',p_gr_no => p_number, p_date => p_date, p_customer_id => current_setting('test.nd_customer')::uuid, p_customer_name => 'Numbering Customer',
     p_items => jsonb_build_array(jsonb_build_object('item_id', current_setting('test.nd_item'), 'item_name', 'Numbering Potatoes', 'packaging', 'Bag', 'qty', 10, 'weight', 5))) $$;
 SELECT set_config('test.nd_customer', :'customer_id', true), set_config('test.nd_item', :'item_id', true) \gset
 SELECT set_config('request.jwt.claims',:'admin_claims',true);

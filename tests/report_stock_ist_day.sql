@@ -401,7 +401,7 @@ SET LOCAL ROLE authenticated;
 -- Nothing from another test lies in storage: every stock figure below is this fixture's.
 SELECT pg_temp.sd_assert(public.get_all_stock_summary()#>>'{summary,grn_count}' = '0' AND public.get_stock_aging_report()#>>'{data,summary,total_items}' = '0',
   'no stock in storage before the fixture');
-SELECT pg_temp.sd_assert(public.save_grn(p_gr_no => r.gr_no, p_date => r.at,
+SELECT pg_temp.sd_assert(public.save_grn(p_sender_name=>'Fixture Sender',p_supervisor_id=>(SELECT id FROM public.user_profiles WHERE NOT is_service_account ORDER BY created_at LIMIT 1),p_supervisor_name=>'Fixture Supervisor',p_gr_no => r.gr_no, p_date => r.at,
   p_customer_id => r.customer_id, p_customer_name => r.customer_name, p_idempotency_key => 'report-stock-ist-day-' || r.gr_no,
   p_items => jsonb_build_array(jsonb_build_object('item_id', (SELECT i.id FROM public.items i WHERE i.name = r.item), 'item_name', r.item,
     'packaging', 'Bag', 'qty', r.qty, 'weight', 5)))->>'success' = 'true', 'fixture receipt ' || r.gr_no)

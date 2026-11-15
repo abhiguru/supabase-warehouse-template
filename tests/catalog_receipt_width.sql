@@ -41,7 +41,7 @@ END $$;
 CREATE FUNCTION pg_temp.cw_line(p_item uuid, p_name text, p_pack text, p_qty integer) RETURNS jsonb LANGUAGE sql AS $$
   SELECT jsonb_build_object('item_id',p_item,'item_name',p_name,'packaging',p_pack,'qty',p_qty,'weight',40,'rack','R1') $$;
 CREATE FUNCTION pg_temp.cw_save(claims jsonb, p_no text, p_customer uuid, p_items jsonb) RETURNS jsonb LANGUAGE sql AS $$
-  SELECT pg_temp.cw_as(claims, format($q$SELECT public.save_grn(p_gr_no=>%L,p_date=>now(),p_customer_id=>%L::uuid,
+  SELECT pg_temp.cw_as(claims, format($q$SELECT public.save_grn(p_sender_name=>'Fixture Sender',p_supervisor_id=>(SELECT id FROM public.user_profiles WHERE NOT is_service_account ORDER BY created_at LIMIT 1),p_supervisor_name=>'Fixture Supervisor',p_gr_no=>%L,p_date=>now(),p_customer_id=>%L::uuid,
     p_customer_name=>'x',p_items=>%L::jsonb)$q$, p_no, p_customer, p_items)) $$;
 CREATE FUNCTION pg_temp.cw_upd(claims jsonb, p_grn uuid, p_items jsonb) RETURNS jsonb LANGUAGE sql AS $$
   SELECT pg_temp.cw_as(claims, format($q$SELECT public.update_grn(p_grn_id=>%L::uuid,p_items=>%L::jsonb)$q$, p_grn, p_items)) $$;

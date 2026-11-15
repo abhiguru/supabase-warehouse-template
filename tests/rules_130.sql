@@ -27,7 +27,7 @@ BEGIN
 END $$;
 -- A receipt with one line, as the app saves it. Called as the administrator.
 CREATE FUNCTION pg_temp.r130_grn(p_number text, p_date timestamptz DEFAULT now(), p_images jsonb DEFAULT '[]') RETURNS jsonb LANGUAGE sql AS $$
-  SELECT public.save_grn(p_gr_no => p_number, p_date => p_date, p_customer_id => current_setting('test.r130_customer')::uuid,
+  SELECT public.save_grn(p_sender_name=>'Fixture Sender',p_supervisor_id=>(SELECT id FROM public.user_profiles WHERE NOT is_service_account ORDER BY created_at LIMIT 1),p_supervisor_name=>'Fixture Supervisor',p_gr_no => p_number, p_date => p_date, p_customer_id => current_setting('test.r130_customer')::uuid,
     p_customer_name => 'Rules 130 Customer',
     p_items => jsonb_build_array(jsonb_build_object('item_id', current_setting('test.r130_item'), 'item_name', 'Rules 130 Potatoes',
       'packaging', 'Bag', 'qty', 10, 'weight', 50, 'rack', '1', 'package_mark', 'MK4455')),
@@ -184,7 +184,7 @@ SELECT pg_temp.r130_assert(:'edit_21'::jsonb->>'error_code' = 'registration_too_
 SELECT set_config('request.jwt.claims',:'admin_claims',true);
 SET LOCAL ROLE authenticated;
 SELECT public.update_dispatch_smart(:'disp_one'::uuid, '{"registration":"  GJ01AB1234567890123X  "}'::jsonb, NULL) AS edit_padded \gset
-SELECT public.save_grn(p_gr_no => 'R130REG1', p_date => now(), p_customer_id => current_setting('test.r130_customer')::uuid,
+SELECT public.save_grn(p_sender_name=>'Fixture Sender',p_supervisor_id=>(SELECT id FROM public.user_profiles WHERE NOT is_service_account ORDER BY created_at LIMIT 1),p_supervisor_name=>'Fixture Supervisor',p_gr_no => 'R130REG1', p_date => now(), p_customer_id => current_setting('test.r130_customer')::uuid,
     p_customer_name => 'Rules 130 Customer', p_registration => ' T31 X18 ',
     p_items => jsonb_build_array(jsonb_build_object('item_id', current_setting('test.r130_item'), 'item_name', 'Rules 130 Potatoes',
       'packaging', 'Bag', 'qty', 10, 'weight', 50, 'rack', '1', 'package_mark', 'MK4455'))) AS grn_padded \gset
@@ -255,7 +255,7 @@ SELECT pg_temp.r130_assert(:'grn_c20'::jsonb->>'success' = 'true' AND :'grn_c21'
 -- save_grn and the dispatch writers collapse too.
 SELECT set_config('request.jwt.claims',:'admin_claims',true);
 SET LOCAL ROLE authenticated;
-SELECT public.save_grn(p_gr_no => 'R130REG2', p_date => now(), p_customer_id => current_setting('test.r130_customer')::uuid,
+SELECT public.save_grn(p_sender_name=>'Fixture Sender',p_supervisor_id=>(SELECT id FROM public.user_profiles WHERE NOT is_service_account ORDER BY created_at LIMIT 1),p_supervisor_name=>'Fixture Supervisor',p_gr_no => 'R130REG2', p_date => now(), p_customer_id => current_setting('test.r130_customer')::uuid,
     p_customer_name => 'Rules 130 Customer', p_registration => E' GJ01  AB1234\t',
     p_items => jsonb_build_array(jsonb_build_object('item_id', current_setting('test.r130_item'), 'item_name', 'Rules 130 Potatoes',
       'packaging', 'Bag', 'qty', 10, 'weight', 50, 'rack', '1', 'package_mark', 'MK4455'))) AS grn_save_inner \gset
@@ -355,7 +355,7 @@ SELECT pg_temp.r130_assert((SELECT disp_no = 'OLD 1' AND note = 'same number sen
 INSERT INTO public.customers(name,mobile) VALUES ('Rules 130 Search Customer','9888888912') RETURNING id AS search_customer \gset
 SELECT set_config('request.jwt.claims',:'admin_claims',true);
 SET LOCAL ROLE authenticated;
-SELECT public.save_grn(p_gr_no => 'SRCH130', p_date => now(), p_customer_id => :'search_customer'::uuid, p_customer_name => 'Rules 130 Search Customer',
+SELECT public.save_grn(p_sender_name=>'Fixture Sender',p_supervisor_id=>(SELECT id FROM public.user_profiles WHERE NOT is_service_account ORDER BY created_at LIMIT 1),p_supervisor_name=>'Fixture Supervisor',p_gr_no => 'SRCH130', p_date => now(), p_customer_id => :'search_customer'::uuid, p_customer_name => 'Rules 130 Search Customer',
   p_items => jsonb_build_array(
     jsonb_build_object('item_id', :'item_id', 'item_name', 'Search Beans', 'packaging', 'Bag', 'qty', 10, 'weight', 50, 'rack', '1', 'package_mark', 'MK4455'),
     jsonb_build_object('item_id', :'item_id', 'item_name', 'Search Rice', 'packaging', 'Bag', 'qty', 10, 'weight', 4455, 'rack', '2', 'package_mark', 'R1'),

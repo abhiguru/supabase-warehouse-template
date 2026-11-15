@@ -62,24 +62,24 @@ SELECT id AS customer_a FROM public.customers WHERE name='Lot Rule Customer A' \
 SELECT id AS customer_b FROM public.customers WHERE name='Lot Rule Customer B' \gset
 SELECT id AS item_id FROM public.items WHERE name='Lot Rule Potatoes' \gset
 SELECT pg_temp.lot_assert(public.replace_item_rates(:'item_id'::uuid,:'customer_a'::uuid,'monthly','2026-01-01'::date,jsonb_build_array(jsonb_build_object('weight_min',0,'weight_max',100,'unit_price',5,'labour_rate',2,'tax_percent',5)))->>'success'='true','price for A');
-SELECT pg_temp.lot_assert(public.save_grn(p_gr_no=>'LOTA',p_date=>'2026-04-01T12:00:00Z',p_customer_id=>:'customer_a'::uuid,
+SELECT pg_temp.lot_assert(public.save_grn(p_sender_name=>'Fixture Sender',p_supervisor_id=>(SELECT id FROM public.user_profiles WHERE NOT is_service_account ORDER BY created_at LIMIT 1),p_supervisor_name=>'Fixture Supervisor',p_gr_no=>'LOTA',p_date=>'2026-04-01T12:00:00Z',p_customer_id=>:'customer_a'::uuid,
  p_customer_name=>'Lot Rule Customer A',p_pricing_mode=>'MONTHLY',p_idempotency_key=>'lot-rule-a',
  p_items=>jsonb_build_array(jsonb_build_object('item_id',:'item_id','item_name','Lot Rule Potatoes',
  'packaging','Bag','qty',100,'weight',10,'rack','R1')))->>'success'='true','receipt LOTA');
-SELECT pg_temp.lot_assert(public.save_grn(p_gr_no=>'LOTA2',p_date=>'2026-04-01T12:00:00Z',p_customer_id=>:'customer_a'::uuid,
+SELECT pg_temp.lot_assert(public.save_grn(p_sender_name=>'Fixture Sender',p_supervisor_id=>(SELECT id FROM public.user_profiles WHERE NOT is_service_account ORDER BY created_at LIMIT 1),p_supervisor_name=>'Fixture Supervisor',p_gr_no=>'LOTA2',p_date=>'2026-04-01T12:00:00Z',p_customer_id=>:'customer_a'::uuid,
  p_customer_name=>'Lot Rule Customer A',p_pricing_mode=>'MONTHLY',p_idempotency_key=>'lot-rule-a2',
  p_items=>jsonb_build_array(
   jsonb_build_object('item_id',:'item_id','item_name','Lot Rule Potatoes','packaging','Bag','qty',50,'weight',10,'rack','R2'),
   jsonb_build_object('item_id',:'item_id','item_name','Lot Rule Potatoes','packaging','Bag','qty',30,'weight',10,'rack','R3')))->>'success'='true','receipt LOTA2');
-SELECT pg_temp.lot_assert(public.save_grn(p_gr_no=>'LOTB',p_date=>'2026-04-01T12:00:00Z',p_customer_id=>:'customer_b'::uuid,
+SELECT pg_temp.lot_assert(public.save_grn(p_sender_name=>'Fixture Sender',p_supervisor_id=>(SELECT id FROM public.user_profiles WHERE NOT is_service_account ORDER BY created_at LIMIT 1),p_supervisor_name=>'Fixture Supervisor',p_gr_no=>'LOTB',p_date=>'2026-04-01T12:00:00Z',p_customer_id=>:'customer_b'::uuid,
  p_customer_name=>'Lot Rule Customer B',p_pricing_mode=>'MONTHLY',p_idempotency_key=>'lot-rule-b',
  p_items=>jsonb_build_array(jsonb_build_object('item_id',:'item_id','item_name','Lot Rule Potatoes',
  'packaging','Bag','qty',40,'weight',10,'rack','R4')))->>'success'='true','receipt LOTB');
-SELECT pg_temp.lot_assert(public.save_grn(p_gr_no=>'LOTB2',p_date=>'2026-04-01T12:00:00Z',p_customer_id=>:'customer_b'::uuid,
+SELECT pg_temp.lot_assert(public.save_grn(p_sender_name=>'Fixture Sender',p_supervisor_id=>(SELECT id FROM public.user_profiles WHERE NOT is_service_account ORDER BY created_at LIMIT 1),p_supervisor_name=>'Fixture Supervisor',p_gr_no=>'LOTB2',p_date=>'2026-04-01T12:00:00Z',p_customer_id=>:'customer_b'::uuid,
  p_customer_name=>'Lot Rule Customer B',p_pricing_mode=>'MONTHLY',p_idempotency_key=>'lot-rule-b2',
  p_items=>jsonb_build_array(jsonb_build_object('item_id',:'item_id','item_name','Lot Rule Potatoes',
  'packaging','Bag','qty',10,'weight',10,'rack','R5')))->>'success'='true','receipt LOTB2');
-SELECT pg_temp.lot_assert(public.save_grn(p_gr_no=>'LOTB3',p_date=>'2026-04-01T12:00:00Z',p_customer_id=>:'customer_b'::uuid,
+SELECT pg_temp.lot_assert(public.save_grn(p_sender_name=>'Fixture Sender',p_supervisor_id=>(SELECT id FROM public.user_profiles WHERE NOT is_service_account ORDER BY created_at LIMIT 1),p_supervisor_name=>'Fixture Supervisor',p_gr_no=>'LOTB3',p_date=>'2026-04-01T12:00:00Z',p_customer_id=>:'customer_b'::uuid,
  p_customer_name=>'Lot Rule Customer B',p_pricing_mode=>'MONTHLY',p_idempotency_key=>'lot-rule-b3',
  p_items=>jsonb_build_array(jsonb_build_object('item_id',:'item_id','item_name','Lot Rule Potatoes',
  'packaging','Bag','qty',10,'weight',10,'rack','R6')))->>'success'='true','receipt LOTB3');

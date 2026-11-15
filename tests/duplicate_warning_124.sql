@@ -50,7 +50,7 @@ CREATE FUNCTION pg_temp.dw_save(claims jsonb, no text, cust uuid, cname text, da
  BEGIN
   PERFORM set_config('request.jwt.claims',claims::text,true);
   SET LOCAL ROLE authenticated;
-  r:=public.save_grn(p_gr_no=>no,p_date=>day::timestamptz,p_customer_id=>cust,p_customer_name=>cname,p_pricing_mode=>'MONTHLY',p_items=>items,p_idempotency_key=>COALESCE(key,'dw-auto-'||gen_random_uuid()::text),p_warn_duplicate=>true);
+  r:=public.save_grn(p_sender_name=>'Fixture Sender',p_supervisor_id=>(SELECT id FROM public.user_profiles WHERE NOT is_service_account ORDER BY created_at LIMIT 1),p_supervisor_name=>'Fixture Supervisor',p_gr_no=>no,p_date=>day::timestamptz,p_customer_id=>cust,p_customer_name=>cname,p_pricing_mode=>'MONTHLY',p_items=>items,p_idempotency_key=>COALESCE(key,'dw-auto-'||gen_random_uuid()::text),p_warn_duplicate=>true);
   RESET ROLE;
   RETURN r;
  END $$;
@@ -60,7 +60,7 @@ CREATE FUNCTION pg_temp.dw_save_plain(claims jsonb, no text, cust uuid, cname te
  BEGIN
   PERFORM set_config('request.jwt.claims',claims::text,true);
   SET LOCAL ROLE authenticated;
-  r:=public.save_grn(p_gr_no=>no,p_date=>day::timestamptz,p_customer_id=>cust,p_customer_name=>cname,p_pricing_mode=>'MONTHLY',p_items=>items,p_idempotency_key=>key);
+  r:=public.save_grn(p_sender_name=>'Fixture Sender',p_supervisor_id=>(SELECT id FROM public.user_profiles WHERE NOT is_service_account ORDER BY created_at LIMIT 1),p_supervisor_name=>'Fixture Supervisor',p_gr_no=>no,p_date=>day::timestamptz,p_customer_id=>cust,p_customer_name=>cname,p_pricing_mode=>'MONTHLY',p_items=>items,p_idempotency_key=>key);
   RESET ROLE;
   RETURN r;
  END $$;
@@ -70,7 +70,7 @@ CREATE FUNCTION pg_temp.dw_save_warn(claims jsonb, no text, cust uuid, cname tex
  BEGIN
   PERFORM set_config('request.jwt.claims',claims::text,true);
   SET LOCAL ROLE authenticated;
-  r:=public.save_grn(p_gr_no=>no,p_date=>day::timestamptz,p_customer_id=>cust,p_customer_name=>cname,p_pricing_mode=>'MONTHLY',p_items=>items,p_idempotency_key=>COALESCE(key,'dw-auto-'||gen_random_uuid()::text),p_warn_duplicate=>warn);
+  r:=public.save_grn(p_sender_name=>'Fixture Sender',p_supervisor_id=>(SELECT id FROM public.user_profiles WHERE NOT is_service_account ORDER BY created_at LIMIT 1),p_supervisor_name=>'Fixture Supervisor',p_gr_no=>no,p_date=>day::timestamptz,p_customer_id=>cust,p_customer_name=>cname,p_pricing_mode=>'MONTHLY',p_items=>items,p_idempotency_key=>COALESCE(key,'dw-auto-'||gen_random_uuid()::text),p_warn_duplicate=>warn);
   RESET ROLE;
   RETURN r;
  END $$;
@@ -80,7 +80,7 @@ CREATE FUNCTION pg_temp.dw_save_nokey(claims jsonb, no text, cust uuid, cname te
  BEGIN
   PERFORM set_config('request.jwt.claims',claims::text,true);
   SET LOCAL ROLE authenticated;
-  r:=public.save_grn(p_gr_no=>no,p_date=>day::timestamptz,p_customer_id=>cust,p_customer_name=>cname,p_pricing_mode=>'MONTHLY',p_items=>items,p_warn_duplicate=>true);
+  r:=public.save_grn(p_sender_name=>'Fixture Sender',p_supervisor_id=>(SELECT id FROM public.user_profiles WHERE NOT is_service_account ORDER BY created_at LIMIT 1),p_supervisor_name=>'Fixture Supervisor',p_gr_no=>no,p_date=>day::timestamptz,p_customer_id=>cust,p_customer_name=>cname,p_pricing_mode=>'MONTHLY',p_items=>items,p_warn_duplicate=>true);
   RESET ROLE;
   RETURN r;
  END $$;
@@ -90,7 +90,7 @@ CREATE FUNCTION pg_temp.dw_save_rates(claims jsonb, no text, cust uuid, cname te
  BEGIN
   PERFORM set_config('request.jwt.claims',claims::text,true);
   SET LOCAL ROLE authenticated;
-  r:=public.save_grn(p_gr_no=>no,p_date=>day::timestamptz,p_customer_id=>cust,p_customer_name=>cname,p_pricing_mode=>'MONTHLY',p_items=>items,p_rates=>rates,
+  r:=public.save_grn(p_sender_name=>'Fixture Sender',p_supervisor_id=>(SELECT id FROM public.user_profiles WHERE NOT is_service_account ORDER BY created_at LIMIT 1),p_supervisor_name=>'Fixture Supervisor',p_gr_no=>no,p_date=>day::timestamptz,p_customer_id=>cust,p_customer_name=>cname,p_pricing_mode=>'MONTHLY',p_items=>items,p_rates=>rates,
     p_idempotency_key=>'dw-auto-'||gen_random_uuid()::text,p_warn_duplicate=>warn);
   RESET ROLE;
   RETURN r;

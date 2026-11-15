@@ -51,7 +51,7 @@ BEGIN EXECUTE p_query INTO v; RETURN v; END $$;
 CREATE FUNCTION pg_temp.i9_make(p_no text, p_qty integer, p_grn_day date, p_disp_no text, p_disp_day date, p_customer uuid, p_item uuid, p_admin uuid) RETURNS jsonb LANGUAGE plpgsql AS $$
 DECLARE v_grn jsonb; v_grn_id uuid; v_lot uuid; v_disp jsonb; v_line jsonb;
 BEGIN
-  v_grn := public.save_grn(p_gr_no=>p_no, p_date=>(p_grn_day::text||'T12:00:00Z')::timestamptz, p_customer_id=>p_customer, p_customer_name=>'Inv129 Customer A',
+  v_grn := public.save_grn(p_sender_name=>'Fixture Sender',p_supervisor_id=>(SELECT id FROM public.user_profiles WHERE NOT is_service_account ORDER BY created_at LIMIT 1),p_supervisor_name=>'Fixture Supervisor',p_gr_no=>p_no, p_date=>(p_grn_day::text||'T12:00:00Z')::timestamptz, p_customer_id=>p_customer, p_customer_name=>'Inv129 Customer A',
     p_pricing_mode=>'MONTHLY', p_items=>jsonb_build_array(jsonb_build_object('item_id',p_item,'item_name','Inv129 Potatoes','packaging','Bag','qty',p_qty,'weight',10,'rack','R1','package_mark',p_no||'-P')));
   IF v_grn->>'success' IS DISTINCT FROM 'true' THEN RAISE EXCEPTION 'fixture GRN % failed: %', p_no, v_grn; END IF;
   SELECT pg_temp.i9_scalar(format('SELECT g.id FROM public.goodsreceived g WHERE g.gr_no = %L', p_no))::uuid INTO v_grn_id;
@@ -106,7 +106,7 @@ SELECT id AS potatoes FROM public.items WHERE name='Inv129 Potatoes' \gset
 -- I1: 100 bags received 2026-04-01, 20 dispatched on DA1 (2026-05-02) and 80 on DA2 (2026-06-10).
 SELECT set_config('request.jwt.claims',:'admin_claims',true);
 SET LOCAL ROLE authenticated;
-SELECT pg_temp.i9_assert(public.save_grn(p_gr_no=>'IV1',p_date=>'2026-04-01T12:00:00Z',p_customer_id=>:'ca'::uuid,p_customer_name=>'Inv129 Customer A',p_pricing_mode=>'MONTHLY',
+SELECT pg_temp.i9_assert(public.save_grn(p_sender_name=>'Fixture Sender',p_supervisor_id=>(SELECT id FROM public.user_profiles WHERE NOT is_service_account ORDER BY created_at LIMIT 1),p_supervisor_name=>'Fixture Supervisor',p_gr_no=>'IV1',p_date=>'2026-04-01T12:00:00Z',p_customer_id=>:'ca'::uuid,p_customer_name=>'Inv129 Customer A',p_pricing_mode=>'MONTHLY',
  p_items=>jsonb_build_array(jsonb_build_object('item_id',:'potatoes','item_name','Inv129 Potatoes','packaging','Bag','qty',100,'weight',10,'rack','R1','package_mark','IV1-P')))->>'success'='true','GRN IV1');
 RESET ROLE;
 SELECT id AS grn_1 FROM public.goodsreceived WHERE gr_no='IV1' \gset

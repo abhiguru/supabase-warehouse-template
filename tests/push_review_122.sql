@@ -73,7 +73,7 @@ SELECT id AS potatoes FROM public.items WHERE name='Push Potatoes' \gset
 SELECT id AS onions FROM public.items WHERE name='Push Onions' \gset
 SELECT set_config('request.jwt.claims',:'admin_claims',true);
 SET LOCAL ROLE authenticated;
-SELECT pg_temp.pr_assert(public.save_grn(p_gr_no=>g.no,p_date=>'2026-04-01T12:00:00Z',p_customer_id=>g.cust::uuid,p_customer_name=>g.cname,
+SELECT pg_temp.pr_assert(public.save_grn(p_sender_name=>'Fixture Sender',p_supervisor_id=>(SELECT id FROM public.user_profiles WHERE NOT is_service_account ORDER BY created_at LIMIT 1),p_supervisor_name=>'Fixture Supervisor',p_gr_no=>g.no,p_date=>'2026-04-01T12:00:00Z',p_customer_id=>g.cust::uuid,p_customer_name=>g.cname,
   p_pricing_mode=>'MONTHLY',p_items=>g.items)->>'success'='true','receipt '||g.no)
 FROM (VALUES
  ('PG1',:'ca','Push Customer A',jsonb_build_array(pg_temp.pr_line(:'potatoes','Push Potatoes',100,'PG1-X'),pg_temp.pr_line(:'onions','Push Onions',100,'PG1-Y'))),
