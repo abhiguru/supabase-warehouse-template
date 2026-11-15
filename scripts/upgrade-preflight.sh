@@ -153,7 +153,13 @@ fi
 # It never refuses and never changes anything: the proof of the upgrade's own backup stays the gate. A check that cannot read says so.
 say
 say 'Stored files (read-only check, scripts/storage-file-check.sh):'
-WAREHOUSE_STATE_DIR="$STATE" bash "$HERE/storage-file-check.sh" || say "Note: the check above found missing files or could not read; the upgrade's own backup proof refuses a catalogued object with no file. Nothing was changed."
+# This copy runs from a temporary directory, so its compose.sh would refuse the installation (its guard compares the compose project's
+# working directory with its own checkout). upgrade.sh runs the preflight from a subshell that left the installed checkout with `cd`, so
+# OLDPWD is that checkout (for a tag, --ref and bundle upgrade alike); it is used only when it is a checkout at FROM_SHA with its own
+# compose.sh, and the check then reaches the database through that compose.sh, whose guard is unchanged. Otherwise the check runs as before.
+installed=''
+if [[ "${OLDPWD:-}" == /* && -f "$OLDPWD/scripts/compose.sh" && "$(git -C "$OLDPWD" rev-parse HEAD 2>/dev/null || true)" == "$FROM_SHA" ]]; then installed="$OLDPWD"; fi
+WAREHOUSE_INSTALLED_CHECKOUT="$installed" WAREHOUSE_STATE_DIR="$STATE" bash "$HERE/storage-file-check.sh" || say "Note: the check above found missing files or could not read; the upgrade's own backup proof refuses a catalogued object with no file. Nothing was changed."
 
 # --- 5. the migrations, applied to a copy of the facility's data -------------------------------------------------------------
 # With --dry-run too: the live database and its files are only read (the backup is restored into a disposable container).
