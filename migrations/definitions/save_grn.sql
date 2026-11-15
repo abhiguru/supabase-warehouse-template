@@ -166,7 +166,8 @@ BEGIN
       --   2. fas.session is set and not blank: fas-sync sets it for the transaction of each push before it acts as its profile. It
       --      tells fas-sync apart from an installer's own psql call on the same login, which stays refused. A setting local to a
       --      transaction reads as '' once that transaction ends, so blank counts as not set.
-      -- The same two lines guard the same exemption in update_grn.sql when it gains this check (WH-233); change both files together.
+      -- This is the only place with this exemption: update_grn judges only what an edit changes and has none (WH-233), because
+      -- fas-sync's updates send neither the sender nor the supervisor.
       IF warehouse_security.is_blank_text(p_sender_name)
          AND NOT (session_user = 'supabase_admin'
                   AND NOT warehouse_security.is_blank_text(current_setting('fas.session', true))) THEN
