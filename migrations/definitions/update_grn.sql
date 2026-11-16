@@ -468,9 +468,9 @@ BEGIN
         -- Two saves are not held to that, and may leave an empty or half-filled value as stored:
         --   1. fas-sync's updates, recognised as save_grn.sql recognises fas-sync: session_user is supabase_admin (the login of the
         --      connection, which the API cannot give a client) and fas.session is set and not blank. They send neither field.
-        --   2. A save that changes only the rates: p_rates is sent and every other field equals what is stored, compared by
-        --      warehouse_security.grn_save_keeps_stored (the comparison of the rates-only save of an imported GRN, migration 190, with
-        --      the photos this function would remove or move to another line counted as a change).
+        --   2. A save that changes only the rates: p_rates is sent and nothing this function would write on the GRN, its lines or its
+        --      photos differs from what is stored, by warehouse_security.grn_save_keeps_stored with p_strict true (WH-250, WH-251; its
+        --      migration's header says which values count as the same, such as a name differing only by white space at its ends).
         --   WH-233's rules still hold for them: an edit that changes the sender name may not leave it blank, and one that changes the
         --   supervisor (id or name) must leave both. The same id (or still none) with the same name, both trimmed, is as stored.
         -- These come after every refusal above and before anything is written, so the GRN is unchanged after a refusal.
@@ -485,7 +485,7 @@ BEGIN
         v_supervisor_missing := v_result_supervisor_id IS NULL OR warehouse_security.is_blank_text(v_result_supervisor_name);
         IF v_sender_missing OR v_supervisor_missing THEN
             -- The comparison is sent the arguments as this function received them: a sent blank name or registration (NULL after the
-            -- trimming above) goes as '' so that it counts as a change from a stored value, and an omitted one as NULL ("as stored").
+            -- trimming above) goes as '' so that it is compared with the stored value, and an omitted one as NULL ("as stored").
             v_held := NOT (session_user = 'supabase_admin'
                            AND NOT warehouse_security.is_blank_text(current_setting('fas.session', true)))
                       AND NOT (p_rates IS NOT NULL
@@ -493,7 +493,7 @@ BEGIN
                                      p_sender_id, CASE WHEN v_sender_name_sent THEN COALESCE(p_sender_name, '') END,
                                      p_supervisor_id, CASE WHEN v_supervisor_name_sent THEN COALESCE(p_supervisor_name, '') END,
                                      CASE WHEN v_registration_sent THEN COALESCE(p_registration, '') END, p_note, p_leon,
-                                     p_pricing_mode, p_items, p_images, p_duration_mode));
+                                     p_pricing_mode, p_items, p_images, p_duration_mode, true));
             IF v_sender_missing AND (v_held OR NOT warehouse_security.is_blank_text(v_stored_sender_name)) THEN
                 RETURN warehouse_security.refuse('SENDER_REQUIRED', 'Sender name is required', '{}'::jsonb);
             END IF;
