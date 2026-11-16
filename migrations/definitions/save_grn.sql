@@ -60,7 +60,7 @@ BEGIN
   -- WH-237: the sender name and the supervisor name are stored without white space at either end (white space inside is kept), and
   -- one that is empty or only white space is stored as NULL. warehouse_security.trimmed_reason trims exactly the characters
   -- warehouse_security.is_blank_text treats as blank, so the WH-231 checks below answer as they did. update_grn.sql stores a name
-  -- that an edit sends the same way.
+  -- that an edit sends the same way. The customer's name that WH-248 stores as fas-sync's missing sender (below) is trimmed the same way.
   p_sender_name := warehouse_security.trimmed_reason(p_sender_name);
   p_supervisor_name := warehouse_security.trimmed_reason(p_supervisor_name);
     -- The list-refresh lock comes before any row lock (migration 46).
@@ -161,22 +161,25 @@ BEGIN
       END IF;
 
       -- WH-231: a new GRN has a sender name and a supervisor, as the app's form requires. Empty is NULL, or blank after trimming
-      -- white space (spaces, tabs, line breaks, non-breaking spaces). Edits (update_grn, WH-230) and the history import (WH-180, which
-      -- writes the tables itself and never calls this function) are not held to it. Nothing is written or numbered before this.
-      -- fas-sync's exemption (WH-231): a GRN that fas-sync creates from FAS with no sender is saved with the sender empty, like an
-      -- imported one (the same old-system data). Only the sender check is skipped; the supervisor check below has no exemption.
+      -- white space (spaces, tabs, line breaks, non-breaking spaces). The history import (WH-180) writes the tables itself and never
+      -- calls this function; an edit (update_grn) has its own rule (WH-248). Nothing is written or numbered before this.
+      -- WH-248 (it replaces WH-231's "fas-sync saves the sender empty"): a GRN that fas-sync creates from FAS with no sender is saved
+      -- with the sender name set to the customer's name, the name stored as the GRN's customer below (one business per GRN: the sender
+      -- is the customer). The sender id stays as sent. The supervisor check below has no exemption.
       -- fas-sync is recognised by two things together, and both are needed:
       --   1. session_user is supabase_admin: the login of the connection (SET ROLE and SECURITY DEFINER do not change it). fas-sync
       --      writes with psql on a direct installer connection; the API logs in as authenticator, and nothing a client sends through
-      --      it can change the login, so the exemption cannot be claimed through the API.
+      --      it can change the login, so the default cannot be claimed through the API.
       --   2. fas.session is set and not blank: fas-sync sets it for the transaction of each push before it acts as its profile. It
       --      tells fas-sync apart from an installer's own psql call on the same login, which stays refused. A setting local to a
       --      transaction reads as '' once that transaction ends, so blank counts as not set.
-      -- This is the only place with this exemption: update_grn judges only what an edit changes and has none (WH-233), because
-      -- fas-sync's updates send neither the sender nor the supervisor.
+      -- update_grn.sql recognises fas-sync's updates the same way.
       IF warehouse_security.is_blank_text(p_sender_name)
-         AND NOT (session_user = 'supabase_admin'
-                  AND NOT warehouse_security.is_blank_text(current_setting('fas.session', true))) THEN
+         AND session_user = 'supabase_admin'
+         AND NOT warehouse_security.is_blank_text(current_setting('fas.session', true)) THEN
+          p_sender_name := warehouse_security.trimmed_reason(COALESCE((SELECT c.name FROM customers c WHERE c.id = p_customer_id), p_customer_name));
+      END IF;
+      IF warehouse_security.is_blank_text(p_sender_name) THEN
           RETURN warehouse_security.refuse('SENDER_REQUIRED', 'Sender name is required', '{}'::jsonb);
       END IF;
       IF p_supervisor_id IS NULL OR warehouse_security.is_blank_text(p_supervisor_name) THEN
