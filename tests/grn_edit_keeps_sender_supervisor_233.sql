@@ -1,7 +1,8 @@
--- WH-233: update_grn judges only what an edit changes. An edit may leave the sender name and the supervisor exactly as stored (empty, half-filled or whole);
---   an edit that changes the sender name must not end blank (SENDER_REQUIRED); one that changes the supervisor (id or name) must end with both
---   an id and a name (SUPERVISOR_REQUIRED). No fas-sync exemption: a blanking edit is refused on the plain path, on fas-sync's path and with the
---   API's login; fas-sync's own update (date, registration, leon, lines; it sends neither field) saves whatever is stored. A refusal changes nothing.
+-- WH-233, as changed by WH-248: an edit must leave the GRN with a sender name and a whole supervisor (id and name), whatever it held before
+--   (SENDER_REQUIRED, SUPERVISOR_REQUIRED, sender judged first). Two callers may leave an empty or half-filled value as stored: fas-sync's
+--   updates (session_user supabase_admin and a fas.session mark; the API's login with the mark is NOT exempt) and a rates-only save (tests/
+--   grn_edit_requires_sender_supervisor_248.sql). WH-233's rules still hold for those two: a filled sender cannot be blanked, and a changed
+--   supervisor (id or name) must end with both. A refusal changes nothing.
 -- Half-filled and empty stored values cannot be made through save_grn any more, so they are set with a direct UPDATE here, as the import test does.
 -- Fictional data; runs only in migrations.sh's disposable, network-disabled database; rolls back.
 \set ON_ERROR_STOP on
@@ -114,18 +115,18 @@ SELECT pg_temp.e_try('sender not sent with the API login', 'api', 'E233', NULL, 
 SELECT pg_temp.e_try('sender re-sent as stored', 'plain', 'E233', 'Orig Sender', NULL, NULL, 'ok', 'Orig Sender', :'p1'::uuid, 'Sup One');
 SELECT pg_temp.e_try('sender changed to another name', 'plain', 'E233', 'Another Sender', NULL, NULL, 'ok', 'Another Sender', :'p1'::uuid, 'Sup One');
 
--- ===== A blank stored sender may stay blank and may be filled =====
+-- ===== A blank stored sender may not stay blank (WH-248; WH-233 let it stay), except on fas-sync's path; it may be filled =====
 SELECT pg_temp.e_put('E233', NULL, :'p1'::uuid, 'Sup One');
-SELECT pg_temp.e_try('NULL sender, not sent', 'plain', 'E233', NULL, NULL, NULL, 'ok', NULL, :'p1'::uuid, 'Sup One');
-SELECT pg_temp.e_try('NULL sender, sent empty', 'plain', 'E233', '', NULL, NULL, 'ok', NULL, :'p1'::uuid, 'Sup One');
-SELECT pg_temp.e_try('NULL sender, sent white space', 'plain', 'E233', E'  \t ', NULL, NULL, 'ok', NULL, :'p1'::uuid, 'Sup One');
-SELECT pg_temp.e_try('NULL sender, sent empty with the API login', 'api', 'E233', '', NULL, NULL, 'ok', NULL, :'p1'::uuid, 'Sup One');
+SELECT pg_temp.e_try('NULL sender, not sent', 'plain', 'E233', NULL, NULL, NULL, 'SENDER_REQUIRED');
+SELECT pg_temp.e_try('NULL sender, sent empty', 'plain', 'E233', '', NULL, NULL, 'SENDER_REQUIRED');
+SELECT pg_temp.e_try('NULL sender, sent white space', 'plain', 'E233', E'  \t ', NULL, NULL, 'SENDER_REQUIRED');
+SELECT pg_temp.e_try('NULL sender, sent empty with the API login', 'api', 'E233', '', NULL, NULL, 'SENDER_REQUIRED');
 SELECT pg_temp.e_put('E233', '', :'p1'::uuid, 'Sup One');
-SELECT pg_temp.e_try('empty-string sender, not sent', 'plain', 'E233', NULL, NULL, NULL, 'ok', '', :'p1'::uuid, 'Sup One');
+SELECT pg_temp.e_try('empty-string sender, not sent', 'plain', 'E233', NULL, NULL, NULL, 'SENDER_REQUIRED');
 -- WH-237: a sent blank is stored as NULL, not as ''.
 SELECT pg_temp.e_try('empty-string sender, sent empty', 'fas', 'E233', '', NULL, NULL, 'ok', NULL, :'p1'::uuid, 'Sup One');
 SELECT pg_temp.e_put('E233', E'   ', :'p1'::uuid, 'Sup One');
-SELECT pg_temp.e_try('white-space sender, sent empty', 'plain', 'E233', '', NULL, NULL, 'ok', NULL, :'p1'::uuid, 'Sup One');
+SELECT pg_temp.e_try('white-space sender, sent empty', 'plain', 'E233', '', NULL, NULL, 'SENDER_REQUIRED');
 SELECT pg_temp.e_put('E233', NULL, :'p1'::uuid, 'Sup One');
 SELECT pg_temp.e_try('NULL sender filled', 'plain', 'E233', 'Now Filled', NULL, NULL, 'ok', 'Now Filled', :'p1'::uuid, 'Sup One');
 SELECT pg_temp.e_put('E233', '', :'p1'::uuid, 'Sup One');
@@ -147,22 +148,22 @@ SELECT pg_temp.e_try('whole supervisor: another id with a new name', 'plain', 'E
 SELECT pg_temp.e_put('E233', 'Orig Sender', :'p1'::uuid, 'Sup One');
 SELECT pg_temp.e_try('whole supervisor: only the name changed', 'plain', 'E233', NULL, NULL, 'Sup One Renamed', 'ok', 'Orig Sender', :'p1'::uuid, 'Sup One Renamed');
 
--- ===== Id without a name =====
+-- ===== Id without a name: an edit must complete it (WH-248), except on fas-sync's path =====
 SELECT pg_temp.e_put('E233', 'Orig Sender', :'p1'::uuid, NULL);
-SELECT pg_temp.e_try('id only: nothing sent', 'plain', 'E233', NULL, NULL, NULL, 'ok', 'Orig Sender', :'p1'::uuid, NULL);
-SELECT pg_temp.e_try('id only: stored id sent', 'plain', 'E233', NULL, :'p1'::uuid, NULL, 'ok', 'Orig Sender', :'p1'::uuid, NULL);
-SELECT pg_temp.e_try('id only: stored id with an empty name', 'plain', 'E233', NULL, :'p1'::uuid, '', 'ok', 'Orig Sender', :'p1'::uuid, NULL);
-SELECT pg_temp.e_try('id only: nothing sent with the API login', 'api', 'E233', NULL, NULL, NULL, 'ok', 'Orig Sender', :'p1'::uuid, NULL);
+SELECT pg_temp.e_try('id only: nothing sent', 'plain', 'E233', NULL, NULL, NULL, 'SUPERVISOR_REQUIRED');
+SELECT pg_temp.e_try('id only: stored id sent', 'plain', 'E233', NULL, :'p1'::uuid, NULL, 'SUPERVISOR_REQUIRED');
+SELECT pg_temp.e_try('id only: stored id with an empty name', 'plain', 'E233', NULL, :'p1'::uuid, '', 'SUPERVISOR_REQUIRED');
+SELECT pg_temp.e_try('id only: nothing sent with the API login', 'api', 'E233', NULL, NULL, NULL, 'SUPERVISOR_REQUIRED');
 SELECT pg_temp.e_try('id only: a new id with no name', 'plain', 'E233', NULL, :'p2'::uuid, NULL, 'SUPERVISOR_REQUIRED');
 SELECT pg_temp.e_try('id only: a new id with an empty name', 'fas', 'E233', NULL, :'p2'::uuid, '', 'SUPERVISOR_REQUIRED');
 SELECT pg_temp.e_try('id only: completing it with a name', 'plain', 'E233', NULL, NULL, 'Sup One', 'ok', 'Orig Sender', :'p1'::uuid, 'Sup One');
 SELECT pg_temp.e_put('E233', 'Orig Sender', :'p1'::uuid, NULL);
 SELECT pg_temp.e_try('id only: a new id completed with a name', 'plain', 'E233', NULL, :'p2'::uuid, 'Sup Two', 'ok', 'Orig Sender', :'p2'::uuid, 'Sup Two');
 
--- ===== Name without an id =====
+-- ===== Name without an id: an edit must complete it (WH-248), except on fas-sync's path =====
 SELECT pg_temp.e_put('E233', 'Orig Sender', NULL, 'Sup One');
-SELECT pg_temp.e_try('name only: nothing sent', 'plain', 'E233', NULL, NULL, NULL, 'ok', 'Orig Sender', NULL, 'Sup One');
-SELECT pg_temp.e_try('name only: the stored name sent', 'plain', 'E233', NULL, NULL, 'Sup One', 'ok', 'Orig Sender', NULL, 'Sup One');
+SELECT pg_temp.e_try('name only: nothing sent', 'plain', 'E233', NULL, NULL, NULL, 'SUPERVISOR_REQUIRED');
+SELECT pg_temp.e_try('name only: the stored name sent', 'plain', 'E233', NULL, NULL, 'Sup One', 'SUPERVISOR_REQUIRED');
 SELECT pg_temp.e_try('name only: nothing sent on fas-sync''s path', 'fas', 'E233', NULL, NULL, NULL, 'ok', 'Orig Sender', NULL, 'Sup One');
 SELECT pg_temp.e_try('name only: cleared with an empty name', 'plain', 'E233', NULL, NULL, '', 'SUPERVISOR_REQUIRED');
 SELECT pg_temp.e_try('name only: cleared with white space, API login', 'api', 'E233', NULL, NULL, E'  ', 'SUPERVISOR_REQUIRED');
@@ -171,12 +172,12 @@ SELECT pg_temp.e_try('name only: adding an id', 'plain', 'E233', NULL, :'p1'::uu
 SELECT pg_temp.e_put('E233', 'Orig Sender', NULL, 'Sup One');
 SELECT pg_temp.e_try('name only: adding an id with another name', 'plain', 'E233', NULL, :'p1'::uuid, 'Sup Two', 'ok', 'Orig Sender', :'p1'::uuid, 'Sup Two');
 
--- ===== Both empty =====
+-- ===== Both empty: an edit must fill both (WH-248), except on fas-sync's path =====
 SELECT pg_temp.e_put('E233', 'Orig Sender', NULL, NULL);
-SELECT pg_temp.e_try('both empty: nothing sent', 'plain', 'E233', NULL, NULL, NULL, 'ok', 'Orig Sender', NULL, NULL);
-SELECT pg_temp.e_try('both empty: an empty name sent', 'plain', 'E233', NULL, NULL, '', 'ok', 'Orig Sender', NULL, NULL);
+SELECT pg_temp.e_try('both empty: nothing sent', 'plain', 'E233', NULL, NULL, NULL, 'SUPERVISOR_REQUIRED');
+SELECT pg_temp.e_try('both empty: an empty name sent', 'plain', 'E233', NULL, NULL, '', 'SUPERVISOR_REQUIRED');
 SELECT pg_temp.e_try('both empty: a white-space name sent', 'fas', 'E233', NULL, NULL, E' \t ', 'ok', 'Orig Sender', NULL, NULL);
-SELECT pg_temp.e_try('both empty: nothing sent with the API login', 'api', 'E233', NULL, NULL, NULL, 'ok', 'Orig Sender', NULL, NULL);
+SELECT pg_temp.e_try('both empty: nothing sent with the API login', 'api', 'E233', NULL, NULL, NULL, 'SUPERVISOR_REQUIRED');
 SELECT pg_temp.e_try('both empty: only a name', 'plain', 'E233', NULL, NULL, 'Only Name', 'SUPERVISOR_REQUIRED');
 SELECT pg_temp.e_try('both empty: only an id', 'plain', 'E233', NULL, :'p1'::uuid, NULL, 'SUPERVISOR_REQUIRED');
 SELECT pg_temp.e_try('both empty: an id with an empty name', 'plain', 'E233', NULL, :'p1'::uuid, '', 'SUPERVISOR_REQUIRED');
@@ -196,5 +197,19 @@ SELECT pg_temp.e_put('E233', '', NULL, NULL);
 SELECT pg_temp.e_try('fas-sync update: empty-string sender, empty supervisor', 'fas', 'E233', NULL, NULL, NULL, 'ok', p_shape => 'fas');
 SELECT pg_temp.e_put('E233', 'Orig Sender', NULL, 'Sup One');
 SELECT pg_temp.e_try('fas-sync update: name without an id', 'fas', 'E233', NULL, NULL, NULL, 'ok', p_shape => 'fas');
+
+-- ===== WH-248: fas-sync's path leaves an empty or half-filled value as stored (an edit that sends neither field, or sends it unchanged) =====
+SELECT pg_temp.e_put('E233', NULL, NULL, NULL);
+SELECT pg_temp.e_try('fas path edit shape: both empty, nothing sent', 'fas', 'E233', NULL, NULL, NULL, 'ok', NULL, NULL, NULL);
+SELECT pg_temp.e_put('E233', NULL, :'p1'::uuid, NULL);
+SELECT pg_temp.e_try('fas path edit shape: sender empty, id without a name, nothing sent', 'fas', 'E233', NULL, NULL, NULL, 'ok', NULL, :'p1'::uuid, NULL);
+SELECT pg_temp.e_put('E233', 'Orig Sender', NULL, 'Sup One');
+SELECT pg_temp.e_try('fas path edit shape: name without an id, nothing sent', 'fas', 'E233', NULL, NULL, NULL, 'ok', 'Orig Sender', NULL, 'Sup One');
+-- ...and the same edit on the plain path and with the API login (the mark alone does not exempt it) is refused, the GRN unchanged.
+SELECT pg_temp.e_try('API login with the mark: name without an id, nothing sent', 'api', 'E233', NULL, NULL, NULL, 'SUPERVISOR_REQUIRED');
+SELECT pg_temp.e_put('E233', NULL, NULL, NULL);
+SELECT pg_temp.e_try('API login with the mark: both empty, an empty sender sent', 'api', 'E233', '', NULL, NULL, 'SENDER_REQUIRED');
+-- Even on fas-sync's path, completing is judged as before: a changed supervisor must end whole.
+SELECT pg_temp.e_try('fas path edit shape: only an id sent for an empty supervisor', 'fas', 'E233', NULL, :'p1'::uuid, NULL, 'SUPERVISOR_REQUIRED');
 ROLLBACK;
 \echo 'GRN edit keeps sender and supervisor (WH-233) checks passed.'
