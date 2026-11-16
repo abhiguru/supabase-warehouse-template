@@ -568,7 +568,7 @@ test_files=(
   "$ROOT/tests/invoice_kept_long_numbers_149.sql"
   "$ROOT/tests/print_range_request_id_151.sql"
   "$ROOT/tests/signin_access_154.sql" "$ROOT/tests/audit_log_insert_only_155.sql" "$ROOT/tests/dispatch_delete_other_lines_156.sql"
-  "$ROOT/tests/grn_one_rule_and_limits_160.sql" "$ROOT/tests/grn_sender_supervisor_required_231.sql" "$ROOT/tests/grn_edit_keeps_sender_supervisor_233.sql" "$ROOT/tests/grn_names_trimmed_237.sql" "$ROOT/tests/grn_edit_requires_sender_supervisor_248.sql" "$ROOT/tests/orders_deleted_row_161.sql"
+  "$ROOT/tests/grn_one_rule_and_limits_160.sql" "$ROOT/tests/grn_sender_supervisor_required_231.sql" "$ROOT/tests/grn_edit_keeps_sender_supervisor_233.sql" "$ROOT/tests/grn_names_trimmed_237.sql" "$ROOT/tests/grn_edit_requires_sender_supervisor_248.sql" "$ROOT/tests/grn_rates_only_strict_250.sql" "$ROOT/tests/orders_deleted_row_161.sql"
   "$ROOT/tests/item_word_144.sql"
   "$ROOT/tests/invoice_delete_146.sql"
   "$ROOT/tests/staff_deactivated_customer_148.sql"
