@@ -111,6 +111,59 @@ SELECT pg_temp.r_put('Orig Sender', :'p1'::uuid, 'Sup One');
 SELECT pg_temp.r_edit('whole GRN, a note', 'Whole note', NULL, 'ok') AS whole_note \gset
 SELECT pg_temp.r_assert((SELECT note = 'Whole note' FROM public.goodsreceived WHERE gr_no = 'R248'), 'the note of the whole GRN was saved');
 
+-- ===== 1b. the photo conditions of the rates-only check (warehouse_security.grn_save_keeps_stored) =====
+-- A GRN with two lines and two confirmed photos (a header photo and a photo of line 1), written directly (no Storage object is needed
+-- for the rows). A rates-only save must send the photos as stored: one photo removed, or one moved to another line, is a change.
+SET LOCAL ROLE authenticated;
+SELECT public.save_grn(p_gr_no=>'R248P', p_date=>'2026-04-01T12:00:00Z', p_customer_id=>:'cust'::uuid, p_customer_name=>'Rates Rule Customer',
+  p_sender_name=>'Orig Sender', p_supervisor_id=>:'p1'::uuid, p_supervisor_name=>'Sup One', p_pricing_mode=>'MONTHLY', p_idempotency_key=>'wh248-photos',
+  p_items=>jsonb_build_array(jsonb_build_object('item_id', :'cumin'::uuid, 'item_name', 'Rates Rule Cumin', 'packaging', 'Bag', 'qty', 2, 'weight', 10),
+                             jsonb_build_object('item_id', :'cumin'::uuid, 'item_name', 'Rates Rule Cumin', 'packaging', 'Bag', 'qty', 3, 'weight', 12))) AS made_p \gset
+RESET ROLE;
+SELECT pg_temp.r_assert(:'made_p'::jsonb->>'success' = 'true', 'the GRN with photos was saved: ' || :'made_p');
+SELECT id AS pg FROM public.goodsreceived WHERE gr_no = 'R248P' \gset
+SELECT id AS pl1 FROM public.goodsreceived_trl WHERE gr_id = :'pg'::uuid ORDER BY id LIMIT 1 \gset
+SELECT id AS pl2 FROM public.goodsreceived_trl WHERE gr_id = :'pg'::uuid ORDER BY id OFFSET 1 LIMIT 1 \gset
+INSERT INTO public.grn_images(grn_id, grn_item_id, image_type, storage_path, original_filename, file_size, mime_type, status)
+ VALUES (:'pg'::uuid, NULL, 'header', 'wh248/header.jpg', 'header.jpg', 1000, 'image/jpeg', 'confirmed') RETURNING id AS ph \gset
+INSERT INTO public.grn_images(grn_id, grn_item_id, image_type, storage_path, original_filename, file_size, mime_type, status)
+ VALUES (:'pg'::uuid, :'pl1'::uuid, 'item', 'wh248/line1.jpg', 'line1.jpg', 1000, 'image/jpeg', 'confirmed') RETURNING id AS pi \gset
+SELECT jsonb_build_array(jsonb_build_object('id', :'ph', 'image_type', 'header', 'storage_path', 'wh248/header.jpg'),
+                         jsonb_build_object('id', :'pi', 'image_type', 'item', 'grn_item_id', :'pl1', 'storage_path', 'wh248/line1.jpg')) AS imgs_stored \gset
+SELECT jsonb_build_array(jsonb_build_object('id', :'ph', 'image_type', 'header', 'storage_path', 'wh248/header.jpg')) AS imgs_removed \gset
+SELECT jsonb_build_array(jsonb_build_object('id', :'ph', 'image_type', 'header', 'storage_path', 'wh248/header.jpg'),
+                         jsonb_build_object('id', :'pi', 'image_type', 'item', 'grn_item_id', :'pl2', 'storage_path', 'wh248/line1.jpg')) AS imgs_moved \gset
+-- One rates-only call with the given photo list; expect 'ok' or a reason. A refusal leaves the row, the lines and the photos identical.
+CREATE FUNCTION pg_temp.r_photo(p_label text, p_images jsonb, p_expect text) RETURNS void LANGUAGE plpgsql AS $$
+DECLARE v_id uuid; v_row jsonb; v_imgs jsonb; v_res jsonb; v_row2 jsonb; v_imgs2 jsonb;
+BEGIN
+  SELECT x.id, to_jsonb(x) INTO v_id, v_row FROM public.goodsreceived x WHERE x.gr_no = 'R248P';
+  SELECT COALESCE(jsonb_agg(to_jsonb(i) ORDER BY i.id), '[]') INTO v_imgs FROM public.grn_images i WHERE i.grn_id = v_id;
+  SET LOCAL ROLE authenticated;
+  v_res := public.update_grn(p_grn_id => v_id, p_items => pg_temp.r_lines('R248P'), p_images => p_images,
+    p_rates => (SELECT jsonb_build_array(jsonb_build_object('scope', 'grn', 'item_id', t.item_id, 'weight_min', 0, 'weight_max', 100, 'unit_price', 9, 'labour_rate', 1, 'tax_percent', 0))
+                FROM public.goodsreceived_trl t WHERE t.gr_id = v_id ORDER BY t.id LIMIT 1));
+  RESET ROLE;
+  SELECT to_jsonb(x) INTO v_row2 FROM public.goodsreceived x WHERE x.id = v_id;
+  SELECT COALESCE(jsonb_agg(to_jsonb(i) ORDER BY i.id), '[]') INTO v_imgs2 FROM public.grn_images i WHERE i.grn_id = v_id;
+  IF p_expect = 'ok' THEN
+    PERFORM pg_temp.r_assert(v_res->>'success' = 'true', p_label || ': saves: ' || v_res);
+    PERFORM pg_temp.r_assert((SELECT sender_name IS NULL AND supervisor_id IS NULL AND supervisor_name IS NULL FROM public.goodsreceived WHERE id = v_id)
+      AND (SELECT count(*) = 2 FROM public.grn_images WHERE grn_id = v_id AND status = 'confirmed'), p_label || ': sender and supervisor stay empty, both photos stay');
+  ELSE
+    PERFORM pg_temp.r_assert(v_res->>'success' = 'false' AND v_res->>'reason' = p_expect AND v_res->>'error_code' = 'WH409', p_label || ': refused with ' || p_expect || ': ' || v_res);
+    PERFORM pg_temp.r_assert(v_row2 = v_row AND v_imgs2 = v_imgs, p_label || ': the GRN row and its photos are identical after the refusal');
+  END IF;
+END $$;
+UPDATE public.goodsreceived SET sender_name = NULL, supervisor_id = NULL, supervisor_name = NULL WHERE gr_no = 'R248P';
+SELECT pg_temp.r_photo('rates only, empty sender, photos as stored', :'imgs_stored'::jsonb, 'ok');
+UPDATE public.goodsreceived SET sender_name = NULL, supervisor_id = NULL, supervisor_name = NULL WHERE gr_no = 'R248P';
+SELECT pg_temp.r_photo('rates only, empty sender, a photo removed', :'imgs_removed'::jsonb, 'SENDER_REQUIRED');
+SELECT pg_temp.r_photo('rates only, empty sender, a photo moved to another line', :'imgs_moved'::jsonb, 'SENDER_REQUIRED');
+UPDATE public.goodsreceived SET sender_name = 'Orig Sender', supervisor_id = NULL, supervisor_name = NULL WHERE gr_no = 'R248P';
+SELECT pg_temp.r_photo('rates only, empty supervisor, a photo removed', :'imgs_removed'::jsonb, 'SUPERVISOR_REQUIRED');
+SELECT pg_temp.r_photo('rates only, empty supervisor, a photo moved to another line', :'imgs_moved'::jsonb, 'SUPERVISOR_REQUIRED');
+
 -- ===== 2. the history import =====
 SELECT pg_temp.r_assert((SELECT count(*) FROM warehouse_import.stage_grns) = 0, 'no staged rows before this part');
 INSERT INTO warehouse_import.stage_grns(line, gr_no, gr_date, customer, pricing, sender) VALUES
