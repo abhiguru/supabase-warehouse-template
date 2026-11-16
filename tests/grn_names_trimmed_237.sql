@@ -38,16 +38,19 @@ BEGIN
 END $$;
 -- One edit through update_grn with only the names (NULL = not sent). Expects success, the stored values exactly, and the answer showing the same.
 CREATE FUNCTION pg_temp.t_edit(p_label text, p_state_sender text, p_state_sid uuid, p_state_sname text, p_sender text, p_sid uuid, p_sname text,
-                               p_e_sender text, p_e_sid uuid, p_e_sname text) RETURNS void LANGUAGE plpgsql AS $$
+                               p_e_sender text, p_e_sid uuid, p_e_sname text, p_fas boolean DEFAULT false) RETURNS void LANGUAGE plpgsql AS $$
 DECLARE v_id uuid; v_lines jsonb; v_res jsonb; g public.goodsreceived;
 BEGIN
   UPDATE public.goodsreceived SET sender_name = p_state_sender, supervisor_id = p_state_sid, supervisor_name = p_state_sname WHERE gr_no = 'T237';
   SELECT x.id INTO v_id FROM public.goodsreceived x WHERE x.gr_no = 'T237';
   SELECT jsonb_agg(jsonb_build_object('id', t.id, 'item_id', t.item_id, 'item_name', t.item_name, 'packaging', t.packaging, 'qty', t.qty, 'weight', t.weight) ORDER BY t.id)
     INTO v_lines FROM public.goodsreceived_trl t WHERE t.gr_id = v_id;
+  -- p_fas: fas-sync's path (the mark set on the superuser's connection); since WH-248 only that path may leave an empty supervisor or sender as stored.
+  PERFORM set_config('fas.session', CASE WHEN p_fas THEN gen_random_uuid()::text ELSE '' END, true);
   SET LOCAL ROLE authenticated;
   v_res := public.update_grn(p_grn_id => v_id, p_sender_name => p_sender, p_supervisor_id => p_sid, p_supervisor_name => p_sname, p_items => v_lines);
   RESET ROLE;
+  PERFORM set_config('fas.session', '', true);
   PERFORM pg_temp.t_assert(v_res->>'success' = 'true', p_label || ': saves: ' || v_res);
   SELECT * INTO g FROM public.goodsreceived x WHERE x.id = v_id;
   PERFORM pg_temp.t_assert(g.sender_name IS NOT DISTINCT FROM p_e_sender AND g.supervisor_id IS NOT DISTINCT FROM p_e_sid
@@ -55,6 +58,23 @@ BEGIN
     p_label || ': stored sender [' || COALESCE(g.sender_name, '<NULL>') || '] supervisor [' || COALESCE(g.supervisor_name, '<NULL>') || ']');
   PERFORM pg_temp.t_assert(v_res #>> '{grn,sender_name}' IS NOT DISTINCT FROM p_e_sender AND v_res #>> '{grn,supervisor_name}' IS NOT DISTINCT FROM p_e_sname,
     p_label || ': the answer shows the stored values: ' || (v_res->'grn')::text);
+END $$;
+-- The same edit, expected to be refused (WH-248) with the given reason, the GRN row and its lines unchanged.
+CREATE FUNCTION pg_temp.t_refuse(p_label text, p_state_sender text, p_state_sid uuid, p_state_sname text, p_sender text, p_sid uuid, p_sname text,
+                                 p_reason text) RETURNS void LANGUAGE plpgsql AS $$
+DECLARE v_id uuid; v_lines jsonb; v_res jsonb; v_before jsonb; v_after jsonb;
+BEGIN
+  UPDATE public.goodsreceived SET sender_name = p_state_sender, supervisor_id = p_state_sid, supervisor_name = p_state_sname WHERE gr_no = 'T237';
+  SELECT x.id INTO v_id FROM public.goodsreceived x WHERE x.gr_no = 'T237';
+  SELECT to_jsonb(x) INTO v_before FROM public.goodsreceived x WHERE x.id = v_id;
+  SELECT jsonb_agg(jsonb_build_object('id', t.id, 'item_id', t.item_id, 'item_name', t.item_name, 'packaging', t.packaging, 'qty', t.qty, 'weight', t.weight) ORDER BY t.id)
+    INTO v_lines FROM public.goodsreceived_trl t WHERE t.gr_id = v_id;
+  SET LOCAL ROLE authenticated;
+  v_res := public.update_grn(p_grn_id => v_id, p_sender_name => p_sender, p_supervisor_id => p_sid, p_supervisor_name => p_sname, p_items => v_lines);
+  RESET ROLE;
+  SELECT to_jsonb(x) INTO v_after FROM public.goodsreceived x WHERE x.id = v_id;
+  PERFORM pg_temp.t_assert(v_res->>'success' = 'false' AND v_res->>'reason' = p_reason, p_label || ': refused with ' || p_reason || ': ' || v_res);
+  PERFORM pg_temp.t_assert(v_before = v_after, p_label || ': the GRN is unchanged after the refusal');
 END $$;
 
 INSERT INTO warehouse_security.auth_config(key, value) VALUES
@@ -78,11 +98,11 @@ SELECT pg_temp.t_save('new: tab and line break at the ends', 'plain', 'N3', :'cu
 SELECT pg_temp.t_save('new: non-breaking space at the ends', 'plain', 'N4', :'cust'::uuid, :'cumin'::uuid, :'p1'::uuid, E' Ramesh  ', E' Suresh', 'Ramesh', 'Suresh');
 SELECT pg_temp.t_save('new: zero-width space at the ends', 'plain', 'N5', :'cust'::uuid, :'cumin'::uuid, :'p1'::uuid, E'​Ramesh​', E'​ Suresh ​', 'Ramesh', 'Suresh');
 SELECT pg_temp.t_save('new: mixed white space around, inner kept', 'plain', 'N6', :'cust'::uuid, :'cumin'::uuid, :'p1'::uuid, E' \t Ramesh ​ Patel\n ', 'Suresh', 'Ramesh ​ Patel', 'Suresh');
--- On fas-sync's path a blank sender is stored as NULL, never '' or white space.
-SELECT pg_temp.t_save('new on fas-sync''s path: sender empty', 'fas', 'N7', :'cust'::uuid, :'cumin'::uuid, :'p1'::uuid, '', 'Suresh', NULL, 'Suresh');
-SELECT pg_temp.t_save('new on fas-sync''s path: sender spaces', 'fas', 'N8', :'cust'::uuid, :'cumin'::uuid, :'p1'::uuid, E'  \t ', '  Suresh ', NULL, 'Suresh');
-SELECT pg_temp.t_save('new on fas-sync''s path: sender NULL', 'fas', 'N9', :'cust'::uuid, :'cumin'::uuid, :'p1'::uuid, NULL, 'Suresh', NULL, 'Suresh');
-SELECT pg_temp.t_save('new on fas-sync''s path: sender non-breaking and zero-width spaces only', 'fas', 'N10', :'cust'::uuid, :'cumin'::uuid, :'p1'::uuid, E' ​', 'Suresh', NULL, 'Suresh');
+-- On fas-sync's path a blank sender is stored as the customer's name (WH-248; WH-237 stored NULL), never '' or white space.
+SELECT pg_temp.t_save('new on fas-sync''s path: sender empty', 'fas', 'N7', :'cust'::uuid, :'cumin'::uuid, :'p1'::uuid, '', 'Suresh', 'Trim Rule Customer', 'Suresh');
+SELECT pg_temp.t_save('new on fas-sync''s path: sender spaces', 'fas', 'N8', :'cust'::uuid, :'cumin'::uuid, :'p1'::uuid, E'  \t ', '  Suresh ', 'Trim Rule Customer', 'Suresh');
+SELECT pg_temp.t_save('new on fas-sync''s path: sender NULL', 'fas', 'N9', :'cust'::uuid, :'cumin'::uuid, :'p1'::uuid, NULL, 'Suresh', 'Trim Rule Customer', 'Suresh');
+SELECT pg_temp.t_save('new on fas-sync''s path: sender non-breaking and zero-width spaces only', 'fas', 'N10', :'cust'::uuid, :'cumin'::uuid, :'p1'::uuid, E' ​', 'Suresh', 'Trim Rule Customer', 'Suresh');
 -- The WH-231 refusals are as before after the trimming: a blank supervisor name is still refused.
 SET LOCAL ROLE authenticated;
 SELECT public.save_grn(p_gr_no=>'N11', p_date=>'2026-04-01T12:00:00Z', p_customer_id=>:'cust'::uuid, p_customer_name=>'Trim Rule Customer', p_sender_name=>'Ramesh',
@@ -101,23 +121,33 @@ SELECT pg_temp.t_edit('edit: non-breaking space', 'Orig Sender', :'p1'::uuid, 'O
 SELECT pg_temp.t_edit('edit: zero-width space', 'Orig Sender', :'p1'::uuid, 'Orig Sup', E'​Ramesh​', NULL, E'​ Suresh​', 'Ramesh', :'p1'::uuid, 'Suresh');
 SELECT pg_temp.t_edit('edit: a new id with a padded name', 'Orig Sender', NULL, 'Orig Sup', NULL, :'p1'::uuid, E'  Suresh Shah\t', 'Orig Sender', :'p1'::uuid, 'Suresh Shah');
 -- An empty sender: sending '' or white space saves and the sender is NULL (for a NULL, an '' and a white-space stored value alike).
-SELECT pg_temp.t_edit('edit: NULL sender, sent empty', NULL, :'p1'::uuid, 'Orig Sup', '', NULL, NULL, NULL, :'p1'::uuid, 'Orig Sup');
-SELECT pg_temp.t_edit('edit: NULL sender, sent white space', NULL, :'p1'::uuid, 'Orig Sup', E'  \t ​ ', NULL, NULL, NULL, :'p1'::uuid, 'Orig Sup');
-SELECT pg_temp.t_edit('edit: empty-string sender, sent empty', '', :'p1'::uuid, 'Orig Sup', '', NULL, NULL, NULL, :'p1'::uuid, 'Orig Sup');
-SELECT pg_temp.t_edit('edit: white-space sender, sent white space', E'   ', :'p1'::uuid, 'Orig Sup', E' \t ', NULL, NULL, NULL, :'p1'::uuid, 'Orig Sup');
+SELECT pg_temp.t_edit('edit: NULL sender, sent empty', NULL, :'p1'::uuid, 'Orig Sup', '', NULL, NULL, NULL, :'p1'::uuid, 'Orig Sup', true);
+SELECT pg_temp.t_edit('edit: NULL sender, sent white space', NULL, :'p1'::uuid, 'Orig Sup', E'  \t ​ ', NULL, NULL, NULL, :'p1'::uuid, 'Orig Sup', true);
+SELECT pg_temp.t_edit('edit: empty-string sender, sent empty', '', :'p1'::uuid, 'Orig Sup', '', NULL, NULL, NULL, :'p1'::uuid, 'Orig Sup', true);
+SELECT pg_temp.t_edit('edit: white-space sender, sent white space', E'   ', :'p1'::uuid, 'Orig Sup', E' \t ', NULL, NULL, NULL, :'p1'::uuid, 'Orig Sup', true);
 SELECT pg_temp.t_edit('edit: NULL sender filled with a padded name', NULL, :'p1'::uuid, 'Orig Sup', '  Now Filled ', NULL, NULL, 'Now Filled', :'p1'::uuid, 'Orig Sup');
 -- An empty supervisor (no id, no name): a blank name sent is NULL.
-SELECT pg_temp.t_edit('edit: both empty, empty name sent', 'Orig Sender', NULL, NULL, NULL, NULL, '', 'Orig Sender', NULL, NULL);
-SELECT pg_temp.t_edit('edit: both empty, white-space name sent', 'Orig Sender', NULL, NULL, NULL, NULL, E' \t  ', 'Orig Sender', NULL, NULL);
-SELECT pg_temp.t_edit('edit: id without a name, empty name sent', 'Orig Sender', :'p1'::uuid, NULL, NULL, :'p1'::uuid, '', 'Orig Sender', :'p1'::uuid, NULL);
+SELECT pg_temp.t_edit('edit: both empty, empty name sent', 'Orig Sender', NULL, NULL, NULL, NULL, '', 'Orig Sender', NULL, NULL, true);
+SELECT pg_temp.t_edit('edit: both empty, white-space name sent', 'Orig Sender', NULL, NULL, NULL, NULL, E' \t  ', 'Orig Sender', NULL, NULL, true);
+SELECT pg_temp.t_edit('edit: id without a name, empty name sent', 'Orig Sender', :'p1'::uuid, NULL, NULL, :'p1'::uuid, '', 'Orig Sender', :'p1'::uuid, NULL, true);
+-- WH-248: the cases above marked true are fas-sync's path, the only one that may leave an empty value (the trimming still applies there: a
+-- blank sent is stored as NULL). On the ordinary path the same edits are refused, and the GRN stays as it was.
+SELECT pg_temp.t_refuse('plain: NULL sender, sent empty', NULL, :'p1'::uuid, 'Orig Sup', '', NULL, NULL, 'SENDER_REQUIRED');
+SELECT pg_temp.t_refuse('plain: NULL sender, sent white space', NULL, :'p1'::uuid, 'Orig Sup', E'  \t ​ ', NULL, NULL, 'SENDER_REQUIRED');
+SELECT pg_temp.t_refuse('plain: empty-string sender, sent empty', '', :'p1'::uuid, 'Orig Sup', '', NULL, NULL, 'SENDER_REQUIRED');
+SELECT pg_temp.t_refuse('plain: white-space sender, sent white space', E'   ', :'p1'::uuid, 'Orig Sup', E' \t ', NULL, NULL, 'SENDER_REQUIRED');
+SELECT pg_temp.t_refuse('plain: both empty, empty name sent', 'Orig Sender', NULL, NULL, NULL, NULL, '', 'SUPERVISOR_REQUIRED');
+SELECT pg_temp.t_refuse('plain: both empty, white-space name sent', 'Orig Sender', NULL, NULL, NULL, NULL, E' \t  ', 'SUPERVISOR_REQUIRED');
+SELECT pg_temp.t_refuse('plain: id without a name, empty name sent', 'Orig Sender', :'p1'::uuid, NULL, NULL, :'p1'::uuid, '', 'SUPERVISOR_REQUIRED');
+SELECT pg_temp.t_refuse('plain: name only, the same name padded (no id, so the supervisor is not whole)', 'Orig Sender', NULL, 'Suresh', NULL, NULL, '  Suresh  ', 'SUPERVISOR_REQUIRED');
 -- A name that is not sent is left byte for byte as stored, even with white space at its ends (and the other name is trimmed as sent).
 SELECT pg_temp.t_edit('edit: stored padded names, nothing sent', E'  Padded Sender \t', :'p1'::uuid, E'  Padded Sup\n', NULL, NULL, NULL, E'  Padded Sender \t', :'p1'::uuid, E'  Padded Sup\n');
 SELECT pg_temp.t_edit('edit: stored padded names, only the sender sent', E'  Padded Sender \t', :'p1'::uuid, E'  Padded Sup\n', ' New ', NULL, NULL, 'New', :'p1'::uuid, E'  Padded Sup\n');
 SELECT pg_temp.t_edit('edit: stored padded names, only the supervisor name sent', E'  Padded Sender \t', :'p1'::uuid, E'  Padded Sup\n', NULL, NULL, ' New Sup ', E'  Padded Sender \t', :'p1'::uuid, 'New Sup');
 -- The one refusal that now saves (WH-233's rule): a name with no id, sent with only white space added or removed at its ends, is no change.
-SELECT pg_temp.t_edit('name only: the same name padded', 'Orig Sender', NULL, 'Suresh', NULL, NULL, '  Suresh  ', 'Orig Sender', NULL, 'Suresh');
-SELECT pg_temp.t_edit('name only: the same name padded with tab and non-breaking space', 'Orig Sender', NULL, 'Suresh', NULL, NULL, E'\tSuresh ', 'Orig Sender', NULL, 'Suresh');
-SELECT pg_temp.t_edit('name only (stored padded): the same name trimmed', 'Orig Sender', NULL, '  Suresh ', NULL, NULL, 'Suresh', 'Orig Sender', NULL, 'Suresh');
+SELECT pg_temp.t_edit('name only: the same name padded', 'Orig Sender', NULL, 'Suresh', NULL, NULL, '  Suresh  ', 'Orig Sender', NULL, 'Suresh', true);
+SELECT pg_temp.t_edit('name only: the same name padded with tab and non-breaking space', 'Orig Sender', NULL, 'Suresh', NULL, NULL, E'\tSuresh ', 'Orig Sender', NULL, 'Suresh', true);
+SELECT pg_temp.t_edit('name only (stored padded): the same name trimmed', 'Orig Sender', NULL, '  Suresh ', NULL, NULL, 'Suresh', 'Orig Sender', NULL, 'Suresh', true);
 -- ...while a different name, or an empty one, on a name-only supervisor is still refused (WH-233), and the stored values stay.
 UPDATE public.goodsreceived SET sender_name = 'Orig Sender', supervisor_id = NULL, supervisor_name = 'Suresh' WHERE gr_no = 'T237';
 SELECT id AS t_id FROM public.goodsreceived WHERE gr_no = 'T237' \gset

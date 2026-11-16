@@ -19,7 +19,7 @@ ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 catalog_query="SELECT o.bucket_id||'/'||o.name||COALESCE('/'||o.version,'') || E'\\t'
   || COALESCE((SELECT string_agg('GRN '||g.gr_no||CASE WHEN i.status = 'pending' THEN ' (pending upload)' ELSE '' END, '; ') FROM public.grn_images i JOIN public.goodsreceived g ON g.id = i.grn_id WHERE o.bucket_id = 'grn-images' AND i.storage_path = o.name), '')
   || COALESCE((SELECT string_agg('Dispatch '||d.disp_no||CASE WHEN i.status = 'pending' THEN ' (pending upload)' ELSE '' END, '; ') FROM public.dispatch_images i JOIN public.dispatch d ON d.id = i.dispatch_id WHERE o.bucket_id = 'dispatch-images' AND i.storage_path = o.name), '')
-  FROM storage.objects o ORDER BY 1 COLLATE \"C\""
+  FROM storage.objects o ORDER BY (o.bucket_id||'/'||o.name||COALESCE('/'||o.version,'')) COLLATE \"C\""
 
 usage() { echo 'Usage: npm run storage:check   |   bash scripts/storage-file-check.sh --catalog CATALOG.tsv --files FILES.txt   |   --print-query' >&2; exit 2; }
 catalog=''; files=''
@@ -45,7 +45,12 @@ if [[ -n "$catalog" || -n "$files" ]]; then
 else
   state="${WAREHOUSE_STATE_DIR:-}"
   [[ "$state" == /* && -d "$state/data/storage" ]] || fail 'WAREHOUSE_STATE_DIR does not name an installed state with data/storage'
-  compose() { bash "$ROOT/scripts/compose.sh" "$@"; }
+  # WAREHOUSE_INSTALLED_CHECKOUT (set by scripts/upgrade-preflight.sh, which runs from a temporary copy of the new release): the installed
+  # checkout whose own scripts/compose.sh reaches the database. Its guard stays in force: that compose.sh still refuses a project whose
+  # recorded working directory is not its own checkout, so this names which checkout to ask and never switches the guard off.
+  compose_root="${WAREHOUSE_INSTALLED_CHECKOUT:-}"; [[ -n "$compose_root" ]] || compose_root="$ROOT"
+  [[ "$compose_root" == /* && -f "$compose_root/scripts/compose.sh" ]] || fail 'WAREHOUSE_INSTALLED_CHECKOUT does not name a checkout with scripts/compose.sh'
+  compose() { bash "$compose_root/scripts/compose.sh" "$@"; }
   compose exec -T db psql -X -A -t -F $'\t' -v ON_ERROR_STOP=1 -U supabase_admin -d postgres -c "$catalog_query" > "$scratch/catalog.tsv" \
     || fail 'the database query'
   (cd "$state/data/storage" && find . -type f | sed 's|^\./||' | LC_ALL=C sort) > "$scratch/files.txt" || fail 'the file listing'

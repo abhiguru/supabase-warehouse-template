@@ -82,10 +82,14 @@ DECLARE
     v_stored_sender_name text;
     v_stored_supervisor_id uuid;
     v_stored_supervisor_name text;
+    v_result_sender_name text;
     v_result_supervisor_id uuid;
     v_result_supervisor_name text;
     v_sender_name_sent boolean := false;
     v_supervisor_name_sent boolean := false;
+    v_sender_missing boolean;
+    v_supervisor_missing boolean;
+    v_held boolean;
 BEGIN
   PERFORM warehouse_security.authorize_rpc('update_grn',jsonb_build_object('p_grn_id',p_grn_id,'p_customer_id',p_customer_id));
   -- Migration 190 (WH-180): a GRN imported from the previous system is read-only (IMPORTED_READ_ONLY), except its rates: a call whose
@@ -454,32 +458,51 @@ BEGIN
             END IF;
         END LOOP;
 
-        -- WH-233: an edit may leave the sender name and the supervisor as stored, whatever is stored (empty, half-filled or whole);
-        -- only what it changes is judged, so an edit cannot make the record worse. The value judged is the one the edit would store: a
-        -- NULL argument keeps the stored value (the UPDATE below) and any other replaces it, trimmed above (WH-237), so no argument
-        -- clears a stored supervisor id; a name is cleared by sending a blank. Blank is NULL, or nothing left after trimming white space
-        -- (is_blank_text), as in save_grn (WH-231).
-        --   Sender: refused when the stored name is not blank and the result is blank.
-        --   Supervisor: the same id (or still none) with the same name, both trimmed (so both blank is the same), is as stored and
-        --   saves; any other result must have both an id and a name. So clearing a whole supervisor, or the remaining half of a
-        --   half-filled one, is refused, and completing a half-filled one saves.
-        -- No fas-sync exemption here (save_grn has one for a new GRN): fas-sync's updates send neither field, so they leave both as stored.
+        -- WH-248 (it replaces WH-233's "an edit may leave the sender name and the supervisor as stored"): an edit saves only a GRN that
+        -- then has a sender name and a whole supervisor (an id and a name), whatever it held when the edit began. The value judged is the
+        -- one the edit would store: a NULL argument keeps the stored value (the UPDATE below) and any other replaces it, trimmed above
+        -- (WH-237), so no argument clears a stored supervisor id; a name is cleared by sending a blank. Blank is NULL, or nothing left after
+        -- trimming white space (is_blank_text), as in save_grn (WH-231).
+        --   Sender: refused (SENDER_REQUIRED) when the result is blank. Supervisor: refused (SUPERVISOR_REQUIRED) when the result has no
+        --   id or a blank name. The sender is judged first, with the same codes and messages as save_grn.
+        -- Two saves are not held to that, and may leave an empty or half-filled value as stored:
+        --   1. fas-sync's updates, recognised as save_grn.sql recognises fas-sync: session_user is supabase_admin (the login of the
+        --      connection, which the API cannot give a client) and fas.session is set and not blank. They send neither field.
+        --   2. A save that changes only the rates: p_rates is sent and nothing this function would write on the GRN, its lines or its
+        --      photos differs from what is stored, by warehouse_security.grn_save_keeps_stored with p_strict true (WH-250, WH-251; its
+        --      migration's header says which values count as the same, such as a name differing only by white space at its ends).
+        --   WH-233's rules still hold for them: an edit that changes the sender name may not leave it blank, and one that changes the
+        --   supervisor (id or name) must leave both. The same id (or still none) with the same name, both trimmed, is as stored.
         -- These come after every refusal above and before anything is written, so the GRN is unchanged after a refusal.
         SELECT g.sender_name, g.supervisor_id, g.supervisor_name
         INTO v_stored_sender_name, v_stored_supervisor_id, v_stored_supervisor_name
         FROM goodsreceived g
         WHERE g.id = p_grn_id;
+        v_result_sender_name := CASE WHEN v_sender_name_sent THEN p_sender_name ELSE v_stored_sender_name END;
         v_result_supervisor_id := COALESCE(p_supervisor_id, v_stored_supervisor_id);
         v_result_supervisor_name := CASE WHEN v_supervisor_name_sent THEN p_supervisor_name ELSE v_stored_supervisor_name END;
-        IF NOT warehouse_security.is_blank_text(v_stored_sender_name)
-           AND warehouse_security.is_blank_text(CASE WHEN v_sender_name_sent THEN p_sender_name ELSE v_stored_sender_name END) THEN
-            RETURN warehouse_security.refuse('SENDER_REQUIRED', 'Sender name is required', '{}'::jsonb);
-        END IF;
-        IF NOT (v_result_supervisor_id IS NOT DISTINCT FROM v_stored_supervisor_id
-                AND warehouse_security.trimmed_reason(v_result_supervisor_name)
-                    IS NOT DISTINCT FROM warehouse_security.trimmed_reason(v_stored_supervisor_name))
-           AND (v_result_supervisor_id IS NULL OR warehouse_security.is_blank_text(v_result_supervisor_name)) THEN
-            RETURN warehouse_security.refuse('SUPERVISOR_REQUIRED', 'Supervisor is required', '{}'::jsonb);
+        v_sender_missing := warehouse_security.is_blank_text(v_result_sender_name);
+        v_supervisor_missing := v_result_supervisor_id IS NULL OR warehouse_security.is_blank_text(v_result_supervisor_name);
+        IF v_sender_missing OR v_supervisor_missing THEN
+            -- The comparison is sent the arguments as this function received them: a sent blank name or registration (NULL after the
+            -- trimming above) goes as '' so that it is compared with the stored value, and an omitted one as NULL ("as stored").
+            v_held := NOT (session_user = 'supabase_admin'
+                           AND NOT warehouse_security.is_blank_text(current_setting('fas.session', true)))
+                      AND NOT (p_rates IS NOT NULL
+                               AND warehouse_security.grn_save_keeps_stored(p_grn_id, p_gr_no, p_date, p_customer_id, p_customer_name,
+                                     p_sender_id, CASE WHEN v_sender_name_sent THEN COALESCE(p_sender_name, '') END,
+                                     p_supervisor_id, CASE WHEN v_supervisor_name_sent THEN COALESCE(p_supervisor_name, '') END,
+                                     CASE WHEN v_registration_sent THEN COALESCE(p_registration, '') END, p_note, p_leon,
+                                     p_pricing_mode, p_items, p_images, p_duration_mode, true));
+            IF v_sender_missing AND (v_held OR NOT warehouse_security.is_blank_text(v_stored_sender_name)) THEN
+                RETURN warehouse_security.refuse('SENDER_REQUIRED', 'Sender name is required', '{}'::jsonb);
+            END IF;
+            IF v_supervisor_missing
+               AND (v_held OR NOT (v_result_supervisor_id IS NOT DISTINCT FROM v_stored_supervisor_id
+                                   AND warehouse_security.trimmed_reason(v_result_supervisor_name)
+                                       IS NOT DISTINCT FROM warehouse_security.trimmed_reason(v_stored_supervisor_name))) THEN
+                RETURN warehouse_security.refuse('SUPERVISOR_REQUIRED', 'Supervisor is required', '{}'::jsonb);
+            END IF;
         END IF;
 
         -- Migration 128: the order lines and the stock of this GRN's lots before the edit writes anything, to tell afterwards which
