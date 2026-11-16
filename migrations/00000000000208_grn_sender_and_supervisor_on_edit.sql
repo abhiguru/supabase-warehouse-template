@@ -1,4 +1,4 @@
--- Migration "GRN sender and supervisor on edit" (WH-248). Its number is taken when the work is assembled for main. Written against the
+-- Migration 208 (WH-248): GRN sender and supervisor on edit. Written against the
 -- functions as migrations 190 (warehouse_security.update_imported_grn_rates) and 192 (public.import_history) left them; update_grn and
 -- save_grn are definition files (migrations/definitions/) and change with this migration.
 --  1. warehouse_security.grn_save_keeps_stored(...): whether an update_grn call changes nothing but the rates. It is the comparison that
