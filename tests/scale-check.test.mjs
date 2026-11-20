@@ -19,6 +19,15 @@ test('summarise gives p50, p95 and max per RPC, sorts its input and counts error
   assert.deepEqual(summary.b, { calls: 3, errors: 3, p50: null, p95: null, max: null });
 });
 
+// WH-110: the answers of the failed calls are kept by status, so a gateway refusal (429) is told from a fault of the RPC.
+test('summarise keeps the status of failed calls, and evaluate names them in the failure', () => {
+  const summary = summarise({ limited: { durations: [10], errors: 3, statuses: { 429: 2, timeout: 1 } }, clean: { durations: [10], errors: 0, statuses: {} } });
+  assert.deepEqual(summary.limited, { calls: 4, errors: 3, p50: 10, p95: 10, max: 10, statuses: { 429: 2, timeout: 1 } });
+  assert.deepEqual(summary.clean, { calls: 1, errors: 0, p50: 10, p95: 10, max: 10 });
+  const verdict = evaluate(summary, { limitMs: 300, enforce: false });
+  assert.deepEqual(verdict.failures, ['limited: 3 of 4 calls failed or timed out (answers: 429 x2, timeout x1)']);
+});
+
 test('evaluate: a p95 above the limit is a warning unless enforced; an error or no answer always fails; the limit itself passes', () => {
   const summary = { fast: { calls: 10, errors: 0, p50: 10, p95: 300, max: 400 }, slow: { calls: 10, errors: 0, p50: 100, p95: 300.1, max: 900 } };
   assert.deepEqual(evaluate(summary, { limitMs: 300, enforce: false }), { failures: [], warnings: ['slow: p95 300.1 ms is above 300 ms'] });
