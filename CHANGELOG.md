@@ -369,7 +369,7 @@ pairs with this release is 0.8.0.
   ```
 
 - **Upgrade the app in the same window as this release.** An older app build keeps working and is not told to update (`minimumClientVersion` stays 0.6.0). On every
-  older build, adding an item with no packaging word, or editing an item that has none, is refused, because the word is now required (migration 144). On a 0.6.0 build,
+  older build, adding an item with no packaging word, or saving an edit of an item that has none without adding a word, is refused (switching such an item on or off still works), because the word is now required (migration 144). On a 0.6.0 build,
   invoice delete works without the changed-invoice check (migration 146), and Cancel invoice, the `payments` capability switch and the devices list (migration 140) are
   missing. A 0.7.0 build from before this release has Cancel invoice but no Delete invoice; the app that pairs with this release has both.
 - **git 2.34 or newer and `ssh-keygen` are needed on the host from now on**: `upgrade.sh` verifies the SSH signature of every release tag against the key
