@@ -724,7 +724,7 @@ devices on the facility LAN. What limits it:
 
 The functions load nothing from the network when a worker starts.
 
-- **One vendored file.** `functions/vendor/jose.mjs` (jose 6.2.12) is one self-contained module; the functions import it by
+- **One vendored file.** `functions/vendor/jose.mjs` (jose 6.2.17) is one self-contained module; the functions import it by
   relative path. `functions/vendor/LICENSES.txt` holds the licence of every package it may contain.
   `functions/_shared/supabase-rest.ts` makes the few REST, RPC and Storage calls the functions need with plain `fetch`, and
   adds a 60 s timeout to each call (the worker's own wall-clock limit is 60 s, `functions/main/index.ts`). There is no
