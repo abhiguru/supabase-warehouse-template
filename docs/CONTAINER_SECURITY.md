@@ -470,7 +470,7 @@ branch (1.30; Dependabot proposes patch releases only, `.github/dependabot.yml`)
 minor from 1.30 in the `-alpine-slim` variant, so that move needs no test edit.
 
 **Base image watch.** A pin by digest does not notice that its base stops receiving patches: node drops the Alpine release
-a tag names (the Storage image's `node:24.22.1-alpine3.23` is the first, expected around the end of 2026), nginx stops a stable
+a tag names (the Storage image's `node:24.22.3-alpine3.23` is the first, expected around the end of 2026), nginx stops a stable
 branch when the next one ships, python drops a Debian release. Nothing fails; a later scan is the first sign.
 `.github/workflows/base-images.yml` runs `scripts/check-base-images.mjs` weekly: for every `FROM name:tag@sha256:` in
 `docker/*/Dockerfile` and every `image:` of `docker/docker-compose.yml` that is an official Docker image (node, nginx, python,
