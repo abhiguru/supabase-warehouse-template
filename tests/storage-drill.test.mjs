@@ -9,6 +9,10 @@ import { join } from 'node:path';
 // (or, with STOP_AT=1, to fail step 1 because the Storage container is not running), so the cleanup that follows can be read from the calls:
 // which images it removes, how, and which it leaves. Nothing here touches a real Docker.
 const SCRIPT = new URL('../tests/storage-drill.sh', import.meta.url).pathname;
+const HEAD_TEXT = readFileSync(new URL('../docker/storage/migrations-head.txt', import.meta.url), 'utf8');
+const HEAD_ID = Number(/^id=(\d+)$/m.exec(HEAD_TEXT)[1]);
+const HEAD_NAME = /^name=(.+)$/m.exec(HEAD_TEXT)[1].trim();
+const NEXT_MIG = `${String(HEAD_ID + 1).padStart(4, '0')}-next-migration.sql`;
 const id = c => `sha256:${c.repeat(64)}`;
 const BUILT = id('b');
 const NEXT = id('e');
@@ -41,12 +45,12 @@ case "$1" in
   logs)
     echo 'PostgreSQL init process complete; ready for start up'
     case "$all" in *drill-frozen*) ;; *) [ "$STOP_AT" = 1 ] || echo 'Started Successfully' ;; esac ;;
-  run) case "$all" in *"--entrypoint sh"*) echo '0074-next-migration.sql' ;; esac ;;
+  run) case "$all" in *"--entrypoint sh"*) echo '${NEXT_MIG}' ;; esac ;;
   exec)
     cat > /dev/null
     case "$all" in
-      *'max(id)'*) echo 73 ;;
-      *'FROM storage.migrations WHERE id = 73'*) echo revoke-grants-to-unused-operations ;;
+      *'max(id)'*) echo ${HEAD_ID} ;;
+      *'FROM storage.migrations WHERE id = ${HEAD_ID}'*) echo ${HEAD_NAME} ;;
       *'count(*) FROM storage.migrations'*) echo 5 ;;
       *'count(*) FROM storage.objects'*) echo 2 ;;
       *md5*) echo catalogmd5 ;;

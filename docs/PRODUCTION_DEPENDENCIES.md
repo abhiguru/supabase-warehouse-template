@@ -42,7 +42,7 @@ they go in the operator's secret store. Nothing here authorizes production deplo
     no valid exception, an expired exception, or one that expires within 14 days. Raise the dependency, or record a reviewed exception
     of at most 90 days in `docker/npm-audit-exceptions.json` ("Dependency advisory exceptions" in docs/CONTAINER_SECURITY.md).
   - "Base image pins need attention" (`base-images.yml`): a pinned base image variant that the official-images library no longer
-    publishes (node's `alpine3.23` for Storage is the first, around the end of 2026; nginx 1.30, which leaves the library when 1.32
+    publishes (node's `alpine3.24` for Storage, around the end of 2027; nginx 1.30, which leaves the library when 1.32
     ships; python's `slim-bookworm`), or a pinned tag not pushed for 120 days. Move the pin, rebuild and rescan.
   - Not weekly, but the same kind of signal: the image-scan exceptions in `docker/image-exceptions.json` expire on 2027-01-15 (see "Accepted by the owner").
 - **Owner action: the `keep-alive` workflow and the Actions tab.** Once `.github/workflows/keep-alive.yml` is on `main`, run it by hand
@@ -115,9 +115,9 @@ they go in the operator's secret store. Nothing here authorizes production deplo
   - Release tags and release notes, and with them every `bash upgrade.sh vX.Y.Z` the operators would run.
   - Image-scan exception renewals: the six entries of `docker/image-exceptions.json` expire on **2027-01-15**. After that date
     `npm run scan:images` and the release checklist fail until the owner reviews and renews them (CI does not run the scan). End-of-life
-    dates behind it: Node 22 on the host 2027-04-30, Node 24 in the storage and PDF images 2028-04-30, Debian 12 for the
+    dates behind it: Node 22 on the host 2027-04-30, Node 24 in the PDF image 2028-04-30, Node 26 in the storage image 2029-04-30, Debian 12 for the
     functions image 2028-06-30. The rest of the end-of-life dates, with the forecast ones marked as such (Ubuntu 22.04 under CUPS
-    2027-04 to 05, Alpine 3.23 2027-11-01, Python 3.15 for the sensor bridge about 2031-10, the database's move off Debian 13, with the PostgreSQL
+    2027-04 to 05, Alpine 3.24 for the storage image 2028-05-01, Python 3.15 for the sensor bridge about 2031-10, the database's move off Debian 13, with the PostgreSQL
     major move, in 2029 H1, PostgreSQL 18 2030-11), are in [MAINTENANCE_CALENDAR.md](MAINTENANCE_CALENDAR.md), which lists every dated obligation
     and where it is checked.
   - Mitigation, **unverified**: `.github/workflows/keep-alive.yml` commits a timestamp once a month to the orphan branch `keep-alive`

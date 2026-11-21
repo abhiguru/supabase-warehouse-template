@@ -19,7 +19,10 @@ old tag's dependency set under the new application.
 2. Start from those two files. Drop `scripts` and `devDependencies`, then
    carry over the raised versions and the `overrides` block from the current
    `package.json`, leaving out any the new tag already meets.
-3. `npx -y npm@11.12.1 install --package-lock-only --ignore-scripts` in this directory.
+3. `npx -y npm@<the image's npm> install --package-lock-only --ignore-scripts --lockfile-version 2` in this directory, with the npm
+   the publisher image ships (`docker run --rm --entrypoint npm supabase/storage-api:<tag> -v`; 12.2.1 since v1.85.0) and the
+   lockfile version of its own lock. The build's `npm install` runs that npm under the image's `/app/.npmrc` (`engine-strict`,
+   `allow-git=root`, `strict-allow-scripts`), so keep the publisher's `engines` and `allowScripts`.
 4. Set the tag and digest in `Dockerfile` (`FROM ... AS patched`), keep stage 2's Node image (`node:<x>-alpine<y>`)
    equal in major, minor and Alpine to the publisher image's (`docker run --rm --entrypoint node
    supabase/storage-api:<tag> -v`; `cat /etc/alpine-release` in the same image) and set `ENV VERSION` to the tag's
@@ -122,3 +125,36 @@ copy stays valid for `^8.7.0`), `fast-uri` 3.1.9 and 4.2.3, `ip-address` 10.7.4,
 every parent's caret range, so no override was needed. The lock was updated with npm 11.12.1
 (`npx -y npm@11.12.1 update systeminformation --package-lock-only --ignore-scripts --lockfile-version 2`) and only those two lock
 entries changed; `npm audit --omit=dev` reports 0 vulnerabilities, and the image builds with its lockfile and `npm ls` guards.
+
+2026-11-20: five advisories in the locked runtime, 15 findings in `npm audit --omit=dev`.
+Raised: `@opentelemetry/instrumentation-http` to 0.222.0
+([GHSA-3v2p-hm54-8qcq](https://github.com/advisories/GHSA-3v2p-hm54-8qcq)), with a scoped override under
+`@platformatic/telemetry`, which pins 0.219.0 and would otherwise keep that copy; `minimatch@^10` to 11.0.1
+([GHSA-g3hv-75wg-m249](https://github.com/advisories/GHSA-g3hv-75wg-m249)); `glob@^10` and `glob@^13` to 14.0.2
+([GHSA-3g3m-2fjr-6pw4](https://github.com/advisories/GHSA-3g3m-2fjr-6pw4)); `fast-xml-parser` 5.12.0
+([GHSA-474x-hrwr-fgx4](https://github.com/advisories/GHSA-474x-hrwr-fgx4)); `jose` 6.2.17. The overrides are needed
+because the parents' ranges accept the vulnerable copies, so a plain lock regeneration keeps them. The `glob` and
+`minimatch` overrides force a new major on transitive users (`@fastify/otel`, `rimraf` 5 under `gaxios`, and
+`@fastify/static`). The lock was regenerated with npm 11.12.1, lockfileVersion 2; `npm audit --omit=dev` went from 15 to 0.
+Open risk: the forced majors are proven only at runtime, by the storage drill and dev-facility checks. The 2026-11-21 entry
+below (v1.95.0, npm 12.2.1) kept all five raises and their overrides, because the v1.95.0 tree still pulls the
+vulnerable copies, and dropped none of them; it dropped only other overrides.
+
+2026-11-21, v1.80.2 to v1.95.0 (Dependabot #224): v1.85.0 moved the publisher image to Node 26 and npm 12, so stage 2 is
+`node:26.13.0-alpine3.24` (the publisher's Node 26.13.0 on Alpine 3.24.3) and the manifest takes the publisher's `packageManager`
+(`npm@12.2.1`), `engines` (Node 26, npm 12.2.1), `allowScripts` and its own override of `@fastify/busboy` (3.2.4, under
+`@fastify/multipart`). The lock was regenerated from the v1.95.0 manifest and lock with npm 12.2.1 (`--lockfile-version 2`, the
+publisher's); npm 11.12.1 writes the same bytes. Dropped because the new tree already meets them or they would now go backwards:
+the `@fastify/busboy@^3` pin (3.2.3 is below the publisher's 3.2.4), `undici@^7` and `undici@^8` (the root is now undici 8.12.3,
+and the 7.x copies under platformatic are 7.30.1, the fixed version), `fast-uri@^3`, `js-yaml@^4` and `protobufjs@^7` (no copy
+below the fix), and `dotenv` (the publisher no longer depends on it). `@opentelemetry/propagator-jaeger` is now scoped to
+`@<2.9.0`, so the root copy stays at 2.12.0 and only the 2.8.0 copy under `@platformatic/telemetry` is raised. Kept from the earlier
+raises: `@opentelemetry/auto-instrumentations-node` `^0.81.0`, `@opentelemetry/instrumentation-http` `^0.222.0` (and the scoped
+override under `@platformatic/telemetry`), `fast-xml-parser` `^5.12.0`, `jose` `^6.2.17`, and the `glob`, `minimatch`,
+`brace-expansion`, `fast-copy`, `fast-uri@^4`, `ip-address`, `@grpc/grpc-js` and `socks` overrides; `systeminformation` was updated
+inside its range to 5.33.23. `pg-boss` stays on commit 89b675b, the one v1.95.0 locks. `npm audit --omit=dev` reports 0
+vulnerabilities (the v1.95.0 lock as published: 32, 7 of them high). Storage's schema moves from 73 to 80
+(`revoke-extra-lifecycle-postgres-grants`): new lifecycle tables and triggers on `storage.buckets` (a short `EXCLUSIVE` lock on
+`buckets`, retried within `lock_timeout` or one minute) and two partial indexes on `storage.objects` built `CONCURRENTLY`; no
+migration rewrites `storage.objects`. The image also rewrites the stored hashes of migrations 2 and 62, which upstream edited in
+place (`DB_ALLOW_MIGRATION_REFRESH` is left at its default, on).
