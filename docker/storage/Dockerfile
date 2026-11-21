@@ -17,7 +17,7 @@ RUN before="$(sha256sum package-lock.json | cut -d' ' -f1)" \
 # Stage 2 (the image that runs): a clean Node image of the same major and Alpine as the publisher's (24.21.0,
 # 3.23), without the compilers and Python of stage 1, with only the patched /app copied over. Keep the Node
 # version in step with stage 1's (docker/storage/README.md).
-FROM node:24.22.1-alpine3.23@sha256:0468540aa58203ff9e40c2aab3907c52644ab818af6176b1c70a026137dc92a2
+FROM node:24.22.3-alpine3.23@sha256:3946fb783fdce8a2812136ea694bc95c698c4f4096f3fd18568dc27a8ac389dc
 # Alpine base: take the distribution's security updates first. No package manager at run time.
 RUN apk upgrade --no-cache \
     && rm -rf /root/.npm /usr/local/lib/node_modules/npm /usr/local/lib/node_modules/corepack \
