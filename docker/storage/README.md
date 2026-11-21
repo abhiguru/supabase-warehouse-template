@@ -126,6 +126,20 @@ every parent's caret range, so no override was needed. The lock was updated with
 (`npx -y npm@11.12.1 update systeminformation --package-lock-only --ignore-scripts --lockfile-version 2`) and only those two lock
 entries changed; `npm audit --omit=dev` reports 0 vulnerabilities, and the image builds with its lockfile and `npm ls` guards.
 
+2026-11-20 (WH-19 branch B, 7101ffc): five advisories in the locked runtime, 15 findings in `npm audit --omit=dev`.
+Raised: `@opentelemetry/instrumentation-http` to 0.222.0
+([GHSA-3v2p-hm54-8qcq](https://github.com/advisories/GHSA-3v2p-hm54-8qcq)), with a scoped override under
+`@platformatic/telemetry`, which pins 0.219.0 and would otherwise keep that copy; `minimatch@^10` to 11.0.1
+([GHSA-g3hv-75wg-m249](https://github.com/advisories/GHSA-g3hv-75wg-m249)); `glob@^10` and `glob@^13` to 14.0.2
+([GHSA-3g3m-2fjr-6pw4](https://github.com/advisories/GHSA-3g3m-2fjr-6pw4)); `fast-xml-parser` 5.12.0
+([GHSA-474x-hrwr-fgx4](https://github.com/advisories/GHSA-474x-hrwr-fgx4)); `jose` 6.2.17. The overrides are needed
+because the parents' ranges accept the vulnerable copies, so a plain lock regeneration keeps them. The `glob` and
+`minimatch` overrides force a new major on transitive users (`@fastify/otel`, `rimraf` 5 under `gaxios`, and
+`@fastify/static`). The lock was regenerated with npm 11.12.1, lockfileVersion 2; `npm audit --omit=dev` went from 15 to 0.
+Open risk: the forced majors are proven only at runtime, by the storage drill and the temp1 checks. The 2026-11-21 entry
+below (WH-19 C5, v1.95.0, npm 12.2.1) kept all five raises and their overrides, because the v1.95.0 tree still pulls the
+vulnerable copies, and dropped none of them; it dropped only other overrides.
+
 2026-11-21, v1.80.2 to v1.95.0 (Dependabot #224): v1.85.0 moved the publisher image to Node 26 and npm 12, so stage 2 is
 `node:26.13.0-alpine3.24` (the publisher's Node 26.13.0 on Alpine 3.24.3) and the manifest takes the publisher's `packageManager`
 (`npm@12.2.1`), `engines` (Node 26, npm 12.2.1), `allowScripts` and its own override of `@fastify/busboy` (3.2.4, under
