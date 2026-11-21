@@ -837,6 +837,12 @@ test('scale-check is scheduled only, needs validate, runs the 5-year seed and th
   assert.match(job, /core-backend-test-[0-9]+/, 'the state name the operator fixtures accept');
   assert.match(job, /node tests\/seed\/make-seed\.mjs --years 5 >/);
   assert.ok(job.indexOf('make-seed.mjs --years 5') < job.indexOf('node tests/scale-check.mjs'), 'the data is loaded before the check');
+  // WH-110: the gateway's limit stays in the repository; only this job's own checkout loses it, before the gateway image is built.
+  const lift = /- name: Lift the gateway request limit in this job's checkout only\n(?: {8}[^\n]*\n)+/.exec(job)?.[0] ?? '';
+  assert.match(lift, /rate=100000r\\\/s;\/' docker\/nginx\/api-http\.conf/);
+  assert.match(lift, /burst=1000000 nodelay;\/' docker\/nginx\/api-locations\.conf/);
+  assert.match(lift, /grep -q 'zone=rest:10m rate=100000r\/s;' docker\/nginx\/api-http\.conf/, 'a pattern that stops matching fails the job');
+  assert.ok(job.indexOf('Lift the gateway request limit') < job.indexOf('bash setup.sh --operator'), 'before the gateway image is built');
   assert.match(job, /SCALE_ENFORCE: '0'/, 'a warning only until the numbers have settled');
   assert.match(job, /\n        run: node tests\/scale-check\.mjs\n/);
   const upload = /- name: Per-RPC timings[^\n]*\n(?: {8}[^\n]*\n)+/.exec(job)?.[0] ?? '';

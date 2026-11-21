@@ -173,4 +173,36 @@ SELECT pg_temp.pr_assert(COALESCE(:'six_ub'::jsonb#>'{data,summary,current_stock
 SELECT pg_temp.pr_assert(public.create_customer('Zero Stock Customer','9877711111')->>'success'='true','zero-stock customer');
 SELECT public.get_customer_activity_detail((SELECT id FROM public.customers WHERE name='Zero Stock Customer'),'2026-05-01'::date,'2026-05-31'::date) AS zero_stock \gset
 SELECT pg_temp.pr_assert(COALESCE(:'zero_stock'::jsonb#>>'{data,summary,current_stock_packaging}',:'zero_stock'::jsonb#>>'{summary,current_stock_packaging}')='Bag','zero stock reads Bag: '||:'zero_stock');
+
+-- WH-10: a fully dispatched lot holds no stock and a deleted receipt is not stock: neither counts in the word. Either would read Box here if it were counted.
+SELECT pg_temp.pr_assert(public.create_item(n,'Bag')->>'success'='true','catalog item '||n) FROM unnest(ARRAY['Rule Gone','Rule Kept','Rule Deleted']) n;
+SELECT pg_temp.pr_assert(public.create_customer(c,p)->>'success'='true','customer '||c) FROM (VALUES ('Fully Dispatched Customer','9877722221'),('Deleted Receipt Customer','9877722222'),('Only Deleted Customer','9877722223')) v(c,p);
+SELECT pg_temp.pr_assert(public.replace_item_rates(i.id,c.id,'monthly','2026-01-01'::date,jsonb_build_array(jsonb_build_object('weight_min',0,'weight_max',100,'unit_price',5,'labour_rate',2,'tax_percent',5)))->>'success'='true','rate '||i.name||' '||c.name)
+  FROM public.items i JOIN public.customers c ON (i.name,c.name) IN (('Rule Gone','Fully Dispatched Customer'),('Rule Kept','Deleted Receipt Customer'),('Rule Deleted','Deleted Receipt Customer'),('Rule Deleted','Only Deleted Customer'));
+-- (a) one Box lot, all ten dispatched: stock is zero, so no lot has stock and the word is the default Bag.
+SELECT pg_temp.pr_grn_for('Fully Dispatched Customer','FD1',jsonb_build_array(pg_temp.pr_lot((SELECT id FROM public.items WHERE name='Rule Gone'),'Rule Gone','Box','F1')));
+SELECT t.id AS fd_lot FROM public.goodsreceived_trl t JOIN public.goodsreceived g ON g.id=t.gr_id WHERE g.customer_id=(SELECT id FROM public.customers WHERE name='Fully Dispatched Customer') \gset
+SELECT public.create_dispatch_with_stock_check(jsonb_build_object('customer_id',(SELECT id FROM public.customers WHERE name='Fully Dispatched Customer'),'customer_name','Fully Dispatched Customer',
+ 'supervisor_id',:'admin_profile','supervisor_name','Packaging Rule Administrator','disp_date','2026-05-04','disp_no','PRD3'),
+ ARRAY[jsonb_build_object('gr_trl_id',:'fd_lot','disp_qty',10)],0,'pr-dispatch-3') AS d3 \gset
+SELECT pg_temp.pr_assert(:'d3'::jsonb->>'success'='true','dispatch PRD3 takes the whole lot: '||:'d3');
+SELECT pg_temp.pr_assert((SELECT stock FROM public.goodsreceived_trl WHERE id=:'fd_lot'::uuid)=0,'the lot has no stock left');
+SELECT public.get_customer_activity_detail((SELECT id FROM public.customers WHERE name='Fully Dispatched Customer'),'2026-05-01'::date,'2026-05-31'::date) AS full_gone \gset
+SELECT pg_temp.pr_assert(COALESCE(:'full_gone'::jsonb#>>'{data,summary,current_stock}',:'full_gone'::jsonb#>>'{summary,current_stock}')::numeric=0
+  AND COALESCE(:'full_gone'::jsonb#>>'{data,summary,current_stock_packaging}',:'full_gone'::jsonb#>>'{summary,current_stock_packaging}')='Bag','fully dispatched Box lot: no stock, Bag: '||:'full_gone');
+-- (b) a Bag receipt and a Box receipt that is then marked deleted (as tests/grn_rates.sql does): the word is Bag, not a mix. A customer whose only receipt is deleted reads Bag with no stock.
+SELECT pg_temp.pr_grn_for('Deleted Receipt Customer','DR1',jsonb_build_array(pg_temp.pr_lot((SELECT id FROM public.items WHERE name='Rule Kept'),'Rule Kept','Bag','D1')));
+SELECT pg_temp.pr_grn_for('Deleted Receipt Customer','DR2',jsonb_build_array(pg_temp.pr_lot((SELECT id FROM public.items WHERE name='Rule Deleted'),'Rule Deleted','Box','D2')));
+SELECT pg_temp.pr_grn_for('Only Deleted Customer','DR3',jsonb_build_array(pg_temp.pr_lot((SELECT id FROM public.items WHERE name='Rule Deleted'),'Rule Deleted','Box','D3')));
+SELECT public.get_customer_activity_detail((SELECT id FROM public.customers WHERE name='Deleted Receipt Customer'),'2026-05-01'::date,'2026-05-31'::date) AS del_before \gset
+SELECT pg_temp.pr_assert(COALESCE(:'del_before'::jsonb#>'{data,summary,current_stock_packaging}',:'del_before'::jsonb#>'{summary,current_stock_packaging}')='null'::jsonb,'Bag and Box receipts, both live: null (mixed): '||:'del_before');
+RESET ROLE;
+UPDATE public.goodsreceived SET deleted_at=now() WHERE id IN (SELECT t.gr_id FROM public.goodsreceived_trl t WHERE t.rack IN ('D2','D3'));
+SELECT pg_temp.pr_assert((SELECT count(*) FROM public.goodsreceived g WHERE g.deleted_at IS NOT NULL AND g.id IN (SELECT t.gr_id FROM public.goodsreceived_trl t WHERE t.rack IN ('D2','D3')))=2,'both Box receipts are marked deleted');
+SET LOCAL ROLE authenticated;
+SELECT public.get_customer_activity_detail((SELECT id FROM public.customers WHERE name='Deleted Receipt Customer'),'2026-05-01'::date,'2026-05-31'::date) AS del_after \gset
+SELECT pg_temp.pr_assert(COALESCE(:'del_after'::jsonb#>>'{data,summary,current_stock_packaging}',:'del_after'::jsonb#>>'{summary,current_stock_packaging}')='Bag','the deleted Box receipt is left out: Bag: '||:'del_after');
+SELECT public.get_customer_activity_detail((SELECT id FROM public.customers WHERE name='Only Deleted Customer'),'2026-05-01'::date,'2026-05-31'::date) AS del_only \gset
+SELECT pg_temp.pr_assert(COALESCE(:'del_only'::jsonb#>>'{data,summary,current_stock}',:'del_only'::jsonb#>>'{summary,current_stock}')::numeric=0
+  AND COALESCE(:'del_only'::jsonb#>>'{data,summary,current_stock_packaging}',:'del_only'::jsonb#>>'{summary,current_stock_packaging}')='Bag','only a deleted Box receipt: no stock, Bag: '||:'del_only');
 ROLLBACK;

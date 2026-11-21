@@ -1137,6 +1137,16 @@ jobs:
         run: |
           mkdir -m 700 "$RUNNER_TEMP/core-backend-test-20261101"   # the operator-api fixtures only accept this name pattern
           echo "WAREHOUSE_STATE_DIR=$RUNNER_TEMP/core-backend-test-20261101" >> "$GITHUB_ENV"
+      # WH-110: the gateway's REST request limit (30 a second, burst 1800 per address) is a product decision and stays as it is. This
+      # check runs 20 workers flat out from one address and measures the RPCs, not the gateway, so only this job's own checkout (the
+      # gateway image is built from it a step later) gets a limit it cannot reach. A pattern that no longer matches fails the job.
+      - name: Lift the gateway request limit in this job's checkout only
+        run: |
+          sed -i 's/zone=rest:10m rate=30r\/s;/zone=rest:10m rate=100000r\/s;/' docker/nginx/api-http.conf
+          sed -i 's/limit_req zone=rest burst=1800 nodelay;/limit_req zone=rest burst=1000000 nodelay;/' docker/nginx/api-locations.conf
+          grep -q 'zone=rest:10m rate=100000r/s;' docker/nginx/api-http.conf
+          grep -q 'limit_req zone=rest burst=1000000 nodelay;' docker/nginx/api-locations.conf
+        working-directory: backend
       - name: Fresh private operator installation
         run: |
           # The fixture sentinel of docs/OPERATOR_INSTALL.md, "Test installations": accepted only for this .example.test address,

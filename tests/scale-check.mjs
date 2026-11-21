@@ -21,23 +21,28 @@ export function percentile(sorted, fraction) {
 
 const round = value => Math.round(value * 10) / 10;
 
-// samples: { rpcName: { durations: [ms], errors: n } } -> { rpcName: { calls, errors, p50, p95, max } }
+// samples: { rpcName: { durations: [ms], errors: n, statuses?: { code: n } } } -> { rpcName: { calls, errors, p50, p95, max, statuses? } }
+// `statuses` counts the answers of the failed calls by HTTP status ('timeout' or 'error' when there was no answer), so a refusal by the
+// gateway (429) can be told from a fault of the RPC (WH-110). It is left out when no call failed.
 export function summarise(samples) {
   const result = {};
-  for (const [name, { durations, errors }] of Object.entries(samples)) {
+  for (const [name, { durations, errors, statuses }] of Object.entries(samples)) {
     const sorted = [...durations].sort((a, b) => a - b);
     result[name] = { calls: sorted.length + errors, errors, p50: sorted.length ? round(percentile(sorted, 0.5)) : null,
-      p95: sorted.length ? round(percentile(sorted, 0.95)) : null, max: sorted.length ? round(sorted.at(-1)) : null };
+      p95: sorted.length ? round(percentile(sorted, 0.95)) : null, max: sorted.length ? round(sorted.at(-1)) : null,
+      ...(statuses && Object.keys(statuses).length ? { statuses } : {}) };
   }
   return result;
 }
+
+const describeStatuses = statuses => (statuses ? ` (answers: ${Object.entries(statuses).map(([code, count]) => `${code} x${count}`).join(', ')})` : '');
 
 // The verdict: an RPC with errors (or no answer at all) always fails; a p95 above the limit fails only when enforced, else it is a warning.
 export function evaluate(summary, { limitMs, enforce }) {
   const failures = [];
   const warnings = [];
   for (const [name, row] of Object.entries(summary)) {
-    if (row.errors > 0 || row.p95 === null) failures.push(`${name}: ${row.errors} of ${row.calls} calls failed or timed out`);
+    if (row.errors > 0 || row.p95 === null) failures.push(`${name}: ${row.errors} of ${row.calls} calls failed or timed out${describeStatuses(row.statuses)}`);
     else if (row.p95 > limitMs) (enforce ? failures : warnings).push(`${name}: p95 ${row.p95} ms is above ${limitMs} ms`);
   }
   return { failures, warnings };
@@ -126,7 +131,7 @@ async function main() {
 
   const sinceIso = () => new Date(Date.now() - 3600 * 1000).toISOString();
   const samples = {};
-  const note = name => (samples[name] ??= { durations: [], errors: 0 });
+  const note = name => (samples[name] ??= { durations: [], errors: 0, statuses: {} });
   // Warm-up: one call of every RPC per role (plans, caches), not measured; a refusal here is a setup fault.
   for (const user of users) for (const [name, body] of workload(user.role, { big, sinceIso: sinceIso() })) {
     const answer = await rpc(name, user.token, body);
@@ -141,9 +146,19 @@ async function main() {
       const [name, body] = calls[turn % calls.length];
       const start = performance.now();
       let good = false;
-      try { good = (await rpc(name, user.token, body)).ok; } catch { good = false; }
+      let status = 'error';
+      try {
+        const answer = await rpc(name, user.token, body);
+        good = answer.ok;
+        status = answer.status;
+      } catch (error) { status = error?.name === 'TimeoutError' ? 'timeout' : 'error'; }
       const took = performance.now() - start;
-      if (good) note(name).durations.push(took); else note(name).errors += 1;
+      if (good) note(name).durations.push(took);
+      else {
+        const row = note(name);
+        row.errors += 1;
+        row.statuses[status] = (row.statuses[status] ?? 0) + 1;
+      }
     }
   }
   await Promise.all(Array.from({ length: config.workers }, (_, i) => worker(i)));
