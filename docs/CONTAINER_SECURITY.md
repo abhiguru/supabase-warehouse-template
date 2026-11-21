@@ -15,7 +15,7 @@ on the installation's host.
 | `functions` | `docker/edge-runtime`: supabase/edge-runtime v1.77.8 binary on `debian:bookworm-slim` (both by digest) | Full `apt-get upgrade` and a minimum PCRE2 version check |
 | `db` | `docker/postgres`: the official `postgres:18.6-trixie` image (Debian 13), pinned by tag and index digest in the `FROM` line (`scripts/db-image.sh` prints it) | The recipe deletes the base image's `gosu` (a Go binary built with an old toolchain, which Trivy reported) in a layer of its own and copies in `docker/postgres/gosu`, a shell shim over util-linux `setpriv`; the build checks that it drops to `postgres` with the same ids, groups and `HOME`. No Go is built or shipped. Operating-system rows with no fix are covered by the ledger entry `db-os-no-fix`. The earlier Supabase database image is no longer used |
 | `pdf-renderer` | `docker/pdf-renderer`: Node 24 (by digest), chrome-headless-shell from Chrome for Testing, puppeteer-core | Our own code; see "PDF renderer" |
-| `supavisor` (profile `pooler`) | `docker/supavisor`: 2.9.13 by digest | Debian package upgrade |
+| `supavisor` (profile `pooler`) | `docker/supavisor`: 2.10.1 by digest | Debian package upgrade |
 | `cups` (profile `printing`) | `docker/cups`: `ubuntu:22.04` by digest | Ubuntu package upgrade |
 | `sensor-bridge` (profile `sensors`) | `docker/sensor-bridge`: `python:3.15-slim-bookworm` by digest | Hashed `requirements.txt`; pip uninstalled after the install |
 

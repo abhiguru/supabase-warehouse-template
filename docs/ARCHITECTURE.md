@@ -35,7 +35,7 @@ network table from the rendered configuration).
 | db | PostgreSQL 18 (official `postgres:18.6-trixie` image; roles from `docker/volumes/db/00-bootstrap.sql`, superuser `supabase_admin`, no `postgres` role; schema from the one baseline migration, [DEVELOPER_HANDOFF.md](DEVELOPER_HANDOFF.md#migration-conventions)) | 5432 | always |
 | pdf-renderer | own recipe, chrome-headless-shell | 3000 | always |
 | gateway-lan | the gateway's own image (no build of its own) running its plain-http LAN server ([`docker/nginx/lan`](../docker/nginx/lan)) | 8080, published on `${LAN_BIND_IP}:${LAN_HTTP_PORT}` (the host's own private address) | profile `lan`; off by default, switched with `bash scripts/lan.sh on\|off` ([OPERATOR_INSTALL.md](OPERATOR_INSTALL.md#lan-fallback-plain-http-on-the-warehouse-network)) |
-| supavisor | Supavisor 2.9.13 | 4000, 5432, 6543 | profile `pooler`; off by default, switched with `bash scripts/pooler.sh on\|off` |
+| supavisor | Supavisor 2.10.1 | 4000, 5432, 6543 | profile `pooler`; off by default, switched with `bash scripts/pooler.sh on\|off` |
 | cups | CUPS on Ubuntu 22.04 | 631 | profile `printing` |
 | sensor-bridge | own recipe (GPL-3.0-or-later) | none | profile `sensors` |
 
