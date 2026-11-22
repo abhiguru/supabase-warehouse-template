@@ -12,10 +12,11 @@
 #                                   (scripts/drop-pooler.sql: no CASCADE, no FORCE; it refuses and changes nothing if the
 #                                   schema holds more than get_auth, or the database has connections, other schemas or
 #                                   relations that are not Supavisor's own tables), and records POOLER_ENABLED=false.
-#                                   Those checks run first, read-only, before the container is stopped (connections only
-#                                   when supavisor is not running, as it is connected itself); a refusal there stops nothing.
-#                                   If the removal still refuses after the stop (something connected meanwhile), supavisor is
-#                                   started again if it was running, and the message says which state the pooler is in.
+#                                   Those checks run first, read-only, before anything is saved or stopped (supavisor's own
+#                                   connections left out while it runs healthy); a refusal there changes nothing. If the
+#                                   removal still refuses after the stop (a client connected in between), supavisor is started
+#                                   again if it was running, and the message says which state the pooler is in and names the
+#                                   compose.env copy and dump it left in config/.
 #                                   `on` recreates everything. The role, database and secrets exist only while the pooler
 #                                   is on. Once the pooler has run, _supabase holds Supavisor's own tables (its tenant and
 #                                   pool user, the password encrypted with VAULT_ENC_KEY, written again at every start);
@@ -29,7 +30,6 @@
 #   bash scripts/pooler.sh status   Prints on, off or unset.
 #   bash scripts/pooler.sh cleanup  The one-time clean-up setup.sh runs for an installation made before the pooler had a
 #                                   switch (POOLER_ENABLED absent from compose.env). See docs/OPERATOR_INSTALL.md.
-#                                   - a supavisor container exists: the pooler is in use, so it is recorded as on
 #                                   Before it changes anything it saves a 0600 copy of compose.env next to it
 #                                   (compose.env.pre-pooler-cleanup-<time>) and prints its path.
 #                                   - a supavisor container exists: the pooler is in use, so it is recorded as on
@@ -117,7 +117,7 @@ case "$command" in
     compose config --quiet
     require_db
     facts="$(pooler_facts)"
-    read -r _ _ has_database <<< "$facts"
+    read -r had_role had_schema has_database <<< "$facts"
     tables=0
     if [[ "$has_database" == 1 ]]; then tables="$(supavisor_tables)"; fi
     psql_vars=()
@@ -127,12 +127,17 @@ case "$command" in
       echo 'To switch the pooler off, run: bash scripts/pooler.sh off --drop-metadata (it first saves a copy of compose.env and a dump of _supabase). To keep it, do nothing: it stays on.' >&2
       exit 1
     fi
-    # The refusal checks of drop-pooler.sql, read-only, before anything is saved or stopped. A running supavisor is
-    # connected itself, so connections are checked here only when it is not running; the removal after the stop checks
-    # them again.
-    supavisor_running="$(compose --profile pooler ps -q supavisor)"
+    # The refusal checks of drop-pooler.sql, read-only, before anything is saved or stopped. While supavisor runs healthy
+    # its own connections are left out (drop-pooler.sql names them); any other connection refuses here. Running means
+    # healthy, as for db: a container that is starting, restarting or exited is treated as not running, so every
+    # connection counts and a late refusal does not start it again.
+    supavisor_running=''
+    supavisor_id="$(compose --profile pooler ps -q supavisor)"
+    if [[ -n "$supavisor_id" ]] && docker inspect --format '{{.State.Health.Status}}' "$supavisor_id" 2>/dev/null | grep -qx healthy; then
+      supavisor_running=yes
+    fi
     check_vars=(-v check_only=on)
-    if [[ -n "$supavisor_running" ]]; then check_vars+=(-v ignore_connections=on); fi
+    if [[ -n "$supavisor_running" ]]; then check_vars+=(-v supavisor_running=on); fi
     if ! drop_objects "${psql_vars[@]}" "${check_vars[@]}"; then
       echo 'The pooler objects were not removed and compose.env is unchanged (see above); the supavisor service was not stopped, so nothing was changed. Stop what uses the pooler, or remove what does not belong in _supabase, then run this again.' >&2
       exit 1
@@ -157,13 +162,21 @@ case "$command" in
     compose --profile pooler rm -sf supavisor >/dev/null
     if ! drop_objects "${psql_vars[@]}"; then
       recorded="POOLER_ENABLED is $(switch) in compose.env, which is unchanged"
-      if [[ -z "$supavisor_running" ]]; then
-        echo "The removal of the pooler objects refused or failed (see above). The supavisor service was not running before and is still stopped; $recorded. Stop what uses the pooler, then run this again." >&2
+      saved=''
+      if [[ -n "${copy:-}" ]]; then saved=" Saved before the stop and left in config/: $copy${dump:+ and $dump}."; fi
+      # The role and schema go in one transaction and _supabase after it, so a failure there leaves the role or schema
+      # gone; supavisor would then look healthy but could not sign pooled clients in.
+      after="$(pooler_facts 2>/dev/null || true)"
+      read -r has_role has_schema _ <<< "$after"
+      if [[ ! "$has_role $has_schema" =~ ^[01]\ [01]$ ]] || ((had_role > has_role || had_schema > has_schema)); then
+        echo "The removal of the pooler objects failed part way (see above): the role or schema pgbouncer is already gone (or could not be read), so the supavisor service stays stopped and the pooler is DOWN; $recorded.$saved Switch it on again with: bash scripts/pooler.sh on" >&2
+      elif [[ -z "$supavisor_running" ]]; then
+        echo "The removal of the pooler objects refused (see above). The supavisor service was not running before and is still stopped; $recorded.$saved Stop what uses the pooler, then run this again." >&2
       elif compose --profile pooler up -d --no-deps --wait --wait-timeout 180 supavisor; then
-        echo "The removal of the pooler objects refused or failed (see above), so the supavisor service was started again: the pooler is on as before and $recorded. Stop what uses the pooler, then run this again." >&2
+        echo "The removal of the pooler objects refused (see above), so the supavisor service was started again: the pooler is on as before and $recorded.$saved Stop what uses the pooler, then run this again." >&2
       else
         node "$ROOT/scripts/service-diagnostics.mjs" || true
-        echo "The removal of the pooler objects refused or failed (see above), and the supavisor service did not start again: the pooler is DOWN and $recorded. Start it with: bash scripts/pooler.sh on" >&2
+        echo "The removal of the pooler objects refused (see above), and the supavisor service did not start again: the pooler is DOWN and $recorded.$saved Start it with: bash scripts/pooler.sh on" >&2
       fi
       exit 1
     fi
