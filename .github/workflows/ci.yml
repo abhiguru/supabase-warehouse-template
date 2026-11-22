@@ -375,6 +375,14 @@ jobs:
         run: |
           mkdir -m 700 "$RUNNER_TEMP/core-backend-test-20260929"
           echo "WAREHOUSE_STATE_DIR=$RUNNER_TEMP/core-backend-test-20260929" >> "$GITHUB_ENV"
+      - name: Cosign from the runner's own copy, if it keeps one
+        # setup.sh installs cosign (scripts/install-cosign.sh, about 146 MB from GitHub) into the operator state, which lives in
+        # RUNNER_TEMP and is gone after every job. A self-hosted runner may keep a copy at ~/.cosign/cosign; it is placed in the
+        # state here, and install-cosign.sh uses it only if its SHA-256 equals the pinned one (otherwise it downloads as usual).
+        run: |
+          if [ -f "$HOME/.cosign/cosign" ] && [ ! -L "$HOME/.cosign/cosign" ]; then
+            install -D -m 755 "$HOME/.cosign/cosign" "$WAREHOUSE_STATE_DIR/bin/cosign"
+          fi
       - name: Configure isolated gateway regression network
         run: |
           # An extra Compose file (scripts/compose.sh reads WAREHOUSE_COMPOSE_EXTRA): a fixed subnet for the default network.
