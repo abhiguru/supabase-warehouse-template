@@ -242,14 +242,27 @@ test('off: a failure part way (the role or schema already gone) does not start s
   } finally { clean(f); }
 });
 
-test('off: a supavisor that is not healthy counts as not running: no ignore variable, no restart after a late refusal', () => {
+test('off: a supavisor that is starting or unhealthy counts every connection but is started again after a late refusal', () => {
   const f = fixture('warehouse-pooler-off-unhealthy-', { env: text => poolerEnvText(text, 'on').text });
   try {
-    const result = f.run('off', { FAKE_REFUSE: 'late', FAKE_RUNNING: 'yes', FAKE_HEALTH: 'unhealthy' });
+    const result = f.run('off', { FAKE_REFUSE: 'late', FAKE_RUNNING: 'yes', FAKE_HEALTH: 'starting' });
     assert.equal(result.status, 1);
-    assert.doesNotMatch(f.sql().split('--- psql ')[1], /supavisor_running=on/);
+    assert.doesNotMatch(f.sql().split('--- psql ')[1], /supavisor_running=on/, 'every connection counts in the pre-check');
+    const calls = f.calls();
+    const stop = calls.indexOf('rm -sf');
+    assert.ok(stop >= 0 && calls.indexOf('up -d --no-deps', stop) > stop, 'started again after the stop');
+    assert.match(result.stderr, /started again: the pooler is on as before/);
+    assert.doesNotMatch(result.stderr, /was not running before|No supavisor container was present/);
+  } finally { clean(f); }
+});
+
+test('off: with no supavisor container a late refusal starts nothing and says none was present', () => {
+  const f = fixture('warehouse-pooler-off-nocontainer-', { env: text => poolerEnvText(text, 'on').text });
+  try {
+    const result = f.run('off', { FAKE_REFUSE: 'late' });
+    assert.equal(result.status, 1);
     assert.doesNotMatch(f.calls(), /up -d/);
-    assert.match(result.stderr, /not running before and is still stopped/);
+    assert.match(result.stderr, /No supavisor container was present before, so none was started/);
   } finally { clean(f); }
 });
 
