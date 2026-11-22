@@ -42,7 +42,7 @@ SELECT COALESCE((SELECT string_agg(nspname, ',' ORDER BY nspname) FROM pg_namesp
 SELECT (:other_objects > 0 OR :connections > 0 OR :db_relations > 0 OR :'db_schemas' <> '-') AS refuse \gset
 \if :refuse
 \if :{?supavisor_running}
-\warn Pooler objects not removed, nothing was changed: schema pgbouncer holds :other_objects object(s) besides get_auth, _supabase holds :db_relations relation(s) besides the tables of Supavisor and the schema(s) :db_schemas, and :connections connection(s) besides supavisor's own are open to _supabase or as pgbouncer (a "-" means none).
+\warn Pooler objects not removed, nothing was changed: schema pgbouncer holds :other_objects object(s) besides get_auth, _supabase holds :db_relations relation(s) besides the tables of Supavisor and the schema(s) :db_schemas, and :connections connection(s) besides the Supavisor ones are open to _supabase or as pgbouncer (a "-" means none).
 \else
 \warn Pooler objects not removed, nothing was changed: schema pgbouncer holds :other_objects object(s) besides get_auth, _supabase holds :db_relations relation(s) besides the tables of Supavisor and the schema(s) :db_schemas, and :connections connection(s) are open to _supabase or as pgbouncer (a "-" means none).
 \endif
