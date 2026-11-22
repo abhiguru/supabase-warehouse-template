@@ -128,9 +128,9 @@ case "$command" in
       exit 1
     fi
     # The refusal checks of drop-pooler.sql, read-only, before anything is saved or stopped. While supavisor runs healthy
-    # its own connections are left out (drop-pooler.sql names them); any other connection refuses here. Running means
-    # healthy, as for db: a container that is starting, restarting or exited is treated as not running, so every
-    # connection counts and a late refusal does not start it again.
+    # its own connections are left out (drop-pooler.sql names them); any other connection refuses here. Healthy, as for
+    # db: while it is starting or unhealthy every connection counts. Whether it is started again after a late refusal
+    # depends only on whether a container was there (supavisor_id), healthy or not.
     supavisor_running=''
     supavisor_id="$(compose --profile pooler ps -q supavisor)"
     if [[ -n "$supavisor_id" ]] && docker inspect --format '{{.State.Health.Status}}' "$supavisor_id" 2>/dev/null | grep -qx healthy; then
@@ -170,8 +170,8 @@ case "$command" in
       read -r has_role has_schema _ <<< "$after"
       if [[ ! "$has_role $has_schema" =~ ^[01]\ [01]$ ]] || ((had_role > has_role || had_schema > has_schema)); then
         echo "The removal of the pooler objects failed part way (see above): the role or schema pgbouncer is already gone (or could not be read), so the supavisor service stays stopped and the pooler is DOWN; $recorded.$saved Switch it on again with: bash scripts/pooler.sh on" >&2
-      elif [[ -z "$supavisor_running" ]]; then
-        echo "The removal of the pooler objects refused (see above). The supavisor service was not running before and is still stopped; $recorded.$saved Stop what uses the pooler, then run this again." >&2
+      elif [[ -z "$supavisor_id" ]]; then
+        echo "The removal of the pooler objects refused (see above). No supavisor container was present before, so none was started; $recorded.$saved Stop what uses the pooler, then run this again." >&2
       elif compose --profile pooler up -d --no-deps --wait --wait-timeout 180 supavisor; then
         echo "The removal of the pooler objects refused (see above), so the supavisor service was started again: the pooler is on as before and $recorded.$saved Stop what uses the pooler, then run this again." >&2
       else
