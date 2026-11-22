@@ -19,10 +19,11 @@ const fakeDocker = `#!/bin/sh
 printf '%s\\n' "$*" >> "$FAKE_DOCKER_LOG"
 case "$1" in
   ps) case "$*" in *service=supavisor*) if [ "\${FAKE_SUPAVISOR:-}" = yes ]; then echo abcabcabcabc; fi ;; esac; exit 0 ;;
-  inspect) echo healthy; exit 0 ;;
+  inspect) case "$*" in *svsvsvsvsvsv*) echo "\${FAKE_HEALTH:-healthy}" ;; *) echo healthy ;; esac; exit 0 ;;
   compose)
     case "$*" in
       *' ps -q db') echo dbdbdbdbdbdb; exit 0 ;;
+      *' ps -q supavisor') if [ "\${FAKE_RUNNING:-}" = yes ]; then echo svsvsvsvsvsv; fi; exit 0 ;;
       *' up -d --no-deps'*supavisor) if [ "\${FAKE_FAIL_UP:-}" = yes ]; then exit 1; fi; exit 0 ;;
     esac
     while [ "$#" -gt 0 ] && [ "$1" != exec ]; do shift; done
@@ -32,6 +33,10 @@ case "$1" in
 esac
 `;
 // FAKE_REFUSE=yes: the removal script (scripts/drop-pooler.sql) refuses, as the real one does when the pooler is in use.
+// FAKE_REFUSE=late: it refuses only from the second run on (the pre-check passes, the removal after the stop refuses).
+// FAKE_RUNNING=yes: compose ps -q supavisor returns a container id.
+// FAKE_FOREIGN=yes: a client other than supavisor is connected: the read-only pre-check (check_only) refuses.
+// FAKE_FACTS_AFTER: what the facts query answers from its second call on (the state after a failed removal).
 // What the database answers: FAKE_FACTS for the facts query ("<role> <schema> <database>" counts), FAKE_HELD for the
 // content of _supabase ("<relations> <other schemas or ->"). Standard input of every psql is kept in FAKE_SQL_LOG.
 const fakePsql = `#!/bin/sh
@@ -41,11 +46,14 @@ while [ "$#" -gt 0 ]; do
 done
 if [ -z "$query" ]; then
   { printf -- '--- psql -d %s %s\\n' "$db" "$ARGS"; cat; } >> "$FAKE_SQL_LOG"
+  if [ "\${FAKE_FOREIGN:-}" = yes ] && echo "$ARGS" | grep -q check_only=on; then echo 'Pooler objects not removed, nothing was changed: (fake, foreign client)' >&2; exit 3; fi
+  if [ "\${FAKE_REFUSE:-}" = late ] && [ "$(grep -c '^--- psql -d postgres' "$FAKE_SQL_LOG")" -ge 2 ]; then echo 'Pooler objects not removed, nothing was changed: (fake, late)' >&2; exit 3; fi
   if [ "\${FAKE_REFUSE:-}" = yes ] && grep -q 'pooler objects are in use' "$FAKE_SQL_LOG" && [ "$db" = postgres ]; then echo 'Pooler objects not removed, nothing was changed: (fake)' >&2; exit 3; fi
   exit 0
 fi
 case "$query" in
-  *"rolname = 'pgbouncer'"*) echo "\${FAKE_FACTS:-0 0 0}" ;;
+  *"rolname = 'pgbouncer'"*)
+    if [ -n "\${FAKE_FACTS_AFTER:-}" ] && [ -e "$FAKE_SQL_LOG.facts" ]; then echo "$FAKE_FACTS_AFTER"; else : > "$FAKE_SQL_LOG.facts"; echo "\${FAKE_FACTS:-0 0 0}"; fi ;;
   *pg_class*) echo "\${FAKE_HELD:-0 -}" ;;
 esac
 `;
@@ -154,14 +162,134 @@ test('off: stops and removes the container, drops role, schema and _supabase saf
   } finally { clean(f); }
 });
 
-test('off: when the removal refuses (objects in use) the container is stopped but compose.env keeps the secrets and the switch', () => {
+test('off: a refusal before the stop removes nothing: no rm -sf, compose.env byte-identical, no copy or dump', () => {
   const f = fixture('warehouse-pooler-off-refuse-', { env: text => poolerEnvText(text, 'on').text });
   try {
-    const before = readFileSync(f.envPath, 'utf8');
-    const result = f.run('off', { FAKE_REFUSE: 'yes' });
+    const before = readFileSync(f.envPath);
+    const result = f.runArgs(['off', '--drop-metadata'], { FAKE_REFUSE: 'yes', FAKE_FACTS: '1 1 1', FAKE_HELD: '3 -' });
     assert.equal(result.status, 1);
     assert.match(result.stderr, /not removed and compose\.env is unchanged/);
-    assert.equal(readFileSync(f.envPath, 'utf8'), before);
+    assert.match(result.stderr, /was not stopped, so nothing was changed/);
+    assert.doesNotMatch(f.calls(), /rm -sf/);
+    assert.ok(readFileSync(f.envPath).equals(before), 'compose.env is byte-identical');
+    assert.deepEqual(readdirSync(join(f.state, 'config')).filter(n => /pre-pooler-off|\.dump$/.test(n)), []);
+    assert.doesNotMatch(f.calls(), /pg_dump/);
+  } finally { clean(f); }
+});
+
+test('off: with supavisor running the pre-check carries check_only and supavisor_running, and nothing is stopped on a refusal', () => {
+  const f = fixture('warehouse-pooler-off-precheck-', { env: text => poolerEnvText(text, 'on').text });
+  try {
+    const result = f.run('off', { FAKE_REFUSE: 'yes', FAKE_RUNNING: 'yes' });
+    assert.equal(result.status, 1);
+    const first = f.sql().split('--- psql ')[1];
+    assert.match(first, /check_only=on/);
+    assert.match(first, /supavisor_running=on/);
+    assert.doesNotMatch(f.calls(), /rm -sf/);
+    assert.doesNotMatch(f.calls(), /up -d/);
+  } finally { clean(f); }
+});
+
+test('off: another client connected while supavisor runs refuses before the stop: nothing stopped, saved or changed', () => {
+  const f = fixture('warehouse-pooler-off-foreign-', { env: text => poolerEnvText(text, 'on').text });
+  try {
+    const before = readFileSync(f.envPath);
+    const result = f.runArgs(['off', '--drop-metadata'], { FAKE_FOREIGN: 'yes', FAKE_RUNNING: 'yes', FAKE_FACTS: '1 1 1', FAKE_HELD: '3 -' });
+    assert.equal(result.status, 1);
+    assert.match(f.sql().split('--- psql ')[1], /check_only=on[\s\S]*supavisor_running=on|supavisor_running=on[\s\S]*check_only=on/);
+    assert.doesNotMatch(f.calls(), /rm -sf|up -d|pg_dump/);
+    assert.ok(readFileSync(f.envPath).equals(before), 'compose.env is byte-identical');
+    assert.deepEqual(readdirSync(join(f.state, 'config')).filter(n => /pre-pooler-off|\.dump$/.test(n)), []);
+  } finally { clean(f); }
+});
+
+test('off: the pre-check leaves out only supavisor\'s own connections, never all of them', () => {
+  const f = fixture('warehouse-pooler-off-filter-', { env: text => poolerEnvText(text, 'on').text });
+  try {
+    f.run('off', { FAKE_REFUSE: 'yes', FAKE_RUNNING: 'yes' });
+    const first = f.sql().split('--- psql ')[1];
+    assert.match(first, /supavisor_meta/);
+    assert.match(first, /cluster\\_node\\_%/);
+    assert.match(first, /'Supavisor', 'Supavisor \(auth_query\)'/);
+    assert.doesNotMatch(first, /SELECT 0 AS connections/, 'the connections are never zeroed');
+  } finally { clean(f); }
+});
+
+test('off --drop-metadata: a refusal after the stop names the compose.env copy and the dump it left', () => {
+  const f = fixture('warehouse-pooler-off-saved-', { env: text => poolerEnvText(text, 'on').text });
+  try {
+    const result = f.runArgs(['off', '--drop-metadata'], { FAKE_REFUSE: 'late', FAKE_RUNNING: 'yes', FAKE_FACTS: '1 1 1' });
+    assert.equal(result.status, 1);
+    const left = readdirSync(join(f.state, 'config'));
+    const copy = left.find(n => /^compose\.env\.pre-pooler-off-/.test(n));
+    const dump = left.find(n => /^_supabase\.pre-pooler-off-.*\.dump$/.test(n));
+    assert.ok(copy && dump, 'the copy and the dump are left in config/');
+    assert.ok(result.stderr.includes(join(f.state, 'config', copy)), 'the copy is named');
+    assert.ok(result.stderr.includes(join(f.state, 'config', dump)), 'the dump is named');
+  } finally { clean(f); }
+});
+
+test('off: a failure part way (the role or schema already gone) does not start supavisor and says DOWN and pooler.sh on', () => {
+  const f = fixture('warehouse-pooler-off-partial-', { env: text => poolerEnvText(text, 'on').text });
+  try {
+    const result = f.run('off', { FAKE_REFUSE: 'late', FAKE_RUNNING: 'yes', FAKE_FACTS: '1 1 1', FAKE_FACTS_AFTER: '0 0 1', FAKE_HELD: '0 -' });
+    assert.equal(result.status, 1);
+    const calls = f.calls();
+    assert.match(calls, /rm -sf/);
+    assert.doesNotMatch(calls, /up -d/);
+    assert.match(result.stderr, /pooler is DOWN/);
+    assert.match(result.stderr, /pooler\.sh on/);
+  } finally { clean(f); }
+});
+
+test('off: a supavisor that is starting or unhealthy counts every connection but is started again after a late refusal', () => {
+  const f = fixture('warehouse-pooler-off-unhealthy-', { env: text => poolerEnvText(text, 'on').text });
+  try {
+    const result = f.run('off', { FAKE_REFUSE: 'late', FAKE_RUNNING: 'yes', FAKE_HEALTH: 'starting' });
+    assert.equal(result.status, 1);
+    assert.doesNotMatch(f.sql().split('--- psql ')[1], /supavisor_running=on/, 'every connection counts in the pre-check');
+    const calls = f.calls();
+    const stop = calls.indexOf('rm -sf');
+    assert.ok(stop >= 0 && calls.indexOf('up -d --no-deps', stop) > stop, 'started again after the stop');
+    assert.match(result.stderr, /started again: the pooler is on as before/);
+    assert.doesNotMatch(result.stderr, /was not running before|No supavisor container was present/);
+  } finally { clean(f); }
+});
+
+test('off: with no supavisor container a late refusal starts nothing and says none was present', () => {
+  const f = fixture('warehouse-pooler-off-nocontainer-', { env: text => poolerEnvText(text, 'on').text });
+  try {
+    const result = f.run('off', { FAKE_REFUSE: 'late' });
+    assert.equal(result.status, 1);
+    assert.doesNotMatch(f.calls(), /up -d/);
+    assert.match(result.stderr, /No supavisor container was present before, so none was started/);
+  } finally { clean(f); }
+});
+
+test('off: a refusal after the stop starts supavisor again and says so, with POOLER_ENABLED', () => {
+  const f = fixture('warehouse-pooler-off-late-', { env: text => poolerEnvText(text, 'on').text });
+  try {
+    const before = readFileSync(f.envPath);
+    const result = f.run('off', { FAKE_REFUSE: 'late', FAKE_RUNNING: 'yes' });
+    assert.equal(result.status, 1);
+    const calls = f.calls();
+    const stop = calls.indexOf('rm -sf');
+    assert.ok(stop >= 0, 'supavisor was stopped');
+    assert.ok(calls.indexOf('up -d --no-deps', stop) > stop, 'then started again');
+    assert.match(result.stderr, /started again: the pooler is on as before/);
+    assert.match(result.stderr, /POOLER_ENABLED is on in compose\.env, which is unchanged/);
+    assert.ok(readFileSync(f.envPath).equals(before));
+  } finally { clean(f); }
+});
+
+test('off: a refusal after the stop and a start that fails says the pooler is DOWN and how to start it', () => {
+  const f = fixture('warehouse-pooler-off-down-', { env: text => poolerEnvText(text, 'on').text });
+  try {
+    const result = f.run('off', { FAKE_REFUSE: 'late', FAKE_RUNNING: 'yes', FAKE_FAIL_UP: 'yes' });
+    assert.equal(result.status, 1);
+    assert.match(result.stderr, /the pooler is DOWN/);
+    assert.match(result.stderr, /POOLER_ENABLED is on in compose\.env/);
+    assert.match(result.stderr, /pooler\.sh on/);
   } finally { clean(f); }
 });
 

@@ -12,6 +12,11 @@
 #                                   (scripts/drop-pooler.sql: no CASCADE, no FORCE; it refuses and changes nothing if the
 #                                   schema holds more than get_auth, or the database has connections, other schemas or
 #                                   relations that are not Supavisor's own tables), and records POOLER_ENABLED=false.
+#                                   Those checks run first, read-only, before anything is saved or stopped (supavisor's own
+#                                   connections left out while it runs healthy); a refusal there changes nothing. If the
+#                                   removal still refuses after the stop (a client connected in between), supavisor is started
+#                                   again if it was running, and the message says which state the pooler is in and names the
+#                                   compose.env copy and dump it left in config/.
 #                                   `on` recreates everything. The role, database and secrets exist only while the pooler
 #                                   is on. Once the pooler has run, _supabase holds Supavisor's own tables (its tenant and
 #                                   pool user, the password encrypted with VAULT_ENC_KEY, written again at every start);
@@ -25,7 +30,6 @@
 #   bash scripts/pooler.sh status   Prints on, off or unset.
 #   bash scripts/pooler.sh cleanup  The one-time clean-up setup.sh runs for an installation made before the pooler had a
 #                                   switch (POOLER_ENABLED absent from compose.env). See docs/OPERATOR_INSTALL.md.
-#                                   - a supavisor container exists: the pooler is in use, so it is recorded as on
 #                                   Before it changes anything it saves a 0600 copy of compose.env next to it
 #                                   (compose.env.pre-pooler-cleanup-<time>) and prints its path.
 #                                   - a supavisor container exists: the pooler is in use, so it is recorded as on
@@ -71,13 +75,8 @@ commit_env() {
   mv -f "$staged" "$live"
 }
 # Removes the pooler's database objects (scripts/drop-pooler.sql); on a refusal nothing was changed. Any arguments go to
-# psql (pooler off --drop-metadata passes -v drop_supavisor_metadata=on).
-drop_objects() {
-  if ! db_psql -d postgres "$@" < "$ROOT/scripts/drop-pooler.sql"; then
-    echo 'The pooler objects were not removed and compose.env is unchanged (see above). Stop what uses the pooler, then run this again.' >&2
-    return 1
-  fi
-}
+# psql (pooler off --drop-metadata passes -v drop_supavisor_metadata=on; -v check_only=on runs only the refusal checks).
+drop_objects() { db_psql -d postgres "$@" < "$ROOT/scripts/drop-pooler.sql"; }
 # "<role> <schema> <database>": whether the role pgbouncer, the schema pgbouncer and the database _supabase exist (1 or 0).
 pooler_facts() {
   db_psql -d postgres -c "SELECT (SELECT count(*) FROM pg_roles WHERE rolname = 'pgbouncer') || ' ' || (SELECT count(*) FROM pg_namespace WHERE nspname = 'pgbouncer') || ' ' || (SELECT count(*) FROM pg_database WHERE datname = '_supabase')"
@@ -118,13 +117,29 @@ case "$command" in
     compose config --quiet
     require_db
     facts="$(pooler_facts)"
-    read -r _ _ has_database <<< "$facts"
+    read -r had_role had_schema has_database <<< "$facts"
     tables=0
     if [[ "$has_database" == 1 ]]; then tables="$(supavisor_tables)"; fi
     psql_vars=()
+    if [[ "$drop_metadata" == yes ]]; then psql_vars=(-v drop_supavisor_metadata=on); fi
     if [[ "$drop_metadata" == no && "$tables" != 0 ]]; then
       echo "Nothing was changed: the pooler has been used, so the _supabase database holds Supavisor's own tables ($tables: its tenant and pool user, written again at every start). Switching off removes them with the database, together with VAULT_ENC_KEY, which they cannot be read without." >&2
       echo 'To switch the pooler off, run: bash scripts/pooler.sh off --drop-metadata (it first saves a copy of compose.env and a dump of _supabase). To keep it, do nothing: it stays on.' >&2
+      exit 1
+    fi
+    # The refusal checks of drop-pooler.sql, read-only, before anything is saved or stopped. While supavisor runs healthy
+    # its own connections are left out (drop-pooler.sql names them); any other connection refuses here. Healthy, as for
+    # db: while it is starting or unhealthy every connection counts. Whether it is started again after a late refusal
+    # depends only on whether a container was there (supavisor_id), healthy or not.
+    supavisor_running=''
+    supavisor_id="$(compose --profile pooler ps -q supavisor)"
+    if [[ -n "$supavisor_id" ]] && docker inspect --format '{{.State.Health.Status}}' "$supavisor_id" 2>/dev/null | grep -qx healthy; then
+      supavisor_running=yes
+    fi
+    check_vars=(-v check_only=on)
+    if [[ -n "$supavisor_running" ]]; then check_vars+=(-v supavisor_running=on); fi
+    if ! drop_objects "${psql_vars[@]}" "${check_vars[@]}"; then
+      echo 'The pooler objects were not removed and compose.env is unchanged (see above); the supavisor service was not stopped, so nothing was changed. Stop what uses the pooler, or remove what does not belong in _supabase, then run this again.' >&2
       exit 1
     fi
     if [[ "$drop_metadata" == yes ]]; then
@@ -143,10 +158,28 @@ case "$command" in
         chmod 600 "$dump"
         echo "Pooler off: saved a dump of _supabase ($tables of Supavisor's own tables) as $dump."
       fi
-      psql_vars=(-v drop_supavisor_metadata=on)
     fi
     compose --profile pooler rm -sf supavisor >/dev/null
-    drop_objects "${psql_vars[@]}" || exit 1
+    if ! drop_objects "${psql_vars[@]}"; then
+      recorded="POOLER_ENABLED is $(switch) in compose.env, which is unchanged"
+      saved=''
+      if [[ -n "${copy:-}" ]]; then saved=" Saved before the stop and left in config/: $copy${dump:+ and $dump}."; fi
+      # The role and schema go in one transaction and _supabase after it, so a failure there leaves the role or schema
+      # gone; supavisor would then look healthy but could not sign pooled clients in.
+      after="$(pooler_facts 2>/dev/null || true)"
+      read -r has_role has_schema _ <<< "$after"
+      if [[ ! "$has_role $has_schema" =~ ^[01]\ [01]$ ]] || ((had_role > has_role || had_schema > has_schema)); then
+        echo "The removal of the pooler objects failed part way (see above): the role or schema pgbouncer is already gone (or could not be read), so the supavisor service stays stopped and the pooler is DOWN; $recorded.$saved Switch it on again with: bash scripts/pooler.sh on" >&2
+      elif [[ -z "$supavisor_id" ]]; then
+        echo "The removal of the pooler objects refused (see above). No supavisor container was present before, so none was started; $recorded.$saved Stop what uses the pooler, then run this again." >&2
+      elif compose --profile pooler up -d --no-deps --wait --wait-timeout 180 supavisor; then
+        echo "The removal of the pooler objects refused (see above), so the supavisor service was started again: the pooler is on as before and $recorded.$saved Stop what uses the pooler, then run this again." >&2
+      else
+        node "$ROOT/scripts/service-diagnostics.mjs" || true
+        echo "The removal of the pooler objects refused (see above), and the supavisor service did not start again: the pooler is DOWN and $recorded.$saved Start it with: bash scripts/pooler.sh on" >&2
+      fi
+      exit 1
+    fi
     commit_env forget
     echo 'The pooler is off: the supavisor container is removed, and the role pgbouncer, the schema pgbouncer, the _supabase database and the pooler secrets are gone. bash scripts/pooler.sh on recreates them.'
     ;;
@@ -170,7 +203,10 @@ case "$command" in
       exit 0
     fi
     removed=()
-    drop_objects || exit 1
+    if ! drop_objects; then
+      echo 'The pooler objects were not removed and compose.env is unchanged (see above). Stop what uses the pooler, then run this again.' >&2
+      exit 1
+    fi
     [[ "$has_schema" == 0 ]] || removed+=('schema pgbouncer (get_auth)')
     [[ "$has_role" == 0 ]] || removed+=('role pgbouncer')
     removed+=('database _supabase (empty)')

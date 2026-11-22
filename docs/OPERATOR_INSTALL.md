@@ -2549,8 +2549,12 @@ bash scripts/pooler.sh status   # prints on, off or unset
 Once the pooler has run, `_supabase` holds Supavisor's own tables (`_supavisor.tenants`, `users`, `clusters`, `cluster_tenants`,
 `schema_migrations`): its tenant and pool user, written again at every start, with the password encrypted with `VAULT_ENC_KEY`. They
 cannot be kept across off and on, because off removes `VAULT_ENC_KEY` and `on` makes a new one, so `off --drop-metadata` removes them
-with the database. Off still refuses to drop anything if `_supabase` holds anything else, or while anything is connected to it; by
-then the supavisor container has already been stopped and removed, and `POOLER_ENABLED=true` stays in compose.env.
+with the database. Off still refuses to drop anything if `_supabase` holds anything else, or while anything is connected to it. It
+checks this first, read-only, before it saves, dumps or stops anything (while supavisor runs healthy only its own connections are left
+out, so any other client refuses here), and a refusal there changes nothing. If the removal still refuses after the container has
+stopped (a client connected in between), off starts supavisor again if its container was there (healthy or still starting), says
+which state the pooler is in and names the compose.env copy and the dump it left in `config/`. If the supavisor start fails, or the removal stopped part way (role or schema already
+gone), the pooler is down while `POOLER_ENABLED=true` stays in compose.env, and `bash scripts/pooler.sh on` switches it on again.
 
 After an in-place or lost-host restore the pooler is not started (the restore starts the core services only); while `POOLER_ENABLED=true`
 the restore recreates its role, schema and `_supabase` database, and `bash scripts/pooler.sh on` starts it again. Test: `npm run test:pooler`.

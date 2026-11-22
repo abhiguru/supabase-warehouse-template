@@ -10,6 +10,12 @@
 -- password encrypted with VAULT_ENC_KEY), which volumes/pooler/pooler.exs writes again at every start; they are not
 -- in backups. Only `bash scripts/pooler.sh off --drop-metadata` sets the variable, after saving a dump of _supabase.
 -- A refusal exits non-zero with the reason on standard error. Nothing is removed that does not exist.
+-- With the psql variable check_only set it only runs the refusal checks and stops before the first DROP (pooler.sh off
+-- runs it so before it stops supavisor). With supavisor_running set it leaves out supavisor's own connections, as
+-- Supavisor 2.10.1 names them (config/runtime.exs, lib/cluster/strategy/postgres.ex, lib/supavisor/db_handler.ex,
+-- lib/supavisor/auth_query.ex): to _supabase as supabase_admin, application_name supavisor_meta (its metadata store) or
+-- cluster_node_<node> (CLUSTER_POSTGRES); as pgbouncer, Supavisor (pooled) or Supavisor (auth_query). Any other
+-- connection still refuses. The full run after the stop counts every connection again.
 \set ON_ERROR_STOP on
 SELECT EXISTS (SELECT 1 FROM pg_database WHERE datname = '_supabase') AS has_db \gset
 SELECT count(*) AS other_objects FROM (
@@ -17,7 +23,11 @@ SELECT count(*) AS other_objects FROM (
   UNION ALL
   SELECT p.oid FROM pg_proc p JOIN pg_namespace n ON n.oid = p.pronamespace WHERE n.nspname = 'pgbouncer' AND p.proname <> 'get_auth'
 ) x \gset
-SELECT count(*) AS connections FROM pg_stat_activity WHERE datname = '_supabase' OR usename = 'pgbouncer' \gset
+SELECT count(*) AS connections FROM pg_stat_activity
+WHERE (datname = '_supabase' OR usename = 'pgbouncer')
+  AND NOT (:{?supavisor_running} AND (
+    (datname = '_supabase' AND usename = 'supabase_admin' AND (COALESCE(application_name, '') = 'supavisor_meta' OR COALESCE(application_name, '') LIKE 'cluster\_node\_%'))
+    OR (usename = 'pgbouncer' AND COALESCE(application_name, '') IN ('Supavisor', 'Supavisor (auth_query)')))) \gset
 SELECT 0 AS db_relations, 0 AS supavisor_relations, '-' AS db_schemas \gset
 \if :has_db
 \c _supabase
@@ -31,13 +41,20 @@ SELECT COALESCE((SELECT string_agg(nspname, ',' ORDER BY nspname) FROM pg_namesp
 \endif
 SELECT (:other_objects > 0 OR :connections > 0 OR :db_relations > 0 OR :'db_schemas' <> '-') AS refuse \gset
 \if :refuse
+\if :{?supavisor_running}
+\warn Pooler objects not removed, nothing was changed: schema pgbouncer holds :other_objects object(s) besides get_auth, _supabase holds :db_relations relation(s) besides the tables of Supavisor and the schema(s) :db_schemas, and :connections connection(s) besides supavisor's own are open to _supabase or as pgbouncer (a "-" means none).
+\else
 \warn Pooler objects not removed, nothing was changed: schema pgbouncer holds :other_objects object(s) besides get_auth, _supabase holds :db_relations relation(s) besides the tables of Supavisor and the schema(s) :db_schemas, and :connections connection(s) are open to _supabase or as pgbouncer (a "-" means none).
+\endif
 DO $refuse$ BEGIN RAISE EXCEPTION 'pooler objects are in use'; END $refuse$;
 \endif
 SELECT (:supavisor_relations > 0 AND NOT :{?drop_supavisor_metadata}) AS keep_metadata \gset
 \if :keep_metadata
 \warn Pooler objects not removed, nothing was changed: the pooler has been used, so _supabase holds :supavisor_relations table(s) of Supavisor (its tenant and pool user, written again at every start). To switch the pooler off and remove them, run: bash scripts/pooler.sh off --drop-metadata (it saves a dump of _supabase first). To keep using it, run: bash scripts/pooler.sh on
 DO $refuse$ BEGIN RAISE EXCEPTION 'pooler metadata kept'; END $refuse$;
+\endif
+\if :{?check_only}
+\quit
 \endif
 BEGIN;
 DROP FUNCTION IF EXISTS pgbouncer.get_auth(text);
