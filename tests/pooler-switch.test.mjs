@@ -35,12 +35,12 @@ esac
 // What the database answers: FAKE_FACTS for the facts query ("<role> <schema> <database>" counts), FAKE_HELD for the
 // content of _supabase ("<relations> <other schemas or ->"). Standard input of every psql is kept in FAKE_SQL_LOG.
 const fakePsql = `#!/bin/sh
-db=''; query=''
+db=''; query=''; ARGS="$*"
 while [ "$#" -gt 0 ]; do
   case "$1" in -d) db=$2; shift 2 ;; -c) query=$2; shift 2 ;; *) shift ;; esac
 done
 if [ -z "$query" ]; then
-  { printf -- '--- psql -d %s\\n' "$db"; cat; } >> "$FAKE_SQL_LOG"
+  { printf -- '--- psql -d %s %s\\n' "$db" "$ARGS"; cat; } >> "$FAKE_SQL_LOG"
   if [ "\${FAKE_REFUSE:-}" = yes ] && grep -q 'pooler objects are in use' "$FAKE_SQL_LOG" && [ "$db" = postgres ]; then echo 'Pooler objects not removed, nothing was changed: (fake)' >&2; exit 3; fi
   exit 0
 fi
@@ -60,6 +60,7 @@ function fixture(prefix, { env } = {}) {
   configure(root, { stateDir: state, apiUrl: 'https://api.example.test', company: 'Acme', providerEnv });
   writeFileSync(join(bin, 'docker'), fakeDocker, { mode: 0o700 });
   writeFileSync(join(bin, 'psql'), fakePsql, { mode: 0o700 });
+  writeFileSync(join(bin, 'pg_dump'), '#!/bin/sh\necho "FAKE-DUMP"\n', { mode: 0o700 });
   const envPath = join(state, 'config/compose.env');
   if (env) writeFileSync(envPath, env(readFileSync(envPath, 'utf8')), { mode: 0o600 });
   const log = join(scratch, 'docker.log');
@@ -68,8 +69,9 @@ function fixture(prefix, { env } = {}) {
   writeFileSync(sql, '');
   const base = { ...process.env, PATH: `${bin}:${process.env.PATH}`, WAREHOUSE_STATE_DIR: state, FAKE_DOCKER_LOG: log, FAKE_SQL_LOG: sql };
   const run = (command, extra = {}) => spawnSync('bash', [join(root, 'scripts/pooler.sh'), command], { encoding: 'utf8', env: { ...base, ...extra }, timeout: 60000 });
+  const runArgs = (args, extra = {}) => spawnSync('bash', [join(root, 'scripts/pooler.sh'), ...args], { encoding: 'utf8', env: { ...base, ...extra }, timeout: 60000 });
   const calls = () => readFileSync(log, 'utf8');
-  return { scratch, state, envPath, run, calls, sql: () => readFileSync(sql, 'utf8') };
+  return { scratch, state, envPath, run, runArgs, calls, sql: () => readFileSync(sql, 'utf8') };
 }
 const clean = f => rmSync(f.scratch, { recursive: true, force: true });
 // An installation from before the switch: the pooler secrets exist, POOLER_ENABLED does not.
@@ -244,4 +246,114 @@ test('pooler.sh refuses an unknown command, and setup.sh runs the clean-up befor
   } finally { clean(f); }
   const setup = readFileSync(join(root, 'setup.sh'), 'utf8');
   assert.ok(setup.indexOf('scripts/pooler.sh" cleanup') > setup.indexOf('scripts/migrate.sh') && setup.indexOf('scripts/pooler.sh" cleanup') < setup.indexOf('scripts/db-roles.sh" apply'));
+});
+
+// WH-284: once the pooler has run, _supabase holds Supavisor's own five tables. Plain off refuses cleanly;
+// off --drop-metadata saves compose.env and a dump first, then drops them.
+const USED = { FAKE_FACTS: '1 1 1', FAKE_HELD: '5 -' };
+const savedCopies = f => readdirSync(join(f.state, 'config')).filter(name => name.startsWith('compose.env.pre-pooler-off-'));
+const savedDumps = f => readdirSync(join(f.state, 'config')).filter(name => name.startsWith('_supabase.pre-pooler-off-') && name.endsWith('.dump'));
+const onEnv = text => poolerEnvText(text, 'on').text;
+
+test('off with Supavisor metadata present exits 1 before stopping anything, changes nothing and names off --drop-metadata', () => {
+  const f = fixture('warehouse-pooler-off-metadata-', { env: onEnv });
+  try {
+    const before = readFileSync(f.envPath, 'utf8');
+    const result = f.run('off', USED);
+    assert.equal(result.status, 1);
+    assert.match(result.stderr, /Nothing was changed/);
+    assert.match(result.stderr, /off --drop-metadata/);
+    assert.doesNotMatch(f.calls(), /rm -sf/, 'the container is not stopped');
+    assert.doesNotMatch(f.calls(), /pg_dump/);
+    assert.equal(f.sql(), '', 'the removal script is not run');
+    assert.equal(readFileSync(f.envPath, 'utf8'), before, 'compose.env is unchanged');
+    assert.equal(savedCopies(f).length + savedDumps(f).length, 0, 'nothing is saved');
+  } finally { clean(f); }
+});
+
+test('off --drop-metadata saves compose.env and a _supabase dump (0600), dumps before stopping, sends the drop variable, records off', () => {
+  const f = fixture('warehouse-pooler-off-drop-', { env: onEnv });
+  try {
+    const before = readFileSync(f.envPath, 'utf8');
+    const result = f.runArgs(['off', '--drop-metadata'], USED);
+    assert.equal(result.status, 0, result.stderr);
+    const [copy] = savedCopies(f);
+    const [dump] = savedDumps(f);
+    assert.ok(copy && dump, 'both copies exist');
+    for (const name of [copy, dump]) {
+      const path = join(f.state, 'config', name);
+      assert.equal(statSync(path).mode & 0o777, 0o600, `${name} is 0600`);
+      assert.ok(result.stdout.includes(path), `${name} path is printed`);
+    }
+    assert.equal(readFileSync(join(f.state, 'config', copy), 'utf8'), before, 'the copy is the compose.env from before');
+    assert.match(readFileSync(join(f.state, 'config', dump), 'utf8'), /FAKE-DUMP/);
+    const calls = f.calls();
+    assert.match(calls, /pg_dump .*-d _supabase/);
+    assert.ok(calls.indexOf('pg_dump') >= 0 && calls.indexOf('pg_dump') < calls.indexOf('rm -sf supavisor'), 'the dump runs before the container is removed');
+    assert.match(f.sql(), /--- psql -d postgres .*-v drop_supavisor_metadata=on/);
+    assert.match(f.sql(), /DROP DATABASE IF EXISTS _supabase;/);
+    const env = readEnv(f.envPath);
+    assert.equal(env.POOLER_ENABLED, 'false');
+    for (const name of SECRETS) assert.equal(name in env, false, `${name} is removed`);
+  } finally { clean(f); }
+});
+
+test('off --drop-metadata: a failed dump changes nothing else (container kept, compose.env unchanged)', () => {
+  const f = fixture('warehouse-pooler-off-dumpfail-', { env: onEnv });
+  try {
+    writeFileSync(join(f.scratch, 'bin/pg_dump'), '#!/bin/sh\nexit 2\n', { mode: 0o700 });
+    const before = readFileSync(f.envPath, 'utf8');
+    const result = f.runArgs(['off', '--drop-metadata'], USED);
+    assert.equal(result.status, 1);
+    assert.doesNotMatch(f.calls(), /rm -sf/);
+    assert.equal(savedDumps(f).length, 0, 'no partial dump is left');
+    assert.equal(readFileSync(f.envPath, 'utf8'), before);
+  } finally { clean(f); }
+});
+
+test('off again with no Supavisor metadata present succeeds and makes no dump', () => {
+  // _supabase already gone (a re-run of off --drop-metadata) or present but empty (plain off).
+  for (const [args, extra] of [[['off', '--drop-metadata'], { FAKE_FACTS: '0 0 0' }], [['off'], { FAKE_FACTS: '1 1 1', FAKE_HELD: '0 -' }]]) {
+    const f = fixture('warehouse-pooler-off-rerun-', { env: onEnv });
+    try {
+      const result = f.runArgs(args, extra);
+      assert.equal(result.status, 0, result.stderr);
+      assert.doesNotMatch(f.calls(), /pg_dump/);
+      assert.equal(savedDumps(f).length, 0, 'no dump file');
+      assert.equal(readEnv(f.envPath).POOLER_ENABLED, 'false');
+    } finally { clean(f); }
+  }
+});
+
+test('drop-pooler.sql names exactly the five Supavisor tables, refuses before any DROP and still refuses an unexpected relation', () => {
+  const sql = readFileSync(join(root, 'scripts/drop-pooler.sql'), 'utf8');
+  const code = sql.split('\n').filter(line => !line.startsWith('--')).join('\n');
+  const names = m => m[1].split(',').map(x => x.trim().replace(/'/g, '')).sort();
+  const lists = [...code.matchAll(/relname IN \(([^)]*)\)/g)].map(names);
+  assert.equal(lists.length, 1);
+  assert.deepEqual(lists[0], ['cluster_tenants', 'clusters', 'schema_migrations', 'tenants', 'users']);
+  assert.match(code, /n\.nspname = '_supavisor' AND c\.relkind = 'r'/);
+  const script = readFileSync(join(root, 'scripts/pooler.sh'), 'utf8');
+  assert.deepEqual([...script.matchAll(/c\.relname IN \(([^)]*)\)/g)].map(names), lists, 'pooler.sh counts the same five');
+  const drop = code.indexOf('DROP FUNCTION');
+  const unexpected = code.indexOf("'pooler objects are in use'");
+  const kept = code.indexOf("'pooler metadata kept'");
+  assert.ok(drop > 0 && unexpected > 0 && unexpected < drop, 'unexpected objects refuse before the first DROP');
+  assert.ok(kept > unexpected && kept < drop, 'the metadata refusal comes before the first DROP');
+  // Anything that is not one of the five still refuses, with or without the variable.
+  assert.match(code, /count\(\*\) FILTER \(WHERE NOT supavisor\) AS db_relations/);
+  assert.match(code, /:db_relations > 0 OR :'db_schemas' <> '-'\) AS refuse/);
+  assert.match(code, /:supavisor_relations > 0 AND NOT :\{\?drop_supavisor_metadata\}/);
+  assert.ok(code.indexOf('AS refuse') < code.indexOf('AS keep_metadata'));
+});
+
+test('pooler.sh on --drop-metadata prints the usage and does nothing', () => {
+  const f = fixture('warehouse-pooler-usage-flag-');
+  try {
+    const result = f.runArgs(['on', '--drop-metadata']);
+    assert.equal(result.status, 1);
+    assert.match(result.stderr, /Usage: bash scripts\/pooler\.sh on \| off \| status \| cleanup \(or: off --drop-metadata\)/);
+    assert.equal(f.calls(), '');
+    assert.equal(f.runArgs(['off', '--bogus']).status, 1);
+  } finally { clean(f); }
 });

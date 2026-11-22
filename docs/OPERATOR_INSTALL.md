@@ -2537,9 +2537,20 @@ bash scripts/pooler.sh on       # generates the three secrets where missing, cre
                                 # with --profile pooler up -d --no-deps (db is not recreated); idempotent
 bash scripts/pooler.sh off      # stops and removes the container, records POOLER_ENABLED=false, and DELETES the
                                 # role pgbouncer, schema pgbouncer, database _supabase and the three pooler secrets (it refuses and changes
-                                # nothing if they are in use); `on` creates new ones
+                                # nothing if they are in use); `on` creates new ones. Once the pooler has run it changes nothing and
+                                # asks for --drop-metadata (below)
+bash scripts/pooler.sh off --drop-metadata
+                                # the same, after the pooler has been used: first saves a 0600 copy of compose.env
+                                # (compose.env.pre-pooler-off-<time>) and a dump of _supabase (_supabase.pre-pooler-off-<time>.dump)
+                                # in config/, then removes Supavisor's own tables with _supabase; safe to repeat
 bash scripts/pooler.sh status   # prints on, off or unset
 ```
+
+Once the pooler has run, `_supabase` holds Supavisor's own tables (`_supavisor.tenants`, `users`, `clusters`, `cluster_tenants`,
+`schema_migrations`): its tenant and pool user, written again at every start, with the password encrypted with `VAULT_ENC_KEY`. They
+cannot be kept across off and on, because off removes `VAULT_ENC_KEY` and `on` makes a new one, so `off --drop-metadata` removes them
+with the database. Off still refuses to drop anything if `_supabase` holds anything else, or while anything is connected to it; by
+then the supavisor container has already been stopped and removed, and `POOLER_ENABLED=true` stays in compose.env.
 
 After an in-place or lost-host restore the pooler is not started (the restore starts the core services only); while `POOLER_ENABLED=true`
 the restore recreates its role, schema and `_supabase` database, and `bash scripts/pooler.sh on` starts it again. Test: `npm run test:pooler`.
