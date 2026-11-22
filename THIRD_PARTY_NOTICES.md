@@ -53,7 +53,7 @@ own premises is not distribution.
 
 | Project | Version | Licence | Upstream |
 | --- | --- | --- | --- |
-| python-kasa | 0.11.0.1 (`python-kasa==0.11.0.1` in `docker/sensor-bridge/requirements.txt`) | GPL-3.0 | https://github.com/python-kasa/python-kasa |
+| python-kasa | 0.12.0 (`python-kasa==0.12.0` in `docker/sensor-bridge/requirements.txt`) | GPL-3.0 | https://github.com/python-kasa/python-kasa |
 
 The other packages pinned in that file keep their own upstream licences.
 
