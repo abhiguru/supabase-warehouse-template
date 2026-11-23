@@ -158,3 +158,15 @@ vulnerabilities (the v1.95.0 lock as published: 32, 7 of them high). Storage's s
 `buckets`, retried within `lock_timeout` or one minute) and two partial indexes on `storage.objects` built `CONCURRENTLY`; no
 migration rewrites `storage.objects`. The image also rewrites the stored hashes of migrations 2 and 62, which upstream edited in
 place (`DB_ALLOW_MIGRATION_REFRESH` is left at its default, on).
+
+2026-11-23, v1.95.0 to v1.98.5 (Dependabot #236, WH-291): v1.98.3 to v1.98.5 (pubsub reconnect, cache invalidation, an image-render
+HEAD) and the manifest change from v1.98.2 to v1.98.5 (`pg-listen` pinned to 1.7.0) add no migration, no environment variable and
+no breaking change. The manifest takes the v1.98.5 dependencies and the lock was regenerated from the v1.98.5 lock with npm 12.2.1
+(`--lockfile-version 2`) under our overrides, all kept. `pg-boss` moves from the GitHub fork (commit 89b675b) to the registry
+`^12.38.2` (12.38.2); new `@aws-sdk/client-sqs`; `@fastify/multipart` `^10.1.8`, `@tus/s3-store` 2.1.0, `@tus/server` 2.4.7. The lock
+holds the old nested `@opentelemetry/instrumentation-http` 0.219.0 under `@platformatic/telemetry`, so that entry was removed from the
+lock before regenerating, which re-resolved it under the scoped override. `npm audit --omit=dev` reports 0 vulnerabilities.
+Storage's schema moves from 80 to 81 (`s3-multipart-uploads-parts-index`): one `CREATE INDEX CONCURRENTLY IF NOT EXISTS` on
+`storage.s3_multipart_uploads_parts`, a table this install does not use (file backend), so it is empty; no lock that blocks writes,
+and `storage.objects` is not touched. A backup taken after this move records migration 81, and a restore refuses a backup whose id is
+higher than the image's, so it does not restore onto the v1.95.0 image.

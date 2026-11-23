@@ -65,7 +65,7 @@ UNION ALL SELECT format('column|%s.%s|%s %s type %s notnull %s default %s identi
     c.nspname, c.relname, row_number() OVER (PARTITION BY c.oid ORDER BY a.attnum), a.attname, format_type(a.atttypid, a.atttypmod), a.attnotnull,
     COALESCE(pg_get_expr(d.adbin, d.adrelid), ''), a.attidentity, a.attgenerated,
     COALESCE((SELECT collname FROM pg_collation WHERE pg_collation.oid = a.attcollation AND a.attcollation <> 100), ''), a.attstorage,
-    a.attcompression, CASE WHEN a.attstattarget IS NULL OR a.attstattarget = -1 THEN 'default' ELSE a.attstattarget::text END, COALESCE(a.attoptions::text, ''))
+    a.attcompression, CASE WHEN a.attstattarget IS NULL OR a.attstattarget = -1 THEN 'default' ELSE a.attstattarget::text END, COALESCE((SELECT '{' || string_agg(o.opt, ',' ORDER BY o.n) || '}' FROM unnest(a.attoptions) WITH ORDINALITY AS o(opt, n) WHERE o.opt NOT LIKE 'pg\_attver=%'), ''))
   FROM t_cls c JOIN pg_attribute a ON a.attrelid = c.oid AND a.attnum > 0 AND NOT a.attisdropped
   LEFT JOIN pg_attrdef d ON d.adrelid = a.attrelid AND d.adnum = a.attnum
 UNION ALL SELECT pg_temp.acl('column', c.nspname || '.' || c.relname || '.' || a.attname, a.attacl, NULL, c.relowner)

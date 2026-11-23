@@ -19,7 +19,7 @@
 //   moving or retiring the endpoint) without the run turning red.
 //
 // "Line" is the part of the version that a release stream owns, because the library lists only the newest patch of each
-// stream: node 24 (24.22.1 -> 24), postgres 18 (18.6 -> 18), python 3.15, nginx 1.30 (stable is even minors, mainline odd),
+// stream: node 24 (24.22.1 -> 24), postgres 18 (18.7 -> 18), python 3.15, nginx 1.30 (stable is even minors, mainline odd),
 // ubuntu 22.04. A tag without a version (debian:bookworm-slim) must be listed exactly. Docker Hub is asked once per pinned
 // tag (v2 API, about seven requests); the library files once per image name.
 import { readFileSync, readdirSync, existsSync } from 'node:fs';
