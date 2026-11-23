@@ -102,6 +102,10 @@ file used to carry for earlier installations are in git: `git show b45ae0b:CHANG
 
 - **nginx 1.30.7 and node 26.13.1 in the storage image (WH-291).** The gateway image moves to nginx 1.30.7, which fixes several HTTP/2 and TLS 1.3 vulnerabilities (among them a flow-control overflow and a request-body loop) and others in modules the gateway does not use. The Storage image's final stage moves to node 26.13.1, the Node security release of 2026-11-11 (http2 and tls fixes). The Storage service speaks plain HTTP behind the gateway, so its exposure was small. Run the upgrade to apply both.
 
+### Security
+
+- **PostgreSQL 18.6 to 18.7 (WH-291, no migration).** The `db` image moves to `postgres:18.7-trixie` (PostgreSQL's security release of 2026-11-12, about 40 CVEs fixed, among them CVE-2026-6460, CVE-2026-16237, CVE-2026-116310 and CVE-2026-116322). A minor release: no dump, restore or `pg_upgrade`; the new image starts on the same data directory with the next `upgrade.sh`. [CONTAINER_SECURITY.md](docs/CONTAINER_SECURITY.md).
+
 ## v0.8.0 (2026-11-07)
 
 **Migrations 128 to 149: invoice cancel and delete, each item's own packaging word, items added by staff, signed-in devices, and a safer
