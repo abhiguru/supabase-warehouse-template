@@ -66,7 +66,7 @@ redistributing them. Versions are the ones pinned in
 | Project | Version | Licence | Upstream |
 | --- | --- | --- | --- |
 | nginx (official Docker image, Alpine Linux base) | 1.30.7 (`nginx:1.30.7-alpine-slim`, pinned by tag and index digest in `docker/nginx/Dockerfile`; the image's configuration is replaced by `docker/nginx/`) | BSD-2-Clause (nginx); the Alpine packages under their individual free-software licences | https://nginx.org, https://github.com/nginx/docker-nginx |
-| PostgREST | v16.6 (`postgrest/postgrest:v16.5`, pinned by index digest) | MIT | https://github.com/PostgREST/postgrest |
+| PostgREST | v16.6 (`postgrest/postgrest:v16.6`, pinned by index digest) | MIT | https://github.com/PostgREST/postgrest |
 | PostgreSQL (official Docker image) | 18.6 (`postgres:18.6-trixie`, pinned by tag and index digest in `docker/postgres/Dockerfile`; the Supabase PostgreSQL image is no longer used) | PostgreSQL License for PostgreSQL; Debian packages under their individual free-software licences | https://hub.docker.com/_/postgres and https://www.postgresql.org/ |
 | Supavisor | 2.10.1 (base of `docker/supavisor/Dockerfile`) | Apache-2.0 | https://github.com/supabase/supavisor |
 | Supabase edge-runtime | v1.79.3 (only its `edge-runtime` binary is copied, onto `debian:bookworm-slim`, by `docker/edge-runtime/Dockerfile`) | MIT | https://github.com/supabase/edge-runtime |
