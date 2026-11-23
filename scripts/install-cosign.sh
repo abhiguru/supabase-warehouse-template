@@ -27,8 +27,51 @@ fi
 install -d -m 755 "$state/bin"
 tmp="$(mktemp "$state/bin/.cosign.XXXXXX")" || die "a temporary file cannot be made in $state/bin."
 trap 'rm -f -- "$tmp"' EXIT
-curl --fail --silent --show-error --location --proto '=https' --proto-redir '=https' --tlsv1.2 --connect-timeout 15 --max-time 300 --retry 3 \
-  --output "$tmp" "https://github.com/sigstore/cosign/releases/download/$VERSION/$asset" || die "cosign $VERSION could not be downloaded."
+# A partial file left by an older run that was killed (its trap never ran) is removed; only ones untouched for an hour, so a live run is spared.
+find "$state/bin" -maxdepth 1 -type f -name '.cosign.*' -mmin +60 ! -name "${tmp##*/}" -delete 2>/dev/null || true
+# The download gives up only when it STALLS, not when it is slow: curl stops an attempt that runs under 50 KB/s for 60 s in a row (a line that
+# moves at 300 KB/s finishes the 146 MB in about 8 minutes). The per-attempt ceiling of 3600 s only bounds a trickle that stays just above that
+# floor (146 MB at 50 KB/s takes 2900 s). An attempt that stops part-way is carried on from the byte where it stopped (--continue-at -, into the same
+# temporary file); a server that ignores the range (curl exit 33) is started again from zero. The SHA-256 check below is on the finished file.
+url="https://github.com/sigstore/cosign/releases/download/$VERSION/$asset"
+size_of() { stat -c %s -- "$tmp" 2>/dev/null || echo 0; }
+# The whole loop has a deadline of 2 h, checked before each attempt; an attempt's own ceiling is cut to what is left of it.
+# A transient failure is retried after a pause of 3 s that grows by 3 s for each attempt in a row that brought nothing (at most 15 s):
+# a stalled or reset connection (curl 6, 7, 16, 18, 28, 35, 52, 55, 56, 92) and an HTTP 408, 429 or 5xx. Any other HTTP error (404, 403 ...)
+# ends it at once. --fail keeps an error page out of the partial file.
+deadline=7200 started=$SECONDS
+fails=0 attempts=0 ok='' late=''
+while (( attempts < 30 && fails < 4 )); do
+  left=$(( deadline - (SECONDS - started) ))
+  if (( left <= 0 )); then late=yes; break; fi
+  attempts=$((attempts + 1))
+  before="$(size_of)"
+  rc=0
+  code="$(curl --fail --silent --show-error --location --proto '=https' --proto-redir '=https' --tlsv1.2 \
+    --connect-timeout 15 --speed-limit 50000 --speed-time 60 --max-time $(( left < 3600 ? left : 3600 )) --continue-at - \
+    --write-out '%{http_code}' --output "$tmp" "$url")" || rc=$?
+  if (( rc == 0 )); then ok=yes; break; fi
+  case "$rc" in
+    33) : > "$tmp"; echo "cosign download: the server does not resume a partial file; starting again from the beginning." >&2 ;;
+    6|7|16|18|28|35|52|55|56|92) ;;   # a stalled, reset or refused connection: worth another try
+    22) case "$code" in
+          408|429|5??) ;;             # the server is busy or failing for now
+          416)                        # Range not satisfiable: the file may already be whole; the SHA-256 decides
+            if [[ "$(sha256sum "$tmp" | cut -d' ' -f1)" == "$want" ]]; then ok=yes; break; fi
+            : > "$tmp" ;;
+          *) break ;;                 # 404, 403 ...: another try would end the same way
+        esac ;;
+    *) break ;;                       # a local problem: another try would end the same way
+  esac
+  # Progress is not a failure: only attempts that brought no new bytes count towards giving up.
+  if (( $(size_of) > before )); then fails=0; else fails=$((fails + 1)); fi
+  sleep $(( 3 * (fails < 5 ? fails + 1 : 5) ))
+done
+if [[ "$ok" != yes ]]; then
+  why='the connection stalled or was refused'
+  [[ -z "$late" ]] || why='the 2-hour deadline for the download was reached'
+  die "cosign $VERSION could not be downloaded ($why). Without cosign the release images will NOT be signature-checked. Run the same command again when the connection is better (setup.sh, or the upgrade), or from a checkout of the release: bash scripts/install-cosign.sh \"$state\""
+fi
 echo "$want  $tmp" | sha256sum -c --quiet - || die "the downloaded cosign does not match the pinned SHA-256, so it is not installed."
 chmod 755 "$tmp"
 mv -f -- "$tmp" "$dest"

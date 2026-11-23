@@ -2734,6 +2734,13 @@ Releases from the one that added `docker/images-signed` publish **signed images*
 `setup.sh` installs the pinned `cosign` into `$WAREHOUSE_STATE_DIR/bin` itself (no root; checked against a SHA-256 pinned in `scripts/install-cosign.sh`). Older releases
 are not signed and are not checked. What you may see:
 
+The cosign download is about 146 MB. A slow line is fine: the download is given up only when it **stalls** (under 50 KB/s for 60 seconds in a row; an attempt is
+also stopped after 3600 s, and the whole download after 2 hours), and a stopped attempt carries on from the byte where it stopped, so a line at 300 KB/s finishes in about eight minutes.
+A dropped connection, an HTTP 408, 429 or 5xx is retried after a short, growing pause; another HTTP error (404, 403) is not. The pinned SHA-256 is checked on the
+finished file. If the download still fails, `setup.sh` goes on with the warning `cosign could not be installed ..., so the release images will NOT be signature-checked`:
+the images are then built on this host (an unsigned local build), or used as they are if you passed `--unsigned`. To check them later, when the connection is better, run
+`setup.sh` again with the same options (or the upgrade again; it runs the same script itself), or run `bash scripts/install-cosign.sh "$WAREHOUSE_STATE_DIR"` from a checkout of the release; `setup.sh` and `upgrade.sh` check every release image before using it.
+
 - `Image signature of <image>: verified` is the normal answer.
 - `Refusing: cosign is not installed, so the signatures ... cannot be checked`: the **first** upgrade into the signed era, on a host whose setup has not installed cosign yet.
   Nothing was changed. Install it with the command the message prints (`git show vX.Y.Z:scripts/install-cosign.sh | bash -s -- "$WAREHOUSE_STATE_DIR"`) and run the

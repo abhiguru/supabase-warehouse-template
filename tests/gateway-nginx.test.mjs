@@ -931,7 +931,8 @@ test('maintenance mode: every API route answers 503 with the body that says upgr
   assertRequestId(burst[0], 'the 503');
   const upstream = docker(['logs', STUB]);
   assert.doesNotMatch(`${upstream.stdout}\n${upstream.stderr}`, new RegExp(`maintenance-${marker}`), 'the stand-in never saw a request of the closed gateway');
-  assert.doesNotMatch(`${upstream.stdout}\n${upstream.stderr}`, /operator-otp|abc/);
+  // token=abc, not abc: the stand-in's log also holds other tests' random hex names (pin-ok-2cad62406abc failed this once).
+  assert.doesNotMatch(`${upstream.stdout}\n${upstream.stderr}`, /operator-otp|token=abc/);
   // The open gateway of the same lab, on the same image, is as it was: the same request is answered by the upstream, and a 503 is not what it says.
   const open = await request(`/rest/v1/rpc/maintenance-${marker}`, { headers: { apikey: ANON } });
   assert.equal(open.status, 200);

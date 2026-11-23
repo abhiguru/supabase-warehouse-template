@@ -974,7 +974,9 @@ test('without --from-release nothing is fetched or pulled, whatever the tag; the
 function publish(f, args, env = {}) {
   for (const log of ['relabel.log', 'retag.log', 'gh.log']) writeFileSync(join(f.scratch, log), '');
   const result = spawnSync('bash', [join(f.root, 'scripts/publish-images.sh'), ...args], { encoding: 'utf8',
-    env: { ...process.env, PATH: `${join(f.scratch, 'bin')}:${process.env.PATH}`, WAREHOUSE_STATE_DIR: f.state, FAKE_DIR: f.scratch, FAKE_ROOT: f.root, ...env } });
+    env: { ...process.env, PATH: `${join(f.scratch, 'bin')}:${process.env.PATH}`, WAREHOUSE_STATE_DIR: f.state, FAKE_DIR: f.scratch, FAKE_ROOT: f.root,
+      // GITHUB_REPOSITORY is set by CI to wherever the repository lives now; a test names it itself, or tests the default without it.
+      GITHUB_REPOSITORY: '', ...env } });
   const log = name => (existsSync(join(f.scratch, name)) ? readFileSync(join(f.scratch, name), 'utf8').trim() : '');
   return { ...result, tags: log('tag.log'), pushes: log('push.log'), relabels: log('relabel.log'), retags: log('retag.log'), gh: log('gh.log'), builds: log('build.log') };
 }
