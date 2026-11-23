@@ -96,6 +96,11 @@ file used to carry for earlier installations are in git: `git show b45ae0b:CHANG
 
 - Release images: the db and pdf-renderer base digests move to the current builds of the same tags (postgres 18.6-trixie, node 24-trixie-slim) so the images carry apt and libapt-pkg7.0 3.0.4 (CVE-2026-109518, WH-128).
 - **Docs match the code (WH-117, WH-47).** Pooler off, alert retry, break-glass for all workers, 8-year audit retention, and `get_items` access corrected.
+- **PostgREST v16.6 and jose 6.2.18 (WH-291).** PostgREST now answers an internal server error with a JSON body instead of none. jose (the root test pin and the vendored edge copy `functions/vendor/jose.mjs`) moves to 6.2.18; the functions' calls are unchanged.
+
+### Security
+
+- **nginx 1.30.7 and node 26.13.1 in the storage image (WH-291).** The gateway image moves to nginx 1.30.7, which fixes several HTTP/2 and TLS 1.3 vulnerabilities (among them a flow-control overflow and a request-body loop) and others in modules the gateway does not use. The Storage image's final stage moves to node 26.13.1, the Node security release of 2026-11-11 (http2 and tls fixes). The Storage service speaks plain HTTP behind the gateway, so its exposure was small. Run the upgrade to apply both.
 
 ## v0.8.0 (2026-11-07)
 
