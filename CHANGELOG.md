@@ -106,7 +106,7 @@ file used to carry for earlier installations are in git: `git show b45ae0b:CHANG
 
 ### Security
 
-- **PostgreSQL 18.6 to 18.7 (WH-291, no migration).** The `db` image moves to `postgres:18.7-trixie` (PostgreSQL's security release of 2026-11-12, about 40 CVEs fixed, among them CVE-2026-6460, CVE-2026-16237, CVE-2026-116310 and CVE-2026-116322). A minor release: no dump, restore or `pg_upgrade`; the new image starts on the same data directory with the next `upgrade.sh`. [CONTAINER_SECURITY.md](docs/CONTAINER_SECURITY.md).
+- **PostgreSQL 18.6 to 18.7 (WH-291, no migration).** The `db` image moves to `postgres:18.7-trixie` (PostgreSQL's security release of 2026-11-12, about 40 CVEs fixed, among them CVE-2026-6460, CVE-2026-16237, CVE-2026-116310 and CVE-2026-116322). A minor release: no dump, restore or `pg_upgrade`; the new image starts on the same data directory with the next `upgrade.sh`. Security: the recipe also upgrades only the Kerberos libraries (`libgssapi-krb5-2`, `libkrb5-3`, `libk5crypto3`, `libkrb5support0`) and `zlib1g`, whose Debian fixes came after the base image was built, so the image scan has no HIGH/CRITICAL row with a fix; no libc package changes. [CONTAINER_SECURITY.md](docs/CONTAINER_SECURITY.md).
 
 ## v0.8.0 (2026-11-07)
 

@@ -2,6 +2,14 @@
 # the image ships gosu 1.19 built with an old Go toolchain, and Trivy reports fixable Go standard-library CVEs in
 # that binary. The shim below does the same job with util-linux's setpriv, so no Go build is needed.
 FROM postgres:18.7-trixie@sha256:eb63372c1e05c755f55fa30cbd07aecc443676fc6c0fa90b9002d01537841e1a
+# Debian published fixes for the Kerberos libraries (krb5 1.21.3-5+deb13u2) and zlib after the 18.7 base image was built, and
+# Trivy reports them as HIGH/CRITICAL rows with a fix, which the image scan gate (docker/image-exceptions.json) does not
+# allow. Upgrade only these named packages, as docker/nginx/Dockerfile does with `apk upgrade`. No libc package is in the
+# list (libc6, libc-bin and locales stay as the base image has them), so the collation guard below keeps passing; it
+# runs after this layer and fails the build if one of them ever changed. Remove a name when the base image carries the fix.
+RUN apt-get update \
+    && apt-get install -y --no-install-recommends --only-upgrade libgssapi-krb5-2 libkrb5-3 libk5crypto3 libkrb5support0 zlib1g \
+    && rm -rf /var/lib/apt/lists/*
 # Delete the base image's binary in a layer of its own first: an image scanner (Trivy) reads each layer, and a file that is
 # only overwritten would still be reported as the Go binary it was.
 RUN rm -f /usr/local/bin/gosu
