@@ -64,7 +64,7 @@ test('install-cosign.sh: the arm64 asset on an arm64 host, and a failed download
   try {
     const r = failing.run();
     assert.equal(r.status, 1);
-    assert.match(r.stderr, /could not be downloaded/);
+    assert.match(r.stderr, /^Refusing: cosign v\d+\.\d+\.\d+ could not be downloaded: HTTP error from github\.com\. Without cosign the release images will NOT be signature-checked\. Run /m);
     assert.equal(existsSync(join(failing.state, 'bin/cosign')), false);
   } finally { failing.clean(); }
 });
@@ -164,8 +164,8 @@ test('install-cosign.sh gives up after 4 attempts that add no bytes, leaves noth
     const r = w.run();
     assert.equal(r.status, 1, r.stdout + r.stderr);
     assert.equal(w.count(), 4);
-    assert.match(r.stderr, /^Refusing: cosign v\d+\.\d+\.\d+ could not be downloaded \(the connection stalled or was refused\)\. Without cosign the release images will NOT be signature-checked\. Run the same command again when the connection is better \(setup\.sh, or the upgrade\), or from a checkout of the release: bash scripts\/install-cosign\.sh "[^"\n]+"$/m);
-    assert.ok(r.stderr.includes(`bash scripts/install-cosign.sh "${w.state}"`));
+    assert.match(r.stderr, /^Refusing: cosign v\d+\.\d+\.\d+ could not be downloaded: the connection stalled, timed out or was refused \(curl 28: no message\)\. Without cosign the release images will NOT be signature-checked\. Run bash scripts\/install-cosign\.sh "[^"\n]+" \(from a checkout of the release\) once the connection is better\.$/m);
+    assert.ok(r.stderr.includes(`Run bash scripts/install-cosign.sh "${w.state}" (from a checkout of the release) once the connection is better.`));
     assert.deepEqual(readdirSync(join(w.state, 'bin')), []);
   } finally { w.clean(); }
 });
@@ -176,7 +176,7 @@ test('install-cosign.sh: an attempt that adds bytes resets the stall count, and 
     const r = w.run();
     assert.equal(r.status, 1, r.stdout + r.stderr);
     assert.equal(w.count(), 30);
-    assert.match(r.stderr, /could not be downloaded/);
+    assert.match(r.stderr, /could not be downloaded: the connection stalled, timed out or was refused \(curl 56: no message\)\. Without cosign/);
     assert.deepEqual(readdirSync(join(w.state, 'bin')), []);
   } finally { w.clean(); }
   // progress, then 3 empty attempts, then progress again (attempt 5): the count restarted, so attempts 6 to 9 end it
@@ -194,7 +194,7 @@ test('install-cosign.sh: a non-transient curl exit (22, an HTTP error) gives up 
     const r = w.run();
     assert.equal(r.status, 1);
     assert.equal(w.count(), 1);
-    assert.match(r.stderr, /could not be downloaded/);
+    assert.match(r.stderr, /could not be downloaded: HTTP error from github\.com\. Without cosign/);
     assert.deepEqual(readdirSync(join(w.state, 'bin')), []);
   } finally { w.clean(); }
 });
@@ -225,7 +225,7 @@ test('install-cosign.sh downloads with a speed floor (50 KB/s for 60 s), a per-a
 test('setup.sh warns that the release images will NOT be signature-checked when cosign cannot be installed, and names the retry command', () => {
   const setup = read('setup.sh');
   assert.match(setup, /Warning: cosign could not be installed \(message above\), so the release images will NOT be signature-checked\./);
-  assert.ok(setup.includes('To check them later, when the connection is better: bash scripts/install-cosign.sh \\"$STATE\\" (from a checkout of the release; an upgrade runs the same script itself), then run setup.sh again with the same options (it checks every release image before using it); or check one image with bash scripts/verify-image-signature.sh <repository>@sha256:<digest>.'));
+  assert.ok(setup.includes('To check them later, once the cause above is fixed: bash scripts/install-cosign.sh \\"$STATE\\" (from the checkout you ran setup.sh in), then run setup.sh again with the same options (it checks every release image before using it); or check one image with bash scripts/verify-image-signature.sh <repository>@sha256:<digest>.'));
   assert.ok(setup.includes('bash scripts/verify-image-signature.sh <repository>@sha256:<digest>'));
 });
 
@@ -240,7 +240,7 @@ test('install-cosign.sh removes only .cosign.* temporary files older than 60 min
     utimesSync(old, longAgo, longAgo); utimesSync(other, longAgo, longAgo); utimesSync(fresh, recent, recent);
     w.run();
     const own = /--output \S+\/(\.cosign\.\w{6}) /.exec(w.curlLog())[1];
-    assert.deepEqual(readFileSync(join(w.scratch, 'during'), 'utf8').trim().split('\n').sort(), ['.cosign.NEW123', own, 'keep-me'].sort(), 'during the run only the old file is gone');
+    assert.deepEqual(readFileSync(join(w.scratch, 'during'), 'utf8').trim().split('\n').sort(), ['.cosign.NEW123', own, `${own}.err`, 'keep-me'].sort(), 'during the run only the old file is gone');
     assert.deepEqual(readdirSync(dir).sort(), ['.cosign.NEW123', 'keep-me']);
   } finally { w.clean(); }
 });
@@ -267,27 +267,56 @@ test('install-cosign.sh gives up at once on HTTP 404 and 403 (one curl call, not
       const r = w.run();
       assert.equal(r.status, 1, String(code));
       assert.equal(w.count(), 1, String(code));
-      assert.match(r.stderr, /could not be downloaded/);
+      assert.match(r.stderr, new RegExp(`could not be downloaded: HTTP ${code} from github\\.com\\. Without cosign the release images will NOT be signature-checked\\. Run bash scripts/install-cosign\\.sh "[^"\\n]+" \\(from a checkout of the release\\) once that is fixed\\.$`, 'm'), String(code));
+      assert.doesNotMatch(r.stderr, /connection/);
       assert.deepEqual(readdirSync(join(w.state, 'bin')), [], String(code));
     } finally { w.clean(); }
   }
 });
 
-test('install-cosign.sh: HTTP 416 on a complete file goes to the SHA check, and on a partial file empties it and retries', () => {
-  const whole = cosignWorld(`printf PART1PART2 > "$out"; ${http(416)}`);
+test('install-cosign.sh names a local curl error (exit 23, a write failure) and does not blame the connection', () => {
+  const w = cosignWorld('echo "curl: (23) Failure writing output to destination" >&2; exit 23');
+  try {
+    const r = w.run();
+    assert.equal(r.status, 1);
+    assert.equal(w.count(), 1);
+    assert.match(r.stderr, /could not be downloaded: cosign could not be written to \S+\/state\/bin \(curl 23: Failure writing output to destination\); check the free disk space and that the folder is writable\. Without cosign the release images will NOT be signature-checked\. Run bash scripts\/install-cosign\.sh "[^"\n]+" \(from a checkout of the release\) once that is fixed\.$/m);
+    assert.doesNotMatch(r.stderr.split('\n').filter(l => l.startsWith('Refusing')).join(''), /connection/);
+    assert.deepEqual(readdirSync(join(w.state, 'bin')), [], 'the .err file is removed too');
+  } finally { w.clean(); }
+});
+
+test('install-cosign.sh run piped as git show | bash -s names the printed command, not the upgrade, and a stall still names the connection', () => {
+  const w = cosignWorld('echo "curl: (28) Operation too slow" >&2; exit 28');
+  try {
+    const bin = join(w.scratch, 'bin');
+    const r = spawnSync('bash', ['-s', '--', w.state], { input: read('scripts/install-cosign.sh'), encoding: 'utf8', env: { ...process.env, PATH: `${bin}:${process.env.PATH}`, WAREHOUSE_STATE_DIR: '' } });
+    assert.equal(r.status, 1, r.stdout + r.stderr);
+    assert.match(r.stderr, /could not be downloaded: the connection stalled, timed out or was refused \(curl 28: Operation too slow\)\. Without cosign the release images will NOT be signature-checked\. Run the same command again \(git show <release>:scripts\/install-cosign\.sh \| bash -s -- "[^"\n]+", as the upgrade printed it\) once the connection is better\.$/m);
+    assert.doesNotMatch(r.stderr, /upgrade\.sh|run the upgrade|Run bash scripts/i);
+  } finally { w.clean(); }
+});
+
+
+// Checked against real curl 8.5.0 and a local server that answers 416 to a range past the end (WH-290): `curl --fail --continue-at -` on a complete file
+// exits 0 with %{http_code} 416 and leaves the file as it is; on a file longer than the remote it does the same. So the script's SHA-256 check decides,
+// and the script's own `22` + 416 branch is never reached. The shim does what real curl does.
+test('install-cosign.sh: curl exit 0 with HTTP 416 on a complete file installs after the SHA check, and on a file that is not the release is refused', () => {
+  const whole = cosignWorld(`printf PART1PART2 > "$out"; printf 416; exit 0`);
   try {
     const r = whole.run();
     assert.equal(r.status, 0, r.stdout + r.stderr);
     assert.equal(whole.count(), 1);
     assert.equal(readFileSync(join(whole.state, 'bin/cosign'), 'utf8'), FIXTURE);
   } finally { whole.clean(); }
-  const part = cosignWorld(`if [ $n = 1 ]; then printf PART1 > "$out"; ${http(416)}; fi\n[ ! -s "$out" ] || exit 99\nprintf PART1PART2 >> "$out"; exit 0`);
+  const wrong = cosignWorld(`printf PART1PART2EXTRA > "$out"; printf 416; exit 0`);
   try {
-    const r = part.run();
-    assert.equal(r.status, 0, r.stdout + r.stderr);
-    assert.equal(part.count(), 2);
-    assert.equal(readFileSync(join(part.state, 'bin/cosign'), 'utf8'), FIXTURE);
-  } finally { part.clean(); }
+    const r = wrong.run();
+    assert.equal(r.status, 1);
+    assert.equal(wrong.count(), 1);
+    assert.match(r.stderr, /the downloaded cosign does not match the pinned SHA-256, so it is not installed/);
+    assert.deepEqual(readdirSync(join(wrong.state, 'bin')), []);
+  } finally { wrong.clean(); }
 });
 
 test('install-cosign.sh stops after a 2-hour deadline, and cuts --max-time to the time left', () => {
@@ -302,7 +331,7 @@ test('install-cosign.sh stops after a 2-hour deadline, and cuts --max-time to th
     const max = w.calls().map(l => /--max-time (\d+)/.exec(l)[1]);
     assert.equal(max[0], '3600');
     assert.ok(Number(max[1]) >= 3199 && Number(max[1]) <= 3200, `the second ceiling is the time left, got ${max[1]}`);
-    assert.match(r.stderr, /could not be downloaded \(the 2-hour deadline for the download was reached\)\. Without cosign the release images will NOT be signature-checked\./);
+    assert.match(r.stderr, /could not be downloaded: the 2-hour deadline for the download was reached \(last attempt: curl 28, no message\)\. Without cosign the release images will NOT be signature-checked\./);
     assert.deepEqual(readdirSync(join(w.state, 'bin')), []);
   } finally { w.clean(); rmSync(scratchEnv, { force: true }); }
 });
