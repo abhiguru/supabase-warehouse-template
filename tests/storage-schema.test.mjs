@@ -36,13 +36,24 @@ test('the version the image reports (ENV VERSION) is the tag it is built from', 
   assert.equal(dockerfile.match(/^ENV VERSION=(\S+)$/m)?.[1], from[1]);
 });
 
-test('pg-boss is pinned to one commit, in the manifest and in the lock', () => {
+test('pg-boss is the registry release 12.38.2, by version and integrity hash, in the manifest and in the lock', () => {
+  // Storage's queue schema (pg-boss migrations) moves with this version; v1.98.5 ships 12.38.2 from the registry, no longer a fork commit.
+  const version = '12.38.2';
+  const resolved = `https://registry.npmjs.org/pg-boss/-/pg-boss-${version}.tgz`;
+  const integrity = 'sha512-nvB9hB2cDJGSPUwYjN/Mth+EE3zvxffkp7uKXIiYloMAaxSoEiutmZi9mpSW85hNCcPChf3yicNXdwhIWkv2nA==';
   const manifest = JSON.parse(read('docker/storage/package.json'));
-  const pinned = manifest.dependencies['pg-boss'].match(/^github:supabase\/pg-boss#([0-9a-f]{40})$/);
-  assert.ok(pinned, `pg-boss is not pinned to a commit: ${manifest.dependencies['pg-boss']}`);
+  assert.equal(manifest.dependencies['pg-boss'], `^${version}`, 'a registry range, not a git or tarball URL');
   const lock = JSON.parse(read('docker/storage/package-lock.json'));
   assert.equal(lock.packages[''].dependencies['pg-boss'], manifest.dependencies['pg-boss']);
-  assert.match(lock.packages['node_modules/pg-boss'].resolved, new RegExp(`#${pinned[1]}$`), 'the lock resolves the pinned commit');
+  const entry = lock.packages['node_modules/pg-boss'];
+  assert.equal(entry.version, version);
+  assert.equal(entry.resolved, resolved);
+  assert.equal(entry.integrity, integrity);
+  // lockfileVersion 2 keeps the same package a second time, for older npm.
+  const legacy = lock.dependencies['pg-boss'];
+  assert.equal(legacy.version, version);
+  assert.equal(legacy.resolved, resolved);
+  assert.equal(legacy.integrity, integrity);
 });
 
 test('the integrity report prints the Storage migration count and head, and prints zeros before Storage has run', () => {
