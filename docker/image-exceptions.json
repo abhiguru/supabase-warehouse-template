@@ -96,16 +96,16 @@
     },
     {
       "id": "rest-no-package-inventory",
-      "recipe": "postgrest/postgrest:v16.5@sha256:1347d7552b88f17832912c06afbf7c43209af6eeeb60834b04aae12c9bd9d5cc",
+      "recipe": "postgrest/postgrest:v16.6@sha256:5ce030c153500fe90ba157da4da8ba99ab51d3bc7b95e071bd0b544b67a632f7",
       "class": "no-package-inventory",
-      "digest": "sha256:1347d7552b88f17832912c06afbf7c43209af6eeeb60834b04aae12c9bd9d5cc",
+      "digest": "sha256:5ce030c153500fe90ba157da4da8ba99ab51d3bc7b95e071bd0b544b67a632f7",
       "compensatingControls": [
         "No host port: outside requests reach PostgREST only through the gateway (nginx), which requires the API key, caps request bodies at 10 MB and limits each client address to a burst of 1800 requests and then 30 a second (docs/CONTAINER_SECURITY.md, REST request limit)",
         "public.check_session runs before every request (PGRST_DB_PRE_REQUEST), and business data is written only through RPCs guarded by warehouse_security.authorize_rpc",
-        "The image is the publisher's v16.5 index, pinned by digest in Compose; another digest is not covered by this exception and fails the scan"
+        "The image is the publisher's v16.6 index, pinned by digest in Compose; another digest is not covered by this exception and fails the scan"
       ],
       "owner": "abhiguru",
-      "reason": "The publisher's static PostgREST binary yields no package results in Trivy and the image carries no SBOM, so a clean scan proves nothing (TW-BE-010, option c). Planned replacement: a source build with a recorded dependency closure (option a). The historical aeson advisory HSEC-2026-0007 is unverified for v16.5.",
+      "reason": "The publisher's static PostgREST binary yields no package results in Trivy and the image carries no SBOM, so a clean scan proves nothing (TW-BE-010, option c). Planned replacement: a source build with a recorded dependency closure (option a). The historical aeson advisory HSEC-2026-0007 is unverified for v16.6.",
       "reviewed": "2026-10-26",
       "expires": "2027-01-15"
     }
