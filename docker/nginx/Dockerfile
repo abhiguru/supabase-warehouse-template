@@ -5,7 +5,7 @@
 # Debian-based 1.30.6-trixie) and it still holds everything the configuration uses: the realip, gzip and limit_req
 # modules, HTTP/2 and the envsubst of the image's /docker-entrypoint.d/20-envsubst-on-templates.sh. Move to the next
 # stable branch (1.32) once a year; read the index digest with `docker buildx imagetools inspect nginx:<tag>`.
-FROM nginx:1.30.6-alpine-slim@sha256:e2355aa95529a7999dad94ddcb45a8768abf6fb0b204c93b1a3ffce477d7b893
+FROM nginx:1.30.7-alpine-slim@sha256:8c950211a641ec5b23f265450517001f6bcca533666120ebe36cb4cff3d00a55
 
 # Alpine security updates for the whole image, as the other recipes do for their packages. The image's own default
 # server is removed: nothing listens on port 80.
