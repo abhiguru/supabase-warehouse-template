@@ -8,7 +8,7 @@ ipp 2.0.1 (MIT)
 No licence file in the package; declared licence: MIT; author: William Kapke.
 
 ========================================================================
-jose 6.2.17 (MIT)
+jose 6.2.18 (MIT)
 ========================================================================
 
 The MIT License (MIT)

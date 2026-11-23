@@ -141,7 +141,7 @@ below (v1.95.0, npm 12.2.1) kept all five raises and their overrides, because th
 vulnerable copies, and dropped none of them; it dropped only other overrides.
 
 2026-11-21, v1.80.2 to v1.95.0 (Dependabot #224): v1.85.0 moved the publisher image to Node 26 and npm 12, so stage 2 is
-`node:26.13.0-alpine3.24` (the publisher's Node 26.13.0 on Alpine 3.24.3) and the manifest takes the publisher's `packageManager`
+`node:26.13.1-alpine3.24` (Node 26.13.1 since #235; the publisher's stage 1 is 26.13.0, same major and Alpine 3.24.3) and the manifest takes the publisher's `packageManager`
 (`npm@12.2.1`), `engines` (Node 26, npm 12.2.1), `allowScripts` and its own override of `@fastify/busboy` (3.2.4, under
 `@fastify/multipart`). The lock was regenerated from the v1.95.0 manifest and lock with npm 12.2.1 (`--lockfile-version 2`, the
 publisher's); npm 11.12.1 writes the same bytes. Dropped because the new tree already meets them or they would now go backwards:

@@ -316,6 +316,8 @@ var jwkMatchesOp = (entry, key, usage) => {
     if (key.use !== expected)
       throw new TypeError(`Invalid key for this operation, its "use" must be "${expected}" when present`);
   }
+  if (key.kty === "AKP" && key.alg === void 0)
+    throw new TypeError('missing "alg" (Algorithm) Parameter value');
   if (key.alg !== void 0 && key.alg !== alg)
     throw new TypeError(`Invalid key for this operation, its "alg" must be "${alg}" when present`);
   if (Array.isArray(key.key_ops)) {
@@ -1017,7 +1019,7 @@ async function decryptJWE(jwe, shared, key, token = shareJWE(jwe)) {
     if (decompressionLimit === 0)
       throw new JOSENotSupported('JWE "zip" (Compression Algorithm) Header Parameter is not supported.');
     plaintext = await decompress(plaintext, decompressionLimit).catch((cause) => {
-      throw cause instanceof JWEInvalid ? cause : new JWEInvalid("Failed to decompress plaintext", { cause });
+      throw cause instanceof JWEInvalid || cause instanceof JOSENotSupported ? cause : new JWEInvalid("Failed to decompress plaintext", { cause });
     });
   }
   return {
@@ -1143,7 +1145,7 @@ async function encryptJWE(input, checked, key) {
   const encodedProtectedHeader = protectedHeader ? encode2(JSON.stringify(protectedHeader)) : "", encodedAad = aad?.byteLength ? encode2(aad) : void 0, additionalAuthenticatedData = encode(encodedAad ? `${encodedProtectedHeader}.${encodedAad}` : encodedProtectedHeader);
   let plaintext = inputPlaintext;
   joseHeader.zip === "DEF" && (plaintext = await compress(plaintext).catch((cause) => {
-    throw new JWEInvalid("Failed to compress plaintext", { cause });
+    throw cause instanceof JOSENotSupported ? cause : new JWEInvalid("Failed to compress plaintext", { cause });
   }));
   let ciphertext, tag2, iv;
   algEntry.mode === "integrated-encryption" ? [encryptedKey, ciphertext] = await algEntry.encrypt(cek, plaintext, additionalAuthenticatedData, protectedHeader, joseHeader, keyManagementParameters) : { ciphertext, tag: tag2, iv } = await encrypt(encEntry, plaintext, cek, inputIv, additionalAuthenticatedData);
@@ -1476,7 +1478,7 @@ function secs(str) {
   const matched = REGEX.exec(str);
   (!matched || matched[4] && matched[1]) && invalidDuration();
   const value = parseFloat(matched[2]), durationSeconds = Math.round(value * multipliers[matched[3][0].toLowerCase()]);
-  return Number.isFinite(durationSeconds) || invalidDuration(), matched[1] === "-" || matched[4] === "ago" ? -durationSeconds : durationSeconds;
+  return Number.isFinite(durationSeconds) || invalidDuration(), matched[1] === "-" || matched[4]?.toLowerCase() === "ago" ? -durationSeconds : durationSeconds;
 }
 function validateInput(label, input) {
   if (!Number.isFinite(input))
@@ -1847,15 +1849,12 @@ var EncryptJWT = class extends EncryptJWT_base {
     return this.#replicateAudienceAsHeader = true, this;
   }
   async encrypt(key, options) {
-    const plaintext = jwtClaimsSetBytes(this);
-    this.#input[1] && (this.#replicateIssuerAsHeader || this.#replicateSubjectAsHeader || this.#replicateAudienceAsHeader) && (this.#input[1] = {
-      ...this.#input[1],
-      iss: this.#replicateIssuerAsHeader ? jwtClaim(this, "iss") : void 0,
-      sub: this.#replicateSubjectAsHeader ? jwtClaim(this, "sub") : void 0,
-      aud: this.#replicateAudienceAsHeader ? jwtClaim(this, "aud") : void 0
-    });
     const input = [...this.#input];
-    return input[0] = plaintext, compactJWE(await createJWE(input, key, options));
+    if (input[0] = jwtClaimsSetBytes(this), input[1] && (this.#replicateIssuerAsHeader || this.#replicateSubjectAsHeader || this.#replicateAudienceAsHeader)) {
+      const header = { ...input[1] };
+      this.#replicateIssuerAsHeader && (header.iss = jwtClaim(this, "iss")), this.#replicateSubjectAsHeader && (header.sub = jwtClaim(this, "sub")), this.#replicateAudienceAsHeader && (header.aud = jwtClaim(this, "aud")), input[1] = header;
+    }
+    return compactJWE(await createJWE(input, key, options));
   }
 };
 
@@ -2173,7 +2172,7 @@ function isCloudflareWorkers() {
   return typeof WebSocketPair < "u" || typeof navigator < "u" && navigator.userAgent === "Cloudflare-Workers" || typeof EdgeRuntime < "u" && EdgeRuntime === "vercel";
 }
 var USER_AGENT;
-(typeof navigator > "u" || !navigator.userAgent?.startsWith?.("Mozilla/5.0 ")) && (USER_AGENT = "jose/v6.2.17");
+(typeof navigator > "u" || !navigator.userAgent?.startsWith?.("Mozilla/5.0 ")) && (USER_AGENT = "jose/v6.2.18");
 var customFetch = /* @__PURE__ */ Symbol();
 async function fetchJwks(url, headers, signal, fetchImpl = fetch) {
   const response = await fetchImpl(url, {
@@ -2189,7 +2188,7 @@ async function fetchJwks(url, headers, signal, fetchImpl = fetch) {
   try {
     return await response.json();
   } catch (cause) {
-    throw new JOSEError("Failed to parse the JSON Web Key Set HTTP response as JSON", { cause });
+    throw signal.aborted ? new JWKSTimeout(void 0, { cause }) : new JOSEError("Failed to parse the JSON Web Key Set HTTP response as JSON", { cause });
   }
 }
 var jwksCache = /* @__PURE__ */ Symbol();

@@ -14,10 +14,10 @@ RUN before="$(sha256sum package-lock.json | cut -d' ' -f1)" \
     && if [ "$before" != "$after" ]; then echo "package-lock.json changed during npm install ($before -> $after); regenerate it with: npx -y npm@12.2.1 install --package-lock-only --ignore-scripts --lockfile-version 2 (docker/storage/README.md; npm@11.12.1 writes the same lock)" >&2; exit 1; fi \
     && npm ls --omit=dev --all > /dev/null
 
-# Stage 2 (the image that runs): a clean Node image of the same version and Alpine as the publisher's (26.13.0,
+# Stage 2 (the image that runs): a clean Node image of the same version and Alpine as the publisher's (26.13.1,
 # 3.24), without the compilers and Python of stage 1, with only the patched /app copied over. Keep the Node
 # version in step with stage 1's (docker/storage/README.md).
-FROM node:26.13.0-alpine3.24@sha256:8996bb5821d62a8fd9bb27c1cb07462f3fdce6e47d640c6a881ead0b064ce216
+FROM node:26.13.1-alpine3.24@sha256:6bd9ab43c0ec0190ca7b2d193906cb8b7edf6e7f4afa43ddeccd6452710bffb5
 # Alpine base: take the distribution's security updates first. No package manager at run time.
 RUN apk upgrade --no-cache \
     && rm -rf /root/.npm /usr/local/lib/node_modules/npm /usr/local/lib/node_modules/corepack \
