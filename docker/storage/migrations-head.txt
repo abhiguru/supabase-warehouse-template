@@ -3,5 +3,5 @@
 # (DB_MIGRATIONS_FREEZE_AT); a backup records the id of the newest migration applied to its catalog, and a restore refuses a
 # backup whose id is higher than this one. tests/migrations.sh checks both against the image it builds.
 # Move this file together with the Dockerfile (docker/storage/README.md).
-id=80
-name=revoke-extra-lifecycle-postgres-grants
+id=81
+name=s3-multipart-uploads-parts-index

@@ -1,7 +1,7 @@
 # Stage 1: the publisher's image with its precompiled application and native modules (built with g++, make and
 # python3, which this stage keeps and the final image does not). Patch only locked dependency versions; never run
 # package lifecycle scripts.
-FROM supabase/storage-api:v1.95.0@sha256:833558845aafcfd493c33a4258cc8def1a7c6b3c20dd3b35aacfd2d89aa79558 AS patched
+FROM supabase/storage-api:v1.98.5@sha256:5ea9f4f15d38efe5ae0a07a6f4a649fc7f4a2b2de5dbff4bc8b8fdc0cfc222c2 AS patched
 WORKDIR /app
 COPY package.json package-lock.json ./
 # npm install is kept (the base image's tree is patched in place), but the lockfile is
@@ -25,7 +25,7 @@ RUN apk upgrade --no-cache \
 WORKDIR /app
 COPY --from=patched /app /app
 # The publisher sets VERSION (the Storage version it reports); keep it equal to stage 1's tag.
-ENV VERSION=1.95.0
+ENV VERSION=1.98.5
 EXPOSE 5000
 # The base image's ENTRYPOINT (docker-entrypoint.sh) is kept, as in the publisher's image.
 CMD ["node", "dist/start/server.js"]
