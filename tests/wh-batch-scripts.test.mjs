@@ -125,7 +125,7 @@ function cosignWorld(curlBody) {
   shim('sleep', 'exit 0');
   const real = spawnSync('which', ['sha256sum'], { encoding: 'utf8' }).stdout.trim();
   const good = spawnSync(real, [], { input: FIXTURE, encoding: 'utf8' }).stdout.split(' ')[0];
-  shim('sha256sum', `if [ "$1" = -c ]; then sed "s/${pinned}/${good}/" | ${real} "$@"; else exec ${real} "$@"; fi`);
+  shim('sha256sum', `if [ "$1" = -c ]; then sed "s/${pinned}/${good}/" | ${real} "$@"; else ${real} "$@" | sed "s/${good}/${pinned}/"; fi`);
   const count = () => Number(existsSync(join(w.scratch, 'count')) ? readFileSync(join(w.scratch, 'count'), 'utf8') : 0);
   const calls = () => w.curlLog().trim().split('\n').filter(Boolean);
   return { ...w, count, calls };
@@ -164,7 +164,7 @@ test('install-cosign.sh gives up after 4 attempts that add no bytes, leaves noth
     const r = w.run();
     assert.equal(r.status, 1, r.stdout + r.stderr);
     assert.equal(w.count(), 4);
-    assert.match(r.stderr, /^Refusing: cosign v\d+\.\d+\.\d+ could not be downloaded \(the connection stalled or was refused\)\. Without cosign the release images will NOT be signature-checked\. Run it again when the connection is better: bash scripts\/install-cosign\.sh "/m);
+    assert.match(r.stderr, /^Refusing: cosign v\d+\.\d+\.\d+ could not be downloaded \(the connection stalled or was refused\)\. Without cosign the release images will NOT be signature-checked\. Run the same command again when the connection is better \(setup\.sh, or the upgrade\), or from a checkout of the release: bash scripts\/install-cosign\.sh "[^"\n]+"$/m);
     assert.ok(r.stderr.includes(`bash scripts/install-cosign.sh "${w.state}"`));
     assert.deepEqual(readdirSync(join(w.state, 'bin')), []);
   } finally { w.clean(); }
@@ -225,12 +225,12 @@ test('install-cosign.sh downloads with a speed floor (50 KB/s for 60 s), a per-a
 test('setup.sh warns that the release images will NOT be signature-checked when cosign cannot be installed, and names the retry command', () => {
   const setup = read('setup.sh');
   assert.match(setup, /Warning: cosign could not be installed \(message above\), so the release images will NOT be signature-checked\./);
-  assert.ok(setup.includes('To check them later: bash scripts/install-cosign.sh \\"$STATE\\", then run setup.sh again with the same options'));
+  assert.ok(setup.includes('To check them later, when the connection is better: bash scripts/install-cosign.sh \\"$STATE\\" (from a checkout of the release; an upgrade runs the same script itself), then run setup.sh again with the same options (it checks every release image before using it); or check one image with bash scripts/verify-image-signature.sh <repository>@sha256:<digest>.'));
   assert.ok(setup.includes('bash scripts/verify-image-signature.sh <repository>@sha256:<digest>'));
 });
 
-test('install-cosign.sh removes .cosign.* temporary files older than 60 minutes and keeps newer ones and other files', () => {
-  const w = cosignWorld('exit 22');
+test('install-cosign.sh removes only .cosign.* temporary files older than 60 minutes: a fresh one, its own temporary file and other files survive', () => {
+  const w = cosignWorld('ls -A "$(dirname "$out")" > "$sc/during"; exit 22');
   try {
     const dir = join(w.state, 'bin');
     mkdirSync(dir, { recursive: true });
@@ -239,6 +239,70 @@ test('install-cosign.sh removes .cosign.* temporary files older than 60 minutes 
     const longAgo = new Date(Date.now() - 61 * 60 * 1000), recent = new Date(Date.now() - 30 * 60 * 1000);
     utimesSync(old, longAgo, longAgo); utimesSync(other, longAgo, longAgo); utimesSync(fresh, recent, recent);
     w.run();
+    const own = /--output \S+\/(\.cosign\.\w{6}) /.exec(w.curlLog())[1];
+    assert.deepEqual(readFileSync(join(w.scratch, 'during'), 'utf8').trim().split('\n').sort(), ['.cosign.NEW123', own, 'keep-me'].sort(), 'during the run only the old file is gone');
     assert.deepEqual(readdirSync(dir).sort(), ['.cosign.NEW123', 'keep-me']);
   } finally { w.clean(); }
+});
+
+// WH-289 rework 1: the HTTP code is read from --write-out '%{http_code}' on stdout (the shim prints it as curl does); exit 22 is retried only for 408, 429 and 5xx.
+const http = (code, rc = 22) => `printf ${code}; exit ${rc}`;
+test('install-cosign.sh retries HTTP 503, 429 and 408 and curl exits 92 and 16, then installs', () => {
+  for (const [first, label] of [[http(503), '503'], [http(429), '429'], [http(408), '408'], ['exit 92', '92'], ['exit 16', '16']]) {
+    const w = cosignWorld(`if [ $n = 1 ]; then ${first}; fi\nprintf PART1PART2 >> "$out"; exit 0`);
+    try {
+      const r = w.run();
+      assert.equal(r.status, 0, `${label}: ${r.stdout}${r.stderr}`);
+      assert.equal(w.count(), 2, label);
+      assert.equal(readFileSync(join(w.state, 'bin/cosign'), 'utf8'), FIXTURE, label);
+      assert.deepEqual(readdirSync(join(w.state, 'bin')), ['cosign'], label);
+    } finally { w.clean(); }
+  }
+});
+
+test('install-cosign.sh gives up at once on HTTP 404 and 403 (one curl call, nothing left in the state)', () => {
+  for (const code of [404, 403]) {
+    const w = cosignWorld(http(code));
+    try {
+      const r = w.run();
+      assert.equal(r.status, 1, String(code));
+      assert.equal(w.count(), 1, String(code));
+      assert.match(r.stderr, /could not be downloaded/);
+      assert.deepEqual(readdirSync(join(w.state, 'bin')), [], String(code));
+    } finally { w.clean(); }
+  }
+});
+
+test('install-cosign.sh: HTTP 416 on a complete file goes to the SHA check, and on a partial file empties it and retries', () => {
+  const whole = cosignWorld(`printf PART1PART2 > "$out"; ${http(416)}`);
+  try {
+    const r = whole.run();
+    assert.equal(r.status, 0, r.stdout + r.stderr);
+    assert.equal(whole.count(), 1);
+    assert.equal(readFileSync(join(whole.state, 'bin/cosign'), 'utf8'), FIXTURE);
+  } finally { whole.clean(); }
+  const part = cosignWorld(`if [ $n = 1 ]; then printf PART1 > "$out"; ${http(416)}; fi\n[ ! -s "$out" ] || exit 99\nprintf PART1PART2 >> "$out"; exit 0`);
+  try {
+    const r = part.run();
+    assert.equal(r.status, 0, r.stdout + r.stderr);
+    assert.equal(part.count(), 2);
+    assert.equal(readFileSync(join(part.state, 'bin/cosign'), 'utf8'), FIXTURE);
+  } finally { part.clean(); }
+});
+
+test('install-cosign.sh stops after a 2-hour deadline, and cuts --max-time to the time left', () => {
+  // BASH_ENV gives the script a sleep that moves SECONDS on by 4000, so no real time passes
+  const scratchEnv = join(tmpdir(), `cosign-bashenv-${process.pid}`);
+  writeFileSync(scratchEnv, 'sleep() { SECONDS=$((SECONDS + 4000)); }\n');
+  const w = cosignWorld('exit 28');
+  try {
+    const r = w.run([w.state], { BASH_ENV: scratchEnv });
+    assert.equal(r.status, 1, r.stdout + r.stderr);
+    assert.equal(w.count(), 2, 'the third attempt is not started');
+    const max = w.calls().map(l => /--max-time (\d+)/.exec(l)[1]);
+    assert.equal(max[0], '3600');
+    assert.ok(Number(max[1]) >= 3199 && Number(max[1]) <= 3200, `the second ceiling is the time left, got ${max[1]}`);
+    assert.match(r.stderr, /could not be downloaded \(the 2-hour deadline for the download was reached\)\. Without cosign the release images will NOT be signature-checked\./);
+    assert.deepEqual(readdirSync(join(w.state, 'bin')), []);
+  } finally { w.clean(); rmSync(scratchEnv, { force: true }); }
 });
