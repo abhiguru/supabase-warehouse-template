@@ -26,7 +26,8 @@ if [[ -f "$dest" && ! -L "$dest" ]] && [[ "$(sha256sum "$dest" | cut -d' ' -f1)"
 fi
 install -d -m 755 "$state/bin"
 tmp="$(mktemp "$state/bin/.cosign.XXXXXX")" || die "a temporary file cannot be made in $state/bin."
-trap 'rm -f -- "$tmp"' EXIT
+errf="$tmp.err"
+trap 'rm -f -- "$tmp" "$errf"' EXIT
 # A partial file left by an older run that was killed (its trap never ran) is removed; only ones untouched for an hour, so a live run is spared.
 find "$state/bin" -maxdepth 1 -type f -name '.cosign.*' -mmin +60 ! -name "${tmp##*/}" -delete 2>/dev/null || true
 # The download gives up only when it STALLS, not when it is slow: curl stops an attempt that runs under 50 KB/s for 60 s in a row (a line that
@@ -40,7 +41,7 @@ size_of() { stat -c %s -- "$tmp" 2>/dev/null || echo 0; }
 # a stalled or reset connection (curl 6, 7, 16, 18, 28, 35, 52, 55, 56, 92) and an HTTP 408, 429 or 5xx. Any other HTTP error (404, 403 ...)
 # ends it at once. --fail keeps an error page out of the partial file.
 deadline=7200 started=$SECONDS
-fails=0 attempts=0 ok='' late=''
+fails=0 attempts=0 ok='' late='' lastrc=0 lastcode='' lasterr=''
 while (( attempts < 30 && fails < 4 )); do
   left=$(( deadline - (SECONDS - started) ))
   if (( left <= 0 )); then late=yes; break; fi
@@ -49,7 +50,9 @@ while (( attempts < 30 && fails < 4 )); do
   rc=0
   code="$(curl --fail --silent --show-error --location --proto '=https' --proto-redir '=https' --tlsv1.2 \
     --connect-timeout 15 --speed-limit 50000 --speed-time 60 --max-time $(( left < 3600 ? left : 3600 )) --continue-at - \
-    --write-out '%{http_code}' --output "$tmp" "$url")" || rc=$?
+    --write-out '%{http_code}' --output "$tmp" "$url" 2> "$errf")" || rc=$?
+  lastrc=$rc lastcode=$code
+  if [[ -s "$errf" ]]; then cat "$errf" >&2; lasterr="$(tail -n 1 "$errf")"; lasterr="${lasterr#curl: }"; lasterr="${lasterr#\([0-9]*\) }"; fi
   if (( rc == 0 )); then ok=yes; break; fi
   case "$rc" in
     33) : > "$tmp"; echo "cosign download: the server does not resume a partial file; starting again from the beginning." >&2 ;;
@@ -68,9 +71,20 @@ while (( attempts < 30 && fails < 4 )); do
   sleep $(( 3 * (fails < 5 ? fails + 1 : 5) ))
 done
 if [[ "$ok" != yes ]]; then
-  why='the connection stalled or was refused'
-  [[ -z "$late" ]] || why='the 2-hour deadline for the download was reached'
-  die "cosign $VERSION could not be downloaded ($why). Without cosign the release images will NOT be signature-checked. Run the same command again when the connection is better (setup.sh, or the upgrade), or from a checkout of the release: bash scripts/install-cosign.sh \"$state\""
+  # Name what failed, and the one command that works from where the operator is. Run as "git show <release>:scripts/install-cosign.sh | bash -s"
+  # (what upgrade-prepull.sh prints during an upgrade) there is no script file; from setup.sh or a checkout there is.
+  if [[ -f "${BASH_SOURCE[0]:-}" ]]; then again="bash scripts/install-cosign.sh \"$state\" (from a checkout of the release)"
+  else again="the same command again (git show <release>:scripts/install-cosign.sh | bash -s -- \"$state\", as the upgrade printed it)"; fi
+  fix='the connection is better'
+  if [[ -n "$late" ]]; then why="the 2-hour deadline for the download was reached (last attempt: curl $lastrc, ${lasterr:-no message})"
+  else case "$lastrc" in
+    22) why="HTTP ${lastcode:-error} from github.com"
+        case "$lastcode" in 408|429|5??|'') ;; *) fix='that is fixed' ;; esac ;;
+    23) why="cosign could not be written to $state/bin (curl 23: ${lasterr:-write failed}); check the free disk space and that the folder is writable"; fix='that is fixed' ;;
+    6|7|16|18|28|35|52|55|56|92) why="the connection stalled, timed out or was refused (curl $lastrc: ${lasterr:-no message})" ;;
+    *) why="curl failed (curl $lastrc: ${lasterr:-no message})"; fix='that is fixed' ;;
+  esac; fi
+  die "cosign $VERSION could not be downloaded: $why. Without cosign the release images will NOT be signature-checked. Run $again once $fix."
 fi
 echo "$want  $tmp" | sha256sum -c --quiet - || die "the downloaded cosign does not match the pinned SHA-256, so it is not installed."
 chmod 755 "$tmp"
