@@ -42,7 +42,8 @@ BEGIN
   END IF;
   -- What every customer owes (migration 176): administrators and supervisors only. A customer's statement (migration 176):
   -- administrators, supervisors and a customer account for its own customers (the get_customer_% rule below); staff never.
-  IF rpc = 'get_customer_dues' AND role_name NOT IN ('admin','supervisor') THEN
+  -- One customer's dues (WH-311, get_customer_dues_for): the same audience as the list.
+  IF rpc IN ('get_customer_dues','get_customer_dues_for') AND role_name NOT IN ('admin','supervisor') THEN
     RAISE EXCEPTION 'Administrator or supervisor required' USING ERRCODE = '42501';
   END IF;
   -- The accountant pack (migration 204, WH-158): administrators and supervisors only.

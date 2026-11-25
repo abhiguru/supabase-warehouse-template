@@ -1,5 +1,6 @@
 -- Customer dues speed (WH-311): "Customer dues" answers in about 3 s instead of 84 s on the five-year test set
--- (tests/seed/make-seed.mjs --years 5: 60,000 GRNs, 180,000 lots, 45,000 dispatches, 12,000 invoices, 200 customers). Every figure is the same, to the paisa, as migration 193's: only how they are worked out
+-- (tests/seed/make-seed.mjs --years 5: 60,000 GRNs, 180,000 lots, 45,000 dispatches, 12,000 invoices, 200 customers), and one customer's
+-- dues can be read alone (get_customer_dues_for). Every figure is the same, to the paisa, as migration 193's: only how they are worked out
 -- changes. Nothing is stored; every read works every figure out again, as before.
 --
 -- Why it was slow (EXPLAIN ANALYZE of not_invoiced_grns on that set, 138 s with timing): the step that prices each line joined the
@@ -290,7 +291,8 @@ BEGIN
     'left_rows', CASE WHEN p_rows THEN v_left_rows END, 'in_store_rows', CASE WHEN p_rows THEN v_store_rows END);
 END $$;
 
--- Section 4: one row of "Customer dues" per customer, for every customer (p_customer_id NULL) or one; get_customer_dues reads it.
+-- Section 4: one row of "Customer dues" per customer, for every customer (p_customer_id NULL) or one. get_customer_dues and
+-- get_customer_dues_for both read it, so the list and one customer's answer are worked out by the same query and always agree.
 -- The rows are migration 193's: every live customer with a live invoice, stock in store or a dispatch line on no live invoice (and the
 -- asked-for customer even with none, all figures 0); listed is what the list shows (a figure above 0). Not a reader by itself: the RPCs
 -- authorize first.
@@ -381,5 +383,39 @@ BEGIN
                                     '[]'::jsonb)
                     FROM jsonb_array_elements(v_rows) r));
 END $$;
+
+-- Section 6: one customer's dues (WH-311, for refreshing one customer on the phone): the same row as that customer's entry in
+-- get_customer_dues, worked out by the same query, with listed (whether the list shows it: a figure above 0). A customer with
+-- nothing owed gets the row with 0s. Administrators and supervisors only, as the list.
+CREATE FUNCTION public.get_customer_dues_for(p_customer_id uuid) RETURNS jsonb
+    LANGUAGE plpgsql SECURITY DEFINER
+    SET search_path TO 'pg_catalog', 'public', 'extensions', 'utils', 'pg_temp'
+    SET jit TO 'off'
+    AS $$
+DECLARE
+  v_today date := warehouse_security.business_date(now());
+  v_payments boolean := warehouse_security.payments_enabled();
+  v_fin_year integer := warehouse_security.financial_year(warehouse_security.business_date(now()));
+  v_row record;
+BEGIN
+  PERFORM warehouse_security.authorize_rpc('get_customer_dues_for', jsonb_build_object('p_customer_id', p_customer_id));
+  IF warehouse_security.active_role() IS DISTINCT FROM 'admin' AND warehouse_security.active_role() IS DISTINCT FROM 'supervisor'
+     AND auth.jwt()->>'role' IS DISTINCT FROM 'service_role' THEN
+    RAISE EXCEPTION 'Administrator or supervisor required' USING ERRCODE = '42501';
+  END IF;
+
+  SELECT r.listed, r.figures INTO v_row
+    FROM warehouse_security.customer_dues_rows(p_customer_id, v_today, v_payments, v_fin_year) r;
+  IF p_customer_id IS NULL OR NOT FOUND THEN
+    RETURN jsonb_build_object('success', false, 'error', 'Customer not found');
+  END IF;
+
+  RETURN jsonb_build_object('success', true, 'as_of', now(), 'today', v_today, 'record_payments', v_payments,
+    'invoices_basis', CASE WHEN v_payments THEN 'due' ELSE 'invoiced' END,
+    'listed', v_row.listed, 'customer', v_row.figures);
+END $$;
+ALTER FUNCTION public.get_customer_dues_for(uuid) OWNER TO supabase_admin;
+REVOKE ALL ON FUNCTION public.get_customer_dues_for(uuid) FROM PUBLIC, anon, authenticated;
+GRANT EXECUTE ON FUNCTION public.get_customer_dues_for(uuid) TO authenticated, service_role;
 
 NOTIFY pgrst, 'reload schema';
