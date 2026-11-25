@@ -357,6 +357,10 @@ restore_timing_phase database
 #    start everything and run the local doctor.
 phase='migrations'
 bash "$ROOT/scripts/migrate.sh" --operator
+# WH-297: the restored change log of the phones' copies ends at the backup's time, so a position a phone took after it would
+# mislead: every phone loads its copy again (reload_all RESTORED). After the migrations, which create the function on an older backup.
+phase='sync log'
+db_psql -d postgres -c "SELECT warehouse_sync.rotate_log('RESTORED')" >/dev/null
 # public/release.json and public/app-compat.json describe this checkout, which after a rollback is not the release that wrote them.
 phase='release files'
 WAREHOUSE_STATE_DIR="$state" bash "$ROOT/scripts/release-info.sh"
