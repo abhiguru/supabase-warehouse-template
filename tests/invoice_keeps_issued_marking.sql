@@ -102,9 +102,11 @@ SELECT set_config('request.jwt.claims','{"role":"service_role"}',true);
 SET LOCAL ROLE service_role;
 SELECT public.get_invoice_range_for_print('31','31',2026,100) AS print_after \gset
 RESET ROLE;
-SELECT pg_temp.km_assert(jsonb_path_query_array(:'print_after'::jsonb,'$.**.grn_items_package_mark')='["AB-12"]'::jsonb
-  AND jsonb_path_query_array(:'print_after'::jsonb,'$.**.grn_items_rack')='["R1"]'::jsonb,
-  'get_invoice_range_for_print still carries AB-12 and R1 after the lot changed: '||:'print_after');
+-- The lax path matches a line more than once, so assert on every match: at least one, all AB-12 / R1, none AB-15 / R2.
+SELECT pg_temp.km_assert(
+  (SELECT count(*)>0 AND bool_and(v #>> '{}'='AB-12') FROM jsonb_path_query(:'print_after'::jsonb,'$.**.grn_items_package_mark') v)
+  AND (SELECT count(*)>0 AND bool_and(v #>> '{}'='R1') FROM jsonb_path_query(:'print_after'::jsonb,'$.**.grn_items_rack') v),
+  'get_invoice_range_for_print still carries AB-12 and R1 on every line (so no AB-15 or R2) after the lot changed: '||:'print_after');
 
 -- The lot itself shows the new values.
 SELECT pg_temp.km_assert((SELECT package_mark='AB-15' AND rack='R2' FROM public.goodsreceived_trl WHERE gr_id=:'grn1'::uuid),'the lot row holds AB-15 and R2');
