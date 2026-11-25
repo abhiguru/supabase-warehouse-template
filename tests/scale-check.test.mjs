@@ -1,6 +1,6 @@
 import assert from 'node:assert/strict';
 import { test } from 'node:test';
-import { evaluate, percentile, settings, summarise, workload } from './scale-check.mjs';
+import { SYNC, evaluate, evaluateSyncCalls, percentile, settings, summarise, syncRows, workload } from './scale-check.mjs';
 import { scaleCounts, scaleSeedSql } from './seed/make-seed.mjs';
 
 test('percentile takes the nearest rank of a sorted list', () => {
@@ -77,4 +77,33 @@ test('the scale seed: counts for five years, a bounded size, and the default see
   // Every dispatch takes 5 bags from a line of 100, so stock never goes below 0; the invoices are over dispatched lines.
   assert.match(sql, /CASE WHEN d\.d IS NULL THEN 100 ELSE 95 END/);
   assert.match(sql, /disp_qty\)\n SELECT [^\n]*, 5\n/);
+});
+
+// WH-297, criterion 13: every sync call within 8 s and 2,000 rows.
+test('sync limits: 8 s and 2,000 rows per call, named in the check', () => {
+  assert.equal(SYNC.limitMs, 8000);
+  assert.equal(SYNC.limitRows, 2000);
+  assert.ok(SYNC.oversizedLimit > SYNC.limitRows, 'one page asks for more than the limit, to prove the clamp');
+  assert.deepEqual(SYNC.pageArgs('goodsreceived', null, 2000), { p_entity: 'goodsreceived', p_after: null, p_limit: 2000 });
+  assert.deepEqual(SYNC.changesArgs('123', 'k', 2000), { p_position: '123', p_copy: 'k', p_limit: 2000 });
+});
+
+test('syncRows counts the rows of a page, the entries of a change page and the entities of a checksum answer; null without a list', () => {
+  assert.equal(syncRows(SYNC.page, { rows: [1, 2, 3] }), 3);
+  assert.equal(syncRows(SYNC.changes, { changes: [1, 2] }), 2);
+  assert.equal(syncRows(SYNC.checksums, { entities: [1] }), 1);
+  assert.equal(syncRows(SYNC.start, { position: '1' }), 0);
+  assert.equal(syncRows(SYNC.page, { changes: [1] }), null, 'a page is counted by its rows, not by another list');
+  assert.equal(syncRows(SYNC.changes, { rows: [1] }), null);
+  assert.equal(syncRows(SYNC.page, null), null);
+});
+
+test('evaluateSyncCalls: the limits themselves pass; over a limit, a failed call or an answer without rows fails, named', () => {
+  assert.deepEqual(evaluateSyncCalls([{ label: 'admin a', ok: true, ms: 8000, rows: 2000 }, { label: 'admin b', ok: true, ms: 1, rows: 0 }]), []);
+  assert.deepEqual(evaluateSyncCalls([{ label: 'admin slow', ok: true, ms: 8000.4, rows: 10 }]), ['admin slow: took 8000.4 ms, above 8000 ms']);
+  assert.deepEqual(evaluateSyncCalls([{ label: 'customer big', ok: true, ms: 5, rows: 2001 }]), ['customer big: 2001 rows, above 2000']);
+  assert.deepEqual(evaluateSyncCalls([{ label: 'admin broken', ok: false, ms: 10000, rows: null }]), ['admin broken: failed or timed out after 10000 ms']);
+  assert.deepEqual(evaluateSyncCalls([{ label: 'admin shapeless', ok: true, ms: 5, rows: null }]), ['admin shapeless: the answer has no list of rows']);
+  assert.deepEqual(evaluateSyncCalls([{ label: 'both', ok: true, ms: 9000, rows: 3000 }]), ['both: took 9000 ms, above 8000 ms', 'both: 3000 rows, above 2000']);
+  assert.deepEqual(evaluateSyncCalls([]), ['sync: no call was timed'], 'nothing timed is a failure, not a pass');
 });

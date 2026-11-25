@@ -1018,6 +1018,21 @@ bash "$ROOT/tests/payment_cancel_race_99.sh" "$container"
 # scripts/retention.sh: every statement it sends is one this database accepts.
 bash "$ROOT/tests/retention_queries.sh" "$container"
 
+# WH-297: the server change log and its feed. The feed delivers only committed transactions, so these suites commit; they run in a
+# database of their own (the bootstrap's schemas, the whole plan with the definitions, the Storage tables of the main database) that
+# is dropped afterwards. tests/sync_feed_contract.sql (the agreed feed names, the setup and the phone stand-in) goes in front of each.
+sync_db=sync_feed_probe
+mig_psql -c "CREATE DATABASE $sync_db TEMPLATE template0" >/dev/null
+sed -n '/^-- Schemas the migrations and Storage expect to exist\./,$p' "$ROOT/docker/volumes/db/00-bootstrap.sql" | mig_psql -d "$sync_db" >/dev/null
+sync_plan=$(plan_of "$ROOT" | mig_psql -d "$sync_db" 2>&1) || { echo "$sync_plan" | tail -20 >&2; echo 'The plan did not apply to the sync feed database.' >&2; exit 1; }
+mig_psql -d "$sync_db" -c 'DROP SCHEMA storage CASCADE' >/dev/null
+docker exec -e PGPASSWORD=disposable-test-database-only "$container" pg_dump -U supabase_admin -d postgres --schema-only --no-owner -n storage | mig_psql -d "$sync_db" >/dev/null
+for sync_sql in "$ROOT/tests/sync_feed_changes.sql" "$ROOT/tests/sync_feed_deletes_scope.sql"; do
+  cat "$ROOT/tests/fixtures/gst_details.sql" "$ROOT/tests/sync_feed_contract.sql" "$sync_sql" | mig_psql -d "$sync_db"
+done
+bash "$ROOT/tests/sync_feed_concurrency.sh" "$container" "$sync_db" "$ROOT/tests/sync_feed_contract.sql"
+mig_psql -c "DROP DATABASE $sync_db WITH (FORCE)" >/dev/null
+
 # The ledger after a rejected, changed copy (above) still holds exactly the baseline.
 [[ "$(docker exec -e PGPASSWORD=disposable-test-database-only "$container" psql -X -qAt -U supabase_admin -d postgres -c 'SELECT count(*) FROM warehouse_migrations.applied')" = "$migration_count" ]] || {
   echo 'A rejected migration run changed the ledger.' >&2; exit 1;

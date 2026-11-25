@@ -14,6 +14,41 @@ import { isMain } from '../scripts/is-main.mjs';
 // The statement timeout of the authenticated role is 8 s (docker/volumes/db/00-bootstrap.sql); the client gives up a little later.
 export const REQUEST_TIMEOUT_MS = 10000;
 
+// WH-297, criterion 13: every sync call (first load pages of every entity, changes from the start and from far behind, checksums), as
+// the administrator and as a customer account, answers within the 8 s statement timeout and with at most 2,000 rows. Timed as single
+// calls before the concurrent load; fails whatever SCALE_ENFORCE says.
+// AGREE WITH DEVELOPMENT (WH-297): the RPC names, arguments and answer fields of ~/ws/fresh/product/tech/server-change-log-feed.md.
+export const SYNC = {
+  start: 'get_sync_start', page: 'get_sync_page', changes: 'get_sync_changes', checksums: 'get_sync_checksums',
+  limitMs: 8000, limitRows: 2000, oversizedLimit: 5000,
+  pageArgs: (entity, after, limit) => ({ p_entity: entity, p_after: after, p_limit: limit }),
+  changesArgs: (position, copy, limit) => ({ p_position: position, p_copy: copy, p_limit: limit }),
+  checksumsArgs: (position, copy) => ({ p_position: position, p_copy: copy, p_entities: null }),
+  // The oldest position the log holds (the seed's load), for a phone far behind (contract 13b).
+  oldestPositionSql: 'SELECT COALESCE(min(xid)::text, \'\') FROM warehouse_sync.change_log',
+};
+
+// The rows a sync answer carries: rows of a page, entries of a change page, entities of a checksum answer; 0 for the start.
+export function syncRows(rpc, data) {
+  if (rpc === SYNC.page) return Array.isArray(data?.rows) ? data.rows.length : null;
+  if (rpc === SYNC.changes) return Array.isArray(data?.changes) ? data.changes.length : null;
+  if (rpc === SYNC.checksums) return Array.isArray(data?.entities) ? data.entities.length : null;
+  return 0;
+}
+
+// calls: [{ label, ok, ms, rows }] -> failures (empty when every call answered, within limitMs and with at most limitRows rows).
+export function evaluateSyncCalls(calls, { limitMs = SYNC.limitMs, limitRows = SYNC.limitRows } = {}) {
+  if (!calls.length) return ['sync: no call was timed'];
+  return calls.flatMap(({ label, ok, ms, rows }) => {
+    if (!ok) return [`${label}: failed or timed out after ${round(ms)} ms`];
+    const out = [];
+    if (ms > limitMs) out.push(`${label}: took ${round(ms)} ms, above ${limitMs} ms`);
+    if (rows === null || rows === undefined) out.push(`${label}: the answer has no list of rows`);
+    else if (rows > limitRows) out.push(`${label}: ${rows} rows, above ${limitRows}`);
+    return out;
+  });
+}
+
 export function percentile(sorted, fraction) {
   if (!sorted.length) return null;
   return sorted[Math.min(sorted.length - 1, Math.max(0, Math.ceil(sorted.length * fraction) - 1))];
@@ -138,6 +173,41 @@ async function main() {
     assert.ok(answer.ok, `${user.role} ${name} answered HTTP ${answer.status}: ${JSON.stringify(answer.data)?.slice(0, 200)}`);
   }
 
+  // WH-297: a whole first load and the catch-up, as the administrator and as the customer account, every call timed.
+  const syncCalls = [];
+  async function syncCall(role, token, name, body, label) {
+    const start = performance.now();
+    let answer = { ok: false, data: null };
+    try { answer = await rpc(name, token, body); } catch { answer = { ok: false, data: null }; }
+    syncCalls.push({ label: `${role} ${label}`, ok: answer.ok, ms: performance.now() - start, rows: syncRows(name, answer.data) });
+    return answer.ok ? answer.data : null;
+  }
+  const oldest = sql(SYNC.oldestPositionSql);
+  for (const user of users.filter(u => u.role !== 'staff')) {
+    const started = await syncCall(user.role, user.token, SYNC.start, {}, SYNC.start);
+    if (!started) continue;
+    for (const entity of started.entities ?? []) {
+      let after = null;
+      for (let page = 1; page <= 1000; page += 1) {
+        const data = await syncCall(user.role, user.token, SYNC.page, SYNC.pageArgs(entity, after, SYNC.limitRows), `${SYNC.page} ${entity} page ${page}`);
+        if (!data?.next_after) break;
+        after = data.next_after;
+      }
+    }
+    await syncCall(user.role, user.token, SYNC.page, SYNC.pageArgs(started.entities?.[0], null, SYNC.oversizedLimit), `${SYNC.page} p_limit ${SYNC.oversizedLimit}`);
+    let position = started.position;
+    for (let page = 1; page <= 200; page += 1) {
+      const data = await syncCall(user.role, user.token, SYNC.changes, SYNC.changesArgs(position, started.copy, SYNC.limitRows), `${SYNC.changes} from the start, page ${page}`);
+      if (!data?.more) break;
+      position = data.position;
+    }
+    if (oldest) await syncCall(user.role, user.token, SYNC.changes, SYNC.changesArgs(oldest, started.copy, SYNC.limitRows), `${SYNC.changes} from the oldest position`);
+    if (user.role === 'admin') await syncCall(user.role, user.token, SYNC.checksums, SYNC.checksumsArgs(started.position, started.copy), SYNC.checksums);
+  }
+  const syncFailures = evaluateSyncCalls(syncCalls);
+  const slowestSync = syncCalls.reduce((max, call) => Math.max(max, call.ms), 0);
+  console.log(`sync: ${syncCalls.length} calls, slowest ${round(slowestSync)} ms, most rows ${Math.max(0, ...syncCalls.map(call => call.rows ?? 0))} (limits ${SYNC.limitMs} ms, ${SYNC.limitRows} rows)`);
+
   const deadline = performance.now() + config.seconds * 1000;
   async function worker(index) {
     const user = users[index % users.length];
@@ -164,11 +234,13 @@ async function main() {
   await Promise.all(Array.from({ length: config.workers }, (_, i) => worker(i)));
 
   const summary = summarise(samples);
-  writeFileSync(config.output, JSON.stringify({ seconds: config.seconds, workers: config.workers, p95LimitMs: config.limitMs, enforced: config.enforce, rpcs: summary }, null, 2) + '\n');
+  writeFileSync(config.output, JSON.stringify({ seconds: config.seconds, workers: config.workers, p95LimitMs: config.limitMs, enforced: config.enforce, rpcs: summary,
+    sync: { limitMs: SYNC.limitMs, limitRows: SYNC.limitRows, calls: syncCalls.map(({ label, ok, ms, rows }) => ({ label, ok, ms: round(ms), rows })) } }, null, 2) + '\n');
   for (const [name, row] of Object.entries(summary)) console.log(`${name}: ${row.calls} calls, p50 ${row.p50} ms, p95 ${row.p95} ms, max ${row.max} ms, errors ${row.errors}`);
   const verdict = evaluate(summary, config);
   for (const line of verdict.warnings) console.log(`::warning title=Scale check::${line}`);
-  if (verdict.failures.length) throw new Error(`Scale check failed:\n${verdict.failures.join('\n')}`);
+  const failures = [...syncFailures, ...verdict.failures];
+  if (failures.length) throw new Error(`Scale check failed:\n${failures.join('\n')}`);
   console.log(`Scale check done${verdict.warnings.length ? ' with warnings' : ''}.`);
 }
 
