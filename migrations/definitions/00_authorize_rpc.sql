@@ -12,6 +12,8 @@ DECLARE role_name text := warehouse_security.active_role(); customer uuid; other
 BEGIN
   IF auth.jwt()->>'role' = 'service_role' THEN RETURN; END IF;
   IF role_name IS NULL THEN RAISE EXCEPTION 'Active account required' USING ERRCODE = '42501'; END IF;
+  -- The phone's copy (WH-297): every active role; the bodies decide the entities and rows by role and customer.
+  IF rpc IN ('get_sync_start','get_sync_page','get_sync_changes','get_sync_checksums') THEN RETURN; END IF;
   -- User management: administrators, and supervisors for other people who are
   -- not administrators. The four bodies refuse a supervisor who targets an
   -- administrator or the own profile, or who grants the administrator role.
