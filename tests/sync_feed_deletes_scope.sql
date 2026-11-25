@@ -202,12 +202,25 @@ SELECT pg_temp.sf_assert(NOT EXISTS (SELECT 1 FROM pg_temp.sf_answer a, unnest(p
     WHERE a.phone IN ('c1', 'c2') AND a.answer::text LIKE '%"' || col || '":%'),
   '12b: no answer to a customer account carried a Q1 column: ' || COALESCE((SELECT string_agg(DISTINCT col, ', ') FROM pg_temp.sf_answer a, unnest(pg_temp.sf_list('q1_customer_hidden_columns')) col
     WHERE a.phone IN ('c1', 'c2') AND a.answer::text LIKE '%"' || col || '":%'), ''));
-SELECT pg_temp.sf_assert(NOT EXISTS (SELECT 1 FROM pg_temp.sf_answer a, information_schema.columns c
-    WHERE c.table_schema = 'public' AND c.table_name = 'invoice' AND NOT has_column_privilege('authenticated', 'public.invoice', c.column_name, 'SELECT')
-      AND a.answer::text LIKE '%"' || c.column_name || '":%'),
-  '12: no answer to any phone carried an invoice column the app roles may not read: ' || COALESCE((SELECT string_agg(DISTINCT c.column_name || ' in a ' || a.kind || ' answer of phone ' || a.phone || ' near: ' || substring(a.answer::text from '.{0,100}"' || c.column_name || '":.{0,30}'), E'\n')
-      FROM pg_temp.sf_answer a, information_schema.columns c
-      WHERE c.table_schema = 'public' AND c.table_name = 'invoice' AND NOT has_column_privilege('authenticated', 'public.invoice', c.column_name, 'SELECT')
-        AND a.answer::text LIKE '%"' || c.column_name || '":%'), ''));
+-- 12: no row of an answer or of a copy carries a column its table's readers may not read. The check is per row and per entity (the
+-- same column name, such as updated_at, can be readable on one table and not on another: invoice's is not, goodsreceived's is).
+-- Entities with no readable column at all (read only through RPCs) are not compared here.
+CREATE TEMP TABLE sf_leaks AS
+  SELECT q.src, q.ent, q.k FROM (
+    SELECT a.phone || ' ' || a.kind || ' answer' AS src, x->>pg_temp.sf('f_e') AS ent, k
+      FROM pg_temp.sf_answer a,
+           jsonb_array_elements(CASE WHEN jsonb_typeof(a.answer->pg_temp.sf('f_changes')) = 'array' THEN a.answer->pg_temp.sf('f_changes') ELSE '[]'::jsonb END) x,
+           jsonb_object_keys(CASE WHEN jsonb_typeof(x->pg_temp.sf('f_row')) = 'object' THEN x->pg_temp.sf('f_row') ELSE '{}'::jsonb END) k
+    UNION ALL
+    SELECT c.slot || ' copy', c.e, k FROM pg_temp.sf_copy c,
+           jsonb_object_keys(CASE WHEN jsonb_typeof(c.row) = 'object' THEN c.row ELSE '{}'::jsonb END) k
+  ) q
+  WHERE q.ent = ANY (pg_temp.sf_list('table_entities')) AND cardinality(pg_temp.sf_columns(q.ent)) > 0
+    AND q.k <> ALL (pg_temp.sf_columns(q.ent));
+SELECT pg_temp.sf_assert(NOT EXISTS (SELECT 1 FROM sf_leaks WHERE ent = 'invoice'),
+  '12: no invoice row of any answer or copy carried a column the app roles may not read: ' || COALESCE((SELECT string_agg(DISTINCT k || ' in ' || src, '; ') FROM sf_leaks WHERE ent = 'invoice'), ''));
+SELECT pg_temp.sf_assert(NOT EXISTS (SELECT 1 FROM sf_leaks),
+  '12: no row of any answer or copy carried a column its table''s readers may not read: ' || COALESCE((SELECT string_agg(DISTINCT ent || '.' || k || ' in ' || src, '; ') FROM sf_leaks), ''));
+DROP TABLE pg_temp.sf_leaks;
 
 \echo 'WH-297 sync feed deletes and customer scope (criteria 2 and 12) checks passed.'
