@@ -565,6 +565,7 @@ test_files=(
   "$ROOT/tests/packaging_lines_141.sql"
   "$ROOT/tests/packaging_rule_142.sql"
   "$ROOT/tests/invoice_kept_lines_143.sql"
+  "$ROOT/tests/invoice_keeps_issued_marking.sql"
   "$ROOT/tests/invoice_kept_long_numbers_149.sql"
   "$ROOT/tests/print_range_request_id_151.sql"
   "$ROOT/tests/signin_access_154.sql" "$ROOT/tests/audit_log_insert_only_155.sql" "$ROOT/tests/dispatch_delete_other_lines_156.sql"
