@@ -4,7 +4,9 @@
 // `payments` is refused: since migration 172 it is the "Record payments" setting in the app (Charging screen, administrators,
 // set_record_payments), kept in the database and served from there; the file's flag was carried over once by scripts/migrate.sh.
 //
-//   WAREHOUSE_STATE_DIR=/abs/state node scripts/set-capability.mjs <sensors|printing> <on|off>
+//   WAREHOUSE_STATE_DIR=/abs/state node scripts/set-capability.mjs <sensors|printing|sync> <on|off>
+//
+// `sync` (WH-297) lets the app keep a copy of the store's data on the phone and ask the server only for what changed; off by default.
 //
 // Only the one boolean changes; every other byte of the file stays as it is.
 // The new file is written next to the old one and renamed over it, keeping its
@@ -18,12 +20,12 @@ import { isDeepStrictEqual } from 'node:util';
 import { isMain } from './is-main.mjs';
 import { sensorWebhookNotice } from './alert-webhook.mjs';
 
-export const CAPABILITIES = ['sensors', 'printing', 'payments'];
+export const CAPABILITIES = ['sensors', 'printing', 'payments', 'sync'];
 // Capabilities added after the first releases: a manifest written before them lacks the key (the server reads it as off), so
 // turning one on adds it to the end of the capabilities object.
-const ADDED_LATER = ['payments'];
+const ADDED_LATER = ['payments', 'sync'];
 const VALUES = { on: true, off: false };
-const USAGE = 'Usage: WAREHOUSE_STATE_DIR=/absolute/state node scripts/set-capability.mjs <sensors|printing> <on|off>';
+const USAGE = 'Usage: WAREHOUSE_STATE_DIR=/absolute/state node scripts/set-capability.mjs <sensors|printing|sync> <on|off>';
 export const PAYMENTS_IN_APP = 'payments is no longer set here: an administrator turns it on or off in the app, Charging screen, "Record payments" (it is kept in the database since migration 172). Nothing was changed.';
 
 function privateDirectory(path, what) {
