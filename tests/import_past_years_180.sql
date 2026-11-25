@@ -512,7 +512,7 @@ SELECT pg_temp.ip_assert(NOT EXISTS (SELECT 1 FROM public.imported_billed_dispat
 SELECT id AS g901 FROM public.goodsreceived WHERE gr_no = 'A0901' \gset
 SELECT t.id AS d901_line FROM public.dispatch_trl t JOIN public.dispatch d ON d.id = t.disp_id WHERE d.disp_no = 'I0901' \gset
 SELECT t.id AS d911_line FROM public.dispatch_trl t JOIN public.dispatch d ON d.id = t.disp_id WHERE d.disp_no = 'I0911' \gset
-SELECT n.left_bags AS dues_left_bags, n.left_amount > 0 AS dues_left_priced FROM warehouse_security.not_invoiced_grns(:'trader'::uuid, :'today_ip'::date) n WHERE n.gr_id = :'g901'::uuid \gset
+SELECT n.left_bags AS dues_left_bags, n.left_amount > 0 AS dues_left_priced FROM warehouse_security.not_invoiced_grns(:'trader'::uuid, :'today_ip'::date, false) n WHERE n.gr_id = :'g901'::uuid \gset
 SELECT pg_temp.ip_assert(:'dues_left_bags'::int = 5 AND :'dues_left_priced'::boolean, 'dues counts I0911 only (5 bags), not I0901: ' || :'dues_left_bags');
 SELECT pg_temp.ip_as(:'admin_claims'::jsonb, format($q$SELECT public.get_customer_statement(%L::uuid)$q$, :'trader')) AS t_stmt \gset
 SELECT pg_temp.ip_assert((SELECT (e->>'bags')::int = 5 FROM jsonb_array_elements(:'t_stmt'::jsonb->'left') e WHERE e->>'gr_no' = 'A0901'), 'the statement shows 5 bags not invoiced for A0901: ' || (:'t_stmt'::jsonb->>'left'));
@@ -585,7 +585,7 @@ SELECT pg_temp.ip_assert(pg_temp.ip_notes(:'nl_run'::jsonb) = '', 'no "the app b
 SELECT id AS g905 FROM public.goodsreceived WHERE gr_no = 'A0905' \gset
 SELECT t.id AS d906_line FROM public.dispatch_trl t JOIN public.dispatch d ON d.id = t.disp_id WHERE d.disp_no = 'I0906' \gset
 SELECT t.id AS d907_line FROM public.dispatch_trl t JOIN public.dispatch d ON d.id = t.disp_id WHERE d.disp_no = 'I0907' \gset
-SELECT n.left_bags AS nl_left_bags FROM warehouse_security.not_invoiced_grns(:'trader'::uuid, :'today_ip'::date) n WHERE n.gr_id = :'g905'::uuid \gset
+SELECT n.left_bags AS nl_left_bags FROM warehouse_security.not_invoiced_grns(:'trader'::uuid, :'today_ip'::date, false) n WHERE n.gr_id = :'g905'::uuid \gset
 SELECT pg_temp.ip_assert(:'nl_left_bags'::int = 5, 'dues counts I0907 only (5 bags), not I0906: ' || :'nl_left_bags');
 SELECT set_config('request.jwt.claims', '{"role":"service_role"}', true) AS nl_claims \gset
 SELECT public.build_invoice_form_lines(:'g905'::uuid, NULL) AS nl_form \gset
@@ -623,7 +623,7 @@ SELECT pg_temp.ip_assert((SELECT (c->>'dispatches')::int FROM jsonb_array_elemen
 SELECT id AS g907 FROM public.goodsreceived WHERE gr_no = 'A0907' \gset
 SELECT t.id AS d913_line FROM public.dispatch_trl t JOIN public.dispatch d ON d.id = t.disp_id WHERE d.disp_no = 'I0913' \gset
 SELECT t.id AS d912_line FROM public.dispatch_trl t JOIN public.dispatch d ON d.id = t.disp_id WHERE d.disp_no = 'I0912' \gset
-SELECT n.left_bags AS mx_left FROM warehouse_security.not_invoiced_grns(:'trader'::uuid, :'today_ip'::date) n WHERE n.gr_id = :'g907'::uuid \gset
+SELECT n.left_bags AS mx_left FROM warehouse_security.not_invoiced_grns(:'trader'::uuid, :'today_ip'::date, false) n WHERE n.gr_id = :'g907'::uuid \gset
 SELECT pg_temp.ip_assert(:'mx_left'::int = 5, 'dues counts I0913 (5 bags) and not I0912: ' || :'mx_left');
 SELECT set_config('request.jwt.claims', '{"role":"service_role"}', true) AS mx_claims \gset
 SELECT public.build_invoice_form_lines(:'g907'::uuid, NULL) AS mx_form \gset
