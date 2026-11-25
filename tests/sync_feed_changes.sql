@@ -250,6 +250,8 @@ SELECT pg_temp.sf_assert((SELECT days FROM warehouse_maintenance.retention_polic
 BEGIN;
 -- Only the change log ages out: every other policy is held at its longest for this transaction.
 UPDATE warehouse_maintenance.retention_policy SET days = 3650 WHERE key <> pg_temp.sf('retention_key');
+-- The run is dated in the future, so it would also delete the phones' sessions (expires_at < that date) and the next call would be refused 42501; keep them for this transaction.
+UPDATE warehouse_security.refresh_sessions SET expires_at = now() + interval '3650 days';
 SELECT warehouse_maintenance.run_database_retention(now() + make_interval(days => pg_temp.sf('retention_days')::int + 1), true) AS purge_run \gset
 CREATE TEMP TABLE sf_floor(v text) ON COMMIT DROP;
 SELECT pg_temp.sf_exec(format('INSERT INTO pg_temp.sf_floor %s', pg_temp.sf('floor_query')));

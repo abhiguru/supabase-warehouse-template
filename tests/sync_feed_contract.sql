@@ -58,7 +58,7 @@ INSERT INTO pg_temp.sf_contract(k, v) VALUES
   -- Q1 [4, 14]: the columns a customer account never receives.
   ('soft_delete_tables', 'customers,dispatch,goodsreceived,invoice'),  -- Q4: the tables with deleted_at
   ('soft_delete_column', 'deleted_at'),
-  ('q1_customer_hidden_columns', 'created_by,updated_by,deleted_by,supervisor_id,sender_id,import_batch_id');
+  ('q1_customer_hidden_columns', 'created_by,updated_by,deleted_by,supervisor_id,sender_id,import_batch_id,uploaded_by');
 -- ================================================= END OF THE AGREED NAMES ======================================================
 
 CREATE FUNCTION pg_temp.sf(key text) RETURNS text LANGUAGE plpgsql STABLE AS $$

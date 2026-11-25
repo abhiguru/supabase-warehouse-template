@@ -200,12 +200,12 @@ SET LOCAL ROLE authenticated;
 SELECT pg_temp.grn_assert((SELECT count(*)=0 FROM public.goodsreceived),'revoked staff loses GRN access');
 SELECT pg_temp.grn_denied('SELECT public.get_grn_list()');
 RESET ROLE;
--- Migration 26: the edit takes the list-refresh lock before disabling the item
--- triggers, matching every other writer's lock order.
+-- Migration 26: the edit takes the list-refresh lock before its first write to the item
+-- table (the trigger switch is gone, WH-297), matching every other writer's lock order.
 SELECT pg_temp.grn_assert(
  position('pg_advisory_xact_lock(71040)' IN pg_get_functiondef((SELECT p.oid FROM pg_proc p WHERE p.pronamespace='public'::regnamespace AND p.proname='update_grn'))) > 0 AND
  position('pg_advisory_xact_lock(71040)' IN pg_get_functiondef((SELECT p.oid FROM pg_proc p WHERE p.pronamespace='public'::regnamespace AND p.proname='update_grn'))) <
- position('safe_disable_grn_trl_triggers()' IN pg_get_functiondef((SELECT p.oid FROM pg_proc p WHERE p.pronamespace='public'::regnamespace AND p.proname='update_grn'))),
+ position('UPDATE goodsreceived_trl SET' IN pg_get_functiondef((SELECT p.oid FROM pg_proc p WHERE p.pronamespace='public'::regnamespace AND p.proname='update_grn'))),
  'GRN edit acquires the refresh lock before the item-table lock');
 ROLLBACK;
 SELECT 'staff GRN create/read/update, deletion/other-role denials and revocation passed' AS result;

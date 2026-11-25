@@ -135,6 +135,8 @@ INSERT INTO ra_rpc(name,staff,customer) VALUES
  ('get_submission_result',true,'no'),
  -- migration 121: the edit state of a GRN (version token, locks) for the staff roles; customers are refused
  ('get_grn_edit_state',true,'no'),
+ -- WH-297: the change feed for the phones' copy; any active role, each caller sees only its own rows
+ ('get_sync_start',true,'any'),('get_sync_page',true,'any'),('get_sync_changes',true,'any'),('get_sync_checksums',true,'any'),
  -- warehouse-wide: admitted for staff by migration 45
  ('get_all_stock_summary',true,'no'),('get_all_customer_activity_summary',true,'no'),
  -- migration 90: item pricing is for administrators and supervisors only
