@@ -521,8 +521,6 @@ BEGIN
         FROM goodsreceived g
         WHERE g.id = p_grn_id;
 
-        PERFORM safe_disable_grn_trl_triggers();
-
         UPDATE goodsreceived SET
             gr_no = COALESCE(p_gr_no, gr_no),
             date = COALESCE(p_date, date),
@@ -872,8 +870,6 @@ BEGIN
             END IF;
         END IF;
 
-        PERFORM safe_enable_grn_trl_triggers();
-
         PERFORM pg_advisory_xact_lock(71040);
 
         SELECT jsonb_agg(
@@ -971,10 +967,8 @@ BEGIN
     EXCEPTION WHEN OTHERS THEN
         IF SQLERRM = 'rate_fail' THEN
             GET STACKED DIAGNOSTICS v_detail = PG_EXCEPTION_DETAIL;
-            PERFORM safe_enable_grn_trl_triggers();
             RETURN v_detail::jsonb;
         END IF;
-        PERFORM safe_enable_grn_trl_triggers();
         RAISE;
     END;
 END;
