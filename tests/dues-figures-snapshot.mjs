@@ -4,6 +4,9 @@
 //                                                                 each customer's invoices_amount, not_invoiced_left and not_invoiced_in_store,
 //                                                                 sorted by customer id
 //   node tests/dues-figures-snapshot.mjs compare <before.json> <after.json>   exits 1 on any difference, even one paisa
+//   node tests/dues-figures-snapshot.mjs per-customer <snapshot.json>   calls get_customer_dues_for for every customer of the snapshot and exits 1
+//                                                                 when any of its three figures differs from the list's, or it says the customer is not listed
+// Another installation than the fictional one (read-only calls only): DUES_DB_CONTAINER=<db container> DUES_DB_COMPOSE_ENV=<its compose.env>.
 // Money is never turned into a JavaScript number: the figures are cut out of the RPC's text as strings and compared as exact decimals.
 // Usage on the five-year seed: take a snapshot before the WH-311 migration, apply it, take a second, then compare.
 import assert from 'node:assert/strict';
@@ -45,6 +48,30 @@ export function snapshotFromResponse(responseText) {
   return rows.sort((a, b) => (a.customer_id < b.customer_id ? -1 : a.customer_id > b.customer_id ? 1 : 0));
 }
 
+// responseText: the text of the answer of get_customer_dues_for -> one snapshot row (same shape as snapshotFromResponse's) and whether the
+// list shows that customer. The answer's `customer` object carries the same three figures as a list entry.
+export function rowFromCustomerResponse(responseText) {
+  const quoted = responseText.replace(new RegExp(`("(?:${FIGURES.join('|')})"\\s*:\\s*)(-?\\d+(?:\\.\\d+)?)(?![\\d.eE])`, 'g'), '$1"$2"');
+  const answer = JSON.parse(quoted);
+  assert.equal(answer.success, true, `get_customer_dues_for succeeded: ${answer.error ?? ''}`);
+  const customer = answer.customer;
+  assert.equal(typeof customer?.customer_id, 'string', 'the answer names the customer');
+  const row = { customer_id: customer.customer_id };
+  for (const figure of FIGURES) {
+    assert.equal(typeof customer[figure], 'string', `${customer.customer_id}: ${figure} is a plain decimal`);
+    row[figure] = canonicalDecimal(customer[figure]);
+  }
+  return { row, listed: answer.listed };
+}
+
+// listRows: a snapshot of the list; answers: [{ row, listed }] from get_customer_dues_for, one per customer of the list.
+// -> differences (empty when every customer's own answer equals its list entry, to the paisa, and the answer says it is listed).
+export function comparePerCustomer(listRows, answers) {
+  const differences = compareSnapshots(listRows, answers.map(answer => answer.row));
+  for (const answer of answers) if (answer.listed !== true) differences.push(`${answer.row.customer_id}: in the list but get_customer_dues_for says it is not listed`);
+  return differences;
+}
+
 // -> list of differences (empty when the two snapshots agree on every customer and every figure).
 export function compareSnapshots(before, after) {
   const index = rows => new Map(rows.map(row => [row.customer_id, row]));
@@ -62,28 +89,47 @@ export function compareSnapshots(before, after) {
   return differences;
 }
 
-function readFromDatabase() {
-  // Dynamic import: the unit tests of this file need no installation.
-  return import('./operator-fixture.mjs').then(({ operatorFixture }) => {
-    const { env } = operatorFixture();
-    // The service role passes warehouse_security.authorize_rpc and the administrator check of get_customer_dues.
-    const query = `SELECT public.get_customer_dues()::text FROM (SELECT set_config('request.jwt.claims', '{"role":"service_role"}', false)) AS claims;`;
-    const result = spawnSync('docker', ['exec', '-i', '-e', `PGPASSWORD=${env.POSTGRES_PASSWORD}`, `${env.WAREHOUSE_PROJECT_NAME}-db-1`,
-      'psql', '-X', '-qAt', '-U', 'supabase_admin', '-d', 'postgres', '-v', 'ON_ERROR_STOP=1'], { input: query + '\n', encoding: 'utf8', maxBuffer: 256 * 1024 * 1024 });
-    assert.equal(result.status, 0, `get_customer_dues failed: ${result.stderr?.slice(-400)}`);
-    return result.stdout.trim();
-  });
+// Runs read-only calls through docker exec psql as the service role. calls: SQL expressions returning jsonb. -> one answer text per call.
+// The fictional installation by default; DUES_DB_CONTAINER and DUES_DB_COMPOSE_ENV point it at another installation's database.
+async function readFromDatabase(calls) {
+  // Dynamic imports: the unit tests of this file need no installation.
+  let env;
+  let container;
+  if (process.env.DUES_DB_CONTAINER) {
+    assert.ok(process.env.DUES_DB_COMPOSE_ENV, 'DUES_DB_COMPOSE_ENV (the compose.env holding POSTGRES_PASSWORD) is required with DUES_DB_CONTAINER');
+    env = (await import('../scripts/doctor-common.mjs')).readEnv(process.env.DUES_DB_COMPOSE_ENV);
+    container = process.env.DUES_DB_CONTAINER;
+  } else {
+    env = (await import('./operator-fixture.mjs')).operatorFixture().env;
+    container = `${env.WAREHOUSE_PROJECT_NAME}-db-1`;
+  }
+  // The service role passes warehouse_security.authorize_rpc and the administrator check of the dues functions.
+  const query = ["SELECT set_config('request.jwt.claims', '{\"role\":\"service_role\"}', false) \\g /dev/null",
+    ...calls.map(call => `SELECT ${call}::text;`)].join('\n');
+  const result = spawnSync('docker', ['exec', '-i', '-e', `PGPASSWORD=${env.POSTGRES_PASSWORD}`, container,
+    'psql', '-X', '-qAt', '-U', 'supabase_admin', '-d', 'postgres', '-v', 'ON_ERROR_STOP=1'], { input: query + '\n', encoding: 'utf8', maxBuffer: 256 * 1024 * 1024 });
+  assert.equal(result.status, 0, `the dues call failed: ${result.stderr?.slice(-400)}`);
+  const answers = result.stdout.split('\n').filter(line => line.length > 0);
+  assert.equal(answers.length, calls.length, 'one answer per call');
+  return answers;
 }
-
-// TODO(WH-311): when Development adds the per-customer form of these figures (item 3 of the card), add a mode that calls it for every
-// customer of a snapshot and fails when any of its three figures differs from the list. Its name is not decided yet, so none is called here.
 
 async function main(argv) {
   const [mode, first, second] = argv;
   if (mode === 'snapshot' && first) {
-    const rows = snapshotFromResponse(await readFromDatabase());
+    const rows = snapshotFromResponse((await readFromDatabase(['public.get_customer_dues()']))[0]);
     writeFileSync(first, JSON.stringify(rows, null, 2) + '\n');
     console.log(`Dues snapshot: ${rows.length} customers written to ${first}.`);
+  } else if (mode === 'per-customer' && first) {
+    const rows = JSON.parse(readFileSync(first, 'utf8'));
+    const uuid = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/;
+    for (const row of rows) assert.match(row.customer_id, uuid, 'a customer id in the snapshot is a uuid');
+    const texts = await readFromDatabase(rows.map(row => `public.get_customer_dues_for('${row.customer_id}'::uuid)`));
+    const differences = comparePerCustomer(rows, texts.map(rowFromCustomerResponse));
+    if (differences.length) {
+      console.error(`get_customer_dues_for differs from the list (${differences.length}):\n${differences.slice(0, 50).join('\n')}`);
+      process.exitCode = 1;
+    } else console.log(`get_customer_dues_for equals the list for all ${rows.length} customers.`);
   } else if (mode === 'compare' && first && second) {
     const differences = compareSnapshots(JSON.parse(readFileSync(first, 'utf8')), JSON.parse(readFileSync(second, 'utf8')));
     if (differences.length) {
@@ -91,7 +137,7 @@ async function main(argv) {
       process.exitCode = 1;
     } else console.log('Dues figures are identical.');
   } else {
-    console.error('usage: dues-figures-snapshot.mjs snapshot <out.json> | compare <before.json> <after.json>');
+    console.error('usage: dues-figures-snapshot.mjs snapshot <out.json> | compare <before.json> <after.json> | per-customer <snapshot.json>');
     process.exitCode = 2;
   }
 }
