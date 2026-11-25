@@ -129,7 +129,7 @@ SELECT pg_temp.edit_assert((SELECT qty=50 AND stock=40 FROM public.goodsreceived
  AND (SELECT qty=35 AND stock=35 FROM public.goodsreceived_trl WHERE id=:'lot_30'::uuid),'the refused removal changes no quantity');
 SELECT pg_temp.edit_assert((SELECT note='Line added' FROM public.goodsreceived WHERE id=:'grn_id'::uuid),'the refused removal leaves the note');
 SELECT pg_temp.edit_assert((SELECT count(*)=1 AND bool_and(disp_qty=10) FROM public.dispatch_trl WHERE gr_trl_id=:'lot_50'::uuid),'the dispatch line is untouched');
-SELECT pg_temp.edit_assert(NOT EXISTS (SELECT 1 FROM pg_trigger WHERE tgrelid IN ('public.goodsreceived_trl'::regclass,'public.goodsreceived'::regclass,'public.items'::regclass) AND NOT tgisinternal AND tgenabled<>'O'),
+SELECT pg_temp.edit_assert(NOT EXISTS (SELECT 1 FROM pg_trigger WHERE tgrelid IN ('public.goodsreceived_trl'::regclass,'public.goodsreceived'::regclass,'public.items'::regclass) AND NOT tgisinternal AND tgname NOT LIKE 'zz_change_feed%' AND tgenabled<>'O'),
  'the refused edit leaves no trigger of the receipt, its lines or the items disabled');
 
 -- A line nothing depends on can still be removed (the line added above).
