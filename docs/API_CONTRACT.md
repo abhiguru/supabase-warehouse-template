@@ -303,6 +303,47 @@ Test: `tests/packaging_rule_142.sql`.
   `get_customer_dispatch_items` and `get_customer_stock_analysis_v2` (a deleted receipt or dispatch is "not found"; its lines are left out):
   see [STAFF_GRN_POLICY.md](STAFF_GRN_POLICY.md).
 
+### Sync: the phone's copy and what changed (migration "sync change log", WH-297)
+
+The server logs every change a phone's copy needs (`warehouse_sync.change_log`, written by the `zz_change_feed` triggers, which are
+ENABLE ALWAYS: they also fire under `session_replication_role = replica`). Nothing may switch the user triggers of those tables off or
+on wholesale. The app uses these RPCs only when `capabilities.sync` is true in `get-public-config` (off by default; `scripts/set-capability.mjs
+sync on`) and it knows the answer's `format`; otherwise, or against a server without them (PGRST202), it works as before.
+
+- **Positions** are decimal strings of 64-bit transaction ids; the phone stores and returns them, never computes with them. The copy key
+  (`copy`) is opaque: `<format>.<log id>.<access>`.
+- **`get_sync_start()`** → `{success, format, copy, position, as_of, page_limit: 2000, entities[]}`. The position is fixed before page one.
+  Entities by role: administrators and supervisors `customers, items, settings, goodsreceived, goodsreceived_trl, grn_images, dispatch,
+  dispatch_trl, dispatch_images, invoice, invoice_trl, grn_lock, user_profiles, users_customers_new`; staff the same without
+  `user_profiles` and `users_customers_new`, with `people` (what `get_supervisors('')` answers staff); customer accounts `customers, items` and
+  the document tables.
+- **`get_sync_page(p_entity, p_after DEFAULT NULL, p_limit DEFAULT 2000)`** → `{success, entity, copy, rows: [{id, v, row}], next_after}`,
+  keyset by id, `p_limit` clamped to 1..2000, `next_after` null on the last page. `v` = first 16 hex digits of `md5(row::text)`. Rows and
+  columns are what the caller reads directly today (migration 137's row rules, invoice's granted columns). Administrators, supervisors and
+  staff receive soft-deleted rows with `deleted_at` set; a customer account receives only live rows of its own customers and none of
+  `created_by, updated_by, deleted_by, supervisor_id, sender_id, import_batch_id, uploaded_by`. `grn_lock` (by GRN id) is
+  `get_grn_edit_state`'s data plus `imported` and `rated_item_ids` (one function builds both). `settings`: `rack_presets`, `numbering`
+  (staff: per document type only `server_issues`), `charging_rule` (administrators only).
+- **`get_sync_changes(p_position, p_copy, p_limit DEFAULT 2000)`** → `{success, format, position, as_of, more, reload_all, reload[], changes[]}`.
+  Changes come from finished transactions only, whole transactions per page, at most `p_limit` entries, one per entity and id, each the
+  row as it is now: `{e, id, op: "upsert", v, row}`, `{e, id, op: "delete"}`, or `{e: "money", id: <customer>, op: "stale"}` (that
+  customer's dues and statement are out of date). A changed GRN brings all its lots, photos and `grn_lock`; a dispatch its lines and
+  photos; an invoice its lines. A row the caller may no longer read arrives as a delete (a GRN moved to another customer, a customer
+  account's soft-deleted document). The phone applies a `delete` of `goodsreceived` to its lots, photos and `grn_lock`, of `dispatch` to
+  its lines and photos, of `invoice` to its lines. A transaction larger than a page answers `reload: [entities]` (reload them with
+  `get_sync_page`, then carry on from `position`; a reload of `invoice` also means every money figure is out of date). `reload_all:
+  {reason}` means erase the copy and load again; `position` is then not stored. Reasons: `FORMAT_CHANGED`, `RESTORED`, `BULK_IMPORT`,
+  `TRUNCATED`, `RESET`, `LOG_PURGED` (the log is kept 120 days, retention key `sync_change_log`), `ACCESS_CHANGED` (role, profile or a
+  customer account's customers changed), `POSITION_AHEAD`. While a transaction stays open, later changes wait for it; `as_of` is then its
+  start time.
+- **`get_sync_checksums(p_position, p_copy, p_entities DEFAULT NULL)`** → `{success, position, entities: [{e, count, sum, settled}]}`:
+  `sum` is the sum over the caller's rows of the first 15 hex digits of `v` as an integer, modulo 2^60, as a decimal string; `settled` is
+  false when the entity changed at or after `p_position` (compare later).
+- **Refusals** (the one envelope): `SYNC_BAD_POSITION` (`position`), `SYNC_BAD_COPY`, `SYNC_UNKNOWN_ENTITY` (`entity`; also for an entity
+  the caller's role does not load). No active session: 42501 as everywhere.
+- **Operators:** `scripts/restore.sh` rotates the log (`RESTORED`); `SELECT warehouse_sync.rotate_log('RESET')` as `supabase_admin` makes
+  every phone reload.
+
 ### Sessions: the refresh lifetime and the break-glass code (migration 126, 2026-10-26)
 
 No function changes its arguments or the shape of an answer; the app needs no change. What changed is how long a refresh token's session lasts and one more code that `operator-otp/verify` accepts.

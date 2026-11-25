@@ -70,7 +70,7 @@ An alert fires after two failing runs in a row (10 minutes), except the event al
 | `disk_low:<path>` | Another ext4, xfs or btrfs filesystem has less than 10% free (Docker's own mounts and read-only mounts are skipped) |
 | `postgres_down` | `pg_isready` fails inside the database container |
 | `db_connections_high` | More than 80 client connections (the ceiling is 100) |
-| `db_long_transaction` | The oldest open transaction is older than 300 s |
+| `db_long_transaction` | The oldest open transaction is older than 300 s. While it stays open, the phones' copies receive no newer change (the sync feed waits for it, WH-297; nothing is lost), so it is also the alert for a delayed sync feed |
 | `db_cache_hit_low` | The cache hit ratio is below 90%, judged only once at least 10,000 blocks were read since the last restart |
 | `db_lock_waiters` | 5 or more sessions are waiting for the stock lock (advisory lock 71040, which serializes GRN, dispatch and document-numbering work). Likely cause: one transaction holds the lock for a long time (a stuck request, a manual session left open in a transaction), so saves in the app are slow or time out. First action: look at the oldest transaction, `bash scripts/compose.sh exec -T db psql -X -U supabase_admin -d postgres -c "SELECT pid, now()-xact_start AS age, state, left(query,80) FROM pg_stat_activity WHERE xact_start IS NOT NULL ORDER BY xact_start LIMIT 5"`, and end the one that is stuck (`pg_terminate_backend(pid)`); `db_long_transaction` usually fires with it. Two failing runs fire it; it repeats every 4 hours |
 | `db_dead_tuples_high` | More than 100,000 dead tuples (consider `VACUUM`) |
