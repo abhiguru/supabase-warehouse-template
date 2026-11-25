@@ -205,6 +205,9 @@ SELECT pg_temp.sf_assert(NOT EXISTS (SELECT 1 FROM pg_temp.sf_answer a, unnest(p
 SELECT pg_temp.sf_assert(NOT EXISTS (SELECT 1 FROM pg_temp.sf_answer a, information_schema.columns c
     WHERE c.table_schema = 'public' AND c.table_name = 'invoice' AND NOT has_column_privilege('authenticated', 'public.invoice', c.column_name, 'SELECT')
       AND a.answer::text LIKE '%"' || c.column_name || '":%'),
-  '12: no answer to any phone carried an invoice column the app roles may not read');
+  '12: no answer to any phone carried an invoice column the app roles may not read: ' || COALESCE((SELECT string_agg(DISTINCT c.column_name || ' in a ' || a.kind || ' answer of phone ' || a.phone || ' near: ' || substring(a.answer::text from '.{0,100}"' || c.column_name || '":.{0,30}'), E'\n')
+      FROM pg_temp.sf_answer a, information_schema.columns c
+      WHERE c.table_schema = 'public' AND c.table_name = 'invoice' AND NOT has_column_privilege('authenticated', 'public.invoice', c.column_name, 'SELECT')
+        AND a.answer::text LIKE '%"' || c.column_name || '":%'), ''));
 
 \echo 'WH-297 sync feed deletes and customer scope (criteria 2 and 12) checks passed.'
