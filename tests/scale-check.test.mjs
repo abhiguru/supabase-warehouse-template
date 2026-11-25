@@ -1,6 +1,6 @@
 import assert from 'node:assert/strict';
 import { test } from 'node:test';
-import { evaluate, percentile, settings, summarise, workload } from './scale-check.mjs';
+import { CUSTOMER_DUES_LIMIT_MS, evaluate, evaluateCustomerDues, percentile, settings, summarise, workload } from './scale-check.mjs';
 import { scaleCounts, scaleSeedSql } from './seed/make-seed.mjs';
 
 test('percentile takes the nearest rank of a sorted list', () => {
@@ -77,4 +77,15 @@ test('the scale seed: counts for five years, a bounded size, and the default see
   // Every dispatch takes 5 bags from a line of 100, so stock never goes below 0; the invoices are over dispatched lines.
   assert.match(sql, /CASE WHEN d\.d IS NULL THEN 100 ELSE 95 END/);
   assert.match(sql, /disp_qty\)\n SELECT [^\n]*, 5\n/);
+});
+
+// WH-311: today get_customer_dues takes 82 s on the five-year seed; the bar is 4 s, half the server's 8 s statement timeout.
+test('evaluateCustomerDues: every call must answer within 4 s; a slow call and a failed call both fail; the limit itself passes', () => {
+  assert.equal(CUSTOMER_DUES_LIMIT_MS, 4000);
+  assert.deepEqual(evaluateCustomerDues([{ ok: true, ms: 3200 }, { ok: true, ms: 4000 }]), []);
+  assert.deepEqual(evaluateCustomerDues([{ ok: true, ms: 82100 }, { ok: true, ms: 82600 }]),
+    ['get_customer_dues: call 1 took 82100 ms, above 4000 ms', 'get_customer_dues: call 2 took 82600 ms, above 4000 ms']);
+  assert.deepEqual(evaluateCustomerDues([{ ok: true, ms: 100 }, { ok: true, ms: 4000.1 }]), ['get_customer_dues: call 2 took 4000.1 ms, above 4000 ms']);
+  assert.deepEqual(evaluateCustomerDues([{ ok: false, ms: 8012.34 }]), ['get_customer_dues: call 1 failed or timed out after 8012.3 ms']);
+  assert.deepEqual(evaluateCustomerDues([]), ['get_customer_dues: not timed'], 'no timing is a failure, not a pass');
 });

@@ -14,6 +14,20 @@ import { isMain } from '../scripts/is-main.mjs';
 // The statement timeout of the authenticated role is 8 s (docker/volumes/db/00-bootstrap.sql); the client gives up a little later.
 export const REQUEST_TIMEOUT_MS = 10000;
 
+// WH-311: "Customer dues" (get_customer_dues, every customer in one answer) must open well inside the 8 s statement timeout on the
+// five-year seed. 4 s is half of it: it leaves room for a slower runner and the gateway, and still fails today's 82 s by a wide margin.
+// It is timed as single calls by the administrator, before the concurrent load, and fails whatever SCALE_ENFORCE says.
+export const CUSTOMER_DUES_LIMIT_MS = 4000;
+
+// attempts: [{ ok, ms }] (the first call is cold, the later ones warm) -> failures (empty when every call answered within the limit).
+export function evaluateCustomerDues(attempts, limitMs = CUSTOMER_DUES_LIMIT_MS) {
+  if (!attempts.length) return ['get_customer_dues: not timed'];
+  return attempts.flatMap(({ ok, ms }, index) => {
+    if (!ok) return [`get_customer_dues: call ${index + 1} failed or timed out after ${round(ms)} ms`];
+    return ms > limitMs ? [`get_customer_dues: call ${index + 1} took ${round(ms)} ms, above ${limitMs} ms`] : [];
+  });
+}
+
 export function percentile(sorted, fraction) {
   if (!sorted.length) return null;
   return sorted[Math.min(sorted.length - 1, Math.max(0, Math.ceil(sorted.length * fraction) - 1))];
@@ -138,6 +152,17 @@ async function main() {
     assert.ok(answer.ok, `${user.role} ${name} answered HTTP ${answer.status}: ${JSON.stringify(answer.data)?.slice(0, 200)}`);
   }
 
+  // WH-311: the all-customers dues list, timed alone (one cold and one warm call) before the load starts.
+  const duesAttempts = [];
+  for (let attempt = 0; attempt < 2; attempt += 1) {
+    const start = performance.now();
+    let ok = false;
+    try { ok = (await rpc('get_customer_dues', adminToken, {})).ok; } catch { ok = false; }
+    duesAttempts.push({ ok, ms: performance.now() - start });
+  }
+  const duesFailures = evaluateCustomerDues(duesAttempts);
+  console.log(`get_customer_dues: ${duesAttempts.map(({ ms }) => `${round(ms)} ms`).join(', ')} (limit ${CUSTOMER_DUES_LIMIT_MS} ms)`);
+
   const deadline = performance.now() + config.seconds * 1000;
   async function worker(index) {
     const user = users[index % users.length];
@@ -164,11 +189,13 @@ async function main() {
   await Promise.all(Array.from({ length: config.workers }, (_, i) => worker(i)));
 
   const summary = summarise(samples);
-  writeFileSync(config.output, JSON.stringify({ seconds: config.seconds, workers: config.workers, p95LimitMs: config.limitMs, enforced: config.enforce, rpcs: summary }, null, 2) + '\n');
+  writeFileSync(config.output, JSON.stringify({ seconds: config.seconds, workers: config.workers, p95LimitMs: config.limitMs, enforced: config.enforce, rpcs: summary,
+    customerDues: { limitMs: CUSTOMER_DUES_LIMIT_MS, attempts: duesAttempts.map(({ ok, ms }) => ({ ok, ms: round(ms) })) } }, null, 2) + '\n');
   for (const [name, row] of Object.entries(summary)) console.log(`${name}: ${row.calls} calls, p50 ${row.p50} ms, p95 ${row.p95} ms, max ${row.max} ms, errors ${row.errors}`);
   const verdict = evaluate(summary, config);
   for (const line of verdict.warnings) console.log(`::warning title=Scale check::${line}`);
-  if (verdict.failures.length) throw new Error(`Scale check failed:\n${verdict.failures.join('\n')}`);
+  const failures = [...duesFailures, ...verdict.failures];
+  if (failures.length) throw new Error(`Scale check failed:\n${failures.join('\n')}`);
   console.log(`Scale check done${verdict.warnings.length ? ' with warnings' : ''}.`);
 }
 
