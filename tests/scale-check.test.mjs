@@ -1,6 +1,6 @@
 import assert from 'node:assert/strict';
 import { test } from 'node:test';
-import { SYNC, evaluate, evaluateSyncCalls, percentile, settings, summarise, syncRows, workload } from './scale-check.mjs';
+import { CUSTOMER_DUES_LIMIT_MS, SYNC, evaluate, evaluateCustomerDues, evaluateSyncCalls, percentile, settings, summarise, syncRows, workload } from './scale-check.mjs';
 import { scaleCounts, scaleSeedSql } from './seed/make-seed.mjs';
 
 test('percentile takes the nearest rank of a sorted list', () => {
@@ -106,4 +106,15 @@ test('evaluateSyncCalls: the limits themselves pass; over a limit, a failed call
   assert.deepEqual(evaluateSyncCalls([{ label: 'admin shapeless', ok: true, ms: 5, rows: null }]), ['admin shapeless: the answer has no list of rows']);
   assert.deepEqual(evaluateSyncCalls([{ label: 'both', ok: true, ms: 9000, rows: 3000 }]), ['both: took 9000 ms, above 8000 ms', 'both: 3000 rows, above 2000']);
   assert.deepEqual(evaluateSyncCalls([]), ['sync: no call was timed'], 'nothing timed is a failure, not a pass');
+});
+
+// WH-311: today get_customer_dues takes 82 s on the five-year seed; the bar is 4 s, half the server's 8 s statement timeout.
+test('evaluateCustomerDues: every call must answer within 4 s; a slow call and a failed call both fail; the limit itself passes', () => {
+  assert.equal(CUSTOMER_DUES_LIMIT_MS, 4000);
+  assert.deepEqual(evaluateCustomerDues([{ ok: true, ms: 3200 }, { ok: true, ms: 4000 }]), []);
+  assert.deepEqual(evaluateCustomerDues([{ ok: true, ms: 82100 }, { ok: true, ms: 82600 }]),
+    ['get_customer_dues: call 1 took 82100 ms, above 4000 ms', 'get_customer_dues: call 2 took 82600 ms, above 4000 ms']);
+  assert.deepEqual(evaluateCustomerDues([{ ok: true, ms: 100 }, { ok: true, ms: 4000.1 }]), ['get_customer_dues: call 2 took 4000.1 ms, above 4000 ms']);
+  assert.deepEqual(evaluateCustomerDues([{ ok: false, ms: 8012.34 }]), ['get_customer_dues: call 1 failed or timed out after 8012.3 ms']);
+  assert.deepEqual(evaluateCustomerDues([]), ['get_customer_dues: not timed'], 'no timing is a failure, not a pass');
 });
