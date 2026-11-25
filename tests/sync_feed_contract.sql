@@ -20,10 +20,10 @@
 CREATE TEMP TABLE sf_contract(k text PRIMARY KEY, v text NOT NULL);
 INSERT INTO pg_temp.sf_contract(k, v) VALUES
   -- The four RPCs [3]; filled with format(): %L for text, %s for the limit.
-  ('call_start',     'public.get_sync_start()'),
-  ('call_page',      'public.get_sync_page(p_entity => %L, p_after => %L, p_limit => %s)'),
-  ('call_changes',   'public.get_sync_changes(p_position => %L, p_copy => %L, p_limit => %s)'),
-  ('call_checksums', 'public.get_sync_checksums(p_position => %L, p_copy => %L, p_entities => NULL)'),
+  ('call_start',     'SELECT public.get_sync_start()'),
+  ('call_page',      'SELECT public.get_sync_page(p_entity => %L, p_after => %L, p_limit => %s)'),
+  ('call_changes',   'SELECT public.get_sync_changes(p_position => %L, p_copy => %L, p_limit => %s)'),
+  ('call_checksums', 'SELECT public.get_sync_checksums(p_position => %L, p_copy => %L, p_entities => NULL)'),
   ('page_limit',     '2000'),                                         -- [6] rows per answer, also the clamp of p_limit
   -- Answer fields [3.1-3.4].
   ('f_success', 'success'), ('f_format', 'format'), ('f_copy', 'copy'), ('f_position', 'position'), ('f_as_of', 'as_of'),
@@ -176,9 +176,9 @@ CREATE FUNCTION pg_temp.sf_first_load(p text, fresh boolean DEFAULT false) RETUR
 DECLARE ans jsonb; target text := CASE WHEN fresh THEN 'fresh:' || p ELSE p END; ent text;
 BEGIN
   ans := pg_temp.sf_rpc(p, 'start', pg_temp.sf('call_start'));
-  PERFORM pg_temp.sf_assert(ans->>pg_temp.sf('f_position') ~ '^[0-9]{1,20}$', 'the start position is a decimal string: ' || ans);
+  PERFORM pg_temp.sf_assert(ans->>pg_temp.sf('f_position') ~ '^[0-9]{1,20}$', 'the start position is a decimal string: ' || ans::text);
   PERFORM pg_temp.sf_assert(ans->>pg_temp.sf('f_copy') IS NOT NULL AND (ans->>pg_temp.sf('f_page_limit'))::int = pg_temp.sf('page_limit')::int,
-    'the start gives a copy key and the page limit: ' || ans);
+    'the start gives a copy key and the page limit: ' || ans::text);
   DELETE FROM pg_temp.sf_copy c WHERE c.slot = target;
   IF NOT fresh THEN
     UPDATE pg_temp.sf_device SET position = ans->>pg_temp.sf('f_position'), copy = ans->>pg_temp.sf('f_copy'),

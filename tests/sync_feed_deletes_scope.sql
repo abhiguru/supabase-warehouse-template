@@ -58,7 +58,7 @@ SELECT pg_temp.sf_dispatch(:'sf_admin_claims'::jsonb, 'DSAD1', (SELECT id FROM p
 SELECT pg_temp.sf_dispatch(:'sf_admin_claims'::jsonb, 'DSAD2', (SELECT id FROM public.goodsreceived_trl WHERE gr_id = :'grn_a4'), 20) AS disp_a2 \gset
 SELECT pg_temp.sf_dispatch(:'sf_admin_claims'::jsonb, 'DSBD1', (SELECT id FROM public.goodsreceived_trl WHERE gr_id = :'grn_b1'), 2) AS disp_b1 \gset
 SELECT pg_temp.sf_as(:'staff_claims'::jsonb, format('SELECT public.save_invoice(NULL::uuid, %L::jsonb, ARRAY(SELECT jsonb_build_object(%L, t.id, %L, t.gr_trl_id, %L, 1, %L, 5, %L, 5, %L, 2) FROM public.dispatch_trl t WHERE t.gr_id = %L::uuid))',
-  jsonb_build_object('inv_fin_year', 2026, 'inv_no', 5, 'customer_id', :'north', 'customer_name', 'Sync Scope North', 'inv_date', '2026-05-02T12:00:00Z',
+  jsonb_build_object('inv_fin_year', 2026, 'inv_no', 5, 'customer_id', :'north', 'customer_name', 'Sync Scope North', 'inv_date', '2026-06-02T12:00:00Z',
     'total', 0, 'tax_amount', 0, 'labour', 0, 'discount', 0, 'duration_mode', 'legacy', 'gr_id', :'grn_a4', 'gr_no', 'DSA4'),
   'disp_trl_id', 'grn_item_id', 'duration', 'charge', 'tax', 'labour_rate', :'grn_a4')) AS invoiced \gset
 SELECT pg_temp.sf_assert(:'invoiced'::jsonb->>'success' = 'true', 'fixture: invoice of DSA4: ' || :'invoiced');
