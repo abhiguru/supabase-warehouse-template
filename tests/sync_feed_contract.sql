@@ -291,11 +291,12 @@ CREATE FUNCTION pg_temp.sf_columns(tbl text) RETURNS text[] LANGUAGE sql STABLE 
   WHERE table_schema = 'public' AND table_name = tbl AND has_column_privilege('authenticated', format('public.%I', tbl), column_name, 'SELECT') $$;
 
 -- Criterion 12a: for every table entity of the phone that the caller can read directly, the copy holds exactly the ids of a direct
--- read as the same caller, and every row carries exactly the readable columns less `hidden`. Q4 (Product): administrators,
+-- read as the same caller, and every row carries exactly the readable columns less `hidden`; a goodsreceived_trl row must also
+-- carry emptied_at, which is no column of the table (format 2, WH-299; sync_feed_emptied_time.sql checks its value). Q4 (Product): administrators,
 -- supervisors and staff hold soft-deleted rows with deleted_at set, as they read them today; a customer account (live_only) holds
 -- none. '' when it holds.
 CREATE FUNCTION pg_temp.sf_check_direct(p text, hidden text[] DEFAULT '{}', live_only boolean DEFAULT false) RETURNS text LANGUAGE plpgsql AS $$
-DECLARE d record; ent text; cols text[]; direct jsonb; held jsonb; bad text; problems text[] := '{}'; live text;
+DECLARE d record; ent text; cols text[]; want text[]; direct jsonb; held jsonb; bad text; problems text[] := '{}'; live text;
 BEGIN
   SELECT * INTO d FROM pg_temp.sf_device WHERE phone = p;
   FOREACH ent IN ARRAY d.entities LOOP
@@ -308,10 +309,12 @@ BEGIN
     IF direct IS DISTINCT FROM held THEN
       problems := problems || format('%s ids: copy %s, direct read %s', ent, jsonb_array_length(held), jsonb_array_length(direct));
     END IF;
+    want := ARRAY(SELECT x FROM unnest(cols || CASE WHEN ent = 'goodsreceived_trl' THEN ARRAY['emptied_at'] ELSE '{}'::text[] END) x
+      WHERE x <> ALL (hidden) ORDER BY x);
     SELECT string_agg(DISTINCT array_to_string(ARRAY(SELECT k FROM jsonb_object_keys(c.row) k ORDER BY k), ','), ' | ') INTO bad
       FROM pg_temp.sf_copy c WHERE c.slot = p AND c.e = ent
-      AND ARRAY(SELECT k FROM jsonb_object_keys(c.row) k ORDER BY k) IS DISTINCT FROM ARRAY(SELECT x FROM unnest(cols) x WHERE x <> ALL (hidden) ORDER BY x);
-    IF bad IS NOT NULL THEN problems := problems || format('%s columns %s, expected %s', ent, bad, array_to_string(ARRAY(SELECT x FROM unnest(cols) x WHERE x <> ALL (hidden) ORDER BY x), ',')); END IF;
+      AND ARRAY(SELECT k FROM jsonb_object_keys(c.row) k ORDER BY k) IS DISTINCT FROM want;
+    IF bad IS NOT NULL THEN problems := problems || format('%s columns %s, expected %s', ent, bad, array_to_string(want, ',')); END IF;
   END LOOP;
   RETURN array_to_string(problems, '; ');
 END $$;
