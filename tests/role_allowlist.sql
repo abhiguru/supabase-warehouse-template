@@ -137,6 +137,8 @@ INSERT INTO ra_rpc(name,staff,customer) VALUES
  ('get_grn_edit_state',true,'no'),
  -- WH-297: the change feed for the phones' copy; any active role, each caller sees only its own rows
  ('get_sync_start',true,'any'),('get_sync_page',true,'any'),('get_sync_changes',true,'any'),('get_sync_checksums',true,'any'),
+ -- WH-303: edit a GRN by field changes (staff roles, as update_grn); the replaced-entries list and "mark checked" are for administrators (the bodies refuse a supervisor)
+ ('apply_grn_changes',true,'no'),('get_grn_replacements',false,'no'),('mark_grn_replacements_checked',false,'no'),
  -- warehouse-wide: admitted for staff by migration 45
  ('get_all_stock_summary',true,'no'),('get_all_customer_activity_summary',true,'no'),
  -- migration 90: item pricing is for administrators and supervisors only

@@ -90,31 +90,53 @@ SELECT pg_temp.edit_assert((SELECT sum(t.stock)=95 FROM public.goodsreceived_trl
  'the customer stock counts the new line (40 + 30 + 25)');
 SELECT jsonb_build_object('id',:'lot_new','item_id',:'item_id','item_name','Edit Line Potatoes','packaging','Bag','qty',25,'weight',12,'rack','R3','package_mark','NEW') AS line_new \gset
 
--- A dispatched lot keeps its quantity and stock: asking for 5 bags where 10
--- have left is answered with success, the lot reported in items_skipped_stock
--- and the row unchanged. The undispatched line in the same edit does change.
+-- WH-303 (contract app-offline-edit-grn, topic "GRN save never skips a quantity", U1-U3, U5; Product PQ2): a quantity below
+-- what has left a lot is refused at once with its reason and nothing of that save is written (not the rack, not the other
+-- line). It is never "success" with the lot listed in items_skipped_stock, as it was.
 SET LOCAL ROLE authenticated;
 SELECT public.update_grn(p_grn_id=>:'grn_id'::uuid,
  p_items=>jsonb_build_array(:'line_50'::jsonb || '{"qty":5,"rack":"R9"}'::jsonb,:'line_30'::jsonb || '{"qty":35}'::jsonb,:'line_new'::jsonb)) AS lowered \gset
-SELECT pg_temp.edit_assert(:'lowered'::jsonb->>'success'='true' AND jsonb_array_length(:'lowered'::jsonb#>'{stats,items_skipped_stock}')=1
- AND :'lowered'::jsonb#>>'{stats,items_skipped_stock,0,grn_trl_item_id}'=:'lot_50'
- AND :'lowered'::jsonb#>>'{stats,items_skipped_stock,0,dispatched_qty}'='10'
- AND :'lowered'::jsonb#>>'{stats,items_skipped_stock,0,reason}'='Cannot update qty/stock - item has 10 units dispatched',
- 'the dispatched lot is reported as skipped: ' || :'lowered');
 RESET ROLE;
+SELECT pg_temp.edit_assert(:'lowered'::jsonb->>'success'='false' AND :'lowered'::jsonb->>'reason'='QTY_BELOW_DISPATCHED'
+ AND :'lowered'::jsonb->>'lot_id'=:'lot_50' AND :'lowered'::jsonb->>'item_name'='Edit Line Potatoes'
+ AND :'lowered'::jsonb->>'dispatched_qty'='10' AND :'lowered'::jsonb->>'requested'='5',
+ 'U1: 5 bags where 10 have left is refused with the lot and the figures: ' || :'lowered');
+SELECT pg_temp.edit_assert((SELECT qty=50 AND stock=40 AND rack='R1' FROM public.goodsreceived_trl WHERE id=:'lot_50'::uuid)
+ AND (SELECT qty=30 AND stock=30 FROM public.goodsreceived_trl WHERE id=:'lot_30'::uuid),
+ 'U1: the refused save wrote nothing, not the rack of the lot and not the quantity of the other line');
+
+-- U3: the quantity of the dispatched lot unchanged: success, nothing skipped, the other fields written as before.
+SET LOCAL ROLE authenticated;
+SELECT public.update_grn(p_grn_id=>:'grn_id'::uuid,
+ p_items=>jsonb_build_array(:'line_50'::jsonb || '{"rack":"R9"}'::jsonb,:'line_30'::jsonb || '{"qty":35}'::jsonb,:'line_new'::jsonb)) AS kept_qty \gset
+RESET ROLE;
+SELECT pg_temp.edit_assert(:'kept_qty'::jsonb->>'success'='true' AND :'kept_qty'::jsonb#>'{stats,items_skipped_stock}'='[]'::jsonb,
+ 'U3: an unchanged quantity on a dispatched lot is no skip: ' || :'kept_qty');
 SELECT pg_temp.edit_assert((SELECT qty=50 AND stock=40 AND rack='R9' FROM public.goodsreceived_trl WHERE id=:'lot_50'::uuid),
  'the dispatched lot keeps quantity 50 and stock 40; its rack does change');
 SELECT pg_temp.edit_assert((SELECT qty=35 AND stock=35 FROM public.goodsreceived_trl WHERE id=:'lot_30'::uuid),
- 'the undispatched lot takes its new quantity as stock');
+ 'U5: the undispatched lot takes its new quantity as stock');
 
--- Raising the quantity of a dispatched lot is skipped in the same way.
+-- U2: a quantity above what has left is written (qty = new, stock = new - 10), and one equal to it too; items_skipped_stock is
+-- still in the answer, always [] (an older app reads it).
 SET LOCAL ROLE authenticated;
 SELECT public.update_grn(p_grn_id=>:'grn_id'::uuid,
- p_items=>jsonb_build_array(:'line_50'::jsonb || '{"qty":500,"rack":"R9"}'::jsonb,:'line_30'::jsonb || '{"qty":35}'::jsonb,:'line_new'::jsonb)) AS raised \gset
-SELECT pg_temp.edit_assert(:'raised'::jsonb->>'success'='true' AND jsonb_array_length(:'raised'::jsonb#>'{stats,items_skipped_stock}')=1,
- 'a raised quantity on a dispatched lot is skipped too: ' || :'raised');
+ p_items=>jsonb_build_array(:'line_50'::jsonb || '{"qty":60,"rack":"R9"}'::jsonb,:'line_30'::jsonb || '{"qty":35}'::jsonb,:'line_new'::jsonb)) AS raised \gset
 RESET ROLE;
-SELECT pg_temp.edit_assert((SELECT qty=50 AND stock=40 FROM public.goodsreceived_trl WHERE id=:'lot_50'::uuid),'still 40 of 50');
+SELECT pg_temp.edit_assert(:'raised'::jsonb->>'success'='true' AND :'raised'::jsonb#>'{stats,items_skipped_stock}'='[]'::jsonb,
+ 'U2: a raised quantity is accepted and nothing is skipped: ' || :'raised');
+SELECT pg_temp.edit_assert((SELECT qty=60 AND stock=50 FROM public.goodsreceived_trl WHERE id=:'lot_50'::uuid),'U2: 60 bags, 50 in stock (60 less the 10 that left)');
+SET LOCAL ROLE authenticated;
+SELECT public.update_grn(p_grn_id=>:'grn_id'::uuid,
+ p_items=>jsonb_build_array(:'line_50'::jsonb || '{"qty":10,"rack":"R9"}'::jsonb,:'line_30'::jsonb || '{"qty":35}'::jsonb,:'line_new'::jsonb)) AS exactly_left \gset
+RESET ROLE;
+SELECT pg_temp.edit_assert(:'exactly_left'::jsonb->>'success'='true' AND (SELECT qty=10 AND stock=0 FROM public.goodsreceived_trl WHERE id=:'lot_50'::uuid),
+ 'U2: a quantity equal to what has left is accepted and leaves no stock: ' || :'exactly_left');
+SET LOCAL ROLE authenticated;
+SELECT public.update_grn(p_grn_id=>:'grn_id'::uuid,
+ p_items=>jsonb_build_array(:'line_50'::jsonb || '{"rack":"R9"}'::jsonb,:'line_30'::jsonb || '{"qty":35}'::jsonb,:'line_new'::jsonb)) AS restored \gset
+RESET ROLE;
+SELECT pg_temp.edit_assert(:'restored'::jsonb->>'success'='true' AND (SELECT qty=50 AND stock=40 FROM public.goodsreceived_trl WHERE id=:'lot_50'::uuid),'still 40 of 50');
 
 -- Leaving the dispatched lot out of the list would delete it: refused, and the
 -- note and the other lines of that edit roll back with it.

@@ -513,7 +513,7 @@ test_files=(
   "$ROOT/tests/user_status_enrollment.sql" "$ROOT/tests/retention.sql" "$ROOT/tests/audit_log_retention.sql"
   "$ROOT/tests/order_screen.sql" "$ROOT/tests/document_number_sort.sql" "$ROOT/tests/list_search.sql"
   "$ROOT/tests/preferred_language.sql" "$ROOT/tests/dispatch_lot_ownership.sql"
-  "$ROOT/tests/grn_edit_lines.sql" "$ROOT/tests/invoice_line_rules.sql"
+  "$ROOT/tests/grn_edit_lines.sql" "$ROOT/tests/grn_qty_invoiced_lock.sql" "$ROOT/tests/invoice_line_rules.sql"
   "$ROOT/tests/direct_write_guard.sql" "$ROOT/tests/image_path_rules.sql"
   "$ROOT/tests/refresh_reuse.sql" "$ROOT/tests/otp_abuse_limits.sql"
   "$ROOT/tests/admin_guards.sql" "$ROOT/tests/auth_and_access.sql"
@@ -1034,9 +1034,11 @@ sync_plan=$(plan_of "$ROOT" | mig_psql -d "$sync_db" 2>&1) || { echo "$sync_plan
 mig_psql -d "$sync_db" -c 'DROP SCHEMA storage CASCADE' >/dev/null
 docker exec -e PGPASSWORD=disposable-test-database-only "$container" pg_dump -U supabase_admin -d postgres --schema-only --no-owner -n storage | mig_psql -d "$sync_db" >/dev/null
 # WH-299, feed format 2: the invoice state of a GRN and the time a lot was emptied.
+# WH-303: edit GRN by field changes, the replaced entries and their list, and their feed entity (they need committed statements).
 for sync_sql in "$ROOT/tests/sync_feed_changes.sql" "$ROOT/tests/sync_feed_deletes_scope.sql" \
   "$ROOT/tests/sync_feed_invoice_state.sql" "$ROOT/tests/sync_feed_emptied_time.sql" "$ROOT/tests/sync_feed_lot_rack_mark.sql" \
-  "$ROOT/tests/sync_feed_orders_payments.sql"; do
+  "$ROOT/tests/sync_feed_orders_payments.sql" \
+  "$ROOT/tests/grn_edit_field_changes.sql" "$ROOT/tests/grn_replacements_admin.sql" "$ROOT/tests/sync_feed_grn_replacements.sql"; do
   cat "$ROOT/tests/fixtures/gst_details.sql" "$ROOT/tests/sync_feed_contract.sql" "$sync_sql" | mig_psql -d "$sync_db"
 done
 bash "$ROOT/tests/sync_feed_concurrency.sh" "$container" "$sync_db" "$ROOT/tests/sync_feed_contract.sql"
