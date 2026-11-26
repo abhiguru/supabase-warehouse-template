@@ -308,7 +308,8 @@ Test: `tests/packaging_rule_142.sql`.
 The server logs every change a phone's copy needs (`warehouse_sync.change_log`, written by the `zz_change_feed` triggers, which are
 ENABLE ALWAYS: they also fire under `session_replication_role = replica`). Nothing may switch the user triggers of those tables off or
 on wholesale. The app uses these RPCs only when `capabilities.sync` is true in `get-public-config` (off by default; `scripts/set-capability.mjs
-sync on`) and it knows the answer's `format`; otherwise, or against a server without them (PGRST202), it works as before.
+sync on`) and it knows the answer's `format`; otherwise, or against a server without them (PGRST202), it works as before. The format
+is 2 since migration "sync GRN invoice state and lot emptied time" (WH-299); a copy of format 1 answers `reload_all` `FORMAT_CHANGED`.
 
 - **Positions** are decimal strings of 64-bit transaction ids; the phone stores and returns them, never computes with them. The copy key
   (`copy`) is opaque: `<format>.<log id>.<access>`.
@@ -322,7 +323,10 @@ sync on`) and it knows the answer's `format`; otherwise, or against a server wit
   columns are what the caller reads directly today (migration 137's row rules, invoice's granted columns). Administrators, supervisors and
   staff receive soft-deleted rows with `deleted_at` set; a customer account receives only live rows of its own customers and none of
   `created_by, updated_by, deleted_by, supervisor_id, sender_id, import_batch_id, uploaded_by`. `grn_lock` (by GRN id) is
-  `get_grn_edit_state`'s data plus `imported` and `rated_item_ids` (one function builds both). `settings`: `rack_presets`, `numbering`
+  `get_grn_edit_state`'s data plus `imported`, `rated_item_ids` and, from format 2, `invoice_state` (`not_invoiced` | `invoiced` |
+  `partly_invoiced`, the GRN list's `invoice_state`; one function builds both). From format 2 a `goodsreceived_trl` row also carries
+  `emptied_at`: the latest stock movement that left the lot at zero (what `get_customer_stock_summary` dates an emptied lot by), null
+  when there is none, for every role that receives the lot; it stays after the lot is refilled. `settings`: `rack_presets`, `numbering`
   (staff: per document type only `server_issues`), `charging_rule` (administrators only).
 - **`get_sync_changes(p_position, p_copy, p_limit DEFAULT 2000)`** → `{success, format, position, as_of, more, reload_all, reload[], changes[]}`.
   Changes come from finished transactions only, whole transactions per page, at most `p_limit` entries, one per entity and id, each the
@@ -331,7 +335,8 @@ sync on`) and it knows the answer's `format`; otherwise, or against a server wit
   photos; an invoice its lines. A row the caller may no longer read arrives as a delete (a GRN moved to another customer, a customer
   account's soft-deleted document). The phone applies a `delete` of `goodsreceived` to its lots, photos and `grn_lock`, of `dispatch` to
   its lines and photos, of `invoice` to its lines. A transaction larger than a page answers `reload: [entities]` (reload them with
-  `get_sync_page`, then carry on from `position`; a reload of `invoice` also means every money figure is out of date). `reload_all:
+  `get_sync_page`, then carry on from `position`; a reload of `invoice` also means every money figure is out of date). A change of the
+  charging rule's `invoice_as_goods_leave` answers `reload: ["grn_lock"]` to administrators, supervisors and staff. `reload_all:
   {reason}` means erase the copy and load again; `position` is then not stored. Reasons: `FORMAT_CHANGED`, `RESTORED`, `BULK_IMPORT`,
   `TRUNCATED`, `RESET`, `LOG_PURGED` (the log is kept 120 days, retention key `sync_change_log`), `ACCESS_CHANGED` (role, profile or a
   customer account's customers changed), `POSITION_AHEAD`. While a transaction stays open, later changes wait for it; `as_of` is then its
