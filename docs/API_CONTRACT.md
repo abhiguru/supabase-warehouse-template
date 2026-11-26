@@ -309,15 +309,16 @@ The server logs every change a phone's copy needs (`warehouse_sync.change_log`, 
 ENABLE ALWAYS: they also fire under `session_replication_role = replica`). Nothing may switch the user triggers of those tables off or
 on wholesale. The app uses these RPCs only when `capabilities.sync` is true in `get-public-config` (off by default; `scripts/set-capability.mjs
 sync on`) and it knows the answer's `format`; otherwise, or against a server without them (PGRST202), it works as before. The format
-is 2 since migration "sync GRN invoice state and lot emptied time" (WH-299); a copy of format 1 answers `reload_all` `FORMAT_CHANGED`.
+is 3 since migrations "sync orders" to "sync GST details" (WH-328, WH-348; the last of them sets it); a copy of an earlier format answers `reload_all` `FORMAT_CHANGED`. Format 2 was set by "sync GRN invoice state and lot emptied time" (WH-299).
 
 - **Positions** are decimal strings of 64-bit transaction ids; the phone stores and returns them, never computes with them. The copy key
   (`copy`) is opaque: `<format>.<log id>.<access>`.
 - **`get_sync_start()`** → `{success, format, copy, position, as_of, page_limit: 2000, entities[]}`. The position is fixed before page one.
   Entities by role: administrators and supervisors `customers, items, settings, goodsreceived, goodsreceived_trl, grn_images, dispatch,
-  dispatch_trl, dispatch_images, invoice, invoice_trl, grn_lock, user_profiles, users_customers_new`; staff the same without
-  `user_profiles` and `users_customers_new`, with `people` (what `get_supervisors('')` answers staff); customer accounts `customers, items` and
-  the document tables.
+  dispatch_trl, dispatch_images, invoice, invoice_trl, orders, order_items, payments, grn_rates, item_storage_prices, standard_rate_tiers,
+  item_price_history, grn_lock, user_profiles, users_customers_new`; supervisors the same; staff the same without `payments`, `item_storage_prices`,
+  `standard_rate_tiers`, `item_price_history`, `user_profiles` and `users_customers_new`, with `people` (what `get_supervisors('')` answers staff);
+  customer accounts `customers, items`, the document tables, `orders`, `order_items`, `payments` and `grn_rates` (of their own customers).
 - **`get_sync_page(p_entity, p_after DEFAULT NULL, p_limit DEFAULT 2000)`** → `{success, entity, copy, rows: [{id, v, row}], next_after}`,
   keyset by id, `p_limit` clamped to 1..2000, `next_after` null on the last page. `v` = first 16 hex digits of `md5(row::text)`. Rows and
   columns are what the caller reads directly today (migration 137's row rules, invoice's granted columns). Administrators, supervisors and
@@ -327,7 +328,14 @@ is 2 since migration "sync GRN invoice state and lot emptied time" (WH-299); a c
   `partly_invoiced`, the GRN list's `invoice_state`; one function builds both). From format 2 a `goodsreceived_trl` row also carries
   `emptied_at`: the latest stock movement that left the lot at zero (what `get_customer_stock_summary` dates an emptied lot by), null
   when there is none, for every role that receives the lot; it stays after the lot is refilled. `settings`: `rack_presets`, `numbering`
-  (staff: per document type only `server_issues`), `charging_rule` (administrators only).
+  (staff: per document type only `server_issues`), `charging_rule` (administrators only), `gst_details` (administrators only; `{data}` as `get_gst_details` answers) and `bills_allowed` (`{allowed}`; administrators, supervisors,
+  staff).
+  From format 3: `orders` (every column but `revisions`, plus `updated_by_name` and `updated_by_display_name`) and `order_items` (every column but
+  `revisions`) for every role, soft-deleted orders with `deleted_at` set for administrators, supervisors and staff; `payments` (`payment_json` plus
+  `payment_date` and the invoice's `customer_id`; only payments with an invoice; never staff); `grn_rates`, `item_storage_prices`,
+  `standard_rate_tiers` and `item_price_history` (every column, id as text; the last three administrators and supervisors only); a `dispatch` row
+  made from an order carries `created_by_name`; an `invoice_trl` row `storage_amount`; an `invoice` row `payment_state` (not for staff). A
+  customer account's rows of these lose the columns above, and `entered_by` and `updated_by` of a payment.
 - **`get_sync_changes(p_position, p_copy, p_limit DEFAULT 2000)`** → `{success, format, position, as_of, more, reload_all, reload[], changes[]}`.
   Changes come from finished transactions only, whole transactions per page, at most `p_limit` entries, one per entity and id, each the
   row as it is now: `{e, id, op: "upsert", v, row}`, `{e, id, op: "delete"}`, or `{e: "money", id: <customer>, op: "stale"}` (that
