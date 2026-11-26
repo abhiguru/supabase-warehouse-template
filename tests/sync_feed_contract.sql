@@ -309,7 +309,10 @@ BEGIN
     IF direct IS DISTINCT FROM held THEN
       problems := problems || format('%s ids: copy %s, direct read %s', ent, jsonb_array_length(held), jsonb_array_length(direct));
     END IF;
-    want := ARRAY(SELECT x FROM unnest(cols || CASE WHEN ent = 'goodsreceived_trl' THEN ARRAY['emptied_at'] ELSE '{}'::text[] END) x
+    -- Server-computed keys of the copy that are no readable column: emptied_at (WH-299), invoice_trl.storage_amount and
+    -- invoice.payment_state (WH-348, format 3).
+    want := ARRAY(SELECT x FROM unnest(cols || CASE ent WHEN 'goodsreceived_trl' THEN ARRAY['emptied_at'] WHEN 'invoice_trl' THEN ARRAY['storage_amount']
+      WHEN 'invoice' THEN ARRAY['payment_state'] ELSE '{}'::text[] END) x
       WHERE x <> ALL (hidden) ORDER BY x);
     SELECT string_agg(DISTINCT array_to_string(ARRAY(SELECT k FROM jsonb_object_keys(c.row) k ORDER BY k), ','), ' | ') INTO bad
       FROM pg_temp.sf_copy c WHERE c.slot = p AND c.e = ent

@@ -78,13 +78,13 @@ SELECT pg_temp.sf_phone('reader', :'reader_claims'::jsonb);
 -- B3. Format 2: the stored format, the start answer and copy key of every role, a changes answer; a format-1 copy reloads.
 -- ---------------------------------------------------------------------------------------------------------------------------------
 SELECT pg_temp.sf_first_load(p) FROM unnest(ARRAY['admin', 'supervisor', 'staff', 'reader']) p;
-SELECT pg_temp.sf_assert((SELECT count(*) = 4 AND bool_and(answer->>pg_temp.sf('f_format') = '2' AND answer->>pg_temp.sf('f_copy') LIKE '2.%')
+SELECT pg_temp.sf_assert((SELECT count(*) = 4 AND bool_and(answer->>pg_temp.sf('f_format') = '3' AND answer->>pg_temp.sf('f_copy') LIKE '3.%')
     FROM pg_temp.sf_answer WHERE kind = 'start'),
-  'B3: get_sync_start answers format 2 and a format-2 copy key to every role: '
+  'B3: get_sync_start answers format 3 and a format-3 copy key to every role: '
   || (SELECT string_agg(phone || ' ' || COALESCE(answer->>pg_temp.sf('f_format'), '(none)'), ', ') FROM pg_temp.sf_answer WHERE kind = 'start'));
 SELECT pg_temp.sf_changes_once('admin') AS plain_changes \gset
-SELECT pg_temp.sf_assert(:'plain_changes'::jsonb->>pg_temp.sf('f_format') = '2' AND :'plain_changes'::jsonb->>'success' = 'true',
-  'B3: get_sync_changes answers format 2: ' || left(:'plain_changes', 300));
+SELECT pg_temp.sf_assert(:'plain_changes'::jsonb->>pg_temp.sf('f_format') = '3' AND :'plain_changes'::jsonb->>'success' = 'true',
+  'B3: get_sync_changes answers format 3: ' || left(:'plain_changes', 300));
 SELECT pg_temp.sf_changes_once('admin', NULL, regexp_replace(copy, '^[0-9]+\.', '1.')) AS old_copy FROM pg_temp.sf_device WHERE phone = 'admin' \gset
 SELECT pg_temp.sf_assert(:'old_copy'::jsonb#>>ARRAY[pg_temp.sf('f_reload_all'), pg_temp.sf('f_reason')] = pg_temp.sf('r_format'),
   'B3: a copy key of format 1 answers reload_all FORMAT_CHANGED: ' || left(:'old_copy', 300));

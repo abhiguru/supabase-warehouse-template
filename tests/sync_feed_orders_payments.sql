@@ -258,8 +258,11 @@ SELECT pg_temp.sf_assert(NOT EXISTS (SELECT 1 FROM pg_temp.sf_copy c WHERE c.slo
   'B1: a customer account''s dispatch rows have no created_by_name');
 SELECT pg_temp.sf_assert(NOT (c.row ? 'created_by_name'), 'B1: a dispatch not made from an order has no created_by_name')
   FROM pg_temp.sf_copy c WHERE c.slot = 'admin' AND c.e = 'dispatch' AND c.id = :'disp_n';
-SELECT pg_temp.sf_assert(EXISTS (SELECT 1 FROM pg_temp.sf_copy c WHERE c.slot = p AND c.e = 'order_items' AND c.row->>'order_id' = :'ord_n' AND (c.row->>'fulfilled_quantity')::numeric > 0),
-  'B2: after the dispatch from the order a line shows its fulfilled quantity (' || p || ')') FROM unnest(ARRAY['admin', 'staff', 'c1']) p;
+-- The existing dispatch function lowers the line's requested quantity (5 to 3 for 2 bags) and leaves fulfilled_quantity at 0: the
+-- copy must show what the server holds, whatever that is.
+SELECT pg_temp.sf_assert((SELECT requested_quantity FROM public.order_items WHERE id = :'line_n1') = 3, 'premise: the order dispatch lowered the line from 5 to 3');
+SELECT pg_temp.sf_assert((SELECT c.row->>'requested_quantity' FROM pg_temp.sf_copy c WHERE c.slot = p AND c.e = 'order_items' AND c.id = :'line_n1') = '3',
+  'B2: after the dispatch from the order ' || p || ' holds the line with the requested quantity the server holds') FROM unnest(ARRAY['admin', 'staff', 'c1']) p;
 
 -- Fan-out: renaming a profile re-sends the orders it last updated and the dispatches it created (names are computed on the server).
 UPDATE public.user_profiles SET name = 'Order Feed Renamed' WHERE mobile = '919888897001';
@@ -308,8 +311,9 @@ SELECT pg_temp.of_step('B2 delete_dispatch_with_order_cleanup', :'north'::uuid, 
 SELECT pg_temp.sf_assert(pg_temp.sf_ops(p, 'dispatch', :'disp_n2', pg_temp.sf_last_pull(p)) = 'delete', 'B2: ' || p || ' got the deleted order dispatch as a delete')
   FROM unnest(ARRAY['admin', 'staff', 'c1']) p;
 SELECT pg_temp.sf_assert(NOT EXISTS (SELECT 1 FROM pg_temp.sf_copy c WHERE c.slot = p AND c.e = 'order_items' AND c.row->>'order_id' = :'ord_n'
-    AND c.row->>'fulfilled_quantity' IS DISTINCT FROM (SELECT oi.fulfilled_quantity::text FROM public.order_items oi WHERE oi.id::text = c.id)),
-  'B2: ' || p || ' holds the lines'' fulfilled quantity as the server has it') FROM unnest(ARRAY['admin', 'staff', 'c1']) p;
+    AND (c.row->>'fulfilled_quantity', c.row->>'requested_quantity') IS DISTINCT FROM
+      (SELECT oi.fulfilled_quantity::text, oi.requested_quantity::text FROM public.order_items oi WHERE oi.id::text = c.id)),
+  'B2: ' || p || ' holds the lines'' fulfilled and requested quantity as the server has them') FROM unnest(ARRAY['admin', 'staff', 'c1']) p;
 
 -- Payments: record, update, delete, and rows written by an import (no app, paid_on empty).
 SELECT pg_temp.of_pay(:'sf_admin_claims'::jsonb, :'inv_n'::uuid, 1, 'orders-feed-pay-n2') AS pay_n2 \gset
