@@ -114,8 +114,8 @@ $m$WHEN 'item_storage_prices', 'standard_rate_tiers', 'item_price_history' THEN
 SELECT pg_temp.patch_function('public.get_sync_page(text, text, integer)'::regprocedure, ARRAY[
 $m$p_entity <> 'settings' AND p_after !~ '^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$'$m$
 ], ARRAY[
-$m$CASE p_entity WHEN 'settings' THEN false WHEN 'item_price_history' THEN p_after !~ '^[0-9]{1,18}$'
-                                  ELSE p_after !~ '^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$' END$m$
+$m$p_entity <> 'settings' AND (p_entity = 'item_price_history' AND p_after !~ '^[0-9]{1,18}$'
+                                  OR p_entity <> 'item_price_history' AND p_after !~ '^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$')$m$
 ]);
 
 DROP FUNCTION pg_temp.patch_function(regprocedure, text[], text[]);
