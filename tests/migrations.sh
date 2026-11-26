@@ -1030,7 +1030,8 @@ mig_psql -d "$sync_db" -c 'DROP SCHEMA storage CASCADE' >/dev/null
 docker exec -e PGPASSWORD=disposable-test-database-only "$container" pg_dump -U supabase_admin -d postgres --schema-only --no-owner -n storage | mig_psql -d "$sync_db" >/dev/null
 # WH-299, feed format 2: the invoice state of a GRN and the time a lot was emptied.
 for sync_sql in "$ROOT/tests/sync_feed_changes.sql" "$ROOT/tests/sync_feed_deletes_scope.sql" \
-  "$ROOT/tests/sync_feed_invoice_state.sql" "$ROOT/tests/sync_feed_emptied_time.sql"; do
+  "$ROOT/tests/sync_feed_invoice_state.sql" "$ROOT/tests/sync_feed_emptied_time.sql" \
+  "$ROOT/tests/sync_feed_orders_payments.sql"; do
   cat "$ROOT/tests/fixtures/gst_details.sql" "$ROOT/tests/sync_feed_contract.sql" "$sync_sql" | mig_psql -d "$sync_db"
 done
 bash "$ROOT/tests/sync_feed_concurrency.sh" "$container" "$sync_db" "$ROOT/tests/sync_feed_contract.sql"
