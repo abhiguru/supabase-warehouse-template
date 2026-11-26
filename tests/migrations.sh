@@ -1028,7 +1028,9 @@ sed -n '/^-- Schemas the migrations and Storage expect to exist\./,$p' "$ROOT/do
 sync_plan=$(plan_of "$ROOT" | mig_psql -d "$sync_db" 2>&1) || { echo "$sync_plan" | tail -20 >&2; echo 'The plan did not apply to the sync feed database.' >&2; exit 1; }
 mig_psql -d "$sync_db" -c 'DROP SCHEMA storage CASCADE' >/dev/null
 docker exec -e PGPASSWORD=disposable-test-database-only "$container" pg_dump -U supabase_admin -d postgres --schema-only --no-owner -n storage | mig_psql -d "$sync_db" >/dev/null
-for sync_sql in "$ROOT/tests/sync_feed_changes.sql" "$ROOT/tests/sync_feed_deletes_scope.sql"; do
+# WH-299, feed format 2: the invoice state of a GRN and the time a lot was emptied.
+for sync_sql in "$ROOT/tests/sync_feed_changes.sql" "$ROOT/tests/sync_feed_deletes_scope.sql" \
+  "$ROOT/tests/sync_feed_invoice_state.sql" "$ROOT/tests/sync_feed_emptied_time.sql"; do
   cat "$ROOT/tests/fixtures/gst_details.sql" "$ROOT/tests/sync_feed_contract.sql" "$sync_sql" | mig_psql -d "$sync_db"
 done
 bash "$ROOT/tests/sync_feed_concurrency.sh" "$container" "$sync_db" "$ROOT/tests/sync_feed_contract.sql"
