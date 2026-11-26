@@ -204,7 +204,8 @@ SELECT pg_temp.sf_assert(NOT EXISTS (SELECT 1 FROM pg_temp.sf_answer a, unnest(p
     WHERE a.phone IN ('c1', 'c2') AND a.answer::text LIKE '%"' || col || '":%'), ''));
 -- 12: no row of an answer or of a copy carries a column its table's readers may not read. The check is per row and per entity (the
 -- same column name, such as updated_at, can be readable on one table and not on another: invoice's is not, goodsreceived's is).
--- Entities with no readable column at all (read only through RPCs) are not compared here.
+-- Entities with no readable column at all (read only through RPCs) are not compared here. A goodsreceived_trl row carries emptied_at,
+-- which is no column of the table (format 2, WH-299); no other table or column is exempt.
 CREATE TEMP TABLE sf_leaks AS
   SELECT q.src, q.ent, q.k FROM (
     SELECT a.phone || ' ' || a.kind || ' answer' AS src, x->>pg_temp.sf('f_e') AS ent, k
@@ -216,7 +217,8 @@ CREATE TEMP TABLE sf_leaks AS
            jsonb_object_keys(CASE WHEN jsonb_typeof(c.row) = 'object' THEN c.row ELSE '{}'::jsonb END) k
   ) q
   WHERE q.ent = ANY (pg_temp.sf_list('table_entities')) AND cardinality(pg_temp.sf_columns(q.ent)) > 0
-    AND q.k <> ALL (pg_temp.sf_columns(q.ent));
+    AND q.k <> ALL (pg_temp.sf_columns(q.ent))
+    AND NOT (q.ent = 'goodsreceived_trl' AND q.k = 'emptied_at');
 SELECT pg_temp.sf_assert(NOT EXISTS (SELECT 1 FROM sf_leaks WHERE ent = 'invoice'),
   '12: no invoice row of any answer or copy carried a column the app roles may not read: ' || COALESCE((SELECT string_agg(DISTINCT k || ' in ' || src, '; ') FROM sf_leaks WHERE ent = 'invoice'), ''));
 SELECT pg_temp.sf_assert(NOT EXISTS (SELECT 1 FROM sf_leaks),
