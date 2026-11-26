@@ -164,8 +164,13 @@ UPDATE public.customers SET active = false WHERE id = :'dormant';
 SELECT pg_temp.sf_assert(NOT (SELECT active FROM public.customers WHERE id = :'dormant'), 'premise: Dormant is deactivated');
 
 -- Payments: one invoice for North, one for South, each with one payment; a payment with no invoice (old accounting link).
-SELECT pg_temp.sf_dispatch(:'sf_admin_claims'::jsonb, 'OFND1', :'lot_n3'::uuid, 4) AS disp_n \gset
-SELECT pg_temp.sf_dispatch(:'sf_admin_claims'::jsonb, 'OFSD1', :'lot_s2'::uuid, 4) AS disp_s \gset
+-- An invoice needs a GRN with no stock left: one-lot GRNs of 4 bags, dispatched in full, are the ones billed.
+SELECT pg_temp.sf_save_grn(:'sf_admin_claims'::jsonb, 'OFN2', :'north'::uuid, pg_temp.sf_lines(:'onion'::uuid, 1, 'NB', 4)) AS grn_nb \gset
+SELECT pg_temp.sf_save_grn(:'sf_admin_claims'::jsonb, 'OFS2', :'south'::uuid, pg_temp.sf_lines(:'onion'::uuid, 1, 'SB', 4)) AS grn_sb \gset
+SELECT id AS lot_nb FROM public.goodsreceived_trl WHERE gr_id = :'grn_nb' \gset
+SELECT id AS lot_sb FROM public.goodsreceived_trl WHERE gr_id = :'grn_sb' \gset
+SELECT pg_temp.sf_dispatch(:'sf_admin_claims'::jsonb, 'OFND1', :'lot_nb'::uuid, 4) AS disp_n \gset
+SELECT pg_temp.sf_dispatch(:'sf_admin_claims'::jsonb, 'OFSD1', :'lot_sb'::uuid, 4) AS disp_s \gset
 SELECT pg_temp.of_invoice(:'sf_admin_claims'::jsonb, 8001, :'disp_n'::uuid) AS inv_n \gset
 SELECT pg_temp.of_invoice(:'sf_admin_claims'::jsonb, 8002, :'disp_s'::uuid) AS inv_s \gset
 SELECT pg_temp.of_pay(:'sf_admin_claims'::jsonb, :'inv_n'::uuid, 1, 'orders-feed-pay-n1') AS pay_n1 \gset
