@@ -41,7 +41,7 @@ INSERT INTO pg_temp.cc_contract(k, v) VALUES
   -- Contract section 0 and decision O5: never in a customer account's copy (entity names; the three rate entities are the staff ones).
   ('never', 'settings,people,grn_lock,user_profiles,users_customers_new,item_storage_prices,standard_rate_tiers,item_price_history,grn_replacements,held_items'),
   -- Keys no customer read may answer (the Q1 columns, plus the staff fields PQ3 forbids). supervisor_name and sender_name are allowed.
-  ('forbidden', 'created_by,updated_by,deleted_by,supervisor_id,sender_id,import_batch_id,uploaded_by,created_by_name,updated_by_name,updated_by_display_name,user_access'),
+  ('forbidden', 'created_by,updated_by,deleted_by,supervisor_id,sender_id,import_batch_id,uploaded_by,created_by_name,updated_by_name,updated_by_display_name,user_access,created_by_info,created_by_display_name,created_by_role'),
   -- Keys a reader renames from a copy column, and keys the phone works out (see 2 above).
   ('cc_renamed', 'grn_item_id,grns_id,grns_gr_no,grns_date,grn_id'),
   ('cc_computed', 'image_url'),
