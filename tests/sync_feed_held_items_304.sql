@@ -62,8 +62,8 @@ SELECT pg_temp.sf_phone('c1', :'c1_claims'::jsonb);
 -- ===== B-F4. The format step: every start answers the new format and a copy key of the one before is told to reload everything =====
 SELECT pg_temp.sf_first_load(p) FROM unnest(ARRAY['admin', 'supervisor', 'staff', 'staff2', 'c1']) p;
 SELECT pg_temp.sf_assert((SELECT count(*) = 5 AND bool_and((answer->>pg_temp.sf('f_format'))::int >= :'held_format'::int AND split_part(answer->>pg_temp.sf('f_copy'), '.', 1) = answer->>pg_temp.sf('f_format')
-      AND answer->pg_temp.sf('f_entities') ? 'held_items') FROM pg_temp.sf_answer WHERE kind = 'start'),
-  'B-F4: get_sync_start answers format 5 or later, a copy key of it and the entity held_items to every role: '
+      AND (answer->pg_temp.sf('f_entities') ? 'held_items') = (phone <> 'c1')) FROM pg_temp.sf_answer WHERE kind = 'start'),
+  'B-F4: get_sync_start answers format 5 or later and a copy key of it to every role, and the entity held_items to admin, supervisor and staff only, never to a customer account: '
   || (SELECT string_agg(phone || ' ' || COALESCE(answer->>pg_temp.sf('f_format'), '(none)'), ', ') FROM pg_temp.sf_answer WHERE kind = 'start'));
 SELECT (answer->>pg_temp.sf('f_format'))::int - 1 AS older_format FROM pg_temp.sf_answer WHERE kind = 'start' AND phone = 'admin' \gset
 SELECT pg_temp.sf_changes_once('admin', NULL, regexp_replace(copy, '^[0-9]+\.', :'older_format' || '.')) AS old_copy FROM pg_temp.sf_device WHERE phone = 'admin' \gset
