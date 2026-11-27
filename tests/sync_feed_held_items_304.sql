@@ -91,8 +91,8 @@ SELECT pg_temp.sf_assert(cardinality(pg_temp.sf_held('c1', 'held_items')) = 0, '
 SELECT pg_temp.sf_assert(c.row ? 'body' AND c.row ? 'accepted_body' AND c.row ? 'lines' AND c.row ? 'seen_at' AND c.row ? 'what' AND c.row ? 'reason',
   'B-F1: the recorder''s row carries body, accepted_body, lines, seen_at and the list row: ' || pg_temp.hf_keys('staff', :'d1'))
   FROM pg_temp.sf_copy c WHERE c.slot = 'staff' AND c.e = 'held_items' AND c.id = :'d1';
-SELECT pg_temp.sf_assert(NOT c.row ? 'body' AND NOT c.row ? 'accepted_body' AND c.row ? 'lines' AND c.row ? 'what' AND c.row ? 'reason' AND c.row ? 'recorded_by_name',
-  'B-F1: a manager''s row has the list row and lines but no body: ' || pg_temp.hf_keys(p, :'d1'))
+SELECT pg_temp.sf_assert(NOT c.row ? 'body' AND NOT c.row ? 'accepted_body' AND c.row ? 'lines' AND NOT c.row ? 'what' AND NOT c.row ? 'reason' AND NOT c.row ? 'recorded_by_name' AND pg_temp.hf_keys(p, :'d1') = 'id,kind,lines,needs_decision,state',
+  'B-F1: a manager''s row is exactly id, kind, lines, needs_decision and state: ' || pg_temp.hf_keys(p, :'d1'))
   FROM pg_temp.sf_copy c, unnest(ARRAY['admin', 'supervisor']) p WHERE c.slot = p AND c.e = 'held_items' AND c.id = :'d1';
 SELECT pg_temp.sf_assert(pg_temp.hf_keys('staff2', :'d1') = 'id,kind,lines,state', 'B-F1: another staff person''s dispatch row is exactly id, kind, state and lines: ' || pg_temp.hf_keys('staff2', :'d1'));
 SELECT pg_temp.sf_assert(pg_temp.sf_ops(p, 'held_items', :'d1', pg_temp.sf_last_pull(p)) = 'upsert', 'B-F2: ' || p || ' received the hand-over as an upsert')

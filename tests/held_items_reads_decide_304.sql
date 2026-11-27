@@ -102,10 +102,10 @@ CREATE FUNCTION pg_temp.hd_grn_body(cust uuid, item uuid, qty int, no text) RETU
     'p_items', jsonb_build_array(jsonb_build_object('item_id', item, 'item_name', 'Held Cumin', 'packaging', 'Bag', 'qty', qty, 'weight', 10, 'rack', 'N1', 'package_mark', 'NM')))) $$;
 -- The body of a held new dispatch: data and one line.
 CREATE FUNCTION pg_temp.hd_disp_body(cust uuid, no text, lot uuid, qty int) RETURNS jsonb LANGUAGE sql AS $$
-  SELECT jsonb_build_object('args', jsonb_build_object('data', jsonb_build_object('disp_no', no, 'disp_date', '2026-05-02', 'customer_id', cust,
+  SELECT jsonb_build_object('args', jsonb_build_object('p_dispatch_data', jsonb_build_object('disp_no', no, 'disp_date', '2026-05-02', 'customer_id', cust,
     'customer_name', 'Held Customer A', 'supervisor_id', (SELECT id FROM public.user_profiles WHERE name = 'Held Administrator'),
     'supervisor_name', 'Held Administrator', 'registration', 'GJ01HD0001'),
-    'items', jsonb_build_array(jsonb_build_object('gr_trl_id', lot, 'disp_qty', qty)))) $$;
+    'p_dispatch_items', jsonb_build_array(jsonb_build_object('gr_trl_id', lot, 'disp_qty', qty)), 'p_generate_invoice', false, 'p_retry_count', 0)) $$;
 CREATE FUNCTION pg_temp.hd_lc_body(lot uuid, grn uuid, from_rack text, to_rack text) RETURNS jsonb LANGUAGE sql AS $$
   SELECT jsonb_build_object('lotId', lot, 'grnId', grn, 'recordedAt', now() - interval '2 hours',
     'changes', jsonb_build_object('rack', jsonb_build_object('from', from_rack, 'to', to_rack))) $$;
@@ -311,12 +311,12 @@ SELECT pg_temp.hd_decide(:'admin_claims'::jsonb, pg_temp.hd_hid('hd-p6'), 'accep
 SELECT pg_temp.hd_assert(:'d6_nodec'::text LIKE '%HELD_NO_DECISION%' AND pg_temp.hd_state('hd-p6') = 'held', 'D6: an item with no decision of its own is HELD_NO_DECISION: ' || :'d6_nodec');
 
 -- ===== B-P1. A held GRN's photos: on the GRN after accept, kept with the item after reject; one row per client photo id =====
-INSERT INTO public.held_item_photos(held_id, client_photo_id, path, role, line_ref, state)
- VALUES (pg_temp.hd_hid('hd-g6'), 'hd-photo-1', 'held/hd-g6/hd-photo-1.jpg', 'header', NULL, 'confirmed');
+INSERT INTO public.held_item_photos(held_id, client_photo_id, path, role, line_ref, state, file_name, file_size, mime_type)
+ VALUES (pg_temp.hd_hid('hd-g6'), 'hd-photo-1', 'held/hd-g6/hd-photo-1.jpg', 'header', NULL, 'confirmed', 'p.jpg', 1000, 'image/jpeg');
 DO $$ BEGIN
   BEGIN
-    INSERT INTO public.held_item_photos(held_id, client_photo_id, path, role, line_ref, state)
-      VALUES ((SELECT id FROM public.held_items WHERE request_key = 'hd-g6'), 'hd-photo-1', 'held/hd-g6/again.jpg', 'header', NULL, 'confirmed');
+    INSERT INTO public.held_item_photos(held_id, client_photo_id, path, role, line_ref, state, file_name, file_size, mime_type)
+      VALUES ((SELECT id FROM public.held_items WHERE request_key = 'hd-g6'), 'hd-photo-1', 'held/hd-g6/again.jpg', 'header', NULL, 'confirmed', 'p.jpg', 1000, 'image/jpeg');
     RAISE EXCEPTION 'held items reads and decide 304: P1: a photo registered twice by one client id made a second row';
   EXCEPTION WHEN unique_violation THEN NULL; END;
 END $$;
@@ -328,8 +328,8 @@ SELECT pg_temp.hd_assert(pg_temp.hd_ok(:'p1_accept'::jsonb) AND pg_temp.hd_state
 SELECT pg_temp.hd_hold(:'staff_claims'::jsonb, jsonb_build_array(
   pg_temp.hd_item('hd-g7', 'newGrn', 24, :'ca'::uuid, pg_temp.hd_grn_body(:'ca'::uuid, :'item_id'::uuid, 2, 'HD7G')),
   pg_temp.hd_item('hd-p7', 'photos', 25, :'ca'::uuid, '{"doc":"grn"}', jsonb_build_object('follows_key', 'hd-g7', 'refusal', NULL)))) AS p1_hold7 \gset
-INSERT INTO public.held_item_photos(held_id, client_photo_id, path, role, line_ref, state)
- VALUES (pg_temp.hd_hid('hd-g7'), 'hd-photo-7', 'held/hd-g7/hd-photo-7.jpg', 'header', NULL, 'confirmed');
+INSERT INTO public.held_item_photos(held_id, client_photo_id, path, role, line_ref, state, file_name, file_size, mime_type)
+ VALUES (pg_temp.hd_hid('hd-g7'), 'hd-photo-7', 'held/hd-g7/hd-photo-7.jpg', 'header', NULL, 'confirmed', 'p.jpg', 1000, 'image/jpeg');
 SELECT pg_temp.hd_decide(:'admin_claims'::jsonb, pg_temp.hd_hid('hd-g7'), 'reject', 'dk-g7', 'Duplicate of HD7') AS p1_reject \gset
 SELECT pg_temp.hd_assert(pg_temp.hd_ok(:'p1_reject'::jsonb) AND pg_temp.hd_state('hd-p7') = 'rejected'
   AND (SELECT count(*) FROM public.held_item_photos WHERE held_id = pg_temp.hd_hid('hd-g7')) = 1 AND NOT EXISTS (SELECT 1 FROM public.goodsreceived WHERE request_key = 'hd-g7')
@@ -355,7 +355,7 @@ SELECT pg_temp.hd_assert((SELECT bool_or(c->>'field' = 'rack' AND c->'current' =
 -- ===== B-R5. A photos item with its own decision: no trial; acceptable while its GRN exists, not once it is deleted =====
 SELECT pg_temp.hd_save(:'admin_claims'::jsonb, 'HD8', :'ca'::uuid, :'item_id'::uuid, 1, 'A-1', 'hd-fixture-8') AS grn8 \gset
 SELECT pg_temp.hd_hold(:'staff_claims'::jsonb, jsonb_build_array(pg_temp.hd_item('hd-ph8', 'photos', 40, :'ca'::uuid,
-  jsonb_build_object('doc', 'grn', 'grnId', :'grn8'), jsonb_build_object('refusal', NULL)))) AS r5_hold \gset
+  jsonb_build_object('doc', 'grn', 'recordId', :'grn8'), jsonb_build_object('refusal', NULL)))) AS r5_hold \gset
 SELECT pg_temp.hd_assert(:'r5_hold'::jsonb->>'success' = 'true' AND (SELECT needs_decision FROM public.held_items WHERE request_key = 'hd-ph8'), 'R5: a photos item on its own needs a decision: ' || :'r5_hold');
 SELECT pg_temp.hd_world() AS world_r5 \gset
 SELECT pg_temp.hd_one(:'admin_claims'::jsonb, pg_temp.hd_hid('hd-ph8')) AS r5_exists \gset
@@ -435,7 +435,7 @@ SELECT pg_temp.hd_assert(pg_temp.hd_ok(:'d11d_2'::jsonb) AND pg_temp.hd_rack(:'l
 -- ===== B-D8. An item whose key the server already saved: accept answers that document, accepted, no second one =====
 SELECT pg_temp.hd_as(:'staff_claims'::jsonb, format($q$SELECT public.save_grn(p_sender_name => 'Held Sender', p_supervisor_id => %L::uuid, p_supervisor_name => 'Held Administrator',
   p_gr_no => 'HD12', p_date => '2026-04-01T12:00:00Z'::timestamptz, p_customer_id => %L::uuid, p_customer_name => 'Held Customer A', p_pricing_mode => 'ONE_TIME',
-  p_idempotency_key => 'hd-k12', p_items => %L::jsonb)$q$, :'admin_profile', :'ca', jsonb_build_array(jsonb_build_object('item_id', :'item_id', 'item_name', 'Held Cumin',
+  p_idempotency_key => 'hd-k12', p_recorded_at => now() - interval '2 hours', p_items => %L::jsonb)$q$, :'admin_profile', :'ca', jsonb_build_array(jsonb_build_object('item_id', :'item_id', 'item_name', 'Held Cumin',
     'packaging', 'Bag', 'qty', 3, 'weight', 10, 'rack', 'N1', 'package_mark', 'NM')))) AS d8_first \gset
 SELECT pg_temp.hd_assert(:'d8_first'::jsonb->>'success' = 'true', 'fixture: the phone''s first send was saved: ' || :'d8_first');
 SELECT pg_temp.hd_hold(:'staff_claims'::jsonb, jsonb_build_array(pg_temp.hd_item('hd-k12', 'newGrn', 70, :'ca'::uuid, pg_temp.hd_grn_body(:'ca'::uuid, :'item_id'::uuid, 3, 'HD12')))) AS d8_hold \gset
@@ -484,7 +484,7 @@ SELECT pg_temp.hd_hold(:'staff_claims'::jsonb, jsonb_build_array(
   pg_temp.hd_item('hd-n-lc', 'lotChange', 95, :'ca'::uuid, pg_temp.hd_lc_body(:'lot18'::uuid, :'grn18'::uuid, 'A-1', 'L-1')),
   pg_temp.hd_item('hd-n-ge', 'grnEdit', 96, :'ca'::uuid, jsonb_build_object('v', 1, 'grnId', :'grn18', 'loadedAt', NULL, 'recordedAt', now() - interval '2 hours',
     'lots', jsonb_build_object(:'lot18', jsonb_build_object('rack', jsonb_build_object('from', 'L-1', 'to', 'E-1')))), jsonb_build_object('follows_key', 'hd-n-lc', 'refusal', NULL)),
-  pg_temp.hd_item('hd-n-ph', 'photos', 97, :'ca'::uuid, jsonb_build_object('doc', 'grn', 'grnId', :'grn18'), jsonb_build_object('follows_key', 'hd-n-ge', 'refusal', NULL)))) AS d13_hold \gset
+  pg_temp.hd_item('hd-n-ph', 'photos', 97, :'ca'::uuid, jsonb_build_object('doc', 'grn', 'recordId', :'grn18'), jsonb_build_object('follows_key', 'hd-n-ge', 'refusal', NULL)))) AS d13_hold \gset
 SELECT pg_temp.hd_assert(:'d13_hold'::jsonb->>'success' = 'true', 'fixture: lotChange, grnEdit and photos handed over: ' || :'d13_hold');
 SELECT pg_temp.hd_decide(:'admin_claims'::jsonb, pg_temp.hd_hid('hd-n-lc'), 'accept', 'dk-n-lc') AS d13_lc \gset
 SELECT pg_temp.hd_decide(:'admin_claims'::jsonb, pg_temp.hd_hid('hd-n-ge'), 'accept', 'dk-n-ge') AS d13_ge \gset

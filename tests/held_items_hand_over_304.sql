@@ -193,7 +193,7 @@ INSERT INTO hh_family(code, family) VALUES
  ('STOCK_SHORT', 'stockShort'), ('NUMBER_TAKEN', 'numberUsed'), ('NUMBER_FORMAT', 'numberFormat'), ('GRN_NUMBER_SPACES', 'numberFormat'),
  ('DISPATCH_NUMBER_SPACES', 'numberFormat'), ('GRN_DATE_FUTURE', 'dateRefused'), ('DISPATCH_DATE_FUTURE', 'dateRefused'),
  ('DISPATCH_BEFORE_GRN', 'dateRefused'), ('GRN_DATE_AFTER_DISPATCH', 'dateRefused'), ('RECORDED_TIME_FUTURE', 'dateRefused'),
- ('dup_warn', 'duplicate'), ('LOT_NOT_FOUND', 'deleted'), ('GRN_NOT_FOUND', 'deleted'), ('RECORD_DELETED', 'deleted'),
+ ('POSSIBLE_DUPLICATE', 'duplicate'), ('RATE_MISSING', 'noRate'), ('LOT_NOT_FOUND', 'deleted'), ('GRN_NOT_FOUND', 'deleted'), ('RECORD_DELETED', 'deleted'),
  ('GRN_DATE_LOCKED', 'locked'), ('GRN_INVOICED', 'locked'), ('LOT_INVOICED', 'locked'), ('LOT_DISPATCHED', 'locked'),
  ('LINE_DISPATCHED_BEFORE', 'locked'), ('LINE_ON_ORDER', 'locked'), ('GRN_CUSTOMER_LOCKED', 'locked'), ('GRN_PRICING_MODE_LOCKED', 'locked'),
  ('QTY_BELOW_DISPATCHED', 'belowDispatched'),
