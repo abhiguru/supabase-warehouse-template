@@ -319,15 +319,15 @@ $$;
 CREATE OR REPLACE FUNCTION warehouse_sync.affected(p_tbl text) RETURNS text[]
  LANGUAGE sql IMMUTABLE SET search_path = pg_catalog
 AS $$
-  SELECT CASE p_tbl
-    WHEN 'goodsreceived' THEN ARRAY['goodsreceived', 'goodsreceived_trl', 'grn_images', 'grn_lock', 'grn_rates']
-    WHEN 'goodsreceived_trl' THEN ARRAY['goodsreceived_trl', 'grn_lock']
-    WHEN 'user_profiles' THEN ARRAY['user_profiles', 'people', 'settings']
-    WHEN 'lot_rate' THEN ARRAY['goodsreceived_trl']
-    WHEN 'grn_rates' THEN ARRAY['grn_rates', 'goodsreceived_trl']
-    WHEN 'item_storage_prices' THEN ARRAY['item_storage_prices', 'goodsreceived_trl', 'items']
-    WHEN 'reload' THEN ARRAY['grn_lock']
-    WHEN 'money', 'dispatch', 'dispatch_trl', 'dispatch_images', 'invoice', 'invoice_trl', 'payments', 'orders', 'order_items' THEN '{}'::text[]
+  SELECT CASE
+    WHEN p_tbl = 'goodsreceived' THEN ARRAY['goodsreceived', 'goodsreceived_trl', 'grn_images', 'grn_lock', 'grn_rates']
+    WHEN p_tbl = 'goodsreceived_trl' THEN ARRAY['goodsreceived_trl', 'grn_lock']
+    WHEN p_tbl = 'user_profiles' THEN ARRAY['user_profiles', 'people', 'settings']
+    WHEN p_tbl = 'lot_rate' THEN ARRAY['goodsreceived_trl']
+    WHEN p_tbl = 'grn_rates' THEN ARRAY['grn_rates', 'goodsreceived_trl']
+    WHEN p_tbl = 'item_storage_prices' THEN ARRAY['item_storage_prices', 'goodsreceived_trl', 'items']
+    WHEN p_tbl = 'reload' THEN ARRAY['grn_lock']
+    WHEN p_tbl IN ('money', 'dispatch', 'dispatch_trl', 'dispatch_images', 'invoice', 'invoice_trl', 'payments', 'orders', 'order_items') THEN '{}'::text[]
     ELSE ARRAY[p_tbl] END
 $$;
 
