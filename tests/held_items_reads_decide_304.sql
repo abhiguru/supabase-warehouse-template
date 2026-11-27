@@ -217,7 +217,10 @@ SELECT pg_temp.hd_assert(pg_temp.hd_get(:'r2_now'::jsonb, 'accept_possible') = '
 SELECT pg_temp.hd_assert(NOT EXISTS (SELECT 1 FROM public.dispatch WHERE disp_no = 'HDD1') AND pg_temp.hd_state('hd-x1') = 'held', 'R3: the acceptable trial still wrote no dispatch');
 
 -- ===== B-D1. Accept a held new GRN: the recorder's creator and time, the accepting manager, a number issued now =====
+-- The blank number of hd-g1 is issued by the server: the default GRN letters rule (migration 127) for this accept, then the free-text rule the run set for the typed numbers below.
+SELECT warehouse_security.apply_document_numbering('grn', '{"scheme":"letters","first_letter":"A","width":4,"per_letter":1000}', NULL) AS _ \gset
 SELECT pg_temp.hd_decide(:'admin_claims'::jsonb, pg_temp.hd_hid('hd-g1'), 'accept', 'dk-g1') AS d1 \gset
+SELECT warehouse_security.apply_document_numbering('grn', '{"scheme":"free"}', NULL) AS _ \gset
 SELECT pg_temp.hd_assert(pg_temp.hd_ok(:'d1'::jsonb) AND :'d1'::jsonb->>'state' = 'accepted' AND pg_temp.hd_resno(:'d1'::jsonb) IS NOT NULL
   AND :'d1'::jsonb->>'decided_by_name' = 'Held Administrator', 'D1: the accept answers accepted with the number in result: ' || :'d1');
 SELECT pg_temp.hd_assert((SELECT g.gr_no = pg_temp.hd_resno(:'d1'::jsonb) AND g.gr_no <> '' AND g.created_by = :'staff_profile'::uuid AND g.accepted_by = :'admin_profile'::uuid
