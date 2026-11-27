@@ -98,6 +98,13 @@ $m$SELECT p.id INTO v_by FROM public.user_profiles p WHERE p.auth_user_id = auth
     v_by := COALESCE(warehouse_security.acting_profile(), v_by);$m$
 ]);
 
+-- A customer account's copy never holds who accepted a document (an internal staff id, as created_by).
+SELECT pg_temp.patch_function('warehouse_sync.customer_hidden_columns()'::regprocedure, ARRAY[
+$m$, 'uploaded_by'$m$
+], ARRAY[
+$m$, 'uploaded_by', 'accepted_by'$m$
+]);
+
 DROP FUNCTION pg_temp.patch_function(regprocedure, text[], text[]);
 
 NOTIFY pgrst, 'reload schema';

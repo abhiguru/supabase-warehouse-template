@@ -92,6 +92,14 @@ $m$WHEN 'held_items' THEN
   WHEN 'grn_replacements' THEN$m$
 ]);
 
+-- The daily checksum leaves held_items out: a row's presence depends on who holds it and on decisions made meanwhile (contract 2.7).
+SELECT pg_temp.patch_function('public.get_sync_checksums(text, text, text[])'::regprocedure, ARRAY[
+$m$FOREACH e IN ARRAY v_ents LOOP$m$
+], ARRAY[
+$m$v_ents := array_remove(v_ents, 'held_items');
+  FOREACH e IN ARRAY v_ents LOOP$m$
+]);
+
 DROP FUNCTION pg_temp.patch_function(regprocedure, text[], text[]);
 
 CREATE TRIGGER zz_change_feed AFTER INSERT OR UPDATE OR DELETE ON public.held_items
