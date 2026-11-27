@@ -326,7 +326,8 @@ SELECT pg_temp.dw_assert(:'g13b'::jsonb->>'success'='true' AND :'g13c'::jsonb->>
 -- G6. The number refusal and the saved answer come before the warning.
 SELECT pg_temp.dw_save(:'staff_claims'::jsonb,'DUPA1',:'ca'::uuid,'Dup Customer A','2026-04-01T12:00:00Z',
   jsonb_build_array(pg_temp.dw_line(:'potatoes','Dup Potatoes','Bag',1,1),pg_temp.dw_line(:'onions','Dup Onions','Bag',1,1))) AS g6a \gset
-SELECT pg_temp.dw_assert(:'g6a'::jsonb->>'success'='false' AND :'g6a'::jsonb->>'message'='GRN number already exists: DUPA1' AND NOT :'g6a'::jsonb ? 'reason',
+-- WH-161 (2026-11-27): refusals carry a code; a taken number is NUMBER_TAKEN, never the POSSIBLE_DUPLICATE warning.
+SELECT pg_temp.dw_assert(:'g6a'::jsonb->>'success'='false' AND :'g6a'::jsonb->>'message'='GRN number already exists: DUPA1' AND :'g6a'::jsonb->>'reason'='NUMBER_TAKEN',
   'G6 a taken number is refused as before, not warned about: '||:'g6a');
 -- Customer C: potatoes only. The first save is stored under the key; the identical resend returns the stored answer although the GRN it made is
 -- itself a match; another key with the same body warns, and the warning is not stored; the override with that key saves.
