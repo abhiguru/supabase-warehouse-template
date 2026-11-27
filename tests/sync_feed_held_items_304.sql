@@ -6,13 +6,13 @@
 -- AGREE WITH DEVELOPMENT (WH-304): the entity is named 'held_items'; its rows carry the keys id, kind, state, lines for a staff reader
 -- of another person's item, and for a manager everything of the list row except body and accepted_body (this file looks for the keys
 -- body, accepted_body, what, customer_name, recorded_by_name); the recorder's row carries body and seen_at; the payload format after the
--- topics is :held_format below (the contract says 4, after feed3's 3; change the one \set if the assembly numbers it otherwise).
+-- topics is :held_format below (this card's own step is 5; a later step is accepted, see B-F4).
 -- Every other name is in tests/sync_feed_contract.sql. The hand-over and decisions are made through hold_items and decide_held_item.
 --
 -- Cases: B-F1 rows by role, B-F2 hand-over, decision and seen each reach the phones, B-F3 a decided row leaves a manager's and a staff
 -- phone as a delete, a seen row leaves the recorder's, B-F4 the format step, B-F5 5,000 held rows stay inside 8 s and 2,000 rows.
 \set ON_ERROR_STOP on
-\set held_format 4
+\set held_format 5
 
 CREATE FUNCTION pg_temp.hf_hold(claims jsonb, items jsonb) RETURNS jsonb LANGUAGE plpgsql AS $$
 DECLARE r jsonb;
@@ -61,11 +61,12 @@ SELECT pg_temp.sf_phone('c1', :'c1_claims'::jsonb);
 
 -- ===== B-F4. The format step: every start answers the new format and a copy key of the one before is told to reload everything =====
 SELECT pg_temp.sf_first_load(p) FROM unnest(ARRAY['admin', 'supervisor', 'staff', 'staff2', 'c1']) p;
-SELECT pg_temp.sf_assert((SELECT count(*) = 5 AND bool_and(answer->>pg_temp.sf('f_format') = :'held_format' AND answer->>pg_temp.sf('f_copy') LIKE :'held_format' || '.%'
+SELECT pg_temp.sf_assert((SELECT count(*) = 5 AND bool_and((answer->>pg_temp.sf('f_format'))::int >= :'held_format'::int AND split_part(answer->>pg_temp.sf('f_copy'), '.', 1) = answer->>pg_temp.sf('f_format')
       AND answer->pg_temp.sf('f_entities') ? 'held_items') FROM pg_temp.sf_answer WHERE kind = 'start'),
-  'B-F4: get_sync_start answers the new format, a copy key of it and the entity held_items to every role: '
+  'B-F4: get_sync_start answers format 5 or later, a copy key of it and the entity held_items to every role: '
   || (SELECT string_agg(phone || ' ' || COALESCE(answer->>pg_temp.sf('f_format'), '(none)'), ', ') FROM pg_temp.sf_answer WHERE kind = 'start'));
-SELECT pg_temp.sf_changes_once('admin', NULL, regexp_replace(copy, '^[0-9]+\.', (:'held_format'::int - 1)::text || '.')) AS old_copy FROM pg_temp.sf_device WHERE phone = 'admin' \gset
+SELECT (answer->>pg_temp.sf('f_format'))::int - 1 AS older_format FROM pg_temp.sf_answer WHERE kind = 'start' AND phone = 'admin' \gset
+SELECT pg_temp.sf_changes_once('admin', NULL, regexp_replace(copy, '^[0-9]+\.', :'older_format' || '.')) AS old_copy FROM pg_temp.sf_device WHERE phone = 'admin' \gset
 SELECT pg_temp.sf_assert(:'old_copy'::jsonb#>>ARRAY[pg_temp.sf('f_reload_all'), pg_temp.sf('f_reason')] = pg_temp.sf('r_format'),
   'B-F4: a copy key of the format before answers reload_all FORMAT_CHANGED: ' || left(:'old_copy', 300));
 SELECT pg_temp.hf_step('empty');
