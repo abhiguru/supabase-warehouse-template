@@ -33,14 +33,12 @@ INSERT INTO pg_temp.sf_contract(k, v) VALUES
   ('f_count', 'count'), ('f_sum', 'sum'), ('f_settled', 'settled'), ('f_refusal', 'reason'),
   -- Operations [3.3].
   ('op_upsert', 'upsert'), ('op_delete', 'delete'), ('op_stale', 'stale'),
-  -- Entities [4]: the table entities are named after their tables; the derived ones have no table.
-  ('table_entities', 'customers,items,goodsreceived,goodsreceived_trl,grn_images,dispatch,dispatch_trl,dispatch_images,invoice,invoice_trl,user_profiles,users_customers_new'),
+  -- Entities [4]: the table entities are named after their tables; the derived ones have no table (WH-381 drops dispatch/invoice/orders/payments).
+  ('table_entities', 'customers,items,goodsreceived,goodsreceived_trl,grn_images,user_profiles,users_customers_new'),
   ('e_people', 'people'), ('e_grn_lock', 'grn_lock'), ('e_settings', 'settings'), ('e_money', 'money'),
   ('settings_charging_rule', 'charging_rule'),
   -- Delete cascade on the phone [3.3]: parent entity -> child entity -> the child row field holding the parent id ('id' = same id).
-  ('cascade', '{"goodsreceived": {"goodsreceived_trl": "gr_id", "grn_images": "grn_id", "grn_lock": "id"},
-                "dispatch": {"dispatch_trl": "disp_id", "dispatch_images": "dispatch_id"},
-                "invoice": {"invoice_trl": "invoice_id"}}'),
+  ('cascade', '{"goodsreceived": {"goodsreceived_trl": "gr_id", "grn_images": "grn_id", "grn_lock": "id"}}'),
   -- grn_lock row [4]: get_grn_edit_state's lines[] with id and dispatched_qty.
   ('lock_lines', 'lines'), ('lock_line_id', 'id'), ('lock_dispatched', 'dispatched_qty'),
   -- reload_all reasons [3.3] and refusals [10].
@@ -54,9 +52,9 @@ INSERT INTO pg_temp.sf_contract(k, v) VALUES
   ('retention_days', '120'),                                          -- [8], Q3
   ('floor_query', 'SELECT floor::text FROM warehouse_sync.state'),    -- [1, 8]
   ('feed_trigger', 'zz_change_feed'),
-  ('logged_tables', 'public.goodsreceived,public.goodsreceived_trl,public.grn_images,public.dispatch,public.dispatch_trl,public.dispatch_images,public.invoice,public.invoice_trl,public.payments,public.customers,public.items,public.user_profiles,public.users_customers_new,public.order_items,public.orders,public.grn_rates,warehouse_security.imported_documents,warehouse_security.rack_presets,warehouse_security.document_numbering,warehouse_security.charging_rule'),
+  ('logged_tables', 'public.goodsreceived,public.goodsreceived_trl,public.grn_images,public.dispatch,public.dispatch_trl,public.invoice,public.invoice_trl,public.payments,public.customers,public.items,public.user_profiles,public.users_customers_new,public.order_items,public.orders,public.grn_rates,warehouse_security.imported_documents,warehouse_security.rack_presets,warehouse_security.document_numbering,warehouse_security.charging_rule'),
   -- Q1 [4, 14]: the columns a customer account never receives.
-  ('soft_delete_tables', 'customers,dispatch,goodsreceived,invoice'),  -- Q4: the tables with deleted_at
+  ('soft_delete_tables', 'customers,goodsreceived'),  -- Q4: the kept feed tables with deleted_at (WH-381 dropped dispatch and invoice)
   ('soft_delete_column', 'deleted_at'),
   ('q1_customer_hidden_columns', 'created_by,updated_by,deleted_by,supervisor_id,sender_id,import_batch_id,uploaded_by,accepted_by');
 -- ================================================= END OF THE AGREED NAMES ======================================================
@@ -309,19 +307,16 @@ BEGIN
     IF direct IS DISTINCT FROM held THEN
       problems := problems || format('%s ids: copy %s, direct read %s', ent, jsonb_array_length(held), jsonb_array_length(direct));
     END IF;
-    -- Server-computed keys of the copy that are no readable column: emptied_at (WH-299), invoice_trl.storage_amount and
-    -- invoice.payment_state (WH-348, format 3), invoice_trl.line_amounts and invoice.items_total_amount (every role but the customer
-    -- account for the total), invoice.discount_set_by_name and zero_charge_set_by_name, goodsreceived_trl.item_rate and items.rate_cover
-    -- (administrators, supervisors and staff only: live_only is the customer account). WH-373: goodsreceived and dispatch rows leave out
-    -- request_key, request_digest and request_item_mapping though the columns are readable.
+    -- Server-computed keys of the copy that are no readable column: emptied_at (WH-299), goodsreceived_trl.item_rate and
+    -- items.rate_cover (administrators, supervisors and staff only: live_only is the customer account). WH-373: goodsreceived
+    -- rows leave out request_key, request_digest and request_item_mapping though the columns are readable. (WH-381 dropped
+    -- dispatch and invoice entities from the feed.)
     want := ARRAY(SELECT x FROM unnest(cols || CASE ent
       WHEN 'goodsreceived_trl' THEN ARRAY['emptied_at'] || CASE WHEN live_only THEN '{}'::text[] ELSE ARRAY['item_rate'] END
-      WHEN 'invoice_trl' THEN ARRAY['storage_amount', 'line_amounts']
-      WHEN 'invoice' THEN ARRAY['payment_state'] || CASE WHEN live_only THEN '{}'::text[] ELSE ARRAY['items_total_amount', 'discount_set_by_name', 'zero_charge_set_by_name'] END
       WHEN 'items' THEN CASE WHEN live_only THEN '{}'::text[] ELSE ARRAY['rate_cover'] END
       ELSE '{}'::text[] END) x
       WHERE x <> ALL (hidden)
-        AND NOT (ent IN ('goodsreceived', 'dispatch') AND x IN ('request_key', 'request_digest', 'request_item_mapping'))
+        AND NOT (ent = 'goodsreceived' AND x IN ('request_key', 'request_digest', 'request_item_mapping'))
       ORDER BY x);
     SELECT string_agg(DISTINCT array_to_string(ARRAY(SELECT k FROM jsonb_object_keys(c.row) k ORDER BY k), ','), ' | ') INTO bad
       FROM pg_temp.sf_copy c WHERE c.slot = p AND c.e = ent

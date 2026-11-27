@@ -94,7 +94,9 @@ SELECT pg_temp.sf_assert(pg_temp.sf_held('c1', 'customers') = ARRAY[:'north']::t
   AND NOT EXISTS (SELECT 1 FROM pg_temp.sf_copy l WHERE l.slot = 'c1' AND l.e = 'dispatch_trl'
     AND NOT EXISTS (SELECT 1 FROM pg_temp.sf_copy d WHERE d.slot = 'c1' AND d.e = 'dispatch' AND d.id = l.row->>'disp_id')),
   '12: c1 holds North, its five GRNs and only rows of them');
-SELECT pg_temp.sf_assert(:'inv_a4' = ANY (pg_temp.sf_held('c1', 'invoice')) AND NOT (:'inv_a4' = ANY (pg_temp.sf_held('c2', 'invoice'))), '12: the invoice of North is in c1''s copy only');
+SELECT pg_temp.sf_assert(NOT (:'inv_a4' = ANY (pg_temp.sf_held('c1', 'invoice'))) AND NOT (:'inv_a4' = ANY (pg_temp.sf_held('c2', 'invoice')))
+  AND NOT EXISTS (SELECT 1 FROM pg_temp.sf_copy WHERE slot IN ('admin', 'staff', 'c1', 'c2') AND e IN ('dispatch', 'dispatch_trl', 'invoice', 'invoice_trl')),
+  '12 / WH-381: no role holds dispatch or invoice rows in its copy (dropped from feed format 8)');
 SELECT pg_temp.sf_assert(EXISTS (SELECT 1 FROM pg_temp.sf_event WHERE phone = 'admin' AND kind = 'stale' AND detail = :'north')
   AND EXISTS (SELECT 1 FROM pg_temp.sf_event WHERE phone = 'c1' AND kind = 'stale' AND detail = :'north')
   AND NOT EXISTS (SELECT 1 FROM pg_temp.sf_event WHERE phone IN ('c1', 'c2') AND kind = 'stale' AND detail <> (CASE phone WHEN 'c1' THEN :'north' ELSE :'south' END)),
@@ -131,10 +133,10 @@ SELECT pg_temp.sf_assert(NOT EXISTS (SELECT 1 FROM public.goodsreceived WHERE id
   AND NOT EXISTS (SELECT 1 FROM public.invoice WHERE id = :'inv_a4') AND NOT EXISTS (SELECT 1 FROM public.items WHERE id = :'unused_item'), 'premise: the four rows are gone for good');
 SELECT pg_temp.sf_pull(p) FROM unnest(ARRAY['admin', 'staff', 'c1']) p;
 SELECT pg_temp.sf_assert(pg_temp.sf_ops(p, 'goodsreceived', :'grn_a2', pg_temp.sf_last_pull(p)) = pg_temp.sf('op_delete')
-  AND pg_temp.sf_ops(p, 'dispatch', :'disp_a1', pg_temp.sf_last_pull(p)) = pg_temp.sf('op_delete')
-  AND pg_temp.sf_ops(p, 'invoice', :'inv_a4', pg_temp.sf_last_pull(p)) = pg_temp.sf('op_delete')
-  AND pg_temp.sf_ops(p, 'items', :'unused_item', pg_temp.sf_last_pull(p)) = pg_temp.sf('op_delete'),
-  '2a: ' || p || ' got the GRN, the dispatch, the invoice and the item each as a delete') FROM unnest(ARRAY['admin', 'staff', 'c1']) p;
+  AND pg_temp.sf_ops(p, 'items', :'unused_item', pg_temp.sf_last_pull(p)) = pg_temp.sf('op_delete')
+  AND pg_temp.sf_ops(p, 'dispatch', :'disp_a1', pg_temp.sf_last_pull(p)) = ''
+  AND pg_temp.sf_ops(p, 'invoice', :'inv_a4', pg_temp.sf_last_pull(p)) = '',
+  '2a / WH-381: ' || p || ' got the GRN and item each as a delete, and zero feed entries for the deleted dispatch and invoice') FROM unnest(ARRAY['admin', 'staff', 'c1']) p;
 SELECT pg_temp.sf_assert(NOT EXISTS (SELECT 1 FROM pg_temp.sf_copy c WHERE c.slot = p AND (
     (c.e = 'goodsreceived' AND c.id = :'grn_a2') OR (c.e = 'goodsreceived_trl' AND c.id = ANY (:'lots_a2'::text[]))
     OR (c.e = 'dispatch' AND c.id = :'disp_a1') OR (c.e = 'dispatch_trl' AND c.id = ANY (:'lines_d1'::text[]))
@@ -153,17 +155,18 @@ UPDATE public.dispatch SET deleted_at = now() WHERE id = :'disp_a2';
 UPDATE public.customers SET deleted_at = now() WHERE id = :'west';
 SELECT pg_temp.sf_pull(p) FROM unnest(ARRAY['admin', 'staff', 'c1']) p;
 SELECT pg_temp.sf_assert(pg_temp.sf_ops(p, 'goodsreceived', :'grn_a5', pg_temp.sf_last_pull(p)) = pg_temp.sf('op_upsert')
-  AND pg_temp.sf_ops(p, 'dispatch', :'disp_a2', pg_temp.sf_last_pull(p)) = pg_temp.sf('op_upsert')
   AND pg_temp.sf_ops(p, 'customers', :'west', pg_temp.sf_last_pull(p)) = pg_temp.sf('op_upsert')
+  AND pg_temp.sf_ops(p, 'dispatch', :'disp_a2', pg_temp.sf_last_pull(p)) = ''
+  AND NOT (:'disp_a2' = ANY (pg_temp.sf_held(p, 'dispatch')))
   AND (SELECT bool_and(row->>pg_temp.sf('soft_delete_column') IS NOT NULL) FROM pg_temp.sf_copy
-       WHERE slot = p AND ((e = 'goodsreceived' AND id = :'grn_a5') OR (e = 'dispatch' AND id = :'disp_a2') OR (e = 'customers' AND id = :'west')))
-  AND (SELECT count(*) FROM pg_temp.sf_copy WHERE slot = p AND ((e = 'goodsreceived' AND id = :'grn_a5') OR (e = 'dispatch' AND id = :'disp_a2') OR (e = 'customers' AND id = :'west'))) = 3,
-  '2d: ' || p || ' holds the soft-deleted GRN, dispatch and customer with deleted_at set') FROM unnest(ARRAY['admin', 'staff']) p;
+       WHERE slot = p AND ((e = 'goodsreceived' AND id = :'grn_a5') OR (e = 'customers' AND id = :'west')))
+  AND (SELECT count(*) FROM pg_temp.sf_copy WHERE slot = p AND ((e = 'goodsreceived' AND id = :'grn_a5') OR (e = 'customers' AND id = :'west'))) = 2,
+  '2d / WH-381: ' || p || ' holds the soft-deleted GRN and customer with deleted_at set, and receives no dispatch entry') FROM unnest(ARRAY['admin', 'staff']) p;
 SELECT pg_temp.sf_assert(pg_temp.sf_ops('c1', 'goodsreceived', :'grn_a5', pg_temp.sf_last_pull('c1')) = pg_temp.sf('op_delete')
-  AND pg_temp.sf_ops('c1', 'dispatch', :'disp_a2', pg_temp.sf_last_pull('c1')) = pg_temp.sf('op_delete')
+  AND pg_temp.sf_ops('c1', 'dispatch', :'disp_a2', pg_temp.sf_last_pull('c1')) = ''
   AND NOT (:'grn_a5' = ANY (pg_temp.sf_held('c1', 'goodsreceived'))) AND NOT (:'disp_a2' = ANY (pg_temp.sf_held('c1', 'dispatch')))
   AND NOT EXISTS (SELECT 1 FROM pg_temp.sf_copy WHERE slot = 'c1' AND e = 'goodsreceived_trl' AND row->>'gr_id' = :'grn_a5'),
-  '2d: the customer account got the soft-deleted GRN and dispatch as deletes and holds neither (nor the lot)');
+  '2d / WH-381: the customer account got the soft-deleted GRN as a delete, holds neither GRN nor lot, and gets no dispatch entry');
 SELECT pg_temp.sf_assert(pg_temp.sf_diff(p) = '', '2d: the copy of ' || p || ' equals a fresh load: ' || pg_temp.sf_diff(p)) FROM unnest(ARRAY['admin', 'staff', 'c1']) p;
 SELECT pg_temp.sf_assert(pg_temp.sf_check_direct('staff') = '', '2d: the staff copy equals the staff direct reads (soft-deleted rows included): ' || pg_temp.sf_check_direct('staff'));
 SELECT pg_temp.sf_assert(pg_temp.sf_check_direct('c1', pg_temp.sf_list('q1_customer_hidden_columns'), true) = '',
@@ -220,11 +223,9 @@ CREATE TEMP TABLE sf_leaks AS
   ) q
   WHERE q.ent = ANY (pg_temp.sf_list('table_entities')) AND cardinality(pg_temp.sf_columns(q.ent)) > 0
     AND q.k <> ALL (pg_temp.sf_columns(q.ent))
-    AND NOT ((q.ent, q.k) IN (('goodsreceived_trl', 'emptied_at'), ('goodsreceived_trl', 'item_rate'), ('invoice', 'payment_state'),
-      ('invoice_trl', 'storage_amount'), ('invoice_trl', 'line_amounts'), ('invoice', 'items_total_amount'),
-      ('invoice', 'discount_set_by_name'), ('invoice', 'zero_charge_set_by_name'), ('items', 'rate_cover')));
-SELECT pg_temp.sf_assert(NOT EXISTS (SELECT 1 FROM sf_leaks WHERE ent = 'invoice'),
-  '12: no invoice row of any answer or copy carried a column the app roles may not read: ' || COALESCE((SELECT string_agg(DISTINCT k || ' in ' || src, '; ') FROM sf_leaks WHERE ent = 'invoice'), ''));
+    AND NOT ((q.ent, q.k) IN (('goodsreceived_trl', 'emptied_at'), ('goodsreceived_trl', 'item_rate'), ('items', 'rate_cover')));
+SELECT pg_temp.sf_assert(NOT EXISTS (SELECT 1 FROM pg_temp.sf_copy WHERE e IN ('dispatch', 'dispatch_trl', 'dispatch_images', 'invoice', 'invoice_trl', 'payments', 'orders', 'order_items')),
+  '12 / WH-381: no copy holds any of the 8 dropped entities');
 SELECT pg_temp.sf_assert(NOT EXISTS (SELECT 1 FROM sf_leaks),
   '12: no row of any answer or copy carried a column its table''s readers may not read: ' || COALESCE((SELECT string_agg(DISTINCT ent || '.' || k || ' in ' || src, '; ') FROM sf_leaks), ''));
 DROP TABLE pg_temp.sf_leaks;
@@ -244,8 +245,8 @@ CREATE TEMP TABLE sf_request_leaks AS
 SELECT pg_temp.sf_assert(NOT EXISTS (SELECT 1 FROM sf_request_leaks),
   'WH-373: no goodsreceived or dispatch row of any answer or copy carried request_key, request_digest or request_item_mapping: '
   || COALESCE((SELECT string_agg(DISTINCT ent || '.' || k || ' in ' || src, '; ') FROM sf_request_leaks), ''));
-SELECT pg_temp.sf_assert(EXISTS (SELECT 1 FROM pg_temp.sf_copy c WHERE c.e = 'goodsreceived') AND EXISTS (SELECT 1 FROM pg_temp.sf_copy c WHERE c.e = 'dispatch'),
-  'WH-373: the leak check read at least one goodsreceived and one dispatch row (it is not vacuous)');
+SELECT pg_temp.sf_assert(EXISTS (SELECT 1 FROM pg_temp.sf_copy c WHERE c.e = 'goodsreceived') AND NOT EXISTS (SELECT 1 FROM pg_temp.sf_copy c WHERE c.e = 'dispatch'),
+  'WH-373 / WH-381: the leak check read at least one goodsreceived row (not vacuous) and zero dispatch rows (dropped by WH-381)');
 DROP TABLE pg_temp.sf_request_leaks;
 
 \echo 'WH-297 sync feed deletes and customer scope (criteria 2 and 12) checks passed.'

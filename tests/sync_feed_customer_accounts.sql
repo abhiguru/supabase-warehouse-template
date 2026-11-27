@@ -35,11 +35,11 @@
 -- =================================================================================================================================
 CREATE TEMP TABLE cc_contract(k text PRIMARY KEY, v text NOT NULL);
 INSERT INTO pg_temp.cc_contract(k, v) VALUES
-  ('cc_format', '7'),    -- see 1 above; WH-306's step (contract section 14); a later step passes too
-  -- Contract section 0: what a customer account's copy holds, as a set.
-  ('entities', 'customers,items,goodsreceived,goodsreceived_trl,grn_images,dispatch,dispatch_trl,dispatch_images,invoice,invoice_trl,orders,order_items,payments,grn_rates'),
-  -- Contract section 0 and decision O5: never in a customer account's copy (entity names; the three rate entities are the staff ones).
-  ('never', 'settings,people,grn_lock,user_profiles,users_customers_new,item_storage_prices,standard_rate_tiers,item_price_history,grn_replacements,held_items'),
+  ('cc_format', '8'),    -- WH-381 format 8 (was 7 for WH-306); a later step passes too
+  -- WH-381: what a customer account's copy holds, as a set (dispatch, invoice, orders, payments dropped).
+  ('entities', 'customers,items,goodsreceived,goodsreceived_trl,grn_images,grn_rates'),
+  -- Contract section 0, decision O5, and WH-381: never in a customer account's copy.
+  ('never', 'settings,people,grn_lock,user_profiles,users_customers_new,item_storage_prices,standard_rate_tiers,item_price_history,grn_replacements,held_items,dispatch,dispatch_trl,dispatch_images,invoice,invoice_trl,orders,order_items,payments'),
   -- Keys no customer read may answer (the Q1 columns, plus the staff fields PQ3 forbids). supervisor_name and sender_name are allowed.
   ('forbidden', 'created_by,updated_by,deleted_by,supervisor_id,sender_id,import_batch_id,uploaded_by,created_by_name,updated_by_name,updated_by_display_name,user_access,created_by_info,created_by_display_name,created_by_role,cancelled_by,cancelled_by_name,discount_set_by,zero_charge_set_by,discount_reason,zero_charge_reason,ignored_by'),
   -- Keys a reader renames from a copy column, and keys the phone works out (see 2 above).
@@ -54,11 +54,9 @@ INSERT INTO pg_temp.cc_contract(k, v) VALUES
   ('cc_computed', 'image_url,items,total_qty,total_weight,total_items,grn_details,grn_item_details,item_details,invoice_details,invoice_label,'
     || 'item_images,customer,item_count,quantity_sum,catalog,details_available,grn_item,dispatch'),
   ('stale_entry', 'money');
--- Reads whose answer rows are checked against the copy's keys (B0/B7): label = function name, as cc_read is called.
+-- Kept offline reads whose answer rows are checked against the copy's keys (B0/B7, narrowed by WH-381; online dispatch/order/invoice reads stay in cc_read below for PQ3 forbidden-key checks).
 CREATE TEMP TABLE cc_row_reads(label text PRIMARY KEY);
-INSERT INTO pg_temp.cc_row_reads VALUES ('get_customer_grn_items'), ('get_customer_dispatch_list'), ('get_grn_details'), ('get_dispatch_details'),
-  ('get_grn_item_dispatches'), ('get_orders_list'), ('get_order_with_items'), ('get_customer_invoice_summary'), ('get_invoice_data'),
-  ('get_invoice_detail'), ('get_invoice_items_detailed');
+INSERT INTO pg_temp.cc_row_reads VALUES ('get_customer_grn_items'), ('get_grn_details');
 
 CREATE FUNCTION pg_temp.cc(key text) RETURNS text LANGUAGE sql STABLE AS $$ SELECT v FROM pg_temp.cc_contract WHERE k = key $$;
 CREATE FUNCTION pg_temp.cc_list(key text) RETURNS text[] LANGUAGE sql STABLE AS $$ SELECT string_to_array(pg_temp.cc(key), ',') $$;
@@ -255,9 +253,11 @@ SELECT pg_temp.sf_assert(NOT EXISTS (SELECT 1 FROM pg_temp.sf_copy c, jsonb_obje
   'B1: no key of customer_hidden_columns in any stored row of a customer account: '
   || COALESCE((SELECT string_agg(DISTINCT c.slot || ' ' || c.e || '.' || k, ', ') FROM pg_temp.sf_copy c, jsonb_object_keys(c.row) k
       WHERE c.slot IN ('c1', 'c2', 'c3') AND k = ANY (pg_temp.sf_list('q1_customer_hidden_columns'))), ''));
-SELECT pg_temp.sf_assert(EXISTS (SELECT 1 FROM pg_temp.sf_copy WHERE slot = 'c3' AND e = 'payments') AND EXISTS (SELECT 1 FROM pg_temp.sf_copy WHERE slot = 'c3' AND e = 'orders')
-  AND EXISTS (SELECT 1 FROM pg_temp.sf_copy WHERE slot = 'c3' AND e = 'grn_rates') AND EXISTS (SELECT 1 FROM pg_temp.sf_copy WHERE slot = 'c3' AND e = 'invoice'),
-  'B1: premise: c3''s copy holds rows of payments, orders, grn_rates and invoice (the entity check above is not vacuous)');
+SELECT pg_temp.sf_assert(EXISTS (SELECT 1 FROM pg_temp.sf_copy WHERE slot = 'c3' AND e = 'goodsreceived')
+  AND EXISTS (SELECT 1 FROM pg_temp.sf_copy WHERE slot = 'c3' AND e = 'goodsreceived_trl')
+  AND EXISTS (SELECT 1 FROM pg_temp.sf_copy WHERE slot = 'c3' AND e = 'grn_rates')
+  AND NOT EXISTS (SELECT 1 FROM pg_temp.sf_copy WHERE slot = 'c3' AND e IN ('dispatch', 'dispatch_trl', 'dispatch_images', 'invoice', 'invoice_trl', 'orders', 'order_items', 'payments')),
+  'B1 / WH-381: premise: c3''s copy holds rows of goodsreceived, goodsreceived_trl and grn_rates, and zero rows of the 8 dropped entities');
 SELECT pg_temp.sf_assert(pg_temp.sf_check_direct(p, pg_temp.sf_list('q1_customer_hidden_columns'), true) = '',
   'B1: the copy of ' || p || ' equals its direct reads: ' || pg_temp.sf_check_direct(p, pg_temp.sf_list('q1_customer_hidden_columns'), true)) FROM unnest(ARRAY['c1', 'c3']) p;
 
@@ -321,9 +321,9 @@ SELECT pg_temp.sf_assert(pg_temp.cc_answer_for('c3', 'get_customer_grn_items', c
   format('B7: get_customer_grn_items as c3 for %s answers lots %s, the copy holds %s', c.name,
     pg_temp.cc_ids(pg_temp.cc_answer_for('c3', 'get_customer_grn_items', c.cust)->'data'->'items', 'id'), pg_temp.cc_lot_ids('c3', c.cust)))
   FROM (VALUES ('North', :'north'::uuid), ('South', :'south'::uuid), ('West', :'west'::uuid)) c(name, cust);
-SELECT pg_temp.sf_assert(pg_temp.cc_ids(answer, 'id') @> pg_temp.cc_copy_ids('c3', 'dispatch', :'north'::uuid)
-  AND pg_temp.cc_copy_ids('c3', 'dispatch', :'north'::uuid) <> '{}',
-  'B7: get_customer_dispatch_list as c3 for North answers every dispatch of North that the copy holds: copy ' || pg_temp.cc_copy_ids('c3', 'dispatch', :'north'::uuid)::text)
+SELECT pg_temp.sf_assert(pg_temp.cc_ids(answer, 'id') <> '{}'
+  AND pg_temp.cc_copy_ids('c3', 'dispatch', :'north'::uuid) = '{}',
+  'B7 / WH-381: get_customer_dispatch_list online returns North''s dispatches while c3''s copy holds zero dispatch rows: copy ' || pg_temp.cc_copy_ids('c3', 'dispatch', :'north'::uuid)::text)
   FROM pg_temp.cc_answer WHERE who = 'c3' AND label = 'get_customer_dispatch_list' ORDER BY seq LIMIT 1;
 
 -- R10 server side: a customer account's read for a customer it is not assigned to is refused, and its copy holds nothing of that customer.
@@ -361,7 +361,7 @@ END $$;
 SELECT pg_temp.sf_assert(pg_temp.cc_sums_bad(p) = '', 'B5: the checksums of ' || p || ' differ from its copy: ' || pg_temp.cc_sums_bad(p)) FROM unnest(ARRAY['c1', 'c3']) p;
 SELECT pg_temp.sf_assert((SELECT count(*) FROM jsonb_array_elements(
     pg_temp.sf_as(d.claims, format(pg_temp.sf('call_checksums'), d.position, d.copy))->pg_temp.sf('f_entities')) s
-    WHERE (s->>pg_temp.sf('f_settled'))::boolean) >= 10, 'B5: premise: most entities of c1 are settled and compared')
+    WHERE (s->>pg_temp.sf('f_settled'))::boolean) >= 5, 'B5 / WH-381: premise: most of the 6 customer entities of c1 are settled and compared')
   FROM pg_temp.sf_device d WHERE d.phone = 'c1';
 
 -- ---------------------------------------------------------------------------------------------------------------------------------
@@ -407,18 +407,19 @@ SELECT pg_temp.sf_assert((SELECT pg_temp.cc_ids(answer->'data'->'items', 'id') F
   'B7: after the moves the read of North''s GRN items as c1 answers the lots its copy holds');
 
 -- ---------------------------------------------------------------------------------------------------------------------------------
--- B3. A soft-deleted GRN, dispatch, invoice and order reach a customer account as deletes (its lots, lines and payments with them).
+-- B3. A soft-deleted GRN reaches a customer account as a delete (its lots and rates with it); soft-deleted dispatch, invoice and
+-- order emit zero feed entries (WH-381 dropped them from the feed).
 -- ---------------------------------------------------------------------------------------------------------------------------------
 UPDATE public.dispatch SET deleted_at = now() WHERE id = :'disp_n2';
 UPDATE public.orders SET deleted_at = now() WHERE id = :'ord_n';
 UPDATE public.invoice SET deleted_at = now() WHERE id = :'inv_n';
 UPDATE public.goodsreceived SET deleted_at = now() WHERE id = :'grn_n3';
 SELECT pg_temp.cc_step('B3 soft deletes', ARRAY['admin', 'c1', 'c3']);
-SELECT pg_temp.sf_assert(pg_temp.sf_ops(p, 'dispatch', :'disp_n2', pg_temp.sf_last_pull(p)) = pg_temp.sf('op_delete')
-  AND pg_temp.sf_ops(p, 'orders', :'ord_n', pg_temp.sf_last_pull(p)) = pg_temp.sf('op_delete')
-  AND pg_temp.sf_ops(p, 'invoice', :'inv_n', pg_temp.sf_last_pull(p)) = pg_temp.sf('op_delete')
+SELECT pg_temp.sf_assert(pg_temp.sf_ops(p, 'dispatch', :'disp_n2', pg_temp.sf_last_pull(p)) = ''
+  AND pg_temp.sf_ops(p, 'orders', :'ord_n', pg_temp.sf_last_pull(p)) = ''
+  AND pg_temp.sf_ops(p, 'invoice', :'inv_n', pg_temp.sf_last_pull(p)) = ''
   AND pg_temp.sf_ops(p, 'goodsreceived', :'grn_n3', pg_temp.sf_last_pull(p)) = pg_temp.sf('op_delete'),
-  'B3: ' || p || ' got the soft-deleted dispatch, order, invoice and GRN as deletes') FROM unnest(ARRAY['c1', 'c3']) p;
+  'B3 / WH-381: ' || p || ' got the soft-deleted GRN as a delete and zero entries for the soft-deleted dispatch, order and invoice') FROM unnest(ARRAY['c1', 'c3']) p;
 SELECT pg_temp.sf_assert(NOT (:'disp_n2' = ANY (pg_temp.sf_held(p, 'dispatch'))) AND NOT (:'ord_n' = ANY (pg_temp.sf_held(p, 'orders')))
   AND NOT (:'inv_n' = ANY (pg_temp.sf_held(p, 'invoice'))) AND NOT (:'grn_n3' = ANY (pg_temp.sf_held(p, 'goodsreceived')))
   AND NOT (:'line_n' = ANY (pg_temp.sf_held(p, 'order_items'))) AND NOT (:'pay_n' = ANY (pg_temp.sf_held(p, 'payments'))),
@@ -430,8 +431,8 @@ SELECT pg_temp.sf_assert(NOT (:'disp_n2' = ANY (pg_temp.sf_held(p, 'dispatch')))
 UPDATE public.customers SET active = false WHERE id = :'west';
 SELECT pg_temp.cc_step('B8 West deactivated', ARRAY['admin', 'c3']);
 SELECT pg_temp.sf_assert(:'west' = ANY (pg_temp.sf_held('c3', 'customers')) AND :'grn_w1' = ANY (pg_temp.sf_held('c3', 'goodsreceived'))
-  AND :'disp_w1' = ANY (pg_temp.sf_held('c3', 'dispatch')),
-  'B8/PQ4: a deactivated customer''s customer row, GRNs and dispatches stay in the account''s copy');
+  AND :'lot_w1a' = ANY (pg_temp.sf_held('c3', 'goodsreceived_trl')) AND NOT (:'disp_w1' = ANY (pg_temp.sf_held('c3', 'dispatch'))),
+  'B8/PQ4 / WH-381: a deactivated customer''s customer row, GRNs and lots stay in the account''s copy (no dispatch entity)');
 SELECT pg_temp.cc_read('c3', 'get_customer_grn_items', format('SELECT public.get_customer_grn_items(%L::uuid, NULL, NULL, ''{}''::jsonb, ''date'', ''desc'', 100, 0)', :'west'));
 SELECT pg_temp.sf_assert((SELECT pg_temp.cc_ids(answer->'data'->'items', 'id') FROM pg_temp.cc_answer WHERE who = 'c3' AND label = 'get_customer_grn_items' ORDER BY seq DESC LIMIT 1)
     = pg_temp.cc_lot_ids('c3', :'west'::uuid),

@@ -137,8 +137,9 @@ SELECT pg_temp.sf_assert((SELECT (row->>'stock')::int FROM pg_temp.sf_copy WHERE
 SELECT pg_temp.sf_assert((SELECT (l->>pg_temp.sf('lock_dispatched'))::int FROM pg_temp.sf_copy c, jsonb_array_elements(c.row->pg_temp.sf('lock_lines')) l
     WHERE c.slot = 'admin' AND c.e = pg_temp.sf('e_grn_lock') AND c.id = :'grn_a2' AND l->>pg_temp.sf('lock_line_id') = :'lot_n1') = 4,
   '1d: grn_lock of the GRN says 4 dispatched from the lot');
-SELECT pg_temp.sf_assert(:'disp_1' = ANY (pg_temp.sf_held('admin', 'dispatch')) AND (SELECT count(*) FROM pg_temp.sf_copy WHERE slot = 'admin' AND e = 'dispatch_trl' AND row->>'disp_id' = :'disp_1') = 1,
-  '1d: the dispatch and its line are in the copy');
+SELECT pg_temp.sf_assert(NOT (:'disp_1' = ANY (pg_temp.sf_held('admin', 'dispatch')))
+  AND NOT EXISTS (SELECT 1 FROM pg_temp.sf_copy WHERE slot = 'admin' AND e IN ('dispatch', 'dispatch_trl')),
+  '1d / WH-381: the dispatch and its line are not in the copy (dropped from feed format 8, while lot stock and grn_lock stayed)');
 
 -- ---------------------------------------------------------------------------------------------------------------------------------
 -- 1e. Rows written with the user triggers off (session_replication_role = replica), not an import: still logged and delivered.

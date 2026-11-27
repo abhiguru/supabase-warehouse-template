@@ -1045,7 +1045,7 @@ done
 for sync_sql in "$ROOT/tests/sync_feed_changes.sql" "$ROOT/tests/sync_feed_deletes_scope.sql" \
   "$ROOT/tests/sync_feed_invoice_state.sql" "$ROOT/tests/sync_feed_emptied_time.sql" "$ROOT/tests/sync_feed_lot_rack_mark.sql" \
   "$ROOT/tests/sync_feed_orders_payments.sql" "$ROOT/tests/sync_feed_money_marks.sql" "$ROOT/tests/sync_feed_customer_accounts.sql" \
-  "$ROOT/tests/grn_edit_field_changes.sql" "$ROOT/tests/sync_feed_held_items_304.sql"; do
+  "$ROOT/tests/grn_edit_field_changes.sql" "$ROOT/tests/sync_feed_held_items_304.sql" "$ROOT/tests/sync_feed_scope_cut_381.sql"; do
   cat "$ROOT/tests/fixtures/gst_details.sql" "$ROOT/tests/sync_feed_contract.sql" "$sync_sql" | mig_psql -d "$sync_db"
 done
 cat "$ROOT/tests/fixtures/gst_details.sql" "$ROOT/tests/sync_feed_contract.sql" "$ROOT/tests/grn_replacements_admin.sql" | mig_psql -d sync_feed_replaced_list
