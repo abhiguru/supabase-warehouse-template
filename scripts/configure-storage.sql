@@ -66,7 +66,7 @@ USING (bucket_id IN ('grn-images','dispatch-images') AND (SELECT warehouse_secur
 END
 $policy$;
 -- The files of held items (WH-304, migration 240 held_item_photos_upload): under held/<held id>/ of the two photo buckets. Staff upload only
--- the pending file they registered for a held item still held, and read the files of the items they recorded; the helpers read
+-- the pending file they registered for a held item still held or already accepted (a photo still on its way), and read the files of the items they recorded; the helpers read
 -- held_item_photos, which no app role may read. Managers are covered by the manager policies above. Created only once migration 240's
 -- two helpers exist (the next run of this script after that migration creates them).
 DROP POLICY IF EXISTS starter_held_photo_staff_read ON storage.objects;

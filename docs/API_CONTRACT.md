@@ -1604,7 +1604,14 @@ Items the server refused wait here for a supervisor or administrator; nothing in
   items are moved (`source` moved). Answer `{success, held: [{request_key, id, state} | {request_key, id, state, idempotent: true} |
   {request_key, reason: "REQUEST_KEY_REUSED"}]}` in the order of `p_items`; a repeated key answers its first row. Whole-call refusals (nothing
   written): `HELD_TOO_MANY_ITEMS`, `HELD_ITEM_INVALID`, `HELD_BODY_TOO_LARGE` (body and `what` over 65,536 bytes), `HELD_MOVE_ADMIN_ONLY`,
-  `HELD_RECORDER_UNKNOWN`.
+  `HELD_RECORDER_UNKNOWN` (no such profile), `HELD_RECORDER_INVALID` (`p_recorder` is a profile without a warehouse role, such as a customer
+  account; a deactivated staff, supervisor or administrator profile is allowed). An item follows only an item of the same recorder, and the
+  row's customer is taken from the saved body (a GRN's `p_customer_id`, a dispatch's `customer_id`, else the customer of the record it
+  belongs to), never from the item's `customer_id` field.
+- Photos of a held item (`register_held_photo_upload`, `confirm_held_photo_upload`, `mark_held_photo_missing`; the recorder, or the
+  administrator who moved the item): allowed while the item is held or accepted, refused with `HELD_ALREADY_DECIDED` once it is rejected. A
+  photo confirmed after the accept is attached at once to the document the accept created; one marked missing after the accept keeps its
+  state, reason and `document_id` (the GRN or dispatch).
 - `get_held_items(p_limit int DEFAULT 50, p_offset int DEFAULT 0)`, administrators and supervisors: `{success, rows, total}`, open items only,
   oldest first, an item that follows another directly under it; a row `{id, kind, what, customer_name, recorded_by_name, recorded_at, phone,
   reason, reason_data, state, follows, needs_decision, can_accept, decided_by_name, decided_at, reject_reason, result}` (`reason` is one of
