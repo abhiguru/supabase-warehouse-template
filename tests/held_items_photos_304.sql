@@ -344,5 +344,98 @@ SELECT pg_temp.hp_assert(NOT has_table_privilege('authenticated', 'public.held_i
   AND NOT has_table_privilege('service_role', 'public.held_item_photos', 'SELECT'), 'G7: no app role reads or writes held_item_photos directly');
 SELECT pg_temp.hp_assert((SELECT count(*) = 3 FROM pg_policies WHERE schemaname = 'storage' AND tablename = 'objects'
   AND policyname IN ('starter_held_photo_staff_read', 'starter_held_photo_staff_insert', 'starter_held_photo_staff_update')), 'G7: the three staff held-photo storage policies exist');
+
+-- ===== G8. Missing photos (PQ11, migration topic "held photo missing"): the phone gave up on a photo =====
+--   public.mark_held_photo_missing(p_held_id, p_client_photo_id, p_role, p_line_ref DEFAULT NULL, p_reason DEFAULT NULL)
+--     -> { success, held_id, client_photo_id, status }, register's caller rule, creates the row when none, pending -> missing,
+--     a confirmed photo stays confirmed, the first reason is kept; get_held_item's photos carry state, role, line_ref, reason and path NULL when missing.
+CREATE FUNCTION pg_temp.hp_mark(claims jsonb, held uuid, cid text, role text, line text DEFAULT NULL, reason text DEFAULT NULL) RETURNS jsonb LANGUAGE sql AS $$
+  SELECT pg_temp.hp_as(claims, format('SELECT public.mark_held_photo_missing(%L::uuid, %L, %L, %L, %L)', held, cid, role, line, reason)) $$;
+CREATE FUNCTION pg_temp.hp_get_photo(a jsonb, cid text) RETURNS jsonb LANGUAGE sql IMMUTABLE AS $$
+  SELECT p FROM jsonb_array_elements(COALESCE(a->'photos', a->'item'->'photos', a->'data'->'photos')) p WHERE p->>'client_photo_id' = cid $$;
+SELECT pg_temp.hp_hold(:'staff_claims'::jsonb, jsonb_build_array(
+  pg_temp.hp_item('hp-n1', 'newGrn', 5, :'ca'::uuid, pg_temp.hp_grn_body(:'ca'::uuid, :'item_id'::uuid, 2, 'HPN1')))) AS g8_hold \gset
+SELECT pg_temp.hp_assert(:'g8_hold'::jsonb->>'success' = 'true', 'fixture: hp-n1 handed over: ' || :'g8_hold');
+SELECT pg_temp.hp_hid('hp-n1') AS n1 \gset
+-- No row yet: the call creates it as missing, with the recorder and the first reason (trimmed).
+SELECT pg_temp.hp_mark(:'staff_claims'::jsonb, :'n1'::uuid, 'pm-a', 'header', NULL, '  Photo refused: wrong type  ') AS g8_a \gset
+SELECT pg_temp.hp_assert(pg_temp.hp_ok(:'g8_a'::jsonb) AND :'g8_a'::jsonb->>'status' = 'missing' AND :'g8_a'::jsonb->>'held_id' = :'n1'
+  AND :'g8_a'::jsonb->>'client_photo_id' = 'pm-a' AND (SELECT state = 'missing' AND reason = 'Photo refused: wrong type' AND role = 'header' AND line_ref IS NULL
+    AND uploaded_by = :'staff_profile'::uuid FROM public.held_item_photos WHERE held_id = :'n1'::uuid AND client_photo_id = 'pm-a'),
+  'G8: marking a photo that has no row creates it as missing with the trimmed reason and the recorder: ' || :'g8_a');
+-- A repeat is idempotent and keeps the first reason.
+SELECT pg_temp.hp_n() AS n_g8 \gset
+SELECT pg_temp.hp_mark(:'staff_claims'::jsonb, :'n1'::uuid, 'pm-a', 'header', NULL, 'Another reason') AS g8_again \gset
+SELECT pg_temp.hp_assert(pg_temp.hp_ok(:'g8_again'::jsonb) AND :'g8_again'::jsonb->>'status' = 'missing' AND pg_temp.hp_n() = :'n_g8'::bigint
+  AND (SELECT reason = 'Photo refused: wrong type' FROM public.held_item_photos WHERE held_id = :'n1'::uuid AND client_photo_id = 'pm-a'),
+  'G8: a repeat answers missing, adds no row and keeps the first reason: ' || :'g8_again');
+-- A pending row (registered, never uploaded) becomes missing and keeps its file facts.
+SELECT pg_temp.hp_reg(:'staff_claims'::jsonb, :'n1'::uuid, 'pm-b', 'header', 'b.jpg', 321, 'image/jpeg') AS g8_reg_b \gset
+SELECT pg_temp.hp_mark(:'staff_claims'::jsonb, :'n1'::uuid, 'pm-b', 'header', NULL, 'Gave up') AS g8_b \gset
+SELECT pg_temp.hp_assert(pg_temp.hp_ok(:'g8_b'::jsonb) AND :'g8_b'::jsonb->>'status' = 'missing' AND (SELECT state = 'missing' AND reason = 'Gave up'
+    AND file_name = 'b.jpg' AND file_size = 321 AND path = :'g8_reg_b'::jsonb->>'storage_path' FROM public.held_item_photos WHERE held_id = :'n1'::uuid AND client_photo_id = 'pm-b'),
+  'G8: a pending photo becomes missing and keeps its registered file facts and path: ' || :'g8_b');
+-- A confirmed photo never turns missing.
+SELECT pg_temp.hp_reg(:'staff_claims'::jsonb, :'n1'::uuid, 'pm-c', 'header', 'c.jpg', 100, 'image/jpeg') AS g8_reg_c \gset
+SELECT pg_temp.hp_reg(:'staff_claims'::jsonb, :'n1'::uuid, 'pm-e', 'item', 'e.jpg', 100, 'image/jpeg', 'index:0') AS g8_reg_e \gset
+SELECT pg_temp.hp_assert(pg_temp.hp_put(:'staff_claims'::jsonb, 'grn-images', :'g8_reg_c'::jsonb->>'storage_path') = 'rows:1'
+  AND pg_temp.hp_put(:'staff_claims'::jsonb, 'grn-images', :'g8_reg_e'::jsonb->>'storage_path') = 'rows:1', 'G8: fixture: files of c and e uploaded');
+SELECT pg_temp.hp_assert(pg_temp.hp_ok(pg_temp.hp_confirm(:'staff_claims'::jsonb, :'n1'::uuid, 'pm-c')) AND pg_temp.hp_ok(pg_temp.hp_confirm(:'staff_claims'::jsonb, :'n1'::uuid, 'pm-e')),
+  'G8: fixture: c and e confirmed');
+SELECT pg_temp.hp_mark(:'staff_claims'::jsonb, :'n1'::uuid, 'pm-c', 'header', NULL, 'Too late') AS g8_c \gset
+SELECT pg_temp.hp_assert(pg_temp.hp_ok(:'g8_c'::jsonb) AND :'g8_c'::jsonb->>'status' = 'confirmed' AND (SELECT state = 'confirmed' AND reason IS NULL
+    FROM public.held_item_photos WHERE held_id = :'n1'::uuid AND client_photo_id = 'pm-c'), 'G8: marking a confirmed photo answers confirmed and changes nothing: ' || :'g8_c');
+-- An item photo is marked with its line; a reason over 500 characters is cut to 500.
+SELECT pg_temp.hp_mark(:'staff_claims'::jsonb, :'n1'::uuid, 'pm-d', 'item', ' index:0 ', repeat('r', 600)) AS g8_d \gset
+SELECT pg_temp.hp_assert(pg_temp.hp_ok(:'g8_d'::jsonb) AND (SELECT state = 'missing' AND role = 'item' AND line_ref = 'index:0' AND length(reason) = 500
+    FROM public.held_item_photos WHERE held_id = :'n1'::uuid AND client_photo_id = 'pm-d'),
+  'G8: an item photo is marked missing with its trimmed line, and a long reason is cut to 500: ' || :'g8_d');
+-- The administrator who moved an item marks for it; the row names the administrator.
+SELECT pg_temp.hp_mark(:'admin_claims'::jsonb, :'m1'::uuid, 'pm-m', 'header', NULL, 'Moved') AS g8_moved \gset
+SELECT pg_temp.hp_assert(pg_temp.hp_ok(:'g8_moved'::jsonb) AND (SELECT state = 'missing' AND uploaded_by = (SELECT id FROM public.user_profiles WHERE name = 'Photo Administrator')
+  FROM public.held_item_photos WHERE held_id = :'m1'::uuid AND client_photo_id = 'pm-m'), 'G8: the administrator who moved the item may mark its photo: ' || :'g8_moved');
+-- Refusals: as register, and nothing is written.
+SELECT pg_temp.hp_n() AS n_g8r \gset
+SELECT pg_temp.hp_assert(pg_temp.hp_refused(pg_temp.hp_mark(:'staff2_claims'::jsonb, :'n1'::uuid, 'pm-x', 'header'), 'HELD_PHOTO_NOT_YOURS')
+  AND pg_temp.hp_refused(pg_temp.hp_mark(:'supervisor_claims'::jsonb, :'n1'::uuid, 'pm-x', 'header'), 'HELD_PHOTO_NOT_YOURS')
+  AND pg_temp.hp_refused(pg_temp.hp_mark(:'admin_claims'::jsonb, :'n1'::uuid, 'pm-x', 'header'), 'HELD_PHOTO_NOT_YOURS')
+  AND pg_temp.hp_refused(pg_temp.hp_mark(:'staff_claims'::jsonb, gen_random_uuid(), 'pm-x', 'header'), 'HELD_NOT_FOUND')
+  AND pg_temp.hp_mark(:'customer_claims'::jsonb, :'n1'::uuid, 'pm-x', 'header')->>'state' = '42501'
+  AND pg_temp.hp_mark(jsonb_build_object('role', 'authenticated', 'sub', gen_random_uuid()), :'n1'::uuid, 'pm-x', 'header')->>'state' = '42501'
+  AND pg_temp.hp_refused(pg_temp.hp_mark(:'staff_claims'::jsonb, :'n1'::uuid, 'pm-x', 'item'), 'HELD_PHOTO_INVALID')
+  AND pg_temp.hp_refused(pg_temp.hp_mark(:'staff_claims'::jsonb, :'n1'::uuid, 'pm-x', 'item', '  '), 'HELD_PHOTO_INVALID')
+  AND pg_temp.hp_refused(pg_temp.hp_mark(:'staff_claims'::jsonb, :'n1'::uuid, 'pm-x', 'banner'), 'HELD_PHOTO_INVALID')
+  AND pg_temp.hp_refused(pg_temp.hp_mark(:'staff_claims'::jsonb, :'n1'::uuid, 'pm-x', NULL), 'HELD_PHOTO_INVALID')
+  AND pg_temp.hp_refused(pg_temp.hp_mark(:'staff_claims'::jsonb, :'n1'::uuid, '  ', 'header'), 'HELD_PHOTO_INVALID')
+  AND pg_temp.hp_refused(pg_temp.hp_mark(:'staff_claims'::jsonb, :'n1'::uuid, repeat('i', 101), 'header'), 'HELD_PHOTO_INVALID')
+  AND pg_temp.hp_n() = :'n_g8r'::bigint,
+  'G8: other staff, a supervisor, a non-moving administrator, an unknown item, a customer, no profile and bad input are refused and write nothing');
+-- The decider reads them: state, role, line, reason; path is NULL for a missing photo and kept for the others.
+SELECT pg_temp.hp_as(:'admin_claims'::jsonb, format('SELECT public.get_held_item(%L::uuid)', :'n1')) AS g8_item \gset
+SELECT pg_temp.hp_assert(pg_temp.hp_ok(:'g8_item'::jsonb) AND jsonb_array_length(:'g8_item'::jsonb->'photos') = 5, 'G8: get_held_item lists the five photos: ' || left(:'g8_item', 600));
+SELECT pg_temp.hp_assert(pg_temp.hp_get_photo(:'g8_item'::jsonb, 'pm-a')->>'state' = 'missing' AND pg_temp.hp_get_photo(:'g8_item'::jsonb, 'pm-a')->>'role' = 'header'
+  AND pg_temp.hp_get_photo(:'g8_item'::jsonb, 'pm-a')->>'reason' = 'Photo refused: wrong type' AND pg_temp.hp_get_photo(:'g8_item'::jsonb, 'pm-a')->'path' = 'null'::jsonb
+  AND pg_temp.hp_get_photo(:'g8_item'::jsonb, 'pm-d')->>'state' = 'missing' AND pg_temp.hp_get_photo(:'g8_item'::jsonb, 'pm-d')->>'line_ref' = 'index:0'
+  AND pg_temp.hp_get_photo(:'g8_item'::jsonb, 'pm-d')->'path' = 'null'::jsonb AND pg_temp.hp_get_photo(:'g8_item'::jsonb, 'pm-b')->'path' = 'null'::jsonb,
+  'G8: get_held_item shows a missing photo with state, role, line, reason and a null path (also a pending photo that became missing)');
+SELECT pg_temp.hp_assert(pg_temp.hp_get_photo(:'g8_item'::jsonb, 'pm-c')->>'state' = 'confirmed' AND pg_temp.hp_get_photo(:'g8_item'::jsonb, 'pm-c')->>'path' = :'g8_reg_c'::jsonb->>'storage_path'
+  AND pg_temp.hp_get_photo(:'g8_item'::jsonb, 'pm-c')->'reason' = 'null'::jsonb, 'G8: a confirmed photo keeps its path and has no reason in get_held_item');
+-- Accept attaches the two confirmed photos only.
+SELECT pg_temp.hp_decide(:'admin_claims'::jsonb, :'n1'::uuid, 'accept', 'hp-dk-n1') AS g8_accept \gset
+SELECT pg_temp.hp_assert(pg_temp.hp_ok(:'g8_accept'::jsonb) AND pg_temp.hp_state('hp-n1') = 'accepted', 'G8: the held GRN is accepted: ' || :'g8_accept');
+SELECT id AS n1_grn FROM public.goodsreceived WHERE request_key = 'hp-n1' \gset
+SELECT pg_temp.hp_assert((SELECT count(*) = 2 AND count(*) FILTER (WHERE image_type = 'header' AND storage_path = :'g8_reg_c'::jsonb->>'storage_path') = 1
+    AND count(*) FILTER (WHERE image_type = 'item' AND storage_path = :'g8_reg_e'::jsonb->>'storage_path' AND grn_item_id IS NOT NULL) = 1
+  FROM public.grn_images WHERE grn_id = :'n1_grn'::uuid)
+  AND NOT EXISTS (SELECT 1 FROM public.grn_images WHERE storage_path LIKE '%/missing/%')
+  AND (SELECT count(*) = 5 AND count(*) FILTER (WHERE state = 'missing') = 3 FROM public.held_item_photos WHERE held_id = :'n1'::uuid),
+  'G8: accept attaches the two confirmed photos and not the three missing ones, which stay with the item');
+SELECT pg_temp.hp_n() AS n_g8d \gset
+SELECT pg_temp.hp_mark(:'staff_claims'::jsonb, :'n1'::uuid, 'pm-late', 'header') AS g8_late \gset
+SELECT pg_temp.hp_assert(pg_temp.hp_refused(:'g8_late'::jsonb, 'HELD_ALREADY_DECIDED') AND pg_temp.hp_n() = :'n_g8d'::bigint, 'G8: an accepted item takes no more marks: ' || :'g8_late');
+SELECT pg_temp.hp_assert(has_function_privilege('authenticated', 'public.mark_held_photo_missing(uuid,text,text,text,text)', 'EXECUTE')
+  AND has_function_privilege('service_role', 'public.mark_held_photo_missing(uuid,text,text,text,text)', 'EXECUTE')
+  AND NOT has_function_privilege('anon', 'public.mark_held_photo_missing(uuid,text,text,text,text)', 'EXECUTE'),
+  'G8: mark_held_photo_missing is executable by authenticated and service_role, not anon');
 ROLLBACK;
 \echo 'WH-304 held item photos (B-5) checks passed.'

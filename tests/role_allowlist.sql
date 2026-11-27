@@ -102,7 +102,7 @@ INSERT INTO ra_rpc(name,staff,customer) VALUES
  -- WH-304 holding list: staff hand over their own refused items and see the outcome; reads and decisions are for administrators and supervisors
  ('hold_items',true,'no'),('mark_held_item_seen',true,'no'),('get_held_items',false,'no'),('get_held_item',false,'no'),('decide_held_item',false,'no'),
  -- WH-304 held photos: the recorder (or the administrator who moved the item) registers and confirms a photo; the body refuses everyone else
- ('register_held_photo_upload',true,'no'),('confirm_held_photo_upload',true,'no'),
+ ('register_held_photo_upload',true,'no'),('confirm_held_photo_upload',true,'no'),('mark_held_photo_missing',true,'no'),
  -- warehouse-wide: staff documents (migrations 18 to 28)
  ('save_grn',true,'no'),('update_grn',true,'no'),('set_lot_rack_and_mark',true,'no'),('check_grn_exists',true,'no'),('get_next_grn_number',true,'no'),
  -- the numbering rules (migration 127): staff are suggested the next number; supervisors read the rules, administrators change them
