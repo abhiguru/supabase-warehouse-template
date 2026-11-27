@@ -79,7 +79,9 @@ DECLARE d record; ans jsonb;
 BEGIN
   SELECT * INTO d FROM pg_temp.sf_device WHERE phone = p;
   ans := pg_temp.sf_as(d.claims, stmt);
-  PERFORM pg_temp.sf_assert(ans->>'success' = 'true', format('premise: %s as %s answered a success: %s', label, p, left(COALESCE(ans::text, 'NULL'), 300)));
+  -- Answered, not refused: a success answer, or (get_customer_stock_summary) one with neither a success key nor an error key; a refusal
+  -- answers success false or an error key.
+  PERFORM pg_temp.sf_assert(ans->>'success' = 'true' OR (jsonb_typeof(ans) = 'object' AND NOT ans ? 'success' AND NOT ans ? 'error'), format('premise: %s as %s answered a success: %s', label, p, left(COALESCE(ans::text, 'NULL'), 300)));
   INSERT INTO pg_temp.cc_answer(who, label, answer) VALUES (p, label, ans);
 END $$;
 -- The ids found under a key in an answer (any depth).
