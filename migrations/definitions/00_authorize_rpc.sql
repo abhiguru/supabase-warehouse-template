@@ -63,6 +63,8 @@ BEGIN
   -- Approved document RPCs only; no shared ownership or table-policy change.
   IF role_name = 'staff' AND rpc IN (
     'save_grn','update_grn','check_grn_exists','get_next_grn_number',
+    -- A lot's rack and package mark from its row (topic "lot rack and mark change"); a customer account stays refused by the final ELSE.
+    'set_lot_rack_and_mark',
     'get_all_grn_items','get_grn_list','get_grn_details',
     -- The next GRN, dispatch or invoice number under the facility's rule (migration 127); the rules are read by supervisors and above.
     'suggest_document_number',

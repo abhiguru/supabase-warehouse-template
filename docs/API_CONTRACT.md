@@ -1535,6 +1535,23 @@ History: migrations 87 (the outside review fixes of 2026-10-15), 120 and 121.
 - `get_grn_list` (`total_weight`) and `get_customer_dispatch_items` (`total_weight`) sum weight as numeric: a
   total above 2147483647 kg is a number, not an error.
 
+### `set_lot_rack_and_mark(p_lot_id uuid, p_changes jsonb, p_request_key text)` (topic "lot rack and mark change", WH-302)
+
+Changes one lot's rack and package mark, nothing else. Administrators, supervisors and staff; a customer account is refused by the gate (42501).
+`p_changes` = `{ rack?: {to, from}, package_mark?: {to, from}, recorded_at?: ISO time }`; `from` is the value the phone held when the person made the
+change. `recorded_at` is the phone time of the change (not a field: alone, with an unknown key or not a time it is `LOT_CHANGE_INVALID`); it goes to the
+replaced entry, and a time later than the server time is stored as the server time. A missing field, an unknown key or a blank `p_request_key` is `LOT_CHANGE_INVALID`.
+Values are trimmed, given the digits 0-9, blank is NULL; then rack is limited to 30 and mark to 60 characters (`RACK_TOO_LONG`, `MARK_TOO_LONG`, with `limit`).
+A lot or GRN that is gone is `LOT_NOT_FOUND`. Dispatched, billed and on-order lots, imported lots (the imported guard lets this function alone change rack and
+mark of an imported line), lots of a deactivated customer and GRNs with no sender or supervisor are accepted. Last sent wins per field: the stored value
+becomes `to`; when it differed from both `from` and `to`, a `grn_replacements` entry is recorded and listed in `replaced`
+(`{id, field, newer, sent, newer_by_name, newer_at, sent_by_name, sent_at, recorded_at}`), except when the caller set the stored value themselves. `to`
+equal to the stored value writes nothing. A call that writes moves the GRN's `updated_at`/`updated_by` (an Edit GRN opened before is refused `STALE_RECORD`).
+Answer: `{success, lot: {id, gr_id, rack, package_mark}, grn: {id, gr_no, updated_at}, changed: [field], replaced: [entry]}`. The first answer of a key is kept
+with no expiry: a repeat of the key (by the same person, for the same lot) gets it again plus `idempotent: true` and writes nothing, and `get_submission_result`
+finds it while the lot exists; the same key for another lot is `REQUEST_KEY_REUSED`. Field marks (`warehouse_security.grn_field_marks`: who last set a lot's
+rack and mark, and when) are kept by a trigger on `goodsreceived_trl`.
+
 ### Dispatch lists: the GRN of each line (migration 131)
 
 - `get_dispatch_list_with_items(..., p_include_items => true)`: each `data.dispatches[].items[]` object gains `grn_id` (the id of the GRN the lot was
