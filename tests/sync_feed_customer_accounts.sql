@@ -157,7 +157,7 @@ INSERT INTO public.user_profiles(auth_user_id, mobile, name, role, active, enrol
 SELECT pg_temp.sf_login('9888897301') AS c1_claims \gset
 SELECT pg_temp.sf_login('9888897382') AS c2_claims \gset
 SELECT pg_temp.sf_login('9888897383') AS c3_claims \gset
-SELECT pg_temp.sf_assert(pg_temp.sf_as(:'sf_admin_claims'::jsonb, 'SELECT public.create_customer(''Customer Copy North'', ''9888897321'')')->>'success' = 'true'
+SELECT pg_temp.sf_assert(pg_temp.sf_as(:'sf_admin_claims'::jsonb, 'SELECT public.create_customer(''Customer Copy North'', ''9888897391'')')->>'success' = 'true'
   AND pg_temp.sf_as(:'sf_admin_claims'::jsonb, 'SELECT public.create_customer(''Customer Copy South'', ''9888897322'')')->>'success' = 'true'
   AND pg_temp.sf_as(:'sf_admin_claims'::jsonb, 'SELECT public.create_customer(''Customer Copy West'', ''9888897323'')')->>'success' = 'true', 'customers');
 SELECT pg_temp.sf_assert(pg_temp.sf_as(:'sf_admin_claims'::jsonb, 'SELECT public.create_item(''Customer Copy Garlic'', ''Bag'')')->>'success' = 'true', 'item');

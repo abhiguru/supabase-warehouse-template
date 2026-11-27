@@ -49,7 +49,7 @@ SELECT pg_temp.sf_login('9888897652') AS staff_claims \gset
 SELECT pg_temp.sf_login('9888897653') AS supervisor_claims \gset
 SELECT pg_temp.sf_login('9888897604') AS staff2_claims \gset
 SELECT pg_temp.sf_login('9888897661') AS c1_claims \gset
-SELECT pg_temp.sf_assert(pg_temp.sf_as(:'sf_admin_claims'::jsonb, 'SELECT public.create_customer(''Held Feed North'', ''9888897621'')')->>'success' = 'true', 'customer');
+SELECT pg_temp.sf_assert(pg_temp.sf_as(:'sf_admin_claims'::jsonb, 'SELECT public.create_customer(''Held Feed North'', ''9888897671'')')->>'success' = 'true', 'customer');
 SELECT id AS north FROM public.customers WHERE name = 'Held Feed North' \gset
 SELECT pg_temp.sf_assert(pg_temp.sf_as(:'sf_admin_claims'::jsonb, format('SELECT to_jsonb(public.assign_customer_to_user(%L, %L::uuid, %L))', '919888897661', :'north', 'Held feed fixture'))::text = 'true',
   'customer account assigned');
