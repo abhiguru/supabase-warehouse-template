@@ -174,6 +174,13 @@ $m$  END CASE;
       oc := (SELECT x.customer_id FROM public.orders x WHERE x.id = g);
       PERFORM warehouse_sync.log_entry('orders', g::text, 'U', oc, oc, NULL, NULL);
     END LOOP;
+  ELSIF t = 'user_profiles' AND TG_OP = 'UPDATE'
+        AND (o->>'name' IS DISTINCT FROM n->>'name' OR o->>'display_name' IS DISTINCT FROM n->>'display_name') THEN
+    -- A renamed profile changes updated_by_name on the orders it last updated. Staff get them through the user_profiles fan-out in expand();
+    -- a customer account never receives a user_profiles log row, so its own customers' orders are logged here, under their customer.
+    FOR g, oc IN SELECT x.id, x.customer_id FROM public.orders x WHERE x.updated_by = (r->>'id')::uuid LOOP
+      PERFORM warehouse_sync.log_entry('orders', g::text, 'U', oc, oc, NULL, NULL);
+    END LOOP;
   END IF;$m$
 ]);
 
