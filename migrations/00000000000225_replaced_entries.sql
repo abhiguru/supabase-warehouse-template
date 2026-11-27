@@ -60,7 +60,8 @@ BEGIN
   IF COALESCE(v_marked, false) AND v_mark_by IS NOT NULL AND v_mark_by = p_sent_by THEN
     RETURN NULL;
   END IF;
-  v_recorded := LEAST(p_recorded_at, v_sent_at);
+  -- NULL stays NULL (no phone time sent); LEAST alone would ignore the NULL and store sent_at.
+  v_recorded := CASE WHEN p_recorded_at IS NULL THEN NULL ELSE LEAST(p_recorded_at, v_sent_at) END;
   INSERT INTO warehouse_security.grn_replacements
     (grn_id, lot_id, customer_id, kind, field, newer_value, newer_by, newer_at, sent_value, sent_by, sent_at, recorded_at, request_key)
   VALUES (p_grn_id, p_lot_id, (SELECT g.customer_id FROM public.goodsreceived g WHERE g.id = p_grn_id), 'field', p_field,
