@@ -7,7 +7,8 @@
 --    customer read) and public.user_accessible_customers(). The seven reads that check users_customers_new themselves use the same rule.
 --    A deactivated customer (active = false, not deleted) is unchanged. Administrators, supervisors and staff are unchanged.
 -- 2. No read answers a customer account a key of the agreed forbidden list (created_by, updated_by, deleted_by, supervisor_id, sender_id,
---    import_batch_id, uploaded_by, created_by_name, updated_by_name, updated_by_display_name, user_access), at any depth. Only for a caller
+--    import_batch_id, uploaded_by, created_by_name, updated_by_name, updated_by_display_name, user_access, and (PQ8) created_by_info,
+--    created_by_display_name, created_by_role), at any depth. Only for a caller
 --    whose active role is customer; warehouse_security.customer_answer does it. get_invoice_data and get_invoice_detail call it in their
 --    definitions files; get_customer_dispatch_list, get_grn_details, get_orders_list and get_order_with_items here (the other customer reads
 --    answer none of these keys).
@@ -108,7 +109,8 @@ CREATE FUNCTION warehouse_security.strip_staff_keys(j jsonb) RETURNS jsonb
     WHEN 'object' THEN COALESCE((SELECT jsonb_object_agg(e.key, warehouse_security.strip_staff_keys(e.value))
       FROM jsonb_each(j) e
       WHERE e.key <> ALL (ARRAY['created_by', 'updated_by', 'deleted_by', 'supervisor_id', 'sender_id', 'import_batch_id', 'uploaded_by',
-                                'created_by_name', 'updated_by_name', 'updated_by_display_name', 'user_access'])), '{}'::jsonb)
+                                'created_by_name', 'updated_by_name', 'updated_by_display_name', 'user_access',
+                                'created_by_info', 'created_by_display_name', 'created_by_role'])), '{}'::jsonb)
     WHEN 'array' THEN COALESCE((SELECT jsonb_agg(warehouse_security.strip_staff_keys(e.value) ORDER BY e.ord)
       FROM jsonb_array_elements(j) WITH ORDINALITY e(value, ord)), '[]'::jsonb)
     ELSE j END
