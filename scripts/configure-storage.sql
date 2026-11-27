@@ -49,27 +49,43 @@ DROP POLICY IF EXISTS starter_manager_images_update ON storage.objects;
 CREATE POLICY starter_manager_images_update ON storage.objects FOR UPDATE TO authenticated
 USING (bucket_id IN ('grn-images','dispatch-images') AND (SELECT warehouse_security.active_role()) IN ('admin','supervisor'))
 WITH CHECK (bucket_id IN ('grn-images','dispatch-images') AND (SELECT warehouse_security.active_role()) IN ('admin','supervisor'));
+-- The held-photo clause (migration 240, held_item_photos_upload) is added only when its helper exists: this script also runs against a
+-- schema that has not had migration 240 yet, and setup.sh runs it again after every migrate, so the next run creates the full policy.
 DROP POLICY IF EXISTS starter_manager_images_delete ON storage.objects;
-CREATE POLICY starter_manager_images_delete ON storage.objects FOR DELETE TO authenticated
+DO $policy$
+DECLARE
+  v_held text := CASE WHEN to_regprocedure('warehouse_security.held_photo_file_named(text)') IS NOT NULL
+    THEN E'\n  AND NOT warehouse_security.held_photo_file_named(name)' ELSE '' END;
+BEGIN
+  EXECUTE $sql$CREATE POLICY starter_manager_images_delete ON storage.objects FOR DELETE TO authenticated
 USING (bucket_id IN ('grn-images','dispatch-images') AND (SELECT warehouse_security.active_role()) IN ('admin','supervisor')
   AND NOT EXISTS (SELECT 1 FROM public.grn_images i WHERE i.storage_path=name)
   AND NOT EXISTS (SELECT 1 FROM public.dispatch_images i WHERE i.storage_path=name)
   AND NOT EXISTS (SELECT 1 FROM public.goodsreceived g WHERE g.gr_image_url IS NOT NULL AND position(name IN g.gr_image_url) > 0)
-  AND NOT EXISTS (SELECT 1 FROM public.dispatch d WHERE d.disp_image_url IS NOT NULL AND position(name IN d.disp_image_url) > 0)
-  AND NOT warehouse_security.held_photo_file_named(name));
--- The files of held items (WH-304, migration held_item_photos_upload): under held/<held id>/ of the two photo buckets. Staff upload only
+  AND NOT EXISTS (SELECT 1 FROM public.dispatch d WHERE d.disp_image_url IS NOT NULL AND position(name IN d.disp_image_url) > 0)$sql$ || v_held || ')';
+END
+$policy$;
+-- The files of held items (WH-304, migration 240 held_item_photos_upload): under held/<held id>/ of the two photo buckets. Staff upload only
 -- the pending file they registered for a held item still held, and read the files of the items they recorded; the helpers read
--- held_item_photos, which no app role may read. Managers are covered by the manager policies above.
+-- held_item_photos, which no app role may read. Managers are covered by the manager policies above. Created only once migration 240's
+-- two helpers exist (the next run of this script after that migration creates them).
 DROP POLICY IF EXISTS starter_held_photo_staff_read ON storage.objects;
-CREATE POLICY starter_held_photo_staff_read ON storage.objects FOR SELECT TO authenticated
-USING (bucket_id IN ('grn-images','dispatch-images') AND warehouse_security.held_photo_file_access(bucket_id, name, false));
 DROP POLICY IF EXISTS starter_held_photo_staff_insert ON storage.objects;
-CREATE POLICY starter_held_photo_staff_insert ON storage.objects FOR INSERT TO authenticated
-WITH CHECK (bucket_id IN ('grn-images','dispatch-images') AND warehouse_security.held_photo_file_access(bucket_id, name, true));
 DROP POLICY IF EXISTS starter_held_photo_staff_update ON storage.objects;
-CREATE POLICY starter_held_photo_staff_update ON storage.objects FOR UPDATE TO authenticated
-USING (bucket_id IN ('grn-images','dispatch-images') AND warehouse_security.held_photo_file_access(bucket_id, name, true))
-WITH CHECK (bucket_id IN ('grn-images','dispatch-images') AND warehouse_security.held_photo_file_access(bucket_id, name, true));
+DO $policy$
+BEGIN
+  IF to_regprocedure('warehouse_security.held_photo_file_access(text,text,boolean)') IS NOT NULL
+     AND to_regprocedure('warehouse_security.held_photo_file_named(text)') IS NOT NULL THEN
+    CREATE POLICY starter_held_photo_staff_read ON storage.objects FOR SELECT TO authenticated
+    USING (bucket_id IN ('grn-images','dispatch-images') AND warehouse_security.held_photo_file_access(bucket_id, name, false));
+    CREATE POLICY starter_held_photo_staff_insert ON storage.objects FOR INSERT TO authenticated
+    WITH CHECK (bucket_id IN ('grn-images','dispatch-images') AND warehouse_security.held_photo_file_access(bucket_id, name, true));
+    CREATE POLICY starter_held_photo_staff_update ON storage.objects FOR UPDATE TO authenticated
+    USING (bucket_id IN ('grn-images','dispatch-images') AND warehouse_security.held_photo_file_access(bucket_id, name, true))
+    WITH CHECK (bucket_id IN ('grn-images','dispatch-images') AND warehouse_security.held_photo_file_access(bucket_id, name, true));
+  END IF;
+END
+$policy$;
 -- A customer reads the file of a confirmed photo of an assigned customer's document only while the document is not deleted
 -- (migration 137 does the same for the grn_images and dispatch_images rows).
 DROP POLICY IF EXISTS starter_customer_grn_images ON storage.objects;
