@@ -8,9 +8,10 @@
 --     trial of get_held_item has set the transaction-local setting warehouse.held_acting AND the caller is an administrator or a
 --     supervisor; every other call answers NULL, so a save behaves exactly as before. The role gate and every "needs a manager" check keep
 --     reading the caller (the accepting person).
---  3. The five saves read the acting person through it: set_lot_rack_and_mark and apply_grn_changes (the person of the request key, of the
---     replaced entries and of updated_by) and the two field-mark triggers (who set a field, which decides whether a later change is a
---     "replaced entry"). The photo attach of a held item is in decide_held_item.
+--  3. The saves and triggers read the acting person through it: set_lot_rack_and_mark and apply_grn_changes (the person of the request key,
+--     of the replaced entries and of updated_by), the two field-mark triggers (who set a field, which decides whether a later change is a
+--     "replaced entry"), and public.set_audit_columns() (BEFORE INSERT OR UPDATE on goodsreceived and dispatch, so created_by and updated_by
+--     keep the recorder instead of being overwritten from auth.uid()). The photo attach of a held item is in decide_held_item.
 -- Patched by text with marker counts. No role is created, altered or dropped; the pg_temp helper is dropped at the end.
 
 -- ===== 1. who accepted =====
@@ -96,6 +97,18 @@ $m$SELECT p.id INTO v_by FROM public.user_profiles p WHERE p.auth_user_id = auth
 $m$SELECT p.id INTO v_by FROM public.user_profiles p WHERE p.auth_user_id = auth.uid();
     -- WH-304: a field written by an accepted held item was set by the recorder.
     v_by := COALESCE(warehouse_security.acting_profile(), v_by);$m$
+]);
+
+SELECT pg_temp.patch_function('public.set_audit_columns()'::regprocedure, ARRAY[
+$m$      SELECT id INTO current_user_profile_id
+      FROM user_profiles
+      WHERE auth_user_id = auth.uid();$m$
+], ARRAY[
+$m$      SELECT id INTO current_user_profile_id
+      FROM user_profiles
+      WHERE auth_user_id = auth.uid();
+      -- WH-304: a held GRN, dispatch or edit accepted by a supervisor or administrator keeps the recorder on created_by and updated_by.
+      current_user_profile_id := COALESCE(warehouse_security.acting_profile(), current_user_profile_id);$m$
 ]);
 
 -- A customer account's copy never holds who accepted a document (an internal staff id, as created_by).
