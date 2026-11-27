@@ -585,7 +585,7 @@ test_files=(
   "$ROOT/tests/accountant_pack.sql"
   "$ROOT/tests/offline_number_issued_161.sql" "$ROOT/tests/offline_recorded_time_161.sql"
   "$ROOT/tests/offline_request_id_161.sql" "$ROOT/tests/offline_refusal_codes_161.sql"
-  "$ROOT/tests/held_items_hand_over_304.sql" "$ROOT/tests/held_items_reads_decide_304.sql"
+  "$ROOT/tests/held_items_hand_over_304.sql" "$ROOT/tests/held_items_reads_decide_304.sql" "$ROOT/tests/held_items_photos_304.sql"
 )
 for test_sql in "${test_files[@]}"; do
   # WH-205: bills need saved GST details with a GSTIN; every suite starts from a registered store (the suites that test the state set their own).
