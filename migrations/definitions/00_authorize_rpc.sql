@@ -65,6 +65,9 @@ BEGIN
     'save_grn','update_grn','check_grn_exists','get_next_grn_number',
     -- A lot's rack and package mark from its row (topic "lot rack and mark change"); a customer account stays refused by the final ELSE.
     'set_lot_rack_and_mark',
+    -- Edit GRN by field changes (topic "edit GRN by field changes", WH-303), as update_grn. The replaced-entries list and "mark checked"
+    -- are not here: administrators and supervisors pass the line above and their bodies refuse a supervisor.
+    'apply_grn_changes',
     'get_all_grn_items','get_grn_list','get_grn_details',
     -- The next GRN, dispatch or invoice number under the facility's rule (migration 127); the rules are read by supervisors and above.
     'suggest_document_number',

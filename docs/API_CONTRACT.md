@@ -309,7 +309,7 @@ The server logs every change a phone's copy needs (`warehouse_sync.change_log`, 
 ENABLE ALWAYS: they also fire under `session_replication_role = replica`). Nothing may switch the user triggers of those tables off or
 on wholesale. The app uses these RPCs only when `capabilities.sync` is true in `get-public-config` (off by default; `scripts/set-capability.mjs
 sync on`) and it knows the answer's `format`; otherwise, or against a server without them (PGRST202), it works as before. The format
-is 3 since migrations "sync orders" to "sync GST details" (WH-328, WH-348; the last of them sets it); a copy of an earlier format answers `reload_all` `FORMAT_CHANGED`. Format 2 was set by "sync GRN invoice state and lot emptied time" (WH-299).
+is 4 since migration "replaced entries list and feed" (WH-303); it was 3 from migrations "sync orders" to "sync GST details" (WH-328, WH-348; the last of them sets it); a copy of an earlier format answers `reload_all` `FORMAT_CHANGED`. Format 2 was set by "sync GRN invoice state and lot emptied time" (WH-299).
 
 - **Positions** are decimal strings of 64-bit transaction ids; the phone stores and returns them, never computes with them. The copy key
   (`copy`) is opaque: `<format>.<log id>.<access>`.
@@ -336,6 +336,8 @@ is 3 since migrations "sync orders" to "sync GST details" (WH-328, WH-348; the l
   `standard_rate_tiers` and `item_price_history` (every column, id as text; the last three administrators and supervisors only); a `dispatch` row
   made from an order carries `created_by_name`; an `invoice_trl` row `storage_amount`; an `invoice` row `payment_state` (not for staff). A
   customer account's rows of these lose the columns above, and `entered_by` and `updated_by` of a payment.
+  From format 4 (WH-303): `grn_replacements`, the unchecked replaced entries in `get_grn_replacements`' row shape, for administrators,
+  supervisors and staff only; an entry checked is a delete, and any change of an entry brings its GRN (`goodsreceived`) as an upsert.
 - **`get_sync_changes(p_position, p_copy, p_limit DEFAULT 2000)`** → `{success, format, position, as_of, more, reload_all, reload[], changes[]}`.
   Changes come from finished transactions only, whole transactions per page, at most `p_limit` entries, one per entity and id, each the
   row as it is now: `{e, id, op: "upsert", v, row}`, `{e, id, op: "delete"}`, or `{e: "money", id: <customer>, op: "stale"}` (that
@@ -678,7 +680,10 @@ per listed line that has an `id`, before any write, and only where a value reall
 packaging compared as `COALESCE(x,'')`; weight as `COALESCE(x,0)`): an invoiced lot whose item, packaging or weight changes is
 `LOT_INVOICED` (the first offending line in the order sent, `fields` all its changed fields); else a dispatched lot whose item or
 packaging changes is `LOT_DISPATCHED`. A dispatched lot keeps its stored `item_name` (the edit does not overwrite it); its weight and
-the GRN date stay editable unless it is invoiced. D23: the GRN date of an invoiced GRN (a live invoice, or `invoiced` set) is locked:
+the GRN date stay editable unless it is invoiced. WH-303 (topic "GRN save never skips a quantity"): an invoiced lot's quantity is locked
+too (`LOT_INVOICED`, `qty` in `fields`, checked first); a dispatched lot's changed quantity below what has left it is
+`QTY_BELOW_DISPATCHED` (`lot_id`, `item_name`, `dispatched_qty`, `requested`), nothing written; at or above it, it is written with
+`stock = qty − dispatched`. A quantity is never skipped: `stats.items_skipped_stock` is always `[]` (kept for older apps). D23: the GRN date of an invoiced GRN (a live invoice, or `invoiced` set) is locked:
 a day (IST) that differs from the stored one is `GRN_DATE_LOCKED`; the same day sent back, at any time, is not a change.
 `update_dispatch_smart`: when a line of the dispatch is on a live invoice and the request changes the date or the number it answers
 `DISPATCH_INVOICED`. "Changed": `disp_no` differs from the stored text; the day sent (a date) differs from the IST day of the
@@ -1551,6 +1556,36 @@ Answer: `{success, lot: {id, gr_id, rack, package_mark}, grn: {id, gr_no, update
 with no expiry: a repeat of the key (by the same person, for the same lot) gets it again plus `idempotent: true` and writes nothing, and `get_submission_result`
 finds it while the lot exists; the same key for another lot is `REQUEST_KEY_REUSED`. Field marks (`warehouse_security.grn_field_marks`: who last set a lot's
 rack and mark, and when) are kept by a trigger on `goodsreceived_trl`.
+
+### `apply_grn_changes(p_grn_id uuid, p_changes jsonb, p_request_key text)` (topic "edit GRN by field changes", WH-303)
+
+A GRN edit made with no connection, sent as field changes, never the whole GRN. Administrators, supervisors and staff; a customer account
+is refused by the gate (42501). `p_changes` = `{v: 1, grnId, loadedAt, recordedAt, header?: {field: {from, to}}, lots?: {lotId: {field:
+{from, to}}}, linesAdded?: [{clientLineId, item_id, item_name, packaging, qty, weight, rack, package_mark}], linesRemoved?: [{lotId,
+item_name, qty}]}`; header fields `date`, `customer_id` (`{id, name}`), `sender` and `supervisor` (`{id, name}`), `registration`, `note`,
+`leon`, `pricing_mode`; lot fields `item` (`{id, name}`), `packaging`, `qty`, `weight`, `rack`, `package_mark`. No rates, no GRN number,
+no photos. A body not understood, nothing to change or a blank key is `GRN_CHANGE_INVALID`. Last sent wins (no `STALE_RECORD`); a `to`
+equal to the stored value is applied and writes nothing. The checks and the write are `update_grn`'s (the stored GRN with the changes on
+top), plus `GRN_NOT_FOUND`, `IMPORTED_READ_ONLY`, `LOT_NOT_FOUND` (also a change to a line deleted meanwhile), `GRN_CUSTOMER_LOCKED` and
+`GRN_PRICING_MODE_LOCKED`. All or nothing: a refusal is the first refused change's (order header, lots, linesAdded, linesRemoved) with
+`refused: [{path, code}]` for every refused change (`path` `header.<field>`, `lots.<lotId>.<field>`, `linesAdded.<clientLineId>`,
+`linesRemoved.<lotId>`). Answer: `{success, grn_id, gr_no, updated_at, applied: {header: [field], lots: {id: [field]}}, lines_added:
+[{client_line_id, id}], lines_removed: [id], replaced: [entry], order_effects}`; a write moves the GRN's `updated_at`/`updated_by`. A
+stored value that differs from both `from` and `to` is recorded as a replaced entry (`kind` `field`; none when the caller set it
+themselves); when the send adds a line and someone else added one after `loadedAt`, one `line_added` entry per such line and per line of
+this send. The first answer of a key is kept with no expiry (replay as `set_lot_rack_and_mark`; `get_submission_result` finds it while
+the GRN exists). Field marks now cover every field above (triggers on `goodsreceived` and `goodsreceived_trl`).
+
+### Replaced entries (WH-303)
+
+`get_grn_replacements(p_from date, p_to date, p_state text, p_limit int DEFAULT 100, p_offset int DEFAULT 0)`, administrators only:
+`{success, rows, total}`, newest first by `sent_at`, India days of `sent_at` between `p_from` and `p_to` (NULL = open), `p_state`
+`unchecked`, `checked` or NULL (both), else `STATE_INVALID`; at most 2,000 rows. Row: `{id, grn_id, gr_no, customer_name, kind, field,
+newer_value, newer_by_name, newer_at, sent_value, sent_by_name, sent_at, recorded_at, checked_by_name, checked_at}` (a name is null when
+the person is not known; a `field` entry's values are JSON strings, a `line_added` entry's `sent_value` is `{item_name, qty, packaging}`).
+`mark_grn_replacements_checked(p_grn_id uuid, p_ids uuid[])`, administrators only: `{success, checked: n}`, the named entries of that GRN
+not yet checked; others are skipped. The server never deletes an entry. `get_grn_details` answers `replacements` (the GRN's unchecked
+entries, same rows) to administrators, supervisors and staff only.
 
 ### Dispatch lists: the GRN of each line (migration 131)
 
