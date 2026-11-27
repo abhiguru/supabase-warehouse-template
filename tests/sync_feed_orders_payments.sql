@@ -188,15 +188,16 @@ SELECT pg_temp.sf_phone('c2', :'c2_claims'::jsonb);
 -- B4. Format 3: every role's start and copy key, a changes answer; a copy of format 2 is told to reload everything.
 -- ---------------------------------------------------------------------------------------------------------------------------------
 SELECT pg_temp.sf_first_load(p) FROM unnest(ARRAY['admin', 'supervisor', 'staff', 'c1', 'c2']) p;
-SELECT pg_temp.sf_assert((SELECT count(*) = 5 AND bool_and(answer->>pg_temp.sf('f_format') = '3' AND answer->>pg_temp.sf('f_copy') LIKE '3.%')
+SELECT pg_temp.sf_assert((SELECT count(*) = 5 AND bool_and((answer->>pg_temp.sf('f_format'))::int >= 3 AND split_part(answer->>pg_temp.sf('f_copy'), '.', 1) = answer->>pg_temp.sf('f_format'))
     FROM pg_temp.sf_answer WHERE kind = 'start'),
-  'B4: get_sync_start answers format 3 and a format-3 copy key to every role: '
+  'B4: get_sync_start answers format 3 or later and a copy key of that same format to every role: '
   || (SELECT string_agg(phone || ' ' || COALESCE(answer->>pg_temp.sf('f_format'), '(none)'), ', ') FROM pg_temp.sf_answer WHERE kind = 'start'));
 SELECT pg_temp.sf_changes_once('admin') AS plain_changes \gset
-SELECT pg_temp.sf_assert(:'plain_changes'::jsonb->>pg_temp.sf('f_format') = '3', 'B4: get_sync_changes answers format 3: ' || left(:'plain_changes', 300));
-SELECT pg_temp.sf_changes_once('admin', NULL, regexp_replace(copy, '^[0-9]+\.', '2.')) AS old_copy FROM pg_temp.sf_device WHERE phone = 'admin' \gset
+SELECT pg_temp.sf_assert((:'plain_changes'::jsonb->>pg_temp.sf('f_format'))::int >= 3, 'B4: get_sync_changes answers format 3 or later: ' || left(:'plain_changes', 300));
+SELECT (:'plain_changes'::jsonb->>pg_temp.sf('f_format'))::int - 1 AS older_format \gset
+SELECT pg_temp.sf_changes_once('admin', NULL, regexp_replace(copy, '^[0-9]+\.', :'older_format' || '.')) AS old_copy FROM pg_temp.sf_device WHERE phone = 'admin' \gset
 SELECT pg_temp.sf_assert(:'old_copy'::jsonb#>>ARRAY[pg_temp.sf('f_reload_all'), pg_temp.sf('f_reason')] = pg_temp.sf('r_format'),
-  'B4: a copy key of format 2 answers reload_all FORMAT_CHANGED: ' || left(:'old_copy', 300));
+  'B4: a copy key of the format before the current one answers reload_all FORMAT_CHANGED: ' || left(:'old_copy', 300));
 
 -- ---------------------------------------------------------------------------------------------------------------------------------
 -- B1. Who holds which entities and rows after a first load.
