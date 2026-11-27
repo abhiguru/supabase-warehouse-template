@@ -497,6 +497,8 @@ BEGIN
       v_possible := (v_rec.grn IS NOT NULL AND EXISTS (SELECT 1 FROM public.goodsreceived g WHERE g.id = v_rec.grn AND g.deleted_at IS NULL))
                  OR (v_rec.disp IS NOT NULL AND EXISTS (SELECT 1 FROM public.dispatch d WHERE d.id = v_rec.disp AND d.deleted_at IS NULL));
     ELSE
+      -- The trial runs the document writers: the refresh lock first, before held_store_reason's row lock.
+      PERFORM pg_advisory_xact_lock(71040);
       v_run := warehouse_security.held_run(h.id, NULL, true);
       v_possible := (v_run ->> 'ok')::boolean;
       -- The reason follows today's refusal, so the list and the recorder see it.
@@ -549,6 +551,8 @@ BEGIN
     RAISE EXCEPTION 'Administrator or supervisor required' USING ERRCODE = '42501';
   END IF;
 
+  -- The refresh lock before the held item's row lock: the accept runs the document writers, which take it first (migration 46).
+  PERFORM pg_advisory_xact_lock(71040);
   SELECT * INTO h FROM public.held_items x WHERE x.id = p_id FOR UPDATE;
   IF NOT FOUND THEN
     RETURN warehouse_security.refuse('HELD_NOT_FOUND', 'This held item is not there.');
