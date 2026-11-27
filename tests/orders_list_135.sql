@@ -104,6 +104,17 @@ SELECT customer_id AS cust_t4 FROM f135 WHERE tag='t4' \gset
 SELECT customer_id AS cust_t2 FROM f135 WHERE tag='t2' \gset
 
 -- The reference: the old list, read from the view with the old filters, the old ORDER BY and the old object.
+-- WH-306 (migration 239): no read answers a customer account a staff key, at any depth (contract app-offline-customer-accounts.md, PQ3
+-- and PQ8). The test's own copy of the agreed list, so the check does not lean on the function it checks.
+CREATE FUNCTION pg_temp.ol_without_staff_keys(j jsonb) RETURNS jsonb LANGUAGE sql AS $$
+  SELECT CASE jsonb_typeof(j)
+    WHEN 'object' THEN COALESCE((SELECT jsonb_object_agg(e.key, pg_temp.ol_without_staff_keys(e.value)) FROM jsonb_each(j) e
+      WHERE e.key <> ALL (ARRAY['created_by','updated_by','deleted_by','supervisor_id','sender_id','import_batch_id','uploaded_by',
+                                'created_by_name','updated_by_name','updated_by_display_name','user_access',
+                                'created_by_info','created_by_display_name','created_by_role'])), '{}'::jsonb)
+    WHEN 'array' THEN COALESCE((SELECT jsonb_agg(pg_temp.ol_without_staff_keys(e.value) ORDER BY e.ord) FROM jsonb_array_elements(j) WITH ORDINALITY AS e(value, ord)), '[]'::jsonb)
+    ELSE j END
+$$;
 CREATE FUNCTION pg_temp.ol_reference(p_name text DEFAULT 'Ol135', p_has_items boolean DEFAULT NULL, p_search text DEFAULT NULL, p_customers uuid[] DEFAULT NULL) RETURNS jsonb LANGUAGE sql AS $$
   SELECT COALESCE(jsonb_agg(obj ORDER BY ord),'[]') FROM (
     SELECT row_number() OVER (ORDER BY CASE WHEN m.total_items=0 THEN m.dispatch_created_at ELSE m.updated_at END DESC NULLS LAST, m.created_at DESC, m.order_id) AS ord,
@@ -232,8 +243,8 @@ SELECT public.get_orders_list(p_customer_name=>'Ol135',p_user_id=>:'admin_user':
 SELECT public.get_orders_list(p_customer_id=>:'cust_t2'::uuid) AS r_foreign \gset
 RESET ROLE;
 SELECT pg_temp.ol_assert(:'s_all'::jsonb#>'{data,orders}'=:'ref_all'::jsonb AND EXISTS (SELECT 1 FROM jsonb_array_elements(:'s_all'::jsonb#>'{data,orders}') o WHERE o#>>'{customer,active}'='false'),'staff list equals the whole old list, the inactive customer''s order included');
-SELECT pg_temp.ol_assert(:'r_all'::jsonb#>'{data,orders}'=pg_temp.ol_reference(p_customers=>ARRAY(SELECT customer_id FROM f135 WHERE tag IN ('t1','t3')))
-  AND jsonb_array_length(:'r_all'::jsonb#>'{data,orders}')=2 AND (:'r_all'::jsonb#>>'{data,pagination,total_count}')::int=2,'a customer account sees only its two assigned customers, as the old list did');
+SELECT pg_temp.ol_assert(:'r_all'::jsonb#>'{data,orders}'=pg_temp.ol_without_staff_keys(pg_temp.ol_reference(p_customers=>ARRAY(SELECT customer_id FROM f135 WHERE tag IN ('t1','t3'))))
+  AND jsonb_array_length(:'r_all'::jsonb#>'{data,orders}')=2 AND (:'r_all'::jsonb#>>'{data,pagination,total_count}')::int=2,'a customer account sees only its two assigned customers, as the old list did: '||:'r_all');
 SELECT pg_temp.ol_assert(:'r_admin_id'::jsonb#>'{data,orders}'=:'r_all'::jsonb#>'{data,orders}','a customer account passing the administrator''s p_user_id still sees only its own');
 SELECT pg_temp.ol_assert(jsonb_array_length(:'r_foreign'::jsonb#>'{data,orders}')=0,'a customer account asking for a customer it is not assigned to gets nothing');
 
