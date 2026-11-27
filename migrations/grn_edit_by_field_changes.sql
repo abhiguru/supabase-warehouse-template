@@ -729,6 +729,13 @@ BEGIN
          FROM jsonb_array_elements(v_refused) AS r));
   END IF;
 
+  -- Design DQ11: each entry names its lot by the lot's item, mark and rack as they are after this write.
+  SELECT COALESCE(jsonb_agg(e.v || jsonb_build_object('lot_item_name', t.item_name, 'lot_package_mark', t.package_mark, 'lot_rack', t.rack)
+                            ORDER BY e.n), '[]'::jsonb)
+    INTO v_replaced
+    FROM jsonb_array_elements(v_replaced) WITH ORDINALITY AS e(v, n)
+    LEFT JOIN public.goodsreceived_trl t ON t.id = (e.v ->> 'lot_id')::uuid;
+
   SELECT jsonb_build_object(
       'success', true,
       'grn_id', g.id,

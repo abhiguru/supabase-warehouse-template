@@ -1581,8 +1581,9 @@ the GRN exists). Field marks now cover every field above (triggers on `goodsrece
 `get_grn_replacements(p_from date, p_to date, p_state text, p_limit int DEFAULT 100, p_offset int DEFAULT 0)`, administrators only:
 `{success, rows, total}`, newest first by `sent_at`, India days of `sent_at` between `p_from` and `p_to` (NULL = open), `p_state`
 `unchecked`, `checked` or NULL (both), else `STATE_INVALID`; at most 2,000 rows. Row: `{id, grn_id, gr_no, customer_name, kind, field,
-newer_value, newer_by_name, newer_at, sent_value, sent_by_name, sent_at, recorded_at, checked_by_name, checked_at}` (a name is null when
-the person is not known; a `field` entry's values are JSON strings, a `line_added` entry's `sent_value` is `{item_name, qty, packaging}`).
+lot_id, lot_item_name, lot_package_mark, lot_rack, newer_value, newer_by_name, newer_at, sent_value, sent_by_name, sent_at, recorded_at,
+checked_by_name, checked_at}` (the `lot_*` keys name the entry's lot by its present item, mark and rack, null for a GRN field or a lot
+since removed; `apply_grn_changes`' `replaced` entries carry them too; a name is null when the person is not known; a `field` entry's values are JSON strings, a `line_added` entry's `sent_value` is `{item_name, qty, packaging}`).
 `mark_grn_replacements_checked(p_grn_id uuid, p_ids uuid[])`, administrators only: `{success, checked: n}`, the named entries of that GRN
 not yet checked; others are skipped. The server never deletes an entry. `get_grn_details` answers `replacements` (the GRN's unchecked
 entries, same rows) to administrators, supervisors and staff only.

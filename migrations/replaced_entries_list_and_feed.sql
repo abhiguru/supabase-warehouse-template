@@ -3,8 +3,9 @@
 -- is assembled for main. It needs the topics "replaced entries" (the table) and "sync change log" with the feed migrations up to
 -- "sync feed without request columns" applied before it.
 --  1. warehouse_security.grn_replacement_rows: one row shape for every reader (names resolved; a person not known is NULL):
---     {id, grn_id, gr_no, customer_name, kind, field, newer_value, newer_by_name, newer_at, sent_value, sent_by_name, sent_at,
---     recorded_at, checked_by_name, checked_at}. No app role reads it.
+--     {id, grn_id, gr_no, customer_name, kind, field, lot_id, lot_item_name, lot_package_mark, lot_rack, newer_value, newer_by_name,
+--     newer_at, sent_value, sent_by_name, sent_at, recorded_at, checked_by_name, checked_at}; the lot_* keys are the lot's present values
+--     (Design DQ11: the line names the lot). No app role reads it.
 --  2. public.get_grn_replacements(p_from, p_to, p_state, p_limit, p_offset): administrators only; {success, rows, total}, newest first by
 --     sent_at; p_from and p_to are India days of sent_at (NULL = open; any p_from, Product PQ7); p_state 'unchecked' ("To check"),
 --     'checked' ("Checked") or NULL (both), anything else STATE_INVALID; at most 2,000 rows a page.
@@ -23,11 +24,14 @@ CREATE VIEW warehouse_security.grn_replacement_rows AS
          jsonb_build_object(
            'id', r.id, 'grn_id', r.grn_id, 'gr_no', g.gr_no, 'customer_name', COALESCE(g.customer_name, c.name),
            'kind', r.kind, 'field', r.field,
+           -- Design DQ11: the lot an entry belongs to, by its present item, mark and rack (NULL for a GRN field or a lot since deleted).
+           'lot_id', r.lot_id, 'lot_item_name', t.item_name, 'lot_package_mark', t.package_mark, 'lot_rack', t.rack,
            'newer_value', r.newer_value, 'newer_by_name', nb.name, 'newer_at', r.newer_at,
            'sent_value', r.sent_value, 'sent_by_name', sb.name, 'sent_at', r.sent_at, 'recorded_at', r.recorded_at,
            'checked_by_name', cb.name, 'checked_at', r.checked_at) AS body
     FROM warehouse_security.grn_replacements r
     LEFT JOIN public.goodsreceived g ON g.id = r.grn_id
+    LEFT JOIN public.goodsreceived_trl t ON t.id = r.lot_id
     LEFT JOIN public.customers c ON c.id = r.customer_id
     LEFT JOIN public.user_profiles nb ON nb.id = r.newer_by
     LEFT JOIN public.user_profiles sb ON sb.id = r.sent_by
