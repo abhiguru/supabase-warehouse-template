@@ -66,6 +66,23 @@ $m$'created_by_info', 'created_by_display_name', 'created_by_role',
                                 'cancelled_by', 'ignored_by', 'discount_set_by', 'zero_charge_set_by', 'discount_reason', 'zero_charge_reason'$m$
 ]);
 
+-- ===== 4. the invoice re-sent after a GRN or dispatch line change reaches customer accounts =====
+-- 221 re-sends an invoice (its items_total_amount follows its lines) when a goodsreceived or dispatch_trl entry changes, for staff-side roles
+-- only. A customer account now receives the figure, so the same two keys are expanded for it. Scope: caller_log passes a customer account
+-- only the log rows of its own customers, and entity_rows sends only invoices of its customers that are live (customer_id = ANY, deleted_at
+-- IS NULL), so no other customer's invoice reaches it.
+SELECT pg_temp.patch_function('warehouse_sync.expand(text, warehouse_sync.change_log[])'::regprocedure, ARRAY[
+$m$WHERE l.tbl = 'goodsreceived' AND p_role <> 'customer'$m$,
+$m$WHERE l.tbl = 'dispatch_trl' AND p_role <> 'customer'$m$
+], ARRAY[
+$m$WHERE l.tbl = 'goodsreceived' AND p_role = 'customer'
+    UNION ALL SELECT l.xid, 'invoice', v.id::text FROM l JOIN public.invoice v ON v.gr_id = l.row_key::uuid
+      WHERE l.tbl = 'goodsreceived' AND p_role <> 'customer'$m$,
+$m$WHERE l.tbl = 'dispatch_trl' AND p_role = 'customer'
+    UNION ALL SELECT l.xid, 'invoice', it.invoice_id::text FROM l JOIN public.invoice_trl it ON it.disp_trl_id = l.row_key::uuid
+      WHERE l.tbl = 'dispatch_trl' AND p_role <> 'customer'$m$
+]);
+
 DROP FUNCTION pg_temp.patch_function(regprocedure, text[], text[]);
 
 NOTIFY pgrst, 'reload schema';
