@@ -256,14 +256,14 @@ SELECT pg_temp.sf_assert(extract(epoch FROM (:'t_load1'::timestamptz - :'t_load0
 -- B0 / B7. Every read of contract section 3, called as a customer account on the fixture. Kept in cc_answer.
 -- ---------------------------------------------------------------------------------------------------------------------------------
 SELECT pg_temp.cc_read('c3', t.label, t.stmt) FROM (VALUES
-  ('get_customer_grn_items', format('SELECT public.get_customer_grn_items(%L::uuid, NULL, NULL, ''{}''::jsonb, ''date'', ''desc'', 2000, 0)', :'north')),
-  ('get_customer_grn_items', format('SELECT public.get_customer_grn_items(%L::uuid, NULL, NULL, ''{}''::jsonb, ''date'', ''desc'', 2000, 0)', :'south')),
-  ('get_customer_grn_items', format('SELECT public.get_customer_grn_items(%L::uuid, NULL, NULL, ''{}''::jsonb, ''date'', ''desc'', 2000, 0)', :'west')),
+  ('get_customer_grn_items', format('SELECT public.get_customer_grn_items(%L::uuid, NULL, NULL, ''{}''::jsonb, ''date'', ''desc'', 100, 0)', :'north')),
+  ('get_customer_grn_items', format('SELECT public.get_customer_grn_items(%L::uuid, NULL, NULL, ''{}''::jsonb, ''date'', ''desc'', 100, 0)', :'south')),
+  ('get_customer_grn_items', format('SELECT public.get_customer_grn_items(%L::uuid, NULL, NULL, ''{}''::jsonb, ''date'', ''desc'', 100, 0)', :'west')),
   ('get_grn_details', format('SELECT public.get_grn_details(%L::uuid)', :'grn_n1')),
   ('get_grn_item_dispatches', format('SELECT public.get_grn_item_dispatches(%L::uuid)', :'lot_n2')),
   ('get_grn_item_rates', format('SELECT public.get_grn_item_rates(%L::uuid)', :'grn_n1')),
-  ('get_customer_dispatch_list', format('SELECT public.get_customer_dispatch_list(%L::uuid, 2000, 0, true)', :'north')),
-  ('get_customer_dispatch_list', format('SELECT public.get_customer_dispatch_list(%L::uuid, 2000, 0, true)', :'west')),
+  ('get_customer_dispatch_list', format('SELECT public.get_customer_dispatch_list(%L::uuid, 100, 0, true)', :'north')),
+  ('get_customer_dispatch_list', format('SELECT public.get_customer_dispatch_list(%L::uuid, 100, 0, true)', :'west')),
   ('get_dispatch_details', format('SELECT public.get_dispatch_details(%L::uuid)', :'disp_n1')),
   ('get_orders_list', format('SELECT public.get_orders_list(p_customer_id => %L::uuid)', :'north')),
   ('get_customer_order', format('SELECT public.get_customer_order(%L::uuid)', :'north')),
@@ -281,7 +281,7 @@ SELECT pg_temp.cc_read('c3', t.label, t.stmt) FROM (VALUES
   ('get_customer_statement', format('SELECT public.get_customer_statement(%L::uuid)', :'north'))
 ) t(label, stmt);
 SELECT pg_temp.cc_read('c1', 'get_grn_details', format('SELECT public.get_grn_details(%L::uuid)', :'grn_n1'));
-SELECT pg_temp.cc_read('c1', 'get_customer_grn_items', format('SELECT public.get_customer_grn_items(%L::uuid, NULL, NULL, ''{}''::jsonb, ''date'', ''desc'', 2000, 0)', :'north'));
+SELECT pg_temp.cc_read('c1', 'get_customer_grn_items', format('SELECT public.get_customer_grn_items(%L::uuid, NULL, NULL, ''{}''::jsonb, ''date'', ''desc'', 100, 0)', :'north'));
 
 -- B0, PQ3: no read answers a customer account a key of the forbidden list, at any depth.
 SELECT pg_temp.sf_assert(NOT EXISTS (SELECT 1 FROM pg_temp.cc_answer a, LATERAL pg_temp.cc_keys(a.answer, false) k WHERE k = ANY (pg_temp.cc_list('forbidden'))),
@@ -388,7 +388,7 @@ SELECT pg_temp.sf_assert(pg_temp.sf_ops('c2', 'goodsreceived', :'grn_w2', pg_tem
   'B2: an account of neither customer got no entry, not even a delete, for the GRN moved West to North');
 SELECT pg_temp.sf_assert(pg_temp.sf_ops('c1', 'goodsreceived', :'grn_w2', pg_temp.sf_last_pull('c1')) = pg_temp.sf('op_upsert'), 'B2: North''s account got the GRN from West as an upsert');
 -- The read follows the copy after a move (B7): North's list as c1 holds the lots of CCW2 and not those of CCN1.
-SELECT pg_temp.cc_read('c1', 'get_customer_grn_items', format('SELECT public.get_customer_grn_items(%L::uuid, NULL, NULL, ''{}''::jsonb, ''date'', ''desc'', 2000, 0)', :'north'));
+SELECT pg_temp.cc_read('c1', 'get_customer_grn_items', format('SELECT public.get_customer_grn_items(%L::uuid, NULL, NULL, ''{}''::jsonb, ''date'', ''desc'', 100, 0)', :'north'));
 SELECT pg_temp.sf_assert((SELECT pg_temp.cc_ids(answer->'data'->'items', 'id') FROM pg_temp.cc_answer WHERE who = 'c1' AND label = 'get_customer_grn_items' ORDER BY seq DESC LIMIT 1)
     = pg_temp.cc_lot_ids('c1', :'north'::uuid),
   'B7: after the moves the read of North''s GRN items as c1 answers the lots its copy holds');
@@ -419,7 +419,7 @@ SELECT pg_temp.cc_step('B8 West deactivated', ARRAY['admin', 'c3']);
 SELECT pg_temp.sf_assert(:'west' = ANY (pg_temp.sf_held('c3', 'customers')) AND :'grn_w1' = ANY (pg_temp.sf_held('c3', 'goodsreceived'))
   AND :'disp_w1' = ANY (pg_temp.sf_held('c3', 'dispatch')),
   'B8/PQ4: a deactivated customer''s customer row, GRNs and dispatches stay in the account''s copy');
-SELECT pg_temp.cc_read('c3', 'get_customer_grn_items', format('SELECT public.get_customer_grn_items(%L::uuid, NULL, NULL, ''{}''::jsonb, ''date'', ''desc'', 2000, 0)', :'west'));
+SELECT pg_temp.cc_read('c3', 'get_customer_grn_items', format('SELECT public.get_customer_grn_items(%L::uuid, NULL, NULL, ''{}''::jsonb, ''date'', ''desc'', 100, 0)', :'west'));
 SELECT pg_temp.sf_assert((SELECT pg_temp.cc_ids(answer->'data'->'items', 'id') FROM pg_temp.cc_answer WHERE who = 'c3' AND label = 'get_customer_grn_items' ORDER BY seq DESC LIMIT 1)
     = pg_temp.cc_lot_ids('c3', :'west'::uuid),
   'B8/PQ4: the read of a deactivated customer''s GRN items as c3 answers what the copy holds (the goods stay visible)');
@@ -431,7 +431,7 @@ SELECT pg_temp.sf_assert(NOT EXISTS (SELECT 1 FROM pg_temp.sf_copy c WHERE c.slo
   AND NOT EXISTS (SELECT 1 FROM pg_temp.sf_copy c WHERE c.slot = 'c3' AND c.e = 'goodsreceived_trl' AND c.row->>'gr_id' = :'grn_w1'),
   'B8/PQ4 (product gap if it fails: the feed scopes by assignment, not by the customer being live): a deleted customer''s documents leave the copy: left '
   || (SELECT count(*) FROM pg_temp.sf_copy c WHERE c.slot = 'c3' AND c.row->>'customer_id' = :'west') || ' rows with its customer id');
-SELECT pg_temp.sf_try('authenticated', :'c3_claims'::jsonb, format('SELECT public.get_customer_grn_items(%L::uuid, NULL, NULL, ''{}''::jsonb, ''date'', ''desc'', 2000, 0)', :'west')) AS west_deleted_read \gset
+SELECT pg_temp.sf_try('authenticated', :'c3_claims'::jsonb, format('SELECT public.get_customer_grn_items(%L::uuid, NULL, NULL, ''{}''::jsonb, ''date'', ''desc'', 100, 0)', :'west')) AS west_deleted_read \gset
 SELECT pg_temp.sf_assert(CASE WHEN :'west_deleted_read'::jsonb ? 'sqlstate' THEN true
     ELSE pg_temp.cc_ids(:'west_deleted_read'::jsonb#>'{answer,data,items}', 'id') = pg_temp.cc_lot_ids('c3', :'west'::uuid) END,
   'B8/PQ4: the read of a deleted customer''s GRN items answers what the copy holds (nothing) or is refused: ' || left(:'west_deleted_read', 300));
