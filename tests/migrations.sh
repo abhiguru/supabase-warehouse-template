@@ -585,6 +585,7 @@ test_files=(
   "$ROOT/tests/accountant_pack.sql"
   "$ROOT/tests/offline_number_issued_161.sql" "$ROOT/tests/offline_recorded_time_161.sql"
   "$ROOT/tests/offline_request_id_161.sql" "$ROOT/tests/offline_refusal_codes_161.sql"
+  "$ROOT/tests/held_items_hand_over_304.sql" "$ROOT/tests/held_items_reads_decide_304.sql"
 )
 for test_sql in "${test_files[@]}"; do
   # WH-205: bills need saved GST details with a GSTIN; every suite starts from a registered store (the suites that test the state set their own).
@@ -1038,7 +1039,8 @@ docker exec -e PGPASSWORD=disposable-test-database-only "$container" pg_dump -U 
 for sync_sql in "$ROOT/tests/sync_feed_changes.sql" "$ROOT/tests/sync_feed_deletes_scope.sql" \
   "$ROOT/tests/sync_feed_invoice_state.sql" "$ROOT/tests/sync_feed_emptied_time.sql" "$ROOT/tests/sync_feed_lot_rack_mark.sql" \
   "$ROOT/tests/sync_feed_orders_payments.sql" \
-  "$ROOT/tests/grn_edit_field_changes.sql" "$ROOT/tests/grn_replacements_admin.sql" "$ROOT/tests/sync_feed_grn_replacements.sql"; do
+  "$ROOT/tests/grn_edit_field_changes.sql" "$ROOT/tests/grn_replacements_admin.sql" "$ROOT/tests/sync_feed_grn_replacements.sql" \
+  "$ROOT/tests/sync_feed_held_items_304.sql"; do
   cat "$ROOT/tests/fixtures/gst_details.sql" "$ROOT/tests/sync_feed_contract.sql" "$sync_sql" | mig_psql -d "$sync_db"
 done
 bash "$ROOT/tests/sync_feed_concurrency.sh" "$container" "$sync_db" "$ROOT/tests/sync_feed_contract.sql"

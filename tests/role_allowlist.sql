@@ -99,6 +99,8 @@ INSERT INTO ra_rpc(name,staff,customer) VALUES
  ('get_stock_aging_report',true,'own'),('get_item_wise_stock_list',true,'own'),
  -- customer-scoped, used by no staff screen
  ('get_customer_stock_analysis_v2',false,'own'),
+ -- WH-304 holding list: staff hand over their own refused items and see the outcome; reads and decisions are for administrators and supervisors
+ ('hold_items',true,'no'),('mark_held_item_seen',true,'no'),('get_held_items',false,'no'),('get_held_item',false,'no'),('decide_held_item',false,'no'),
  -- warehouse-wide: staff documents (migrations 18 to 28)
  ('save_grn',true,'no'),('update_grn',true,'no'),('set_lot_rack_and_mark',true,'no'),('check_grn_exists',true,'no'),('get_next_grn_number',true,'no'),
  -- the numbering rules (migration 127): staff are suggested the next number; supervisors read the rules, administrators change them
