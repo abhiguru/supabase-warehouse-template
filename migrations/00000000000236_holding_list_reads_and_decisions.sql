@@ -160,7 +160,7 @@ BEGIN
       v_from := v_apart -> 'from';
       v_cur := v_a.follows;
     END LOOP;
-    v_body := jsonb_set(v_body, v_path || 'from', v_from);
+    v_body := jsonb_set(v_body, v_path || ARRAY['from'], v_from);
   END LOOP;
   RETURN v_body;
 END $$;
