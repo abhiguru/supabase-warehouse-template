@@ -4,7 +4,7 @@
 --   public.confirm_held_photo_upload(p_held_id, p_client_photo_id) -> { success, ..., status: 'confirmed' } or a refusal;
 --   warehouse_security.held_photo_refusal (no app role), held_photo_file_access(bucket, name, write) and held_photo_file_named(name)
 --     (authenticated), and the staff / manager policies of scripts/configure-storage.sql that call them.
--- Written after the build, from migrations/held_item_photos_upload.sql. Fictional data; rolls back at the end. Runs only in migrations.sh
+-- Written after the build, from migrations/00000000000240_held_item_photos_upload.sql. Fictional data; rolls back at the end. Runs only in migrations.sh
 -- (the real Storage tables and the policies of configure-storage.sql are there; storage.allow_delete_query is 'true' for the suite).
 -- What the suite guards (label prefix): G1 register then confirm, G2 a resend answers the same row, G3 refusals of register and confirm
 -- (other people, decided items, bad input, missing file), G4 accept attaches only confirmed photos and reject keeps them, G5 staff storage
