@@ -35,11 +35,11 @@
 -- =================================================================================================================================
 CREATE TEMP TABLE cc_contract(k text PRIMARY KEY, v text NOT NULL);
 INSERT INTO pg_temp.cc_contract(k, v) VALUES
-  ('cc_format', '4'),    -- see 1 above
+  ('cc_format', '7'),    -- see 1 above; WH-306's step (contract section 14); a later step passes too
   -- Contract section 0: what a customer account's copy holds, as a set.
   ('entities', 'customers,items,goodsreceived,goodsreceived_trl,grn_images,dispatch,dispatch_trl,dispatch_images,invoice,invoice_trl,orders,order_items,payments,grn_rates'),
   -- Contract section 0 and decision O5: never in a customer account's copy (entity names; the three rate entities are the staff ones).
-  ('never', 'settings,people,grn_lock,user_profiles,users_customers_new,item_storage_prices,standard_rate_tiers,item_price_history,grn_replacements'),
+  ('never', 'settings,people,grn_lock,user_profiles,users_customers_new,item_storage_prices,standard_rate_tiers,item_price_history,grn_replacements,held_items'),
   -- Keys no customer read may answer (the Q1 columns, plus the staff fields PQ3 forbids). supervisor_name and sender_name are allowed.
   ('forbidden', 'created_by,updated_by,deleted_by,supervisor_id,sender_id,import_batch_id,uploaded_by,created_by_name,updated_by_name,updated_by_display_name,user_access'),
   -- Keys a reader renames from a copy column, and keys the phone works out (see 2 above).
@@ -209,11 +209,13 @@ SELECT clock_timestamp() AS t_load1 \gset
 -- ---------------------------------------------------------------------------------------------------------------------------------
 -- Format step. Every customer account's start and copy key carry the agreed format; a copy of the format before it is told to reload.
 -- ---------------------------------------------------------------------------------------------------------------------------------
-SELECT pg_temp.sf_assert((SELECT count(*) = 3 AND bool_and(answer->>pg_temp.sf('f_format') = pg_temp.cc('cc_format') AND answer->>pg_temp.sf('f_copy') LIKE pg_temp.cc('cc_format') || '.%')
+SELECT pg_temp.sf_assert((SELECT count(*) = 3 AND bool_and((answer->>pg_temp.sf('f_format'))::int >= pg_temp.cc('cc_format')::int
+      AND split_part(answer->>pg_temp.sf('f_copy'), '.', 1) = answer->>pg_temp.sf('f_format'))
     FROM pg_temp.sf_answer WHERE kind = 'start' AND phone IN ('c1', 'c2', 'c3')),
-  'format: get_sync_start answers format ' || pg_temp.cc('cc_format') || ' and a copy key of it to every customer account: '
+  'format: get_sync_start answers format ' || pg_temp.cc('cc_format') || ' or later and a copy key of that format to every customer account: '
   || (SELECT string_agg(phone || ' ' || COALESCE(answer->>pg_temp.sf('f_format'), '(none)'), ', ') FROM pg_temp.sf_answer WHERE kind = 'start' AND phone IN ('c1', 'c2', 'c3')));
-SELECT pg_temp.sf_changes_once('c3', NULL, regexp_replace(copy, '^[0-9]+\.', (pg_temp.cc('cc_format')::int - 1)::text || '.')) AS old_copy FROM pg_temp.sf_device WHERE phone = 'c3' \gset
+SELECT (answer->>pg_temp.sf('f_format'))::int - 1 AS cc_older_format FROM pg_temp.sf_answer WHERE kind = 'start' AND phone = 'c3' \gset
+SELECT pg_temp.sf_changes_once('c3', NULL, regexp_replace(copy, '^[0-9]+\.', :'cc_older_format' || '.')) AS old_copy FROM pg_temp.sf_device WHERE phone = 'c3' \gset
 SELECT pg_temp.sf_assert(:'old_copy'::jsonb#>>ARRAY[pg_temp.sf('f_reload_all'), pg_temp.sf('f_reason')] = pg_temp.sf('r_format'),
   'format: a customer account''s copy key of the format before answers reload_all FORMAT_CHANGED: ' || left(:'old_copy', 300));
 
