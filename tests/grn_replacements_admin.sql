@@ -9,6 +9,8 @@
 --   public.mark_grn_replacements_checked(p_grn_id uuid, p_ids uuid[]) -> { success: true, checked: n } (n = newly checked)
 --   p_state values (the card's tags "To check" and "Checked"): the two names below. NULL = both.
 --   entries are made through public.apply_grn_changes (tests/grn_edit_field_changes.sql covers that function).
+-- The 120-day window counts India days (business_date). "Today" below is therefore the India day, not current_date (the UTC day), which is a day
+-- behind between 18:30 and 24:00 UTC and would leave the entries made now out of the window. The 200-day case keeps its distance from the boundary.
 \set ON_ERROR_STOP on
 \set state_open 'unchecked'
 \set state_checked 'checked'
@@ -56,7 +58,7 @@ SELECT id AS e1 FROM warehouse_security.grn_replacements WHERE request_key = 'fr
 SELECT id AS e2 FROM warehouse_security.grn_replacements WHERE request_key = 'fr-4' \gset
 
 -- B11: the list, as an administrator: every row has every key, names are resolved, newest first.
-SELECT pg_temp.fr_list(:'sf_admin_claims'::jsonb, 'current_date - 120, current_date, NULL, 100, 0') AS listed \gset
+SELECT pg_temp.fr_list(:'sf_admin_claims'::jsonb, '(now() AT TIME ZONE ''Asia/Kolkata'')::date - 120, (now() AT TIME ZONE ''Asia/Kolkata'')::date, NULL, 100, 0') AS listed \gset
 SELECT pg_temp.sf_assert(jsonb_array_length(:'listed'::jsonb) = 2 AND (SELECT bool_and(r ?& (SELECT array_agg(k) FROM fr_keys)) FROM jsonb_array_elements(:'listed'::jsonb) r),
   'B11: two rows, each with every key of the contract: ' || :'listed');
 SELECT pg_temp.sf_assert(:'listed'::jsonb#>>'{0,id}' = :'e2' AND :'listed'::jsonb#>>'{1,id}' = :'e1', 'B11: newest first: ' || :'listed');
@@ -66,18 +68,18 @@ SELECT pg_temp.sf_assert(:'listed'::jsonb#>>'{1,gr_no}' = 'FRA1' AND :'listed'::
   AND :'listed'::jsonb#>'{1,checked_by_name}' = 'null'::jsonb AND :'listed'::jsonb#>'{1,checked_at}' = 'null'::jsonb AND :'listed'::jsonb#>>'{1,grn_id}' = :'grn1',
   'B11: the row names the GRN, the customer, the field, both values and both people, and is not checked: ' || :'listed');
 -- The answer's shape (5.8): { success: true, rows: [...], total } with total the count the filter matches, before p_limit and p_offset.
-SELECT pg_temp.sf_as(:'sf_admin_claims'::jsonb, 'SELECT public.get_grn_replacements(current_date - 120, current_date, NULL, 1, 0)') AS listed_raw \gset
+SELECT pg_temp.sf_as(:'sf_admin_claims'::jsonb, 'SELECT public.get_grn_replacements((now() AT TIME ZONE ''Asia/Kolkata'')::date - 120, (now() AT TIME ZONE ''Asia/Kolkata'')::date, NULL, 1, 0)') AS listed_raw \gset
 SELECT pg_temp.sf_assert(:'listed_raw'::jsonb->>'success' = 'true' AND jsonb_typeof(:'listed_raw'::jsonb->'rows') = 'array' AND jsonb_array_length(:'listed_raw'::jsonb->'rows') = 1
   AND (:'listed_raw'::jsonb->>'total')::int = 2, 'B11: the answer is { success, rows, total } and total counts both entries although one row is asked for: ' || :'listed_raw');
 -- p_state takes 'unchecked', 'checked' or NULL (both); anything else is STATE_INVALID.
-SELECT pg_temp.sf_as(:'sf_admin_claims'::jsonb, 'SELECT public.get_grn_replacements(current_date - 120, current_date, ''to check'', 100, 0)') AS bad_state \gset
+SELECT pg_temp.sf_as(:'sf_admin_claims'::jsonb, 'SELECT public.get_grn_replacements((now() AT TIME ZONE ''Asia/Kolkata'')::date - 120, (now() AT TIME ZONE ''Asia/Kolkata'')::date, ''to check'', 100, 0)') AS bad_state \gset
 SELECT pg_temp.sf_assert(:'bad_state'::jsonb->>'success' = 'false' AND :'bad_state'::jsonb->>'reason' = 'STATE_INVALID', 'B11: another p_state is STATE_INVALID: ' || :'bad_state');
 -- paging
-SELECT pg_temp.sf_assert(jsonb_array_length(pg_temp.fr_list(:'sf_admin_claims'::jsonb, 'current_date - 120, current_date, NULL, 1, 0')) = 1
-  AND pg_temp.fr_list(:'sf_admin_claims'::jsonb, 'current_date - 120, current_date, NULL, 1, 1')#>>'{0,id}' = :'e1', 'B11: p_limit and p_offset page the list');
+SELECT pg_temp.sf_assert(jsonb_array_length(pg_temp.fr_list(:'sf_admin_claims'::jsonb, '(now() AT TIME ZONE ''Asia/Kolkata'')::date - 120, (now() AT TIME ZONE ''Asia/Kolkata'')::date, NULL, 1, 0')) = 1
+  AND pg_temp.fr_list(:'sf_admin_claims'::jsonb, '(now() AT TIME ZONE ''Asia/Kolkata'')::date - 120, (now() AT TIME ZONE ''Asia/Kolkata'')::date, NULL, 1, 1')#>>'{0,id}' = :'e1', 'B11: p_limit and p_offset page the list');
 -- who may read and check: administrators only
 SELECT pg_temp.sf_assert(NOT EXISTS (SELECT 1 FROM (VALUES ('a', :'a_claims'::jsonb), ('sup', :'sup_claims'::jsonb), ('reader', :'reader_claims'::jsonb), ('none', NULL::jsonb)) w(who, c),
-    LATERAL (SELECT pg_temp.sf_try('authenticated', w.c, 'SELECT public.get_grn_replacements(current_date - 120, current_date, NULL, 100, 0)') AS t) x
+    LATERAL (SELECT pg_temp.sf_try('authenticated', w.c, 'SELECT public.get_grn_replacements((now() AT TIME ZONE ''Asia/Kolkata'')::date - 120, (now() AT TIME ZONE ''Asia/Kolkata'')::date, NULL, 100, 0)') AS t) x
     WHERE jsonb_array_length(pg_temp.fr_rows(x.t->'answer')) > 0),
   'B11: staff, a supervisor, a customer account and a caller with no role are shown no entry by get_grn_replacements');
 SELECT pg_temp.sf_try('authenticated', :'sup_claims'::jsonb, format('SELECT public.mark_grn_replacements_checked(%L::uuid, ARRAY[%L]::uuid[])', :'grn1', :'e1')) AS sup_mark \gset
@@ -86,8 +88,8 @@ SELECT pg_temp.sf_try('authenticated', :'reader_claims'::jsonb, format('SELECT p
 SELECT pg_temp.sf_assert(COALESCE(:'sup_mark'::jsonb#>>'{answer,success}', 'raised') <> 'true' AND COALESCE(:'staff_mark'::jsonb#>>'{answer,success}', 'raised') <> 'true'
   AND COALESCE(:'reader_mark'::jsonb#>>'{answer,success}', 'raised') <> 'true' AND (SELECT checked_at IS NULL AND checked_by IS NULL FROM warehouse_security.grn_replacements WHERE id = :'e1'),
   'B11: a supervisor, staff and a customer account cannot mark checked, and nothing changed');
-SELECT pg_temp.sf_assert(pg_temp.sf_try('authenticated', :'sup_claims'::jsonb, 'SELECT public.get_grn_replacements(current_date - 120, current_date, NULL, 100, 0)')->>'sqlstate' IS NOT NULL
-  OR jsonb_array_length(pg_temp.fr_rows(pg_temp.sf_try('authenticated', :'sup_claims'::jsonb, 'SELECT public.get_grn_replacements(current_date - 120, current_date, NULL, 100, 0)')->'answer')) = 0,
+SELECT pg_temp.sf_assert(pg_temp.sf_try('authenticated', :'sup_claims'::jsonb, 'SELECT public.get_grn_replacements((now() AT TIME ZONE ''Asia/Kolkata'')::date - 120, (now() AT TIME ZONE ''Asia/Kolkata'')::date, NULL, 100, 0)')->>'sqlstate' IS NOT NULL
+  OR jsonb_array_length(pg_temp.fr_rows(pg_temp.sf_try('authenticated', :'sup_claims'::jsonb, 'SELECT public.get_grn_replacements((now() AT TIME ZONE ''Asia/Kolkata'')::date - 120, (now() AT TIME ZONE ''Asia/Kolkata'')::date, NULL, 100, 0)')->'answer')) = 0,
   'B11: a supervisor is refused or shown nothing');
 
 -- B11: mark checked: exactly the entries the screen showed; one that arrived meanwhile stays "To check"; repeating is a success.
@@ -111,16 +113,16 @@ SELECT pg_temp.sf_assert(:'marked_foreign'::jsonb->>'success' = 'true' AND (:'ma
   AND (SELECT checked_by IS NULL AND checked_at IS NULL FROM warehouse_security.grn_replacements WHERE id = :'e2'),
   'B11: an id that belongs to another GRN is skipped, not refused, and stays "To check": ' || :'marked_foreign');
 -- the state filter and the checker's name
-SELECT pg_temp.fr_list(:'sf_admin_claims'::jsonb, format('current_date - 120, current_date, %L, 100, 0', :'state_checked')) AS only_checked \gset
-SELECT pg_temp.fr_list(:'sf_admin_claims'::jsonb, format('current_date - 120, current_date, %L, 100, 0', :'state_open')) AS only_open \gset
+SELECT pg_temp.fr_list(:'sf_admin_claims'::jsonb, format('(now() AT TIME ZONE ''Asia/Kolkata'')::date - 120, (now() AT TIME ZONE ''Asia/Kolkata'')::date, %L, 100, 0', :'state_checked')) AS only_checked \gset
+SELECT pg_temp.fr_list(:'sf_admin_claims'::jsonb, format('(now() AT TIME ZONE ''Asia/Kolkata'')::date - 120, (now() AT TIME ZONE ''Asia/Kolkata'')::date, %L, 100, 0', :'state_open')) AS only_open \gset
 SELECT pg_temp.sf_assert(jsonb_array_length(:'only_checked'::jsonb) = 1 AND :'only_checked'::jsonb#>>'{0,id}' = :'e1' AND :'only_checked'::jsonb#>>'{0,checked_by_name}' = 'Sync Feed Administrator'
   AND jsonb_array_length(:'only_open'::jsonb) = 2 AND NOT (:'only_open'::jsonb @> jsonb_build_array(jsonb_build_object('id', :'e1'))),
   'B11: the state filter separates "To check" from "Checked"; a checked row names who checked: ' || :'only_checked' || ' / ' || :'only_open');
 
 -- B11 (PQ7): any p_from: an entry older than 120 days is returned when p_from reaches back to it, and not otherwise.
 UPDATE warehouse_security.grn_replacements SET sent_at = now() - interval '200 days', newer_at = now() - interval '201 days', recorded_at = NULL WHERE id = :'e2';
-SELECT pg_temp.sf_assert(NOT (pg_temp.fr_list(:'sf_admin_claims'::jsonb, 'current_date - 120, current_date, NULL, 100, 0') @> jsonb_build_array(jsonb_build_object('id', :'e2')))
-  AND pg_temp.fr_list(:'sf_admin_claims'::jsonb, 'current_date - 300, current_date, NULL, 100, 0') @> jsonb_build_array(jsonb_build_object('id', :'e2')),
+SELECT pg_temp.sf_assert(NOT (pg_temp.fr_list(:'sf_admin_claims'::jsonb, '(now() AT TIME ZONE ''Asia/Kolkata'')::date - 120, (now() AT TIME ZONE ''Asia/Kolkata'')::date, NULL, 100, 0') @> jsonb_build_array(jsonb_build_object('id', :'e2')))
+  AND pg_temp.fr_list(:'sf_admin_claims'::jsonb, '(now() AT TIME ZONE ''Asia/Kolkata'')::date - 300, (now() AT TIME ZONE ''Asia/Kolkata'')::date, NULL, 100, 0') @> jsonb_build_array(jsonb_build_object('id', :'e2')),
   'B11 / PQ7: the last 120 days leave out a 200-day-old entry, p_from 300 days back shows it');
 
 -- B11b (PQ7): the server never deletes an entry: checked ones stay, a deleted GRN keeps its entries.

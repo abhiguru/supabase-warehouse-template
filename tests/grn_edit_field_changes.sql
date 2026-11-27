@@ -425,10 +425,11 @@ SELECT pg_temp.sf_assert(:'e2'::jsonb->>'success' = 'true' AND jsonb_array_lengt
   AND (SELECT count(*) = 2 FROM warehouse_security.grn_replacements r WHERE r.grn_id = :'grn_q' AND r.kind = 'field' AND r.field = 'rack' AND r.lot_id = :'lot_q1'::uuid
        AND r.request_key IN ('fc-b13-edit-2', 'fc-b13-quick-2')),
   'B13: another person''s edit and a later quick change each raise one entry, and both functions'' entries are in the one table: ' || :'e2' || :'q2');
--- Two fields of two lots of one GRN changed by the two functions: both kept.
+-- Two fields of one lot changed by the two functions: both kept. The edit sends the rack's true base value (the fixture's R1, which nothing has
+-- set since), so the stored value equals its from and nothing is replaced.
 SELECT pg_temp.sf_as(:'a_claims'::jsonb, format('SELECT public.set_lot_rack_and_mark(%L::uuid, %L::jsonb, %L)', :'lot_q2', '{"package_mark":{"to":"Q-MARK","from":"FQ2"}}', 'fc-b13-quick-3')) AS q3 \gset
 SELECT pg_temp.fc_apply(:'b_claims'::jsonb, :'grn_q', pg_temp.fc_body(:'grn_q', pg_temp.fc_token(:'grn_q'), now(),
-  jsonb_build_object('lots', jsonb_build_object(:'lot_q2', jsonb_build_object('rack', jsonb_build_object('from', 'R2', 'to', 'Q-R2'))))), 'fc-b13-edit-3') AS e3 \gset
+  jsonb_build_object('lots', jsonb_build_object(:'lot_q2', jsonb_build_object('rack', jsonb_build_object('from', 'R1', 'to', 'Q-R2'))))), 'fc-b13-edit-3') AS e3 \gset
 SELECT pg_temp.sf_assert(:'q3'::jsonb->>'success' = 'true' AND :'e3'::jsonb->>'success' = 'true' AND jsonb_array_length(:'e3'::jsonb->'replaced') = 0
   AND (SELECT rack = 'Q-R2' AND package_mark = 'Q-MARK' FROM public.goodsreceived_trl WHERE id = :'lot_q2'),
   'B13: a quick change of the mark and an edit of the rack of one lot, from two phones, are both kept and replace nothing: ' || :'q3' || :'e3');

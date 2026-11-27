@@ -1035,13 +1035,23 @@ sync_plan=$(plan_of "$ROOT" | mig_psql -d "$sync_db" 2>&1) || { echo "$sync_plan
 mig_psql -d "$sync_db" -c 'DROP SCHEMA storage CASCADE' >/dev/null
 docker exec -e PGPASSWORD=disposable-test-database-only "$container" pg_dump -U supabase_admin -d postgres --schema-only --no-owner -n storage | mig_psql -d "$sync_db" >/dev/null
 # WH-299, feed format 2: the invoice state of a GRN and the time a lot was emptied.
-# WH-303: edit GRN by field changes, the replaced entries and their list, and their feed entity (they need committed statements).
+# WH-303: the replaced entries list and the feed entity count every entry of the database ("exactly two rows", "holds [e1]"), so each runs in a
+# copy of the database as it is now (bootstrap and plan only, nothing a suite wrote); the entries grn_edit_field_changes leaves would break them.
+sync_replaced_dbs=(sync_feed_replaced_list sync_feed_replaced_feed)
+for replaced_db in "${sync_replaced_dbs[@]}"; do
+  mig_psql -c "CREATE DATABASE $replaced_db TEMPLATE $sync_db" >/dev/null
+done
+# WH-303: edit GRN by field changes (it needs committed statements).
 for sync_sql in "$ROOT/tests/sync_feed_changes.sql" "$ROOT/tests/sync_feed_deletes_scope.sql" \
   "$ROOT/tests/sync_feed_invoice_state.sql" "$ROOT/tests/sync_feed_emptied_time.sql" "$ROOT/tests/sync_feed_lot_rack_mark.sql" \
   "$ROOT/tests/sync_feed_orders_payments.sql" "$ROOT/tests/sync_feed_money_marks.sql" "$ROOT/tests/sync_feed_customer_accounts.sql" \
-  "$ROOT/tests/grn_edit_field_changes.sql" "$ROOT/tests/grn_replacements_admin.sql" "$ROOT/tests/sync_feed_grn_replacements.sql" \
-  "$ROOT/tests/sync_feed_held_items_304.sql"; do
+  "$ROOT/tests/grn_edit_field_changes.sql" "$ROOT/tests/sync_feed_held_items_304.sql"; do
   cat "$ROOT/tests/fixtures/gst_details.sql" "$ROOT/tests/sync_feed_contract.sql" "$sync_sql" | mig_psql -d "$sync_db"
+done
+cat "$ROOT/tests/fixtures/gst_details.sql" "$ROOT/tests/sync_feed_contract.sql" "$ROOT/tests/grn_replacements_admin.sql" | mig_psql -d sync_feed_replaced_list
+cat "$ROOT/tests/fixtures/gst_details.sql" "$ROOT/tests/sync_feed_contract.sql" "$ROOT/tests/sync_feed_grn_replacements.sql" | mig_psql -d sync_feed_replaced_feed
+for replaced_db in "${sync_replaced_dbs[@]}"; do
+  mig_psql -c "DROP DATABASE $replaced_db WITH (FORCE)" >/dev/null
 done
 bash "$ROOT/tests/sync_feed_concurrency.sh" "$container" "$sync_db" "$ROOT/tests/sync_feed_contract.sql"
 mig_psql -c "DROP DATABASE $sync_db WITH (FORCE)" >/dev/null
