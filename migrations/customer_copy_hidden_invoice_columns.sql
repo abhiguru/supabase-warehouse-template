@@ -8,7 +8,7 @@
 --     and zero-charge reasons, setters, times and cancelled_by only for those roles. cancel_reason and cancelled_at stay (both are answered
 --     to a customer online). The feed (entity_rows, rows_held_items) and the change-log reads take their column list from this function,
 --     so no other function changes.
---  3. strip_staff_keys (239) also removes cancelled_by, ignored_by, discount_set_by, zero_charge_set_by, discount_reason, zero_charge_reason at any depth, so a customer answer lacks the keys (get_invoice_data answered cancelled_by as null).
+--  3. strip_staff_keys (239) also removes cancelled_by, cancelled_by_name, ignored_by, discount_set_by, zero_charge_set_by, discount_reason, zero_charge_reason at any depth, so a customer answer lacks the keys (get_invoice_data answered cancelled_by as null).
 --  2. A customer account's invoice feed row carries items_total_amount, as migration 221 and the contract (app-offline-read-more.md 15.2)
 --     say for every role: customers see the invoice amounts online and the server computes the figure. discount_set_by_name and
 --     zero_charge_set_by_name stay for administrators, supervisors and staff only.
