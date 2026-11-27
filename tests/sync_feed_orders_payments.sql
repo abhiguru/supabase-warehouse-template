@@ -384,6 +384,9 @@ SELECT pg_temp.sf_assert(pg_temp.sf_ops(p, 'orders', :'ord_f', pg_temp.sf_last_p
 -- ---------------------------------------------------------------------------------------------------------------------------------
 SELECT pg_temp.of_cart(:'sf_admin_claims'::jsonb, :'fresh'::uuid) AS ord_t \gset
 SELECT pg_temp.of_add(:'sf_admin_claims'::jsonb, :'ord_t'::uuid, :'lot_f1'::uuid, 1) AS line_t1 \gset
+-- set_audit_columns (trigger_dispatch_audit) sets created_at to now() on insert and keeps it on update, so the fixture's own created_at
+-- values only stand with that trigger off for the two statements that write them.
+ALTER TABLE public.dispatch DISABLE TRIGGER trigger_dispatch_audit;
 INSERT INTO public.dispatch(id, disp_no, disp_date, customer_id, customer_name, source_order_id, created_at) VALUES
   ('00000000-0000-4000-8000-0000000000b2', 'OFT-B', '2026-06-01', :'fresh', 'Order Feed Fresh', :'ord_t', '2026-06-01 10:00:00+00'),
   ('00000000-0000-4000-8000-0000000000b1', 'OFT-A', '2026-06-01', :'fresh', 'Order Feed Fresh', :'ord_t', '2026-06-01 10:00:00+00');
@@ -392,6 +395,7 @@ SELECT pg_temp.sf_as(:'sf_admin_claims'::jsonb, format('SELECT public.get_order_
 SELECT pg_temp.sf_assert(:'read1'::jsonb = :'read2'::jsonb AND :'read1'::jsonb#>>'{data,order_data,dispatch_id}' = '00000000-0000-4000-8000-0000000000b1',
   'B5: with tied created_at the order read names the dispatch with the lowest id, in both calls: ' || (:'read1'::jsonb#>>'{data,order_data,dispatch_id}'));
 UPDATE public.dispatch SET created_at = '2026-06-02 10:00:00+00' WHERE id = '00000000-0000-4000-8000-0000000000b2';
+ALTER TABLE public.dispatch ENABLE TRIGGER trigger_dispatch_audit;
 SELECT pg_temp.sf_as(:'sf_admin_claims'::jsonb, format('SELECT public.get_order_with_items(%L::uuid)', :'ord_t')) AS read3 \gset
 SELECT pg_temp.sf_assert(:'read3'::jsonb#>>'{data,order_data,dispatch_id}' = '00000000-0000-4000-8000-0000000000b2',
   'B5 / PQ5: the order read names the latest dispatch: ' || (:'read3'::jsonb#>>'{data,order_data,dispatch_id}'));
