@@ -461,7 +461,7 @@ SELECT pg_temp.hd_assert(pg_temp.hd_ok(:'d9'::jsonb) AND (SELECT created_by = :'
 -- What staff may not send is judged by the accepting role: a staff body that carries rates (RATES_NEED_MANAGER for staff) is saved when a manager accepts it.
 SELECT pg_temp.hd_hold(:'staff_claims'::jsonb, jsonb_build_array(pg_temp.hd_item('hd-rates', 'newGrn', 81, :'ca'::uuid,
   jsonb_set(pg_temp.hd_grn_body(:'ca'::uuid, :'item_id'::uuid, 2, 'HD14'), '{args,p_rates}',
-    jsonb_build_array(jsonb_build_object('item_id', :'item_id', 'weight_min', 0, 'weight_max', 100, 'unit_price', 5, 'labour_rate', 2, 'tax_percent', 5))),
+    jsonb_build_array(jsonb_build_object('scope', 'grn', 'item_id', :'item_id', 'weight_min', 0, 'weight_max', 100, 'unit_price', 5, 'labour_rate', 2, 'tax_percent', 5))),
   jsonb_build_object('refusal', jsonb_build_object('code', 'RATES_NEED_MANAGER'))))) AS d9_rates_hold \gset
 SELECT pg_temp.hd_decide(:'supervisor_claims'::jsonb, pg_temp.hd_hid('hd-rates'), 'accept', 'dk-rates') AS d9_rates \gset
 SELECT pg_temp.hd_assert(pg_temp.hd_ok(:'d9_rates'::jsonb) AND (SELECT created_by = :'staff_profile'::uuid FROM public.goodsreceived WHERE request_key = 'hd-rates'),
