@@ -273,6 +273,25 @@ SELECT pg_temp.ri_grn(:'admin_claims'::jsonb,'',:'cb'::uuid,'Offline Customer B'
   jsonb_build_array(pg_temp.ri_line(:'onions','Offline Onions','Bag',10,30)),'ri-g5',true,now()-interval '20 minutes') AS g5_again \gset
 SELECT pg_temp.ri_assert(:'g5_again'::jsonb->>'success'='false' AND :'g5_again'::jsonb->>'reason'='RECORD_DELETED' AND pg_temp.ri_counts()=:'counts_f',
   'Q5 a resend for a GRN deleted meanwhile is refused RECORD_DELETED and makes no new GRN: '||:'g5_again');
+-- The tombstone (contract 2.3): the delete itself wrote the key of the deleted GRN to warehouse_security.deleted_request_keys (a BEFORE DELETE
+-- trigger of goodsreceived and dispatch, so every delete path is covered), with its creator and digest; the table is closed to the app roles.
+SELECT pg_temp.ri_assert((SELECT count(*)=1 FROM warehouse_security.deleted_request_keys k WHERE k.request_key='ri-g5' AND k.rpc_function='save_grn'
+    AND k.record_id=(:'g5'::jsonb#>>'{data,grn_id}')::uuid AND k.created_by=:'admin_profile'::uuid AND k.request_digest IS NOT NULL AND k.deleted_at IS NOT NULL),
+  'Q5 the tombstone of the deleted GRN holds its key, kind, id, creator, digest and time');
+SELECT pg_temp.ri_assert((SELECT relrowsecurity FROM pg_class WHERE oid='warehouse_security.deleted_request_keys'::regclass)
+  AND NOT has_table_privilege('authenticated','warehouse_security.deleted_request_keys','SELECT') AND NOT has_table_privilege('anon','warehouse_security.deleted_request_keys','SELECT')
+  AND NOT has_table_privilege('service_role','warehouse_security.deleted_request_keys','SELECT')
+  AND (SELECT count(*)=2 FROM pg_trigger t WHERE NOT t.tgisinternal AND t.tgname='keep_deleted_request_key' AND t.tgrelid IN ('public.goodsreceived'::regclass,'public.dispatch'::regclass)
+    AND (t.tgtype & 2)=2 AND (t.tgtype & 8)=8 AND (t.tgtype & 1)=1),
+  'Q5 the tombstone table has RLS on and no read for the app roles; a BEFORE DELETE row trigger sits on goodsreceived and on dispatch');
+-- Another person, or the same person with other contents, meeting the tombstone is REQUEST_KEY_REUSED, not RECORD_DELETED, and nothing is made.
+SELECT pg_temp.ri_grn(:'staff_claims'::jsonb,'',:'cb'::uuid,'Offline Customer B','2026-04-01T12:00:00Z',
+  jsonb_build_array(pg_temp.ri_line(:'onions','Offline Onions','Bag',10,30)),'ri-g5',true,now()-interval '20 minutes') AS g5_person \gset
+SELECT pg_temp.ri_grn(:'admin_claims'::jsonb,'',:'cb'::uuid,'Offline Customer B','2026-04-01T12:00:00Z',
+  jsonb_build_array(pg_temp.ri_line(:'onions','Offline Onions','Bag',11,30)),'ri-g5',true,now()-interval '20 minutes') AS g5_digest \gset
+SELECT pg_temp.ri_assert(:'g5_person'::jsonb->>'success'='false' AND :'g5_person'::jsonb->>'reason'='REQUEST_KEY_REUSED'
+  AND :'g5_digest'::jsonb->>'success'='false' AND :'g5_digest'::jsonb->>'reason'='REQUEST_KEY_REUSED' AND pg_temp.ri_counts()=:'counts_f',
+  'Q5 the key of a deleted GRN sent by another person, or with other contents, is REQUEST_KEY_REUSED and makes no GRN: '||:'g5_person'||:'g5_digest');
 SELECT pg_temp.ri_disp(:'admin_claims'::jsonb,pg_temp.ri_ddata(:'ca'::uuid,'Offline Customer A','','GJ 05 GH 5555',pg_temp.ri_off(true,now()-interval '10 minutes')),
   ARRAY[pg_temp.ri_dline(:'lot_p'::uuid,3)],'ri-d5') AS d5 \gset
 SELECT pg_temp.ri_assert(:'d5'::jsonb->>'success'='true','fixture: a second dispatch is saved: '||:'d5');
@@ -285,6 +304,16 @@ SELECT pg_temp.ri_disp(:'admin_claims'::jsonb,pg_temp.ri_ddata(:'ca'::uuid,'Offl
 SELECT pg_temp.ri_assert(:'d5_again'::jsonb->>'success'='false' AND :'d5_again'::jsonb->>'reason'='RECORD_DELETED' AND pg_temp.ri_counts()=:'counts_h'
   AND (SELECT stock FROM public.goodsreceived_trl WHERE id=:'lot_p'::uuid)=95,
   'Q5 a resend for a dispatch deleted meanwhile is refused RECORD_DELETED, makes no new dispatch and takes no stock: '||:'d5_again');
+SELECT pg_temp.ri_assert((SELECT count(*)=1 FROM warehouse_security.deleted_request_keys k WHERE k.request_key='ri-d5' AND k.rpc_function='create_dispatch_with_stock_check'
+    AND k.record_id=(:'d5'::jsonb->>'dispatch_id')::uuid AND k.created_by=:'admin_profile'::uuid AND k.request_digest IS NOT NULL),
+  'Q5 the tombstone of the deleted dispatch holds its key, kind, id, creator and digest');
+SELECT pg_temp.ri_disp(:'staff_claims'::jsonb,pg_temp.ri_ddata(:'ca'::uuid,'Offline Customer A','','GJ 05 GH 5555',pg_temp.ri_off(true,now()-interval '10 minutes')),
+  ARRAY[pg_temp.ri_dline(:'lot_p'::uuid,3)],'ri-d5') AS d5_person \gset
+SELECT pg_temp.ri_disp(:'admin_claims'::jsonb,pg_temp.ri_ddata(:'ca'::uuid,'Offline Customer A','','GJ 05 GH 5555',pg_temp.ri_off(true,now()-interval '10 minutes')),
+  ARRAY[pg_temp.ri_dline(:'lot_p'::uuid,4)],'ri-d5') AS d5_digest \gset
+SELECT pg_temp.ri_assert(:'d5_person'::jsonb->>'reason'='REQUEST_KEY_REUSED' AND :'d5_digest'::jsonb->>'reason'='REQUEST_KEY_REUSED' AND pg_temp.ri_counts()=:'counts_h'
+  AND (SELECT stock FROM public.goodsreceived_trl WHERE id=:'lot_p'::uuid)=95,
+  'Q5 the key of a deleted dispatch sent by another person, or for other lines, is REQUEST_KEY_REUSED, makes no dispatch and takes no stock: '||:'d5_person'||:'d5_digest');
 
 -- ===========================================================================
 -- Q6. get_submission_result answers the key after 8 days and without the saved answer; only to the person who sent it.
