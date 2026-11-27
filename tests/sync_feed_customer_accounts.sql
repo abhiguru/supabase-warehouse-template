@@ -488,6 +488,8 @@ UPDATE public.user_profiles SET active = true WHERE mobile = '919888897382';
 SELECT clock_timestamp() AS t_pull0 \gset
 SELECT pg_temp.sf_pull(p) FROM unnest(ARRAY['c1', 'c2', 'c3']) p;
 SELECT pg_temp.sf_assert(extract(epoch FROM (clock_timestamp() - :'t_pull0'::timestamptz)) < 8, 'B9: three customer accounts caught up in under 8 s (small set)');
+-- The administrator's phone has not pulled since B8; B4's assignments and profile changes reach it here, before the end check.
+SELECT pg_temp.sf_pull('admin');
 SELECT pg_temp.sf_assert(NOT EXISTS (SELECT 1 FROM pg_temp.sf_entry x WHERE x.phone IN ('c1', 'c2', 'c3') AND x.e = ANY (pg_temp.cc_list('never'))),
   'B1: at the end no customer account received an entry of the never list');
 SELECT pg_temp.sf_assert(pg_temp.sf_diff(p) = '', 'at the end the copy of ' || p || ' equals a fresh load: ' || pg_temp.sf_diff(p)) FROM unnest(ARRAY['admin', 'c1', 'c2', 'c3']) p;
