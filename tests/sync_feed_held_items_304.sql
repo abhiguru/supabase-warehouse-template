@@ -137,9 +137,13 @@ SELECT pg_temp.sf_assert((SELECT count(*) FROM public.held_items WHERE state = '
 SELECT clock_timestamp() AS t0 \gset
 SELECT pg_temp.sf_as(:'sf_admin_claims'::jsonb, format(pg_temp.sf('call_page'), 'held_items', NULL, pg_temp.sf('page_limit'))) AS big_page \gset
 SELECT clock_timestamp() AS t1 \gset
+-- A first-load page has no "more" key (that is the changes answer's); more to come is a next_after, the id of the last row of the page.
 SELECT pg_temp.sf_assert(:'big_page'::jsonb->>pg_temp.sf('f_success') = 'true' AND jsonb_array_length(:'big_page'::jsonb->pg_temp.sf('f_rows')) = pg_temp.sf('page_limit')::int
-  AND :'big_page'::jsonb->>pg_temp.sf('f_more') = 'true' AND (:'t1'::timestamptz - :'t0'::timestamptz) < interval '8 seconds',
-  'B-F5: one page of held_items is the page limit with more to come and takes under 8 seconds: ' || (:'t1'::timestamptz - :'t0'::timestamptz));
+  AND :'big_page'::jsonb->>pg_temp.sf('f_next_after') = :'big_page'::jsonb->pg_temp.sf('f_rows')->(pg_temp.sf('page_limit')::int - 1)->>'id'
+  AND (:'t1'::timestamptz - :'t0'::timestamptz) < interval '8 seconds',
+  format('B-F5: one page of held_items is the page limit with more to come (next_after is the last row) and takes under 8 seconds: success=%s rows=%s next_after=%s time=%s',
+    :'big_page'::jsonb->>pg_temp.sf('f_success'), jsonb_array_length(COALESCE(:'big_page'::jsonb->pg_temp.sf('f_rows'), '[]'::jsonb)),
+    COALESCE(:'big_page'::jsonb->>pg_temp.sf('f_next_after'), 'NULL'), :'t1'::timestamptz - :'t0'::timestamptz));
 SELECT pg_temp.sf_changes_once('admin_old') AS big_changes \gset
 SELECT pg_temp.sf_assert(:'big_changes'::jsonb->>pg_temp.sf('f_success') = 'true' AND jsonb_array_length(COALESCE(:'big_changes'::jsonb->pg_temp.sf('f_changes'), '[]'::jsonb)) <= pg_temp.sf('page_limit')::int,
   'B-F5: a changes answer after 5,000 new held rows holds at most the page limit: ' || left(:'big_changes', 200));
