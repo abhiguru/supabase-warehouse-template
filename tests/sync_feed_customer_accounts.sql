@@ -41,10 +41,18 @@ INSERT INTO pg_temp.cc_contract(k, v) VALUES
   -- Contract section 0 and decision O5: never in a customer account's copy (entity names; the three rate entities are the staff ones).
   ('never', 'settings,people,grn_lock,user_profiles,users_customers_new,item_storage_prices,standard_rate_tiers,item_price_history,grn_replacements,held_items'),
   -- Keys no customer read may answer (the Q1 columns, plus the staff fields PQ3 forbids). supervisor_name and sender_name are allowed.
-  ('forbidden', 'created_by,updated_by,deleted_by,supervisor_id,sender_id,import_batch_id,uploaded_by,created_by_name,updated_by_name,updated_by_display_name,user_access,created_by_info,created_by_display_name,created_by_role'),
+  ('forbidden', 'created_by,updated_by,deleted_by,supervisor_id,sender_id,import_batch_id,uploaded_by,created_by_name,updated_by_name,updated_by_display_name,user_access,created_by_info,created_by_display_name,created_by_role,cancelled_by,discount_set_by,zero_charge_set_by,discount_reason,zero_charge_reason,ignored_by'),
   -- Keys a reader renames from a copy column, and keys the phone works out (see 2 above).
-  ('cc_renamed', 'grn_item_id,grns_id,grns_gr_no,grns_date,grn_id'),
-  ('cc_computed', 'image_url'),
+  -- Added from the WH-306 card (Development 2026-11-27, "B0/B7 derivations"), each read and copy source named there.
+  ('cc_renamed', 'grn_item_id,grns_id,grns_gr_no,grns_date,grn_id,'
+    || 'grn_qty,invoice_no,invoice_date,invoice_trl_id,'                  -- dispatch list, dispatch details: goodsreceived_trl.qty, invoice.inv_no, invoice.inv_date, invoice_trl.id
+    || 'dispatch_id,disp_quantity,dispatch_no,dispatch_created_at,'       -- item dispatches, orders, items detailed: dispatch_trl.disp_id / dispatch.id, disp_qty, disp_no, created_at
+    || 'grn_items_qty,gr_date,original_quantity,quantity,dispatch_date,'  -- order with items, invoice data, items detailed: goodsreceived_trl.qty, goodsreceived.date, dispatch_trl.disp_qty, dispatch.disp_date
+    || 'dispatch_qty,grn_quantity,total_amount'),                         -- items detailed: dispatch_trl.disp_qty, goodsreceived_trl.qty, invoice_trl.line_amounts.total_amount (the server's own line figure, copied)
+  -- Containers the phone assembles from copy rows (items, grn_details, grn_item_details, item_details, invoice_details, item_images, customer, catalog,
+  -- grn_item, dispatch) and figures it works out from rows (total_qty, total_weight, total_items, invoice_label, item_count, quantity_sum, details_available).
+  ('cc_computed', 'image_url,items,total_qty,total_weight,total_items,grn_details,grn_item_details,item_details,invoice_details,invoice_label,'
+    || 'item_images,customer,item_count,quantity_sum,catalog,details_available,grn_item,dispatch'),
   ('stale_entry', 'money');
 -- Reads whose answer rows are checked against the copy's keys (B0/B7): label = function name, as cc_read is called.
 CREATE TEMP TABLE cc_row_reads(label text PRIMARY KEY);
