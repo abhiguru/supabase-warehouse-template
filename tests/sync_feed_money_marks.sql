@@ -14,8 +14,8 @@
 --      charging rule (set_charging_rule), the GST settings (set_gst_details) and the record-payments setting (set_record_payments).
 --      A phone that gets 'all' gets exactly that one mark for the change, not one per customer.
 --   4. 'all' reaches admin, supervisor and every customer account (each account gets it, whatever its customer), never staff.
---   5. The feed format is 4 after this set (it is 3 at the base commit); the copy key is '<format>.<log id>.<access>' as today.
---      sync_feed_invoice_state.sql and sync_feed_orders_payments.sql assert format 3 and must be moved to 4 when the step is
+--   5. The feed format is 5 after this set (WH-304 is 4, the base commit has 3); the copy key is '<format>.<log id>.<access>' as today.
+--      sync_feed_invoice_state.sql and sync_feed_orders_payments.sql assert format 3 and must be moved to the assembled format when the step is
 --      assembled (not changed here: not this card's files).
 --   6. An existing database whose log trigger fires on a no-change UPDATE is not relied upon: every write below changes a value.
 -- Cases: B1 each table of 7.1 (old and new customer), B2 the four settings, B3 who receives what (every round), B4 the format step.
@@ -90,17 +90,17 @@ SELECT pg_temp.sf_phone('c1', :'c1_claims'::jsonb);
 SELECT pg_temp.sf_phone('c2', :'c2_claims'::jsonb);
 SELECT pg_temp.sf_first_load(p) FROM unnest(ARRAY['admin', 'supervisor', 'staff', 'c1', 'c2']) p;
 
--- B4 (part 1): the format step. Every role's start and copy key say format 4, and a copy key of format 3 (an app that loaded before
+-- B4 (part 1): the format step. Every role's start and copy key say format 5, and a copy key of format 4 (an app that loaded before
 -- the step) is told to load everything again, as at every earlier step.
-SELECT pg_temp.sf_assert((SELECT count(*) = 5 AND bool_and(answer->>pg_temp.sf('f_format') = '4' AND answer->>pg_temp.sf('f_copy') LIKE '4.%')
+SELECT pg_temp.sf_assert((SELECT count(*) = 5 AND bool_and(answer->>pg_temp.sf('f_format') = '5' AND answer->>pg_temp.sf('f_copy') LIKE '5.%')
     FROM pg_temp.sf_answer WHERE kind = 'start'),
-  'B4: get_sync_start answers format 4 and a format-4 copy key to every role: '
+  'B4: get_sync_start answers format 5 and a format-5 copy key to every role: '
   || (SELECT string_agg(phone || ' ' || COALESCE(answer->>pg_temp.sf('f_format'), '(none)'), ', ') FROM pg_temp.sf_answer WHERE kind = 'start'));
 SELECT pg_temp.sf_changes_once('admin') AS plain_changes \gset
-SELECT pg_temp.sf_assert(:'plain_changes'::jsonb->>pg_temp.sf('f_format') = '4', 'B4: get_sync_changes answers format 4: ' || left(:'plain_changes', 300));
-SELECT pg_temp.sf_changes_once('admin', NULL, regexp_replace(copy, '^[0-9]+\.', '3.')) AS old_copy FROM pg_temp.sf_device WHERE phone = 'admin' \gset
+SELECT pg_temp.sf_assert(:'plain_changes'::jsonb->>pg_temp.sf('f_format') = '5', 'B4: get_sync_changes answers format 5: ' || left(:'plain_changes', 300));
+SELECT pg_temp.sf_changes_once('admin', NULL, regexp_replace(copy, '^[0-9]+\.', '4.')) AS old_copy FROM pg_temp.sf_device WHERE phone = 'admin' \gset
 SELECT pg_temp.sf_assert(:'old_copy'::jsonb#>>ARRAY[pg_temp.sf('f_reload_all'), pg_temp.sf('f_reason')] = pg_temp.sf('r_format'),
-  'B4: a copy key of format 3 answers reload_all FORMAT_CHANGED: ' || left(:'old_copy', 300));
+  'B4: a copy key of format 4 answers reload_all FORMAT_CHANGED: ' || left(:'old_copy', 300));
 SELECT pg_temp.sf_assert(pg_temp.sf_diff(p) = '', 'fixture: the copy of ' || p || ' equals a fresh load: ' || pg_temp.sf_diff(p))
   FROM unnest(ARRAY['admin', 'supervisor', 'staff', 'c1', 'c2']) p;
 SELECT pg_temp.mm_round('fixture', '{}', '{}', '{}');
