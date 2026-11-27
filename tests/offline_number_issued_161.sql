@@ -103,6 +103,9 @@ SELECT id AS potatoes FROM public.items WHERE name='Offline Potatoes' \gset
 SELECT id AS onions FROM public.items WHERE name='Offline Onions' \gset
 SELECT pg_temp.nn_assert((SELECT count(*) FROM public.goodsreceived) = 0 AND (SELECT count(*) FROM public.dispatch) = 0,
   'the numbers below count from empty document tables');
+-- The numbers below follow the new-installation rules (migration 127), not whatever an earlier suite of the run left: GRN letters from A, dispatch I + 4 digits.
+SELECT pg_temp.nn_rule('grn', '{"scheme":"letters","first_letter":"A","width":4,"per_letter":1000}') AS _ \gset
+SELECT pg_temp.nn_rule('dispatch', '{"scheme":"sequence","prefix":"I","width":4,"start":1}') AS _ \gset
 
 -- ===========================================================================
 -- N1-N3. GRN numbers under the default letters rule: the next one, in the order the sends arrive, whoever sends.
