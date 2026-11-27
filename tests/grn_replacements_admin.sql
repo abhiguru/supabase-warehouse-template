@@ -129,7 +129,7 @@ SELECT pg_temp.sf_assert(NOT (pg_temp.fr_list(:'sf_admin_claims'::jsonb, '(now()
 SELECT count(*) AS entries_all FROM warehouse_security.grn_replacements WHERE grn_id IN (:'grn1', :'grn2') \gset
 SELECT pg_temp.sf_assert(:entries_all = 3 AND (SELECT count(*) = 1 FROM warehouse_security.grn_replacements WHERE id = :'e1' AND checked_at IS NOT NULL), 'B11b: the checked entry is still in the table');
 SELECT pg_temp.sf_as(:'sf_admin_claims'::jsonb, format('SELECT public.delete_grn_safe(%L::uuid)', :'grn2')) AS deleted \gset
-SELECT pg_temp.sf_assert(:'deleted'::jsonb->>'success' = 'true' AND (SELECT deleted_at IS NOT NULL FROM public.goodsreceived WHERE id = :'grn2'),
+SELECT pg_temp.sf_assert(:'deleted'::jsonb->>'success' = 'true' AND NOT EXISTS (SELECT 1 FROM public.goodsreceived WHERE id = :'grn2'),
   'premise: the GRN is deleted: ' || :'deleted');
 SELECT pg_temp.sf_assert((SELECT count(*) = 1 FROM warehouse_security.grn_replacements WHERE grn_id = :'grn2'), 'B11b: a deleted GRN keeps its entries');
 SELECT pg_temp.sf_assert((SELECT count(*) FROM warehouse_security.grn_replacements WHERE grn_id IN (:'grn1', :'grn2')) = :entries_all
