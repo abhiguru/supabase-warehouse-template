@@ -158,7 +158,7 @@ END $$;
 -- ---------------------------------------------------------------------------------------------------------------------------------
 -- Fixture. Phones: admin; c1 (account of North only); c2 (account of South only); c3 (account of North, South and West: three customers).
 -- Documents: North CCN1 (two lots), CCN2 (one lot, dispatched in full, billed, paid), CCN3 (second dispatch, for the order);
--- South CCS1; West CCW1 (two lots, one dispatched), CCW2. One order each for North and South.
+-- South CCS1; West CCW1 (two lots, one dispatched), CCW2, and CCN4 (North, one lot, nothing dispatched, billed or ordered: the GRN B2 moves, since update_grn refuses a customer change once a GRN has dispatches, invoices or order lines). One order each for North and South.
 -- ---------------------------------------------------------------------------------------------------------------------------------
 INSERT INTO public.user_profiles(auth_user_id, mobile, name, role, active, enrollment_status) VALUES
  (gen_random_uuid(), '919888897301', 'Customer Copy North Reader', 'customer', true, 'approved'),
@@ -195,6 +195,7 @@ SELECT pg_temp.sf_save_grn(:'sf_admin_claims'::jsonb, 'CCN3', :'north'::uuid, pg
 SELECT pg_temp.sf_save_grn(:'sf_admin_claims'::jsonb, 'CCS1', :'south'::uuid, pg_temp.sf_lines(:'garlic'::uuid, 2, 'CS', 20), :'cc_grn_rates'::jsonb) AS grn_s1 \gset
 SELECT pg_temp.sf_save_grn(:'sf_admin_claims'::jsonb, 'CCW1', :'west'::uuid, pg_temp.sf_lines(:'garlic'::uuid, 2, 'CW', 20), :'cc_grn_rates'::jsonb) AS grn_w1 \gset
 SELECT pg_temp.sf_save_grn(:'sf_admin_claims'::jsonb, 'CCW2', :'west'::uuid, pg_temp.sf_lines(:'garlic'::uuid, 1, 'CV', 20), :'cc_grn_rates'::jsonb) AS grn_w2 \gset
+SELECT pg_temp.sf_save_grn(:'sf_admin_claims'::jsonb, 'CCN4', :'north'::uuid, pg_temp.sf_lines(:'garlic'::uuid, 1, 'CY', 20), :'cc_grn_rates'::jsonb) AS grn_n4 \gset
 SELECT id AS lot_n1a FROM public.goodsreceived_trl WHERE gr_id = :'grn_n1' AND package_mark = 'CN1' \gset
 SELECT id AS lot_n2 FROM public.goodsreceived_trl WHERE gr_id = :'grn_n2' \gset
 SELECT id AS lot_n3 FROM public.goodsreceived_trl WHERE gr_id = :'grn_n3' \gset
@@ -380,18 +381,18 @@ SELECT pg_temp.cc_step('B6 setting restored', ARRAY['admin', 'c1', 'c2', 'c3']);
 
 -- ---------------------------------------------------------------------------------------------------------------------------------
 -- B2. A GRN moved: the account of the old customer gets a delete, of the new one the rows, an account of neither gets no entry.
--- CCN1 North -> South: c1 delete, c2 upsert, c3 (holds both) upsert. CCW2 West -> North: c2 nothing, c1 upsert, c3 upsert.
+-- CCN4 North -> South: c1 delete, c2 upsert, c3 (holds both) upsert. CCW2 West -> North: c2 nothing, c1 upsert, c3 upsert.
 -- ---------------------------------------------------------------------------------------------------------------------------------
-SELECT pg_temp.sf_update_grn(:'sf_admin_claims'::jsonb, :'grn_n1'::uuid, pg_temp.sf_current_lines(:'grn_n1'::uuid), :'south'::uuid);
-SELECT pg_temp.cc_step('B2 CCN1 to South', ARRAY['admin', 'c1', 'c2', 'c3']);
-SELECT pg_temp.sf_assert(pg_temp.sf_ops('c1', 'goodsreceived', :'grn_n1', pg_temp.sf_last_pull('c1')) = pg_temp.sf('op_delete')
-  AND NOT (:'grn_n1' = ANY (pg_temp.sf_held('c1', 'goodsreceived')))
-  AND NOT EXISTS (SELECT 1 FROM pg_temp.sf_copy c WHERE c.slot = 'c1' AND c.e = 'goodsreceived_trl' AND c.row->>'gr_id' = :'grn_n1'),
+SELECT pg_temp.sf_update_grn(:'sf_admin_claims'::jsonb, :'grn_n4'::uuid, pg_temp.sf_current_lines(:'grn_n4'::uuid), :'south'::uuid);
+SELECT pg_temp.cc_step('B2 CCN4 to South', ARRAY['admin', 'c1', 'c2', 'c3']);
+SELECT pg_temp.sf_assert(pg_temp.sf_ops('c1', 'goodsreceived', :'grn_n4', pg_temp.sf_last_pull('c1')) = pg_temp.sf('op_delete')
+  AND NOT (:'grn_n4' = ANY (pg_temp.sf_held('c1', 'goodsreceived')))
+  AND NOT EXISTS (SELECT 1 FROM pg_temp.sf_copy c WHERE c.slot = 'c1' AND c.e = 'goodsreceived_trl' AND c.row->>'gr_id' = :'grn_n4'),
   'B2: North''s account got the moved GRN as a delete and holds neither it nor its lots');
-SELECT pg_temp.sf_assert(pg_temp.sf_ops('c2', 'goodsreceived', :'grn_n1', pg_temp.sf_last_pull('c2')) = pg_temp.sf('op_upsert') AND :'grn_n1' = ANY (pg_temp.sf_held('c2', 'goodsreceived')),
+SELECT pg_temp.sf_assert(pg_temp.sf_ops('c2', 'goodsreceived', :'grn_n4', pg_temp.sf_last_pull('c2')) = pg_temp.sf('op_upsert') AND :'grn_n4' = ANY (pg_temp.sf_held('c2', 'goodsreceived')),
   'B2: South''s account got the moved GRN as an upsert');
-SELECT pg_temp.sf_assert(pg_temp.sf_ops('c3', 'goodsreceived', :'grn_n1', pg_temp.sf_last_pull('c3')) = pg_temp.sf('op_upsert')
-  AND (SELECT row->>'customer_id' FROM pg_temp.sf_copy WHERE slot = 'c3' AND e = 'goodsreceived' AND id = :'grn_n1') = :'south',
+SELECT pg_temp.sf_assert(pg_temp.sf_ops('c3', 'goodsreceived', :'grn_n4', pg_temp.sf_last_pull('c3')) = pg_temp.sf('op_upsert')
+  AND (SELECT row->>'customer_id' FROM pg_temp.sf_copy WHERE slot = 'c3' AND e = 'goodsreceived' AND id = :'grn_n4') = :'south',
   'B2: the account of both customers holds the moved GRN under South, without a delete');
 SELECT pg_temp.sf_update_grn(:'sf_admin_claims'::jsonb, :'grn_w2'::uuid, pg_temp.sf_current_lines(:'grn_w2'::uuid), :'north'::uuid);
 SELECT pg_temp.cc_step('B2 CCW2 to North', ARRAY['admin', 'c1', 'c2', 'c3']);
