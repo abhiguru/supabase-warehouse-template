@@ -74,14 +74,14 @@ SELECT pg_temp.sf_assert(pg_temp.sf_as(:'sf_admin_claims'::jsonb, format('SELECT
   '[{"weight_min":0,"weight_max":100,"unit_price":5,"labour_rate":2,"tax_percent":5}]'))->>'success' = 'true', 'monthly rate for South');
 
 -- One GRN each (North's has two lots), one dispatch of North's.
-SELECT pg_temp.sf_save_grn(:'sf_admin_claims'::jsonb, 'MMN1', :'north'::uuid, pg_temp.sf_lines(:'garlic'::uuid, 2, 'MN')) AS grn_n \gset
-SELECT pg_temp.sf_save_grn(:'sf_admin_claims'::jsonb, 'MMS1', :'south'::uuid, pg_temp.sf_lines(:'garlic'::uuid, 1, 'MS')) AS grn_s \gset
+SELECT pg_temp.sf_save_grn(:'sf_admin_claims'::jsonb, 'MMN1', :'north'::uuid, pg_temp.sf_lines(:'garlic'::uuid, 2, 'MN'), jsonb_build_array(jsonb_build_object('scope', 'grn', 'item_id', :'garlic', 'weight_min', 0, 'weight_max', 100, 'unit_price', 5, 'labour_rate', 2, 'tax_percent', 5))) AS grn_n \gset
+SELECT pg_temp.sf_save_grn(:'sf_admin_claims'::jsonb, 'MMS1', :'south'::uuid, pg_temp.sf_lines(:'garlic'::uuid, 1, 'MS'), jsonb_build_array(jsonb_build_object('scope', 'grn', 'item_id', :'garlic', 'weight_min', 0, 'weight_max', 100, 'unit_price', 5, 'labour_rate', 2, 'tax_percent', 5))) AS grn_s \gset
 SELECT id AS lot_n1 FROM public.goodsreceived_trl WHERE gr_id = :'grn_n' AND package_mark = 'MN1' \gset
 SELECT id AS lot_n2 FROM public.goodsreceived_trl WHERE gr_id = :'grn_n' AND package_mark = 'MN2' \gset
 SELECT pg_temp.sf_dispatch(:'sf_admin_claims'::jsonb, 'MMND1', :'lot_n2'::uuid, 2) AS disp_n \gset
 SELECT id AS disp_line FROM public.dispatch_trl WHERE disp_id = :'disp_n' \gset
 SELECT pg_temp.sf_assert((SELECT count(*) > 0 FROM public.grn_rates WHERE gr_id = :'grn_n'),
-  'premise: the GRN of North has a grn_rates row (the monthly rate was applied at save)');
+  'premise: the GRN of North has a grn_rates row (the GRN rates sent at save were written)');
 
 SELECT pg_temp.sf_phone('admin', :'sf_admin_claims'::jsonb);
 SELECT pg_temp.sf_phone('supervisor', :'supervisor_claims'::jsonb);

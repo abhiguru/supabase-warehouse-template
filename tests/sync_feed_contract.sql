@@ -358,14 +358,14 @@ CREATE FUNCTION pg_temp.sf_lines(item uuid, n int, prefix text, qty int DEFAULT 
     'package_mark', prefix || g) ORDER BY g)
   FROM generate_series(1, n) g CROSS JOIN public.items i WHERE i.id = item $$;
 -- save_grn as a caller; returns the new GRN's id.
-CREATE FUNCTION pg_temp.sf_save_grn(claims jsonb, grn_no text, customer uuid, lines jsonb) RETURNS uuid LANGUAGE plpgsql AS $$
+CREATE FUNCTION pg_temp.sf_save_grn(claims jsonb, grn_no text, customer uuid, lines jsonb, rates jsonb DEFAULT NULL) RETURNS uuid LANGUAGE plpgsql AS $$
 DECLARE r jsonb; cname text; sup uuid; gid uuid;
 BEGIN
   SELECT name INTO cname FROM public.customers WHERE id = customer;
   SELECT id INTO sup FROM public.user_profiles WHERE mobile = '919888897001';
   r := pg_temp.sf_as(claims, format('SELECT public.save_grn(p_sender_name => %L, p_supervisor_id => %L::uuid, p_supervisor_name => %L, p_gr_no => %L,'
-    ' p_date => %L::timestamptz, p_customer_id => %L::uuid, p_customer_name => %L, p_pricing_mode => %L, p_items => %L::jsonb, p_idempotency_key => %L)',
-    'Fixture Sender', sup, 'Fixture Supervisor', grn_no, '2026-04-01T12:00:00Z', customer, cname, 'MONTHLY', lines, 'sync-feed-' || grn_no));
+    ' p_date => %L::timestamptz, p_customer_id => %L::uuid, p_customer_name => %L, p_pricing_mode => %L, p_items => %L::jsonb, p_idempotency_key => %L, p_rates => %L::jsonb)',
+    'Fixture Sender', sup, 'Fixture Supervisor', grn_no, '2026-04-01T12:00:00Z', customer, cname, 'MONTHLY', lines, 'sync-feed-' || grn_no, rates));
   PERFORM pg_temp.sf_assert(r->>'success' = 'true', 'fixture: save_grn ' || grn_no || ': ' || left(r::text, 300));
   SELECT id INTO gid FROM public.goodsreceived WHERE gr_no = grn_no;
   RETURN gid;
