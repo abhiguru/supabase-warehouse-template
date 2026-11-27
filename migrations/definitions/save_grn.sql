@@ -35,6 +35,7 @@ AS $function$
       v_numbered jsonb;
       v_pre_ids uuid[];
       v_pre_mapping jsonb;
+      v_accepter uuid;
 BEGIN
   PERFORM warehouse_security.authorize_rpc('save_grn',jsonb_build_object('p_customer_id',p_customer_id));
   -- Migration 90: rates typed on the GRN sheet are an administrator's or a supervisor's.
@@ -80,7 +81,8 @@ BEGIN
           IF warehouse_security.is_blank_text(p_idempotency_key) THEN
               RETURN warehouse_security.refuse('REQUEST_KEY_REQUIRED', 'A save made offline needs a request key.', '{}'::jsonb);
           END IF;
-          SELECT id INTO v_user_profile_id FROM user_profiles WHERE auth_user_id = auth.uid();
+          -- WH-304: an item accepted from the holding list is saved for the person who recorded it (the request key's owner is theirs).
+          v_user_profile_id := COALESCE(warehouse_security.acting_profile(), (SELECT id FROM user_profiles WHERE auth_user_id = auth.uid()));
           IF v_user_profile_id IS NOT NULL THEN
               v_digest := warehouse_security.request_digest(jsonb_build_object(
                   'gr_no', p_gr_no, 'date', extract(epoch FROM p_date), 'customer_id', p_customer_id, 'customer_name', p_customer_name,
@@ -142,6 +144,14 @@ BEGIN
               'success', false,
               'message', 'Insufficient permissions. Only admin and supervisor can create GRNs'
           );
+      END IF;
+
+      -- WH-304 (topic "save on behalf of the recorder"): when a supervisor or administrator accepts a held item, the role checks above
+      -- are the accepting person's; the GRN is the recorder's (creator, request key owner, photos) and notes who accepted it.
+      v_accepter := NULL;
+      IF warehouse_security.acting_profile() IS NOT NULL THEN
+          v_accepter := v_user_profile_id;
+          v_user_profile_id := warehouse_security.acting_profile();
       END IF;
 
       PERFORM warehouse_security.require_person_supervisor(p_supervisor_id::text);
@@ -283,7 +293,8 @@ BEGIN
               recorded_at,
               request_key,
               request_digest,
-              request_item_mapping
+              request_item_mapping,
+              accepted_by
           ) VALUES (
               p_gr_no,
               p_date,
@@ -305,7 +316,8 @@ BEGIN
               p_recorded_at,
               CASE WHEN v_offline THEN p_idempotency_key END,
               CASE WHEN v_offline THEN v_digest END,
-              CASE WHEN v_offline THEN v_pre_mapping END
+              CASE WHEN v_offline THEN v_pre_mapping END,
+              v_accepter
           ) RETURNING id INTO v_grn_id;
 
           v_item_index := 0;

@@ -68,6 +68,10 @@ BEGIN
     -- Edit GRN by field changes (topic "edit GRN by field changes", WH-303), as update_grn. The replaced-entries list and "mark checked"
     -- are not here: administrators and supervisors pass the line above and their bodies refuse a supervisor.
     'apply_grn_changes',
+    -- The holding list (topics "hand over held items" and "held outcome seen", WH-304): staff hand over their own refused items and
+    -- see their outcome. The list, the item and the decision are for administrators and supervisors (the line above them) and are
+    -- refused to staff and customer accounts by the final ELSE.
+    'hold_items','mark_held_item_seen',
     'get_all_grn_items','get_grn_list','get_grn_details',
     -- The next GRN, dispatch or invoice number under the facility's rule (migration 127); the rules are read by supervisors and above.
     'suggest_document_number',

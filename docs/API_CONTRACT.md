@@ -338,6 +338,12 @@ is 4 since migration "replaced entries list and feed" (WH-303); it was 3 from mi
   customer account's rows of these lose the columns above, and `entered_by` and `updated_by` of a payment.
   From format 4 (WH-303): `grn_replacements`, the unchecked replaced entries in `get_grn_replacements`' row shape, for administrators,
   supervisors and staff only; an entry checked is a delete, and any change of an entry brings its GRN (`goodsreceived`) as an upsert.
+  From format 5 (WH-304): `held_items`, for administrators, supervisors and staff only (never a customer account). The recorder holds their
+  own rows that are held, or decided and not yet seen (`id, kind, what, customer_name, recorded_by_name, recorded_at, phone, reason,
+  reason_data, state, follows, needs_decision, decided_by_name, decided_at, reject_reason, result, body, accepted_body, lines, grn_id,
+  dispatch_id, seen_at`); administrators and supervisors also every other person's held row as exactly `id, kind, state, needs_decision,
+  lines`; staff also every other person's held `newDispatch` row as exactly `id, kind, state, lines`. A row that leaves a phone's set (decided,
+  or seen) arrives as a delete.
 - **`get_sync_changes(p_position, p_copy, p_limit DEFAULT 2000)`** → `{success, format, position, as_of, more, reload_all, reload[], changes[]}`.
   Changes come from finished transactions only, whole transactions per page, at most `p_limit` entries, one per entity and id, each the
   row as it is now: `{e, id, op: "upsert", v, row}`, `{e, id, op: "delete"}`, or `{e: "money", id: <customer>, op: "stale"}` (that
@@ -1587,6 +1593,35 @@ since removed; `apply_grn_changes`' `replaced` entries carry them too; a name is
 `mark_grn_replacements_checked(p_grn_id uuid, p_ids uuid[])`, administrators only: `{success, checked: n}`, the named entries of that GRN
 not yet checked; others are skipped. The server never deletes an entry. `get_grn_details` answers `replacements` (the GRN's unchecked
 entries, same rows) to administrators, supervisors and staff only.
+
+### Holding list (WH-304)
+
+Items the server refused wait here for a supervisor or administrator; nothing in the list is deleted or dropped for age.
+
+- `hold_items(p_items jsonb, p_recorder uuid DEFAULT NULL)`: administrators, supervisors and staff (never a customer account). `p_items` is at
+  most 50 items in `seq` order, each `{request_key, kind, body, seq, recorded_at, follows_key?, what?, customer_id?, refusal?: {code?, reason?, data?}}`,
+  `kind` one of `newGrn`, `newDispatch`, `grnEdit`, `lotChange`, `photos`. `p_recorder` (an administrator only) is another person's auth id: their unsent
+  items are moved (`source` moved). Answer `{success, held: [{request_key, id, state} | {request_key, id, state, idempotent: true} |
+  {request_key, reason: "REQUEST_KEY_REUSED"}]}` in the order of `p_items`; a repeated key answers its first row. Whole-call refusals (nothing
+  written): `HELD_TOO_MANY_ITEMS`, `HELD_ITEM_INVALID`, `HELD_BODY_TOO_LARGE` (body and `what` over 65,536 bytes), `HELD_MOVE_ADMIN_ONLY`,
+  `HELD_RECORDER_UNKNOWN`.
+- `get_held_items(p_limit int DEFAULT 50, p_offset int DEFAULT 0)`, administrators and supervisors: `{success, rows, total}`, open items only,
+  oldest first, an item that follows another directly under it; a row `{id, kind, what, customer_name, recorded_by_name, recorded_at, phone,
+  reason, reason_data, state, follows, needs_decision, can_accept, decided_by_name, decided_at, reject_reason, result}` (`reason` is one of
+  `stockShort`, `noRate`, `numberUsed`, `numberFormat`, `dateRefused`, `duplicate`, `deleted`, `locked`, `belowDispatched`, `followsHeld`, `moved`,
+  `other`; a moved item's `reason_data` is `{admin_name, recorder_name, moved_at}`).
+- `get_held_item(p_id uuid)`, administrators and supervisors: `{success, <the list row>, reason_code, body, accepted_body, photos, followers,
+  accept_possible, current}`. `accept_possible` is the item's own save run inside a block that is always rolled back (false while an item it
+  follows is still held); the reason found is stored on the row. `current` lists, for a held `lotChange` or `grnEdit`, `[{field, line_ref?, current,
+  held}]`.
+- `decide_held_item(p_id uuid, p_action text, p_decision_key text, p_reason text DEFAULT NULL, p_body jsonb DEFAULT NULL)`, administrators and
+  supervisors: `accept` runs the kind's own save under the item's request key, as the recorder (creator, recorded time, request key owner),
+  checked as the caller; the document notes `accepted_by`. `p_body` is an accept with changes. The save's own refusal is answered unchanged and
+  the item stays held. `reject` needs `p_reason` (trimmed, at most 500 characters). Success `{success, id, state, result, decided_by_name,
+  decided_at, now_acceptable[]}` with `result` `{grn_id, gr_no}` or `{dispatch_id, disp_no}`; a repeated `p_decision_key` answers the first with
+  `idempotent: true`. Refusals: `HELD_NOT_FOUND`, `HELD_ALREADY_DECIDED` (+ `state`, `decided_by_name`, `decided_at`), `HELD_NO_DECISION`,
+  `HELD_FOLLOWS_UNDECIDED` (accept only), `HELD_REASON_REQUIRED` (reject only), `HELD_ACTION_INVALID`.
+- `mark_held_item_seen(p_id uuid)`: the recorder marks a decided item of their own as seen (`HELD_NOT_FOUND`, `HELD_NOT_DECIDED`); a repeat writes nothing.
 
 ### Dispatch lists: the GRN of each line (migration 131)
 

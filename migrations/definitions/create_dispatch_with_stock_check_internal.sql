@@ -56,6 +56,7 @@ DECLARE
     v_repeat jsonb;
     v_numbered jsonb;
     v_recorded_at timestamptz;
+    v_accepter uuid;
 BEGIN
     -- The document lock comes before the idempotency lookup, as in save_grn (migration 87):
     -- an overlapping retry waits here and then finds the first call's cached answer.
@@ -72,7 +73,8 @@ BEGIN
         IF warehouse_security.is_blank_text(p_idempotency_key) THEN
             RETURN warehouse_security.refuse('REQUEST_KEY_REQUIRED', 'A save made offline needs a request key.', '{}'::jsonb);
         END IF;
-        SELECT id INTO v_user_id FROM user_profiles WHERE auth_user_id = auth.uid();
+        -- WH-304: an item accepted from the holding list is saved for the person who recorded it (the request key's owner is theirs).
+        v_user_id := COALESCE(warehouse_security.acting_profile(), (SELECT id FROM user_profiles WHERE auth_user_id = auth.uid()));
         IF v_user_id IS NOT NULL THEN
             v_digest := warehouse_security.request_digest(jsonb_build_object(
                 'data', p_dispatch_data - 'warn_duplicate' - 'recorded_at', 'items', to_jsonb(p_dispatch_items), 'invoice', p_generate_invoice));
@@ -120,6 +122,13 @@ BEGIN
 
     -- Get current user
     SELECT id INTO v_user_id FROM user_profiles WHERE auth_user_id = auth.uid();
+    -- WH-304 (topic "save on behalf of the recorder"): the role check above is the accepting person's; the dispatch is the recorder's
+    -- (creator, request key owner, stock movements) and notes who accepted it.
+    v_accepter := NULL;
+    IF warehouse_security.acting_profile() IS NOT NULL THEN
+        v_accepter := v_user_id;
+        v_user_id := warehouse_security.acting_profile();
+    END IF;
 
     -- WH-161: the recorded time is the phone's clock; one more than 5 minutes ahead of the server is refused (clock drift is allowed).
     IF v_recorded_at IS NOT NULL AND v_recorded_at > now() + interval '5 minutes' THEN
@@ -371,7 +380,7 @@ BEGIN
         disp_no, disp_date, registration, customer_id,
         customer_name, supervisor_id, supervisor_name, note,
         created_by, source_order_id, source_order_no,
-        recorded_at, request_key, request_digest
+        recorded_at, request_key, request_digest, accepted_by
     ) VALUES (
         p_dispatch_data->>'disp_no',
         v_disp_day::timestamptz,
@@ -386,7 +395,8 @@ BEGIN
         v_source_order_no,  -- Now uses auto-looked-up value
         v_recorded_at,
         CASE WHEN v_offline THEN p_idempotency_key END,
-        CASE WHEN v_offline THEN v_digest END
+        CASE WHEN v_offline THEN v_digest END,
+        v_accepter
     ) RETURNING id INTO v_dispatch_id;
 
     -- BULK UPDATE STOCK
