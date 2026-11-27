@@ -100,6 +100,22 @@ $m$SELECT a.customer_id FROM users_customers_new a
                 WHERE a.active AND a.user_profile_id = (SELECT id FROM user_profiles WHERE auth_user_id = v_user_id)$m$
 ]) FROM unnest(ARRAY['public.get_grn_details(uuid)', 'public.get_dispatch_details(uuid)']) t(f);
 
+-- Starting an order for the account's own deleted business keeps its old answer (Product's PQ9): P0001 "Business is not active", not the
+-- 42501 the scope check above now gives. Only the error changes: it is raised before the gate, nothing is read or written for the business,
+-- and only for a customer account with an active assignment to this customer. Reads stay refused as access (PQ4). Staff and admin paths unchanged.
+SELECT pg_temp.patch_function('public.get_or_create_cart(uuid)'::regprocedure, ARRAY[
+$m$  PERFORM warehouse_security.authorize_rpc('get_or_create_cart',jsonb_build_object('p_customer_id',p_customer_id));$m$
+], ARRAY[
+$m$  IF warehouse_security.active_role() = 'customer' AND EXISTS (
+       SELECT 1 FROM public.users_customers_new a
+         JOIN public.user_profiles p ON p.id = a.user_profile_id
+         JOIN public.customers c ON c.id = a.customer_id AND c.deleted_at IS NOT NULL
+       WHERE a.customer_id = p_customer_id AND a.active AND p.active AND p.auth_user_id = auth.uid()) THEN
+    RAISE EXCEPTION 'Business is not active' USING ERRCODE = 'P0001';
+  END IF;
+  PERFORM warehouse_security.authorize_rpc('get_or_create_cart',jsonb_build_object('p_customer_id',p_customer_id));$m$
+]);
+
 -- ===== 2. no staff-only key in a customer account's answer =====
 CREATE FUNCTION warehouse_security.strip_staff_keys(j jsonb) RETURNS jsonb
     LANGUAGE sql IMMUTABLE
