@@ -24,8 +24,10 @@ BEGIN
             IF NOT EXISTS (
                 SELECT 1 FROM invoice i
                 JOIN users_customers_new ucn ON ucn.customer_id = i.customer_id
+                JOIN customers live_c ON live_c.id = i.customer_id AND live_c.deleted_at IS NULL
                 WHERE i.id = p_invoice_id
                 AND ucn.user_profile_id = v_user_id
+                AND ucn.active
             ) THEN
                 RETURN jsonb_build_object(
                     'success', false,
@@ -341,7 +343,8 @@ BEGIN
             )
         );
 
-        RETURN v_result;
+        -- WH-306: a customer account is never answered a staff-only key (warehouse_security.customer_answer).
+        RETURN warehouse_security.customer_answer(v_result);
 
     EXCEPTION
         WHEN OTHERS THEN

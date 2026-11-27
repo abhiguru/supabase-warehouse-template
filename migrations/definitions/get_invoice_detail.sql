@@ -145,7 +145,9 @@ BEGIN
           AND (v_cancelled OR it.details_kept_at IS NOT NULL OR (dt.id IS NOT NULL AND d.id IS NOT NULL AND gt.id IS NOT NULL AND gr.id IS NOT NULL))
     ) x;
 
-    RETURN jsonb_build_object('success', true, 'invoice', v_invoice_header, 'items', COALESCE(v_invoice_items, '[]'::jsonb));
+    -- WH-306: a customer account is never answered a staff-only key (warehouse_security.customer_answer).
+    RETURN warehouse_security.customer_answer(
+      jsonb_build_object('success', true, 'invoice', v_invoice_header, 'items', COALESCE(v_invoice_items, '[]'::jsonb)));
 EXCEPTION WHEN OTHERS THEN
     RETURN jsonb_build_object('success', false, 'error', SQLERRM);
 END;
