@@ -48,8 +48,8 @@ SELECT pg_temp.sf_save_grn(:'sf_admin_claims'::jsonb, 'FSR1', :'west'::uuid, pg_
 SELECT updated_at AS load1 FROM public.goodsreceived WHERE id = :'grn' \gset
 SELECT pg_temp.sr_apply(:'sf_admin_claims'::jsonb, :'grn', :'load1', NULL, 'Admin note', 'sr-1') AS s1 \gset
 SELECT pg_temp.sr_apply(:'staff_claims'::jsonb, :'grn', :'load1', NULL, 'Staff note', 'sr-2') AS s2 \gset
-SELECT pg_temp.sf_assert(:'s2'::jsonb->>'success' = 'true' AND (SELECT count(*) = 1 FROM public.grn_replacements WHERE grn_id = :'grn'), 'premise: one entry: ' || :'s2');
-SELECT id AS e1 FROM public.grn_replacements WHERE grn_id = :'grn' \gset
+SELECT pg_temp.sf_assert(:'s2'::jsonb->>'success' = 'true' AND (SELECT count(*) = 1 FROM warehouse_security.grn_replacements WHERE grn_id = :'grn'), 'premise: one entry: ' || :'s2');
+SELECT id AS e1 FROM warehouse_security.grn_replacements WHERE grn_id = :'grn' \gset
 
 SELECT pg_temp.sf_phone('admin', :'sf_admin_claims'::jsonb);
 SELECT pg_temp.sf_phone('staff', :'staff_claims'::jsonb);
@@ -83,7 +83,7 @@ SELECT pg_temp.sf_assert(COALESCE(jsonb_array_length(NULLIF(pg_temp.sr_details(:
 SELECT updated_at AS load2 FROM public.goodsreceived WHERE id = :'grn' \gset
 SELECT pg_temp.sr_apply(:'sf_admin_claims'::jsonb, :'grn', :'load2', 'Staff note', 'Admin note 2', 'sr-3') AS s3 \gset
 SELECT pg_temp.sr_apply(:'staff_claims'::jsonb, :'grn', :'load2', 'Staff note', 'Staff note 2', 'sr-4') AS s4 \gset
-SELECT id AS e2 FROM public.grn_replacements WHERE request_key = 'sr-4' \gset
+SELECT id AS e2 FROM warehouse_security.grn_replacements WHERE request_key = 'sr-4' \gset
 SELECT pg_temp.sf_pull(p) FROM unnest(ARRAY['admin', 'staff', 'sup', 'reader']) p;
 SELECT pg_temp.sf_assert(pg_temp.sf_diff(p) = '' AND pg_temp.sr_held(p) = ARRAY(SELECT x FROM unnest(ARRAY[:'e1', :'e2']) x ORDER BY x)
     AND pg_temp.sf_ops(p, 'grn_replacements', :'e2', pg_temp.sf_last_pull(p)) = pg_temp.sf('op_upsert'),
@@ -93,12 +93,12 @@ SELECT pg_temp.sf_assert(pg_temp.sf_diff('reader') = '' AND pg_temp.sr_held('rea
 
 -- Checking an entry is a delete for the phones; the server keeps the row.
 SELECT pg_temp.sf_as(:'sf_admin_claims'::jsonb, format('SELECT public.mark_grn_replacements_checked(%L::uuid, ARRAY[%L]::uuid[])', :'grn', :'e1')) AS marked \gset
-SELECT pg_temp.sf_assert(:'marked'::jsonb->>'success' = 'true' AND (SELECT checked_at IS NOT NULL FROM public.grn_replacements WHERE id = :'e1'), 'premise: checked: ' || :'marked');
+SELECT pg_temp.sf_assert(:'marked'::jsonb->>'success' = 'true' AND (SELECT checked_at IS NOT NULL FROM warehouse_security.grn_replacements WHERE id = :'e1'), 'premise: checked: ' || :'marked');
 SELECT pg_temp.sf_pull(p) FROM unnest(ARRAY['admin', 'staff', 'sup', 'reader']) p;
 SELECT pg_temp.sf_assert(pg_temp.sf_diff(p) = '' AND pg_temp.sr_held(p) = ARRAY[:'e2']
     AND pg_temp.sf_ops(p, 'grn_replacements', :'e1', pg_temp.sf_last_pull(p)) = pg_temp.sf('op_delete'),
   'B12: checking removes the entry from ' || p || ' as a delete, and the copy equals a fresh load: ' || pg_temp.sf_diff(p)) FROM unnest(ARRAY['admin', 'staff', 'sup']) p;
-SELECT pg_temp.sf_assert((SELECT count(*) = 1 FROM public.grn_replacements WHERE id = :'e1'), 'B12 / PQ7: the server keeps the checked entry');
+SELECT pg_temp.sf_assert((SELECT count(*) = 1 FROM warehouse_security.grn_replacements WHERE id = :'e1'), 'B12 / PQ7: the server keeps the checked entry');
 SELECT pg_temp.sf_assert(pg_temp.sf_ops(p, 'goodsreceived', :'grn', pg_temp.sf_last_pull(p)) = pg_temp.sf('op_upsert'),
   'B12: checking touches the GRN itself so details are read again on ' || p) FROM unnest(ARRAY['admin', 'staff', 'sup']) p;
 SELECT pg_temp.sf_assert(pg_temp.sr_details(:'sf_admin_claims'::jsonb, :'grn'::uuid)#>>'{0,id}' = :'e2' AND jsonb_array_length(pg_temp.sr_details(:'sf_admin_claims'::jsonb, :'grn'::uuid)) = 1,

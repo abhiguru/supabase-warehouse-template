@@ -32,23 +32,23 @@ const sqlFiles = () => shippedFiles().filter(path => path.endsWith('.sql')).map(
 test('B11b: nothing shipped deletes, truncates or drops the replaced entries; the retention script does not name the table', () => {
   const files = shippedFiles();
   assert.ok(files.includes('scripts/retention.sh') && files.includes('migrations/definitions/update_grn.sql'), 'the walk reaches the scripts and the definitions');
-  const removal = new RegExp(`\\b(?:DELETE\\s+FROM(?:\\s+ONLY)?|TRUNCATE(?:\\s+TABLE)?(?:\\s+ONLY)?|DROP\\s+TABLE(?:\\s+IF\\s+EXISTS)?)\\s+(?:public\\.)?${TABLE}\\b`, 'i');
+  const removal = new RegExp(`\\b(?:DELETE\\s+FROM(?:\\s+ONLY)?|TRUNCATE(?:\\s+TABLE)?(?:\\s+ONLY)?|DROP\\s+TABLE(?:\\s+IF\\s+EXISTS)?)\\s+(?:(?:public|warehouse_security)\\.)?${TABLE}\\b`, 'i');
   const offenders = files.filter(path => removal.test(read(path).replace(/^\s*(?:--|#).*$/gm, '')));
   assert.deepEqual(offenders, [], `${TABLE} is deleted from in: ${offenders.join(', ')}`);
   assert.equal(read('scripts/retention.sh').includes(TABLE), false, 'retention.sh names no table of replaced entries');
 });
 
 test('5.4: a migration creates grn_replacements with the contract columns, RLS on, and no grant to the app roles', () => {
-  const create = sqlFiles().filter(({ text }) => new RegExp(`CREATE\\s+TABLE(?:\\s+IF\\s+NOT\\s+EXISTS)?\\s+public\\.${TABLE}\\b`, 'i').test(text));
-  assert.equal(create.length, 1, `exactly one migration creates public.${TABLE}`);
+  const create = sqlFiles().filter(({ text }) => new RegExp(`CREATE\\s+TABLE(?:\\s+IF\\s+NOT\\s+EXISTS)?\\s+warehouse_security\\.${TABLE}\\b`, 'i').test(text));
+  assert.equal(create.length, 1, `exactly one migration creates warehouse_security.${TABLE}`);
   const { text } = create[0];
   for (const column of ['id', 'grn_id', 'lot_id', 'customer_id', 'kind', 'field', 'newer_value', 'newer_by', 'newer_at', 'sent_value', 'sent_by', 'sent_at',
     'recorded_at', 'request_key', 'checked_by', 'checked_at']) {
     assert.match(text, new RegExp(`^\\s*${column}\\s+[a-z]`, 'mi'), `column ${column}`);
   }
-  assert.match(text, new RegExp(`ALTER\\s+TABLE\\s+(?:ONLY\\s+)?public\\.${TABLE}\\s+ENABLE\\s+ROW\\s+LEVEL\\s+SECURITY`, 'i'), 'RLS is enabled');
-  assert.match(text, new RegExp(`REVOKE\\s+ALL\\s+ON\\s+(?:TABLE\\s+)?public\\.${TABLE}\\s+FROM\\s+(?:PUBLIC|anon|authenticated)`, 'i'), 'default grants are revoked');
-  assert.doesNotMatch(text, new RegExp(`GRANT\\s+(?:ALL|SELECT|INSERT|UPDATE|DELETE)[^;]*ON\\s+(?:TABLE\\s+)?public\\.${TABLE}\\s+TO\\s+(?:anon|authenticated)`, 'i'), 'no direct grant to the app roles');
+  assert.match(text, new RegExp(`ALTER\\s+TABLE\\s+(?:ONLY\\s+)?warehouse_security\\.${TABLE}\\s+ENABLE\\s+ROW\\s+LEVEL\\s+SECURITY`, 'i'), 'RLS is enabled');
+  assert.match(text, new RegExp(`REVOKE\\s+ALL\\s+ON\\s+(?:TABLE\\s+)?warehouse_security\\.${TABLE}\\s+FROM\\s+(?:PUBLIC|anon|authenticated)`, 'i'), 'default grants are revoked');
+  assert.doesNotMatch(text, new RegExp(`GRANT\\s+(?:ALL|SELECT|INSERT|UPDATE|DELETE)[^;]*ON\\s+(?:TABLE\\s+)?warehouse_security\\.${TABLE}\\s+TO\\s+(?:anon|authenticated)`, 'i'), 'no direct grant to the app roles');
 });
 
 for (const name of ['apply_grn_changes', 'get_grn_replacements', 'mark_grn_replacements_checked']) {
