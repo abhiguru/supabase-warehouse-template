@@ -347,6 +347,10 @@ SELECT pg_temp.sf_assert(pg_temp.sf_ops(p, 'payments', :'pay_n2', pg_temp.sf_las
 -- ---------------------------------------------------------------------------------------------------------------------------------
 -- B3. An order moves to another customer: the old customer's account gets deletes (order and lines), the new one upserts.
 -- ---------------------------------------------------------------------------------------------------------------------------------
+-- A business has one order row (one_cart_per_customer), so South's own order steps aside to a business of its own while North's order is South's.
+SELECT pg_temp.sf_assert(pg_temp.sf_as(:'sf_admin_claims'::jsonb, 'SELECT public.create_customer(''Order Feed Parked'', ''9888897525'')')->>'success' = 'true', 'customer for South''s order to step aside to');
+SELECT id AS parked FROM public.customers WHERE name = 'Order Feed Parked' \gset
+UPDATE public.orders SET customer_id = :'parked', customer_name = 'Order Feed Parked' WHERE id = :'ord_s';
 UPDATE public.orders SET customer_id = :'south', customer_name = 'Order Feed South' WHERE id = :'ord_n';
 SELECT pg_temp.of_step('B3 order moved to South', :'north'::uuid, :'south'::uuid);
 SELECT pg_temp.sf_assert(pg_temp.sf_ops('c1', 'orders', :'ord_n', pg_temp.sf_last_pull('c1')) = 'delete' AND pg_temp.sf_ops('c1', 'order_items', :'line_n1', pg_temp.sf_last_pull('c1')) = 'delete'
@@ -354,6 +358,7 @@ SELECT pg_temp.sf_assert(pg_temp.sf_ops('c1', 'orders', :'ord_n', pg_temp.sf_las
   'B3: North''s account got the moved order and its lines as deletes');
 SELECT pg_temp.sf_assert(:'ord_n' = ANY (pg_temp.sf_held('c2', 'orders')) AND :'line_n1' = ANY (pg_temp.sf_held('c2', 'order_items')), 'B3: South''s account holds the moved order and its line');
 UPDATE public.orders SET customer_id = :'north', customer_name = 'Order Feed North' WHERE id = :'ord_n';
+UPDATE public.orders SET customer_id = :'south', customer_name = 'Order Feed South' WHERE id = :'ord_s';
 SELECT pg_temp.of_step('B3 order moved back', :'north'::uuid, :'south'::uuid);
 
 -- ---------------------------------------------------------------------------------------------------------------------------------
