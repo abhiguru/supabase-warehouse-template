@@ -55,7 +55,21 @@ USING (bucket_id IN ('grn-images','dispatch-images') AND (SELECT warehouse_secur
   AND NOT EXISTS (SELECT 1 FROM public.grn_images i WHERE i.storage_path=name)
   AND NOT EXISTS (SELECT 1 FROM public.dispatch_images i WHERE i.storage_path=name)
   AND NOT EXISTS (SELECT 1 FROM public.goodsreceived g WHERE g.gr_image_url IS NOT NULL AND position(name IN g.gr_image_url) > 0)
-  AND NOT EXISTS (SELECT 1 FROM public.dispatch d WHERE d.disp_image_url IS NOT NULL AND position(name IN d.disp_image_url) > 0));
+  AND NOT EXISTS (SELECT 1 FROM public.dispatch d WHERE d.disp_image_url IS NOT NULL AND position(name IN d.disp_image_url) > 0)
+  AND NOT warehouse_security.held_photo_file_named(name));
+-- The files of held items (WH-304, migration held_item_photos_upload): under held/<held id>/ of the two photo buckets. Staff upload only
+-- the pending file they registered for a held item still held, and read the files of the items they recorded; the helpers read
+-- held_item_photos, which no app role may read. Managers are covered by the manager policies above.
+DROP POLICY IF EXISTS starter_held_photo_staff_read ON storage.objects;
+CREATE POLICY starter_held_photo_staff_read ON storage.objects FOR SELECT TO authenticated
+USING (bucket_id IN ('grn-images','dispatch-images') AND warehouse_security.held_photo_file_access(bucket_id, name, false));
+DROP POLICY IF EXISTS starter_held_photo_staff_insert ON storage.objects;
+CREATE POLICY starter_held_photo_staff_insert ON storage.objects FOR INSERT TO authenticated
+WITH CHECK (bucket_id IN ('grn-images','dispatch-images') AND warehouse_security.held_photo_file_access(bucket_id, name, true));
+DROP POLICY IF EXISTS starter_held_photo_staff_update ON storage.objects;
+CREATE POLICY starter_held_photo_staff_update ON storage.objects FOR UPDATE TO authenticated
+USING (bucket_id IN ('grn-images','dispatch-images') AND warehouse_security.held_photo_file_access(bucket_id, name, true))
+WITH CHECK (bucket_id IN ('grn-images','dispatch-images') AND warehouse_security.held_photo_file_access(bucket_id, name, true));
 -- A customer reads the file of a confirmed photo of an assigned customer's document only while the document is not deleted
 -- (migration 137 does the same for the grn_images and dispatch_images rows).
 DROP POLICY IF EXISTS starter_customer_grn_images ON storage.objects;
