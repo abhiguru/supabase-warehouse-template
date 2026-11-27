@@ -63,7 +63,7 @@ SELECT pg_temp.patch_function('warehouse_security.strip_staff_keys(jsonb)'::regp
 $m$'created_by_info', 'created_by_display_name', 'created_by_role'$m$
 ], ARRAY[
 $m$'created_by_info', 'created_by_display_name', 'created_by_role',
-                                'cancelled_by', 'ignored_by', 'discount_set_by', 'zero_charge_set_by', 'discount_reason', 'zero_charge_reason'$m$
+                                'cancelled_by', 'cancelled_by_name', 'ignored_by', 'discount_set_by', 'zero_charge_set_by', 'discount_reason', 'zero_charge_reason'$m$
 ]);
 
 -- ===== 4. the invoice re-sent after a GRN or dispatch line change reaches customer accounts =====
