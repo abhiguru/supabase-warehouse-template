@@ -152,11 +152,11 @@ END $$;
 -- ---------------------------------------------------------------------------------------------------------------------------------
 INSERT INTO public.user_profiles(auth_user_id, mobile, name, role, active, enrollment_status) VALUES
  (gen_random_uuid(), '919888897301', 'Customer Copy North Reader', 'customer', true, 'approved'),
- (gen_random_uuid(), '919888897302', 'Customer Copy South Reader', 'customer', true, 'approved'),
- (gen_random_uuid(), '919888897303', 'Customer Copy Three Reader', 'customer', true, 'approved');
+ (gen_random_uuid(), '919888897382', 'Customer Copy South Reader', 'customer', true, 'approved'),
+ (gen_random_uuid(), '919888897383', 'Customer Copy Three Reader', 'customer', true, 'approved');
 SELECT pg_temp.sf_login('9888897301') AS c1_claims \gset
-SELECT pg_temp.sf_login('9888897302') AS c2_claims \gset
-SELECT pg_temp.sf_login('9888897303') AS c3_claims \gset
+SELECT pg_temp.sf_login('9888897382') AS c2_claims \gset
+SELECT pg_temp.sf_login('9888897383') AS c3_claims \gset
 SELECT pg_temp.sf_assert(pg_temp.sf_as(:'sf_admin_claims'::jsonb, 'SELECT public.create_customer(''Customer Copy North'', ''9888897321'')')->>'success' = 'true'
   AND pg_temp.sf_as(:'sf_admin_claims'::jsonb, 'SELECT public.create_customer(''Customer Copy South'', ''9888897322'')')->>'success' = 'true'
   AND pg_temp.sf_as(:'sf_admin_claims'::jsonb, 'SELECT public.create_customer(''Customer Copy West'', ''9888897323'')')->>'success' = 'true', 'customers');
@@ -167,10 +167,10 @@ SELECT id AS west FROM public.customers WHERE name = 'Customer Copy West' \gset
 SELECT id AS garlic FROM public.items WHERE name = 'Customer Copy Garlic' \gset
 SELECT pg_temp.sf_assert(
   pg_temp.sf_as(:'sf_admin_claims'::jsonb, format('SELECT to_jsonb(public.assign_customer_to_user(%L, %L::uuid, %L))', '919888897301', :'north', 'Customer copy fixture'))::text = 'true'
-  AND pg_temp.sf_as(:'sf_admin_claims'::jsonb, format('SELECT to_jsonb(public.assign_customer_to_user(%L, %L::uuid, %L))', '919888897302', :'south', 'Customer copy fixture'))::text = 'true'
-  AND pg_temp.sf_as(:'sf_admin_claims'::jsonb, format('SELECT to_jsonb(public.assign_customer_to_user(%L, %L::uuid, %L))', '919888897303', :'north', 'Customer copy fixture'))::text = 'true'
-  AND pg_temp.sf_as(:'sf_admin_claims'::jsonb, format('SELECT to_jsonb(public.assign_customer_to_user(%L, %L::uuid, %L))', '919888897303', :'south', 'Customer copy fixture'))::text = 'true'
-  AND pg_temp.sf_as(:'sf_admin_claims'::jsonb, format('SELECT to_jsonb(public.assign_customer_to_user(%L, %L::uuid, %L))', '919888897303', :'west', 'Customer copy fixture'))::text = 'true',
+  AND pg_temp.sf_as(:'sf_admin_claims'::jsonb, format('SELECT to_jsonb(public.assign_customer_to_user(%L, %L::uuid, %L))', '919888897382', :'south', 'Customer copy fixture'))::text = 'true'
+  AND pg_temp.sf_as(:'sf_admin_claims'::jsonb, format('SELECT to_jsonb(public.assign_customer_to_user(%L, %L::uuid, %L))', '919888897383', :'north', 'Customer copy fixture'))::text = 'true'
+  AND pg_temp.sf_as(:'sf_admin_claims'::jsonb, format('SELECT to_jsonb(public.assign_customer_to_user(%L, %L::uuid, %L))', '919888897383', :'south', 'Customer copy fixture'))::text = 'true'
+  AND pg_temp.sf_as(:'sf_admin_claims'::jsonb, format('SELECT to_jsonb(public.assign_customer_to_user(%L, %L::uuid, %L))', '919888897383', :'west', 'Customer copy fixture'))::text = 'true',
   'customer accounts assigned');
 SELECT pg_temp.sf_assert(pg_temp.sf_as(:'sf_admin_claims'::jsonb, format('SELECT public.replace_item_rates(%L::uuid, %L::uuid, %L, %L::date, %L::jsonb)', :'garlic', c, 'monthly', '2026-01-01',
   '[{"weight_min":0,"weight_max":100,"unit_price":5,"labour_rate":2,"tax_percent":5}]'))->>'success' = 'true', 'rate for ' || c)
@@ -453,23 +453,23 @@ SELECT pg_temp.sf_assert(:'c1_removed'::jsonb->'reload_all' ? pg_temp.sf('r_acce
   AND NOT EXISTS (SELECT 1 FROM pg_temp.sf_copy c WHERE c.slot = 'c1' AND c.row->>'customer_id' = :'south'),
   'B4: an assignment removed answers ACCESS_CHANGED and the copy holds nothing of South: ' || :'c1_removed');
 -- Role change: customer -> staff: the next call reloads for the staff entities; the copy then holds staff entities and no customer-only scope.
-UPDATE public.user_profiles SET role = 'staff' WHERE mobile = '919888897302';
+UPDATE public.user_profiles SET role = 'staff' WHERE mobile = '919888897382';
 SELECT pg_temp.sf_pull('c2') AS c2_staff \gset
 SELECT pg_temp.sf_assert(:'c2_staff'::jsonb->'reload_all' ? pg_temp.sf('r_access'), 'B4: customer to staff answers ACCESS_CHANGED: ' || :'c2_staff');
 SELECT pg_temp.sf_assert(pg_temp.sf_diff('c2') = '' AND pg_temp.sf_held('c2', 'customers') @> ARRAY[:'north', :'south']::text[],
   'B4: after the role change c2 holds what staff hold (all customers), equal to a fresh load');
-UPDATE public.user_profiles SET role = 'customer' WHERE mobile = '919888897302';
+UPDATE public.user_profiles SET role = 'customer' WHERE mobile = '919888897382';
 SELECT pg_temp.sf_pull('c2') AS c2_back \gset
 SELECT pg_temp.sf_assert(:'c2_back'::jsonb->'reload_all' ? pg_temp.sf('r_access') AND pg_temp.sf_held('c2', 'customers') = ARRAY[:'south']::text[]
   AND NOT EXISTS (SELECT 1 FROM pg_temp.sf_copy c WHERE c.slot = 'c2' AND c.e = ANY (pg_temp.cc_list('never'))),
   'B4: staff to customer answers ACCESS_CHANGED and the copy is the account''s again: ' || :'c2_back');
 SELECT pg_temp.sf_assert(pg_temp.sf_diff('c2') = '', 'B4: c2''s copy equals a fresh load after the round trip: ' || pg_temp.sf_diff('c2'));
 -- Deactivated profile: refused (guess 5).
-UPDATE public.user_profiles SET active = false WHERE mobile = '919888897302';
+UPDATE public.user_profiles SET active = false WHERE mobile = '919888897382';
 SELECT pg_temp.sf_try('authenticated', :'c2_claims'::jsonb, pg_temp.sf('call_start')) AS c2_off \gset
 SELECT pg_temp.sf_assert(:'c2_off'::jsonb ? 'sqlstate' OR COALESCE(:'c2_off'::jsonb#>>'{answer,success}', 'false') <> 'true',
   'B4: a deactivated account''s start is refused, not answered with a copy: ' || left(:'c2_off', 300));
-UPDATE public.user_profiles SET active = true WHERE mobile = '919888897302';
+UPDATE public.user_profiles SET active = true WHERE mobile = '919888897382';
 
 -- B9 (small set): every pull of this file stayed within the page limit (asserted by the stand-in) and a full catch-up is quick.
 SELECT clock_timestamp() AS t_pull0 \gset

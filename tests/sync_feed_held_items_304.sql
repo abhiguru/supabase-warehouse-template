@@ -41,17 +41,17 @@ CREATE FUNCTION pg_temp.hf_keys(p text, rid text) RETURNS text LANGUAGE sql STAB
   SELECT array_to_string(ARRAY(SELECT k FROM jsonb_object_keys(c.row) k ORDER BY k), ',') FROM pg_temp.sf_copy c WHERE c.slot = p AND c.e = 'held_items' AND c.id = rid $$;
 
 INSERT INTO public.user_profiles(auth_user_id, mobile, name, role, active, enrollment_status) VALUES
- (gen_random_uuid(), '919888897602', 'Held Feed Staff Person', 'staff', true, 'approved'),
- (gen_random_uuid(), '919888897603', 'Held Feed Supervisor', 'supervisor', true, 'approved'),
+ (gen_random_uuid(), '919888897652', 'Held Feed Staff Person', 'staff', true, 'approved'),
+ (gen_random_uuid(), '919888897653', 'Held Feed Supervisor', 'supervisor', true, 'approved'),
  (gen_random_uuid(), '919888897604', 'Held Feed Second Staff', 'staff', true, 'approved'),
- (gen_random_uuid(), '919888897611', 'Held Feed North Reader', 'customer', true, 'approved');
-SELECT pg_temp.sf_login('9888897602') AS staff_claims \gset
-SELECT pg_temp.sf_login('9888897603') AS supervisor_claims \gset
+ (gen_random_uuid(), '919888897661', 'Held Feed North Reader', 'customer', true, 'approved');
+SELECT pg_temp.sf_login('9888897652') AS staff_claims \gset
+SELECT pg_temp.sf_login('9888897653') AS supervisor_claims \gset
 SELECT pg_temp.sf_login('9888897604') AS staff2_claims \gset
-SELECT pg_temp.sf_login('9888897611') AS c1_claims \gset
+SELECT pg_temp.sf_login('9888897661') AS c1_claims \gset
 SELECT pg_temp.sf_assert(pg_temp.sf_as(:'sf_admin_claims'::jsonb, 'SELECT public.create_customer(''Held Feed North'', ''9888897621'')')->>'success' = 'true', 'customer');
 SELECT id AS north FROM public.customers WHERE name = 'Held Feed North' \gset
-SELECT pg_temp.sf_assert(pg_temp.sf_as(:'sf_admin_claims'::jsonb, format('SELECT to_jsonb(public.assign_customer_to_user(%L, %L::uuid, %L))', '919888897611', :'north', 'Held feed fixture'))::text = 'true',
+SELECT pg_temp.sf_assert(pg_temp.sf_as(:'sf_admin_claims'::jsonb, format('SELECT to_jsonb(public.assign_customer_to_user(%L, %L::uuid, %L))', '919888897661', :'north', 'Held feed fixture'))::text = 'true',
   'customer account assigned');
 SELECT pg_temp.sf_phone('admin', :'sf_admin_claims'::jsonb);
 SELECT pg_temp.sf_phone('supervisor', :'supervisor_claims'::jsonb);
