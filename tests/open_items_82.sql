@@ -207,7 +207,9 @@ SELECT pg_temp.oi_call(format($q$SELECT public.create_dispatch_with_stock_check(
   jsonb_build_object('disp_no','OI82DR','disp_date',now(),'customer_id',:'cust_q','customer_name','Open Items Q deleted')::text)) AS disp_q4 \gset
 RESET ROLE;
 -- (a NEW GRN for a deactivated business is refused since migration 83: see tests/grn_deactivated_83.sql)
-SELECT pg_temp.oi_assert(:'save_q'::jsonb->>'raised'='Business is not active' AND :'save_q'::jsonb->>'state'='P0001'
+-- WH-161: save_grn answers a deleted business with CUSTOMER_INACTIVE (nothing raised); the dispatch RPCs still raise.
+SELECT pg_temp.oi_assert(:'save_q'::jsonb->>'raised' IS NULL AND :'save_q'::jsonb->>'success'='false' AND :'save_q'::jsonb->>'reason'='CUSTOMER_INACTIVE'
+ AND :'save_q'::jsonb->>'message'='Business is not active' AND :'save_q'::jsonb->>'customer_id'=:'cust_q'
  AND :'disp_q5'::jsonb->>'raised'='Business is not active' AND :'disp_q5'::jsonb->>'state'='P0001'
  AND :'disp_q4'::jsonb->>'raised'='Business is not active' AND :'disp_q4'::jsonb->>'state'='P0001'
  AND NOT EXISTS (SELECT 1 FROM public.goodsreceived WHERE customer_id=:'cust_q'::uuid)

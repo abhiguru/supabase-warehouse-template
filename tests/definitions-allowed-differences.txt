@@ -58,3 +58,8 @@ B ^function\|public\.get_invoice_data\(
 # Vehicle number, 2026-11-01 (definition files, no migration): save_grn, update_grn, create_dispatch_with_stock_check_internal and update_dispatch_smart
 # collapse runs of white space inside a vehicle number to one space; update_grn and update_dispatch_smart store a blank vehicle that is sent (NULL when omitted keeps it).
 # All four are listed above for their earlier changes; the reason is the same entry.
+
+# WH-161, WH-302 and WH-373 (2026-11-27, definition files, no new entry): save_grn (20 arguments: p_issue_number, p_recorded_at; answers
+# CUSTOMER_INACTIVE instead of raising), create_dispatch_with_stock_check_internal (offline send: request key, recorded time, number at
+# save, refusal codes), update_grn and the invoice reads change in their definition files, and authorize_rpc knows set_lot_rack_and_mark.
+# All are listed above for earlier changes; the reason is the same entry, so no line is added (a line that matches nothing fails the run).
