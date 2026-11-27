@@ -184,7 +184,7 @@ SELECT pg_temp.hd_assert(pg_temp.hd_state('hd-x2') = 'held', 'D10: the refused d
 
 -- ===== B-R2 / B-R3. The trial: stock short with the figures; after stock arrives true; the stored reason follows; a trial writes nothing =====
 SELECT pg_temp.hd_world() AS world_before \gset
-SELECT public.suggest_document_number('grn') AS grn_next_before \gset
+SELECT pg_temp.hd_as(:'admin_claims'::jsonb, $q$SELECT public.suggest_document_number('grn')$q$) AS grn_next_before \gset
 SELECT pg_temp.hd_one(:'admin_claims'::jsonb, pg_temp.hd_hid('hd-x1')) AS r2_short \gset
 SELECT pg_temp.hd_assert(pg_temp.hd_get(:'r2_short'::jsonb, 'accept_possible') = 'false' AND pg_temp.hd_get(:'r2_short'::jsonb, 'reason') = '"stockShort"'
   AND pg_temp.hd_get(:'r2_short'::jsonb, 'reason_code') = '"STOCK_SHORT"' AND pg_temp.hd_get(:'r2_short'::jsonb, 'reason_data') IS NOT NULL
@@ -194,7 +194,7 @@ SELECT pg_temp.hd_assert((SELECT reason_data FROM public.held_items WHERE reques
 -- A GRN trial too (it would issue a number): get_held_item of G1.
 SELECT pg_temp.hd_one(:'admin_claims'::jsonb, pg_temp.hd_hid('hd-g1')) AS r3_grn \gset
 SELECT pg_temp.hd_assert(pg_temp.hd_get(:'r3_grn'::jsonb, 'accept_possible') IS NOT NULL, 'R3: the trial of a new GRN answers: ' || :'r3_grn');
-SELECT pg_temp.hd_assert(pg_temp.hd_world() = :'world_before' AND public.suggest_document_number('grn') = :'grn_next_before'::jsonb
+SELECT pg_temp.hd_assert(pg_temp.hd_world() = :'world_before' AND pg_temp.hd_as(:'admin_claims'::jsonb, $q$SELECT public.suggest_document_number('grn')$q$) = :'grn_next_before'::jsonb
   AND NOT EXISTS (SELECT 1 FROM public.goodsreceived WHERE request_key IN ('hd-g1', 'hd-x1')) AND NOT EXISTS (SELECT 1 FROM public.dispatch WHERE request_key = 'hd-x1'),
   'R3: two trials left no document, no stock movement, no stored key, no change-log entry for a document, and no number used');
 -- The shortfall changes: someone dispatches 4 of the lot (10 -> 6 left); the trial shows the new figures and the row follows.
