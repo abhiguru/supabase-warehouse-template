@@ -205,7 +205,9 @@ SELECT pg_temp.sf_assert(NOT EXISTS (SELECT 1 FROM pg_temp.sf_answer a, unnest(p
 -- 12: no row of an answer or of a copy carries a column its table's readers may not read. The check is per row and per entity (the
 -- same column name, such as updated_at, can be readable on one table and not on another: invoice's is not, goodsreceived's is).
 -- Entities with no readable column at all (read only through RPCs) are not compared here. A goodsreceived_trl row carries emptied_at,
--- which is no column of the table (format 2, WH-299); no other table or column is exempt.
+-- which is no column of the table (format 2, WH-299); the other server-computed keys of format 3 are exempt on their entity only:
+-- invoice.payment_state, invoice_trl.storage_amount, invoice_trl.line_amounts, invoice.items_total_amount, invoice.discount_set_by_name,
+-- invoice.zero_charge_set_by_name, goodsreceived_trl.item_rate, items.rate_cover; no other table or column is exempt.
 CREATE TEMP TABLE sf_leaks AS
   SELECT q.src, q.ent, q.k FROM (
     SELECT a.phone || ' ' || a.kind || ' answer' AS src, x->>pg_temp.sf('f_e') AS ent, k
@@ -218,11 +220,32 @@ CREATE TEMP TABLE sf_leaks AS
   ) q
   WHERE q.ent = ANY (pg_temp.sf_list('table_entities')) AND cardinality(pg_temp.sf_columns(q.ent)) > 0
     AND q.k <> ALL (pg_temp.sf_columns(q.ent))
-    AND NOT (q.ent = 'goodsreceived_trl' AND q.k = 'emptied_at');
+    AND NOT ((q.ent, q.k) IN (('goodsreceived_trl', 'emptied_at'), ('goodsreceived_trl', 'item_rate'), ('invoice', 'payment_state'),
+      ('invoice_trl', 'storage_amount'), ('invoice_trl', 'line_amounts'), ('invoice', 'items_total_amount'),
+      ('invoice', 'discount_set_by_name'), ('invoice', 'zero_charge_set_by_name'), ('items', 'rate_cover')));
 SELECT pg_temp.sf_assert(NOT EXISTS (SELECT 1 FROM sf_leaks WHERE ent = 'invoice'),
   '12: no invoice row of any answer or copy carried a column the app roles may not read: ' || COALESCE((SELECT string_agg(DISTINCT k || ' in ' || src, '; ') FROM sf_leaks WHERE ent = 'invoice'), ''));
 SELECT pg_temp.sf_assert(NOT EXISTS (SELECT 1 FROM sf_leaks),
   '12: no row of any answer or copy carried a column its table''s readers may not read: ' || COALESCE((SELECT string_agg(DISTINCT ent || '.' || k || ' in ' || src, '; ') FROM sf_leaks), ''));
 DROP TABLE pg_temp.sf_leaks;
+-- WH-373: no goodsreceived or dispatch row of any answer or copy, for any role (a customer account included), carries the request
+-- bookkeeping of WH-161. Per phone, so a leak names the role; a copy row and an answer row are both read.
+CREATE TEMP TABLE sf_request_leaks AS
+  SELECT q.src, q.ent, q.k FROM (
+    SELECT a.phone || ' ' || a.kind || ' answer' AS src, x->>pg_temp.sf('f_e') AS ent, k
+      FROM pg_temp.sf_answer a,
+           jsonb_array_elements(CASE WHEN jsonb_typeof(a.answer->pg_temp.sf('f_changes')) = 'array' THEN a.answer->pg_temp.sf('f_changes') ELSE '[]'::jsonb END) x,
+           jsonb_object_keys(CASE WHEN jsonb_typeof(x->pg_temp.sf('f_row')) = 'object' THEN x->pg_temp.sf('f_row') ELSE '{}'::jsonb END) k
+    UNION ALL
+    SELECT c.slot || ' copy', c.e, k FROM pg_temp.sf_copy c,
+           jsonb_object_keys(CASE WHEN jsonb_typeof(c.row) = 'object' THEN c.row ELSE '{}'::jsonb END) k
+  ) q
+  WHERE q.ent IN ('goodsreceived', 'dispatch') AND q.k IN ('request_key', 'request_digest', 'request_item_mapping');
+SELECT pg_temp.sf_assert(NOT EXISTS (SELECT 1 FROM sf_request_leaks),
+  'WH-373: no goodsreceived or dispatch row of any answer or copy carried request_key, request_digest or request_item_mapping: '
+  || COALESCE((SELECT string_agg(DISTINCT ent || '.' || k || ' in ' || src, '; ') FROM sf_request_leaks), ''));
+SELECT pg_temp.sf_assert(EXISTS (SELECT 1 FROM pg_temp.sf_copy c WHERE c.e = 'goodsreceived') AND EXISTS (SELECT 1 FROM pg_temp.sf_copy c WHERE c.e = 'dispatch'),
+  'WH-373: the leak check read at least one goodsreceived and one dispatch row (it is not vacuous)');
+DROP TABLE pg_temp.sf_request_leaks;
 
 \echo 'WH-297 sync feed deletes and customer scope (criteria 2 and 12) checks passed.'

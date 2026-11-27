@@ -310,10 +310,19 @@ BEGIN
       problems := problems || format('%s ids: copy %s, direct read %s', ent, jsonb_array_length(held), jsonb_array_length(direct));
     END IF;
     -- Server-computed keys of the copy that are no readable column: emptied_at (WH-299), invoice_trl.storage_amount and
-    -- invoice.payment_state (WH-348, format 3).
-    want := ARRAY(SELECT x FROM unnest(cols || CASE ent WHEN 'goodsreceived_trl' THEN ARRAY['emptied_at'] WHEN 'invoice_trl' THEN ARRAY['storage_amount']
-      WHEN 'invoice' THEN ARRAY['payment_state'] ELSE '{}'::text[] END) x
-      WHERE x <> ALL (hidden) ORDER BY x);
+    -- invoice.payment_state (WH-348, format 3), invoice_trl.line_amounts and invoice.items_total_amount (every role but the customer
+    -- account for the total), invoice.discount_set_by_name and zero_charge_set_by_name, goodsreceived_trl.item_rate and items.rate_cover
+    -- (administrators, supervisors and staff only: live_only is the customer account). WH-373: goodsreceived and dispatch rows leave out
+    -- request_key, request_digest and request_item_mapping though the columns are readable.
+    want := ARRAY(SELECT x FROM unnest(cols || CASE ent
+      WHEN 'goodsreceived_trl' THEN ARRAY['emptied_at'] || CASE WHEN live_only THEN '{}'::text[] ELSE ARRAY['item_rate'] END
+      WHEN 'invoice_trl' THEN ARRAY['storage_amount', 'line_amounts']
+      WHEN 'invoice' THEN ARRAY['payment_state'] || CASE WHEN live_only THEN '{}'::text[] ELSE ARRAY['items_total_amount', 'discount_set_by_name', 'zero_charge_set_by_name'] END
+      WHEN 'items' THEN CASE WHEN live_only THEN '{}'::text[] ELSE ARRAY['rate_cover'] END
+      ELSE '{}'::text[] END) x
+      WHERE x <> ALL (hidden)
+        AND NOT (ent IN ('goodsreceived', 'dispatch') AND x IN ('request_key', 'request_digest', 'request_item_mapping'))
+      ORDER BY x);
     SELECT string_agg(DISTINCT array_to_string(ARRAY(SELECT k FROM jsonb_object_keys(c.row) k ORDER BY k), ','), ' | ') INTO bad
       FROM pg_temp.sf_copy c WHERE c.slot = p AND c.e = ent
       AND ARRAY(SELECT k FROM jsonb_object_keys(c.row) k ORDER BY k) IS DISTINCT FROM want;

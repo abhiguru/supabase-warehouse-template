@@ -311,8 +311,8 @@ SELECT pg_temp.of_step('B2 delete_dispatch_with_order_cleanup', :'north'::uuid, 
 SELECT pg_temp.sf_assert(pg_temp.sf_ops(p, 'dispatch', :'disp_n2', pg_temp.sf_last_pull(p)) = 'delete', 'B2: ' || p || ' got the deleted order dispatch as a delete')
   FROM unnest(ARRAY['admin', 'staff', 'c1']) p;
 SELECT pg_temp.sf_assert(NOT EXISTS (SELECT 1 FROM pg_temp.sf_copy c WHERE c.slot = p AND c.e = 'order_items' AND c.row->>'order_id' = :'ord_n'
-    AND (c.row->>'fulfilled_quantity', c.row->>'requested_quantity') IS DISTINCT FROM
-      (SELECT oi.fulfilled_quantity::text, oi.requested_quantity::text FROM public.order_items oi WHERE oi.id::text = c.id)),
+    AND (c.row->>'fulfilled_quantity') || '/' || (c.row->>'requested_quantity') IS DISTINCT FROM
+      (SELECT oi.fulfilled_quantity::text || '/' || oi.requested_quantity::text FROM public.order_items oi WHERE oi.id::text = c.id)),
   'B2: ' || p || ' holds the lines'' fulfilled and requested quantity as the server has them') FROM unnest(ARRAY['admin', 'staff', 'c1']) p;
 
 -- Payments: record, update, delete, and rows written by an import (no app, paid_on empty).
