@@ -54,7 +54,13 @@ test('every tests/*.sql is registered exactly once in a list tests/migrations.sh
   const run = loops[0][2].match(/^\s*cat ([^|\n]*"\$sync_sql") \| mig_psql -d "\$sync_db"$/m);
   assert.ok(run, 'every suite of the sync feed loop is run');
 
-  const registered = [...names(list[1]), ...names(loops[0][1]), ...names(run[1])];
+  // WH-303: the two replaced-entries suites count every entry of their database, so each runs alone in a copy of the clean sync database
+  // (sync_feed_replaced_list, sync_feed_replaced_feed), behind the same shared file. The suite is the last file of its line.
+  const alone = [...harness.matchAll(/^cat ([^|\n]*) \| mig_psql -d sync_feed_replaced_(?:list|feed)$/gm)].map(match => names(match[1]));
+  assert.equal(alone.length, 2, 'the two replaced-entries suites each run in a database of their own');
+  for (const line of alone) assert.deepEqual(line.slice(0, -1), ['sync_feed_contract.sql'], 'the shared file is in front of the suite');
+
+  const registered = [...names(list[1]), ...names(loops[0][1]), ...names(run[1]), ...alone.map(line => line.at(-1))];
   const files = readdirSync(new URL('./', import.meta.url)).filter(name => name.endsWith('.sql')).sort();
   assert.deepEqual([...registered].sort(), files);
 });
