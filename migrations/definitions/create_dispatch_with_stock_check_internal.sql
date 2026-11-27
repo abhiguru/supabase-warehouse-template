@@ -51,13 +51,40 @@ DECLARE
     v_order_before jsonb;
     v_order_lots uuid[];
     v_order_effects jsonb;
+    v_offline boolean;
+    v_digest text;
+    v_repeat jsonb;
+    v_numbered jsonb;
+    v_recorded_at timestamptz;
 BEGIN
     -- The document lock comes before the idempotency lookup, as in save_grn (migration 87):
     -- an overlapping retry waits here and then finds the first call's cached answer.
     PERFORM pg_advisory_xact_lock(71040);
 
+    -- WH-161 (offline sends): a dispatch that carries the recorded time or asks the server for its number is an offline send. It must
+    -- carry a request key, which is kept on the dispatch itself (request_key, request_digest), so a repeat is answered with the first
+    -- answer however late it comes, and the key of another request or person is refused (warehouse_security.offline_repeat). A caller
+    -- that may not create a dispatch is refused by the role check below, as before. The saved answers (7 days) are used by saves that
+    -- are not offline sends, exactly as before.
+    v_offline := COALESCE(p_dispatch_data->>'issue_number', '') = 'true' OR NULLIF(p_dispatch_data->>'recorded_at', '') IS NOT NULL;
+    v_recorded_at := NULLIF(p_dispatch_data->>'recorded_at', '')::timestamptz;
+    IF v_offline AND warehouse_security.active_role() IN ('admin','supervisor','staff') THEN
+        IF warehouse_security.is_blank_text(p_idempotency_key) THEN
+            RETURN warehouse_security.refuse('REQUEST_KEY_REQUIRED', 'A save made offline needs a request key.', '{}'::jsonb);
+        END IF;
+        SELECT id INTO v_user_id FROM user_profiles WHERE auth_user_id = auth.uid();
+        IF v_user_id IS NOT NULL THEN
+            v_digest := warehouse_security.request_digest(jsonb_build_object(
+                'data', p_dispatch_data - 'warn_duplicate' - 'recorded_at', 'items', to_jsonb(p_dispatch_items), 'invoice', p_generate_invoice));
+            v_repeat := warehouse_security.offline_repeat('create_dispatch_with_stock_check', p_idempotency_key, v_user_id, v_digest);
+            IF v_repeat IS NOT NULL THEN
+                RETURN v_repeat;
+            END IF;
+        END IF;
+    END IF;
+
     -- Check idempotency key first
-    IF p_idempotency_key IS NOT NULL THEN
+    IF p_idempotency_key IS NOT NULL AND NOT v_offline THEN
         SELECT response INTO v_cached_response
         FROM idempotency_keys
         WHERE idempotency_key = p_idempotency_key
@@ -93,6 +120,33 @@ BEGIN
 
     -- Get current user
     SELECT id INTO v_user_id FROM user_profiles WHERE auth_user_id = auth.uid();
+
+    -- WH-161: the recorded time is the phone's clock; one more than 5 minutes ahead of the server is refused (clock drift is allowed).
+    IF v_recorded_at IS NOT NULL AND v_recorded_at > now() + interval '5 minutes' THEN
+        RETURN warehouse_security.refuse('RECORDED_TIME_FUTURE', 'The time this was recorded is ahead of the server''s clock.',
+            jsonb_build_object('recorded_at', v_recorded_at, 'server_time', now()));
+    END IF;
+
+    -- WH-161: the number is given at save (issue_number): the one the owner's numbering suggests for the day of the dispatch, worked out
+    -- here inside the lock (71040), so a burst of sends gets consecutive numbers in the order it arrives. Nothing is reserved: a save
+    -- that is refused or rolled back uses none. A number sent beside the flag is refused; a store that types its numbers cannot be
+    -- given one; a series with no number left is refused.
+    IF COALESCE(p_dispatch_data->>'issue_number', '') = 'true' AND NULLIF(p_dispatch_data->>'disp_date', '') IS NOT NULL THEN
+        IF NOT warehouse_security.is_blank_text(p_dispatch_data->>'disp_no') THEN
+            RETURN warehouse_security.refuse('NUMBER_NOT_EXPECTED', 'This dispatch already has a number, so the server does not give one.',
+                jsonb_build_object('number', p_dispatch_data->>'disp_no'));
+        END IF;
+        v_numbered := warehouse_security.document_number_suggestion('dispatch', warehouse_security.business_date((p_dispatch_data->>'disp_date')::timestamptz));
+        IF v_numbered->>'number' IS NULL THEN
+            IF v_numbered->>'reason' = 'SERIES_FULL' THEN
+                RETURN warehouse_security.refuse('SERIES_FULL', COALESCE(v_numbered->>'message', 'No dispatch number is left.'),
+                    jsonb_build_object('scheme', v_numbered->>'scheme'));
+            END IF;
+            RETURN warehouse_security.refuse('NUMBER_REQUIRED', 'This store types its dispatch numbers, so the server cannot give one.',
+                jsonb_build_object('scheme', v_numbered->>'scheme'));
+        END IF;
+        p_dispatch_data := jsonb_set(p_dispatch_data, '{disp_no}', to_jsonb(v_numbered->>'number'));
+    END IF;
 
     -- Extract source_order_id if provided
     v_source_order_id := (p_dispatch_data->>'source_order_id')::uuid;
@@ -213,8 +267,12 @@ BEGIN
 
     -- A lot that was deleted after the wrapper checked the list is refused, not dropped (migration 120).
     -- A lot appears once (checked above), so the lines sent are the distinct lots sent.
+    -- WH-161: answered with its code (LOT_NOT_FOUND) and today's words; nothing is written before this.
     IF v_locked_lots <> cardinality(p_dispatch_items) THEN
-        RAISE EXCEPTION 'A lot of this dispatch was removed meanwhile; reload and try again' USING ERRCODE = 'WH409';
+        RETURN warehouse_security.refuse('LOT_NOT_FOUND', 'A lot of this dispatch was removed meanwhile; reload and try again',
+            jsonb_build_object('lot_ids', to_jsonb(ARRAY(
+                SELECT (item->>'gr_trl_id')::uuid FROM unnest(p_dispatch_items) AS item
+                WHERE NOT EXISTS (SELECT 1 FROM goodsreceived_trl gt WHERE gt.id = (item->>'gr_trl_id')::uuid)))));
     END IF;
 
     -- The order lines this create may change are locked next, in id order, before any dispatch or order line is written
@@ -302,18 +360,18 @@ BEGIN
     JOIN goodsreceived_trl gt ON gt.id = (item->>'gr_trl_id')::uuid
     WHERE gt.stock < (item->>'disp_qty')::integer;
 
+    -- WH-161: the code and the short lots (only those) beside today's text; the figures are the stock under the lock above.
     IF v_insufficient_stock IS NOT NULL THEN
-        RETURN jsonb_build_object(
-            'success', false,
-            'error', 'Insufficient stock: ' || v_insufficient_stock
-        );
+        RETURN warehouse_security.refuse('STOCK_SHORT', 'Insufficient stock: ' || v_insufficient_stock,
+            jsonb_build_object('lines', warehouse_security.stock_short_lines(p_dispatch_items)));
     END IF;
 
     -- CREATE DISPATCH RECORD
     INSERT INTO dispatch (
         disp_no, disp_date, registration, customer_id,
         customer_name, supervisor_id, supervisor_name, note,
-        created_by, source_order_id, source_order_no
+        created_by, source_order_id, source_order_no,
+        recorded_at, request_key, request_digest
     ) VALUES (
         p_dispatch_data->>'disp_no',
         v_disp_day::timestamptz,
@@ -325,7 +383,10 @@ BEGIN
         p_dispatch_data->>'note',
         v_user_id,
         v_source_order_id,
-        v_source_order_no  -- Now uses auto-looked-up value
+        v_source_order_no,  -- Now uses auto-looked-up value
+        v_recorded_at,
+        CASE WHEN v_offline THEN p_idempotency_key END,
+        CASE WHEN v_offline THEN v_digest END
     ) RETURNING id INTO v_dispatch_id;
 
     -- BULK UPDATE STOCK
@@ -561,7 +622,8 @@ BEGIN
             (p_dispatch_data->>'customer_id')::uuid,
             p_dispatch_data->>'registration',
             ARRAY(SELECT (item->>'gr_trl_id')::uuid FROM unnest(p_dispatch_items) AS item),
-            v_dispatch_id);
+            v_dispatch_id,
+            v_recorded_at);
         IF v_duplicate IS NOT NULL THEN
             RAISE EXCEPTION 'dup_warn' USING ERRCODE = 'P0001', DETAIL = v_duplicate::text;
         END IF;
@@ -574,6 +636,7 @@ BEGIN
     v_cached_response := jsonb_build_object(
         'success', true,
         'dispatch_id', v_dispatch_id,
+        'disp_no', p_dispatch_data->>'disp_no',  -- WH-161: the number the dispatch was saved under, the one given at save included
         'dispatch_items', to_jsonb(v_dispatch_items_result),
         'invoice_data', COALESCE(v_invoice_data, '{}'::jsonb),
         'message', 'Dispatch created successfully',
