@@ -176,13 +176,15 @@ SELECT pg_temp.sf_assert(pg_temp.sf_as(:'sf_admin_claims'::jsonb, format('SELECT
   '[{"weight_min":0,"weight_max":100,"unit_price":5,"labour_rate":2,"tax_percent":5}]'))->>'success' = 'true', 'rate for ' || c)
   FROM unnest(ARRAY[:'north', :'south', :'west']) c;
 SELECT pg_temp.sf_assert(pg_temp.sf_as(:'sf_admin_claims'::jsonb, 'SELECT public.set_record_payments(true)')->>'success' = 'true', 'payments on');
+-- save_grn writes grn_rates only from the rates sent with it (scope grn), so each GRN carries one, as the app's rate sheet sends it.
+SELECT jsonb_build_array(jsonb_build_object('scope', 'grn', 'item_id', :'garlic', 'weight_min', 0, 'weight_max', 100, 'unit_price', 5, 'labour_rate', 2, 'tax_percent', 5)) AS cc_grn_rates \gset
 
-SELECT pg_temp.sf_save_grn(:'sf_admin_claims'::jsonb, 'CCN1', :'north'::uuid, pg_temp.sf_lines(:'garlic'::uuid, 2, 'CN', 20)) AS grn_n1 \gset
-SELECT pg_temp.sf_save_grn(:'sf_admin_claims'::jsonb, 'CCN2', :'north'::uuid, pg_temp.sf_lines(:'garlic'::uuid, 1, 'CM', 4)) AS grn_n2 \gset
-SELECT pg_temp.sf_save_grn(:'sf_admin_claims'::jsonb, 'CCN3', :'north'::uuid, pg_temp.sf_lines(:'garlic'::uuid, 1, 'CK', 20)) AS grn_n3 \gset
-SELECT pg_temp.sf_save_grn(:'sf_admin_claims'::jsonb, 'CCS1', :'south'::uuid, pg_temp.sf_lines(:'garlic'::uuid, 2, 'CS', 20)) AS grn_s1 \gset
-SELECT pg_temp.sf_save_grn(:'sf_admin_claims'::jsonb, 'CCW1', :'west'::uuid, pg_temp.sf_lines(:'garlic'::uuid, 2, 'CW', 20)) AS grn_w1 \gset
-SELECT pg_temp.sf_save_grn(:'sf_admin_claims'::jsonb, 'CCW2', :'west'::uuid, pg_temp.sf_lines(:'garlic'::uuid, 1, 'CV', 20)) AS grn_w2 \gset
+SELECT pg_temp.sf_save_grn(:'sf_admin_claims'::jsonb, 'CCN1', :'north'::uuid, pg_temp.sf_lines(:'garlic'::uuid, 2, 'CN', 20), :'cc_grn_rates'::jsonb) AS grn_n1 \gset
+SELECT pg_temp.sf_save_grn(:'sf_admin_claims'::jsonb, 'CCN2', :'north'::uuid, pg_temp.sf_lines(:'garlic'::uuid, 1, 'CM', 4), :'cc_grn_rates'::jsonb) AS grn_n2 \gset
+SELECT pg_temp.sf_save_grn(:'sf_admin_claims'::jsonb, 'CCN3', :'north'::uuid, pg_temp.sf_lines(:'garlic'::uuid, 1, 'CK', 20), :'cc_grn_rates'::jsonb) AS grn_n3 \gset
+SELECT pg_temp.sf_save_grn(:'sf_admin_claims'::jsonb, 'CCS1', :'south'::uuid, pg_temp.sf_lines(:'garlic'::uuid, 2, 'CS', 20), :'cc_grn_rates'::jsonb) AS grn_s1 \gset
+SELECT pg_temp.sf_save_grn(:'sf_admin_claims'::jsonb, 'CCW1', :'west'::uuid, pg_temp.sf_lines(:'garlic'::uuid, 2, 'CW', 20), :'cc_grn_rates'::jsonb) AS grn_w1 \gset
+SELECT pg_temp.sf_save_grn(:'sf_admin_claims'::jsonb, 'CCW2', :'west'::uuid, pg_temp.sf_lines(:'garlic'::uuid, 1, 'CV', 20), :'cc_grn_rates'::jsonb) AS grn_w2 \gset
 SELECT id AS lot_n1a FROM public.goodsreceived_trl WHERE gr_id = :'grn_n1' AND package_mark = 'CN1' \gset
 SELECT id AS lot_n2 FROM public.goodsreceived_trl WHERE gr_id = :'grn_n2' \gset
 SELECT id AS lot_n3 FROM public.goodsreceived_trl WHERE gr_id = :'grn_n3' \gset
