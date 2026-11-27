@@ -3,6 +3,7 @@
 # one's value is stored, and at most one of them names a replaced value. Contract ~/ws/fresh/product/tech/app-offline-quick-change.md,
 # section 2.1 ("lot and its GRN locked FOR UPDATE") and section 6 B12. Runs only against migrations.sh's disposable container, after
 # tests/numbering_lock.sh (its administrator session 919888888899 and its GRN ZZ-1 with one lot).
+# Call A is the administrator, call B a staff member made here: a replaced entry exists only between two people (PQ4).
 #   1. Call A is in flight (its transaction is held open after the call): call B, sent meanwhile, waits for the lock.
 #   2. A commits: B then runs, both answers are successes, the stored rack is B's, A replaced nothing, B (which saw the rack as it was
 #      before A) names A's value as replaced exactly once, and the GRN's change mark is B's.
@@ -18,6 +19,23 @@ WHERE p.mobile='919888888899' AND s.expires_at>now() ORDER BY s.created_at DESC 
 SQL
 )
 [[ -n "$claims" ]] || { echo 'The lot change race test needs the configuration admin session.' >&2; exit 1; }
+# Person B: a staff member with a session of their own. A replaced entry exists only between two people (contract PQ4: a value last set
+# by the caller themselves makes no entry), so the two calls come from different people.
+psql_exec -At >/dev/null <<'SQL'
+INSERT INTO public.user_profiles(auth_user_id, mobile, name, role, active, enrollment_status)
+SELECT gen_random_uuid(), '919888888877', 'Lot Race Staff', 'staff', true, 'approved'
+WHERE NOT EXISTS (SELECT 1 FROM public.user_profiles WHERE mobile = '919888888877');
+INSERT INTO warehouse_security.refresh_sessions(user_id, token_hash, expires_at)
+SELECT p.auth_user_id, 'lot-race-staff-session', now() + interval '1 hour' FROM public.user_profiles p
+WHERE p.mobile = '919888888877' AND NOT EXISTS (SELECT 1 FROM warehouse_security.refresh_sessions s WHERE s.token_hash = 'lot-race-staff-session');
+SQL
+claims_b=$(psql_exec -At <<'SQL'
+SELECT jsonb_build_object('role','authenticated','sub',p.auth_user_id,'session_id',s.id)::text
+FROM public.user_profiles p JOIN warehouse_security.refresh_sessions s ON s.user_id=p.auth_user_id
+WHERE p.mobile='919888888877' AND s.expires_at>now() ORDER BY s.created_at DESC LIMIT 1;
+SQL
+)
+[[ -n "$claims_b" ]] || { echo 'The lot change race test could not make its second person.' >&2; exit 1; }
 lot=$(psql_exec -At -c "SELECT t.id FROM public.goodsreceived_trl t JOIN public.goodsreceived g ON g.id = t.gr_id WHERE g.gr_no = 'ZZ-1' ORDER BY t.id LIMIT 1")
 [[ "$lot" =~ ^[0-9a-f-]{36}$ ]] || { echo 'The lot change race test needs the numbering lock fixture (GRN ZZ-1).' >&2; exit 1; }
 gate=public.lot_change_race_gate
@@ -47,8 +65,8 @@ BEGIN
 END \$\$;
 SQL
 }
-call_sql() { # new rack, rack the phone saw, request key
-  echo "SELECT set_config('request.jwt.claims', :'claims', true); SET LOCAL ROLE authenticated; SELECT public.set_lot_rack_and_mark('$lot'::uuid, '{\"rack\":{\"to\":\"$1\",\"from\":$2}}'::jsonb, '$3'); RESET ROLE;"
+call_sql() { # new rack, rack the phone saw, request key, claims variable (claims = person A, claims_b = person B)
+  echo "SELECT set_config('request.jwt.claims', :'${4:-claims}', true); SET LOCAL ROLE authenticated; SELECT public.set_lot_rack_and_mark('$lot'::uuid, '{\"rack\":{\"to\":\"$1\",\"from\":$2}}'::jsonb, '$3'); RESET ROLE;"
 }
 poll() { # SQL that answers t when the wait is over, what it is
   local i
@@ -67,7 +85,7 @@ a_rack="RACE-A-$tag"; b_rack="RACE-B-$tag"
 psql_exec -At -v claims="$claims" > "$scratch/a" < <(echo 'BEGIN;'; call_sql "$a_rack" "\"$base\"" "lot-race-a-$tag"; wait_for_gate_sql; echo 'COMMIT;') &
 holder=$!
 poll "SELECT count(*) >= 1 FROM pg_stat_activity WHERE pid <> pg_backend_pid() AND state = 'active' AND query ILIKE '%lot_change_race_gate%'" 'call A to reach the gate with its transaction open'
-psql_exec -At -v claims="$claims" > "$scratch/b" < <(echo 'BEGIN;'; call_sql "$b_rack" "\"$base\"" "lot-race-b-$tag"; echo 'COMMIT;') &
+psql_exec -At -v claims_b="$claims_b" > "$scratch/b" < <(echo 'BEGIN;'; call_sql "$b_rack" "\"$base\"" "lot-race-b-$tag" claims_b; echo 'COMMIT;') &
 second=$!
 poll "SELECT count(*) >= 1 FROM pg_stat_activity WHERE pid <> pg_backend_pid() AND wait_event_type = 'Lock' AND query ILIKE '%set_lot_rack_and_mark%'" 'call B to wait for the lock held by call A'
 [[ "$(psql_exec -At -c "SELECT rack FROM public.goodsreceived_trl WHERE id = '$lot'")" == "$base" ]] || { echo 'Call A is not committed yet, but the rack changed.' >&2; exit 1; }

@@ -14,7 +14,8 @@
 -- What the suite holds (the behaviour each guards is named where it is asserted):
 --   B1 roles, B2 normalise and limit, B3 only the sent fields are written, B4 dispatched, billed and on-order lots, B5 imported lots (and the
 --   exemption does not outlive the call), B6 blank sender or supervisor, B7 deleted lot or GRN, B8 last sent wins per field and the replaced list,
---   B9 the GRN's change mark, B10 the request key, B13 two lots / two fields changed from two phones, B14 a deactivated customer's lots.
+--   B9 the GRN's change mark, B10 the request key (another lot: REQUEST_KEY_REUSED), B13 two lots / two fields changed from two phones, B14 a deactivated customer's lots,
+--   B15 the phone time (p_changes.recorded_at) of an entry; B2 and B8 also cover recorded_at.
 -- Fictional data; runs only in migrations.sh's disposable, network-disabled database; rolls back (so updated_at, which is now(), is moved
 -- back by the suite before a call that is to move it: pg_temp.lc_age).
 \set ON_ERROR_STOP on
@@ -204,6 +205,19 @@ SELECT pg_temp.lc_assert(:'b2_empty'::jsonb->>'reason' = 'LOT_CHANGE_INVALID' AN
 SELECT pg_temp.lc_as(:'admin_claims'::jsonb, format('SELECT public.set_lot_rack_and_mark(%L::uuid, %L::jsonb, NULL)', :'lot1', '{"rack":{"to":"NOKEY","from":null}}')) AS b2_nokey \gset
 SELECT pg_temp.lc_assert(COALESCE(:'b2_nokey'::jsonb->>'success', 'false') <> 'true' AND pg_temp.lc_world(:'grn1'::uuid) = :'b2_world'::jsonb,
   'B2: a call without a request key is refused and writes nothing: ' || :'b2_nokey');
+-- Phone time (contract section 2.1, revised 2026-11-26): recorded_at beside a field is accepted and is no field (nothing of the lot but the
+-- sent field is written); alone, or not a time, it is LOT_CHANGE_INVALID.
+SELECT pg_temp.lc_call(:'admin_claims'::jsonb, :'lot1'::uuid, '{"rack":{"to":"REC-1","from":null},"recorded_at":"2026-04-01T10:00:00Z"}', 'lc-b2-recorded') AS b2_recorded \gset
+SELECT pg_temp.lc_assert(:'b2_recorded'::jsonb->>'success' = 'true' AND :'b2_recorded'::jsonb->'changed' = '["rack"]'::jsonb
+  AND pg_temp.lc_lot(:'lot1'::uuid) = jsonb_build_object('rack', 'REC-1', 'package_mark', repeat('m', 60)),
+  'B2: recorded_at beside a field is accepted, is not written to the lot and is not a changed field: ' || :'b2_recorded');
+SELECT pg_temp.lc_world(:'grn1'::uuid) AS b2_rec_world \gset
+SELECT pg_temp.lc_call(:'admin_claims'::jsonb, :'lot1'::uuid, '{"recorded_at":"2026-04-01T10:00:00Z"}', 'lc-b2-recorded-alone') AS b2_rec_alone \gset
+SELECT pg_temp.lc_call(:'admin_claims'::jsonb, :'lot1'::uuid, '{"rack":{"to":"REC-2","from":"REC-1"},"recorded_at":"not a time"}', 'lc-b2-recorded-text') AS b2_rec_text \gset
+SELECT pg_temp.lc_call(:'admin_claims'::jsonb, :'lot1'::uuid, '{"rack":{"to":"REC-2","from":"REC-1"},"recorded_at":5}', 'lc-b2-recorded-number') AS b2_rec_number \gset
+SELECT pg_temp.lc_assert(:'b2_rec_alone'::jsonb->>'reason' = 'LOT_CHANGE_INVALID' AND :'b2_rec_text'::jsonb->>'reason' = 'LOT_CHANGE_INVALID'
+  AND :'b2_rec_number'::jsonb->>'reason' = 'LOT_CHANGE_INVALID' AND pg_temp.lc_world(:'grn1'::uuid) = :'b2_rec_world'::jsonb,
+  'B2: recorded_at alone, or a value that is not a timestamp, is LOT_CHANGE_INVALID and writes nothing: ' || :'b2_rec_alone' || :'b2_rec_text' || :'b2_rec_number');
 -- Back to known values for the next sections.
 SELECT pg_temp.lc_call(:'admin_claims'::jsonb, :'lot1'::uuid, '{"rack":{"to":"R1","from":null},"package_mark":{"to":"M1","from":null}}', 'lc-b2-reset') AS b2_reset \gset
 SELECT pg_temp.lc_assert(pg_temp.lc_lot(:'lot1'::uuid) = '{"rack":"R1","package_mark":"M1"}', 'premise: lot 1 is back to R1 and M1');
@@ -416,6 +430,10 @@ SELECT pg_temp.lc_assert(:'b8_noop'::jsonb->>'success' = 'true' AND :'b8_noop'::
 SELECT pg_temp.lc_assert(pg_temp.lc_world(:'grn_w'::uuid) = :'b8_world'::jsonb AND (SELECT updated_at = :'b8_token'::timestamptz FROM public.goodsreceived WHERE id = :'grn_w'::uuid),
   'B8: a call that writes nothing does not move the GRN''s change mark');
 
+-- WH-302 phone time: a call that sent no recorded_at records an entry with recorded_at NULL, in the answer and in the table.
+SELECT pg_temp.lc_assert(:'b8_over'::jsonb#>'{replaced,0,recorded_at}' = 'null'::jsonb
+  AND (SELECT r.recorded_at IS NULL AND r.sent_at = now() FROM warehouse_security.grn_replacements r WHERE r.id = (:'b8_over'::jsonb#>>'{replaced,0,id}')::uuid),
+  'B8: an entry made by a call with no recorded_at carries recorded_at NULL and sent_at = the server time: ' || :'b8_over');
 -- B8 (own value, PQ4): a value last set by the caller (from another phone) is replaced with no entry; the value is still written.
 SELECT pg_temp.lc_save(:'admin_claims'::jsonb, 'LC13', :'cust'::uuid, :'item_id'::uuid, ARRAY['V1']) AS grn_v \gset
 SELECT id AS lot_v FROM public.goodsreceived_trl WHERE gr_id = :'grn_v' \gset
@@ -485,8 +503,8 @@ SELECT pg_temp.lc_assert((:'k_late'::jsonb - 'idempotent') = :'k_first'::jsonb A
   AND pg_temp.lc_lot(:'lot_k1'::uuid)->>'rack' = 'KEY-OTHER', 'B10: the key is still answered 8 days later: ' || :'k_late');
 -- The same key for another lot is refused, never replayed.
 SELECT pg_temp.lc_call(:'admin_claims'::jsonb, :'lot_k2'::uuid, '{"rack":{"to":"KEY-2","from":"R2"}}', 'lc-b10-key') AS k_other_lot \gset
-SELECT pg_temp.lc_assert(COALESCE(:'k_other_lot'::jsonb->>'success', 'false') <> 'true' AND NOT :'k_other_lot'::jsonb ? 'idempotent'
-  AND pg_temp.lc_lot(:'lot_k2'::uuid)->>'rack' = 'R2', 'B10: the same key with another lot is refused, not replayed, and writes nothing: ' || :'k_other_lot');
+SELECT pg_temp.lc_assert(COALESCE(:'k_other_lot'::jsonb->>'success', 'false') <> 'true' AND :'k_other_lot'::jsonb->>'reason' = 'REQUEST_KEY_REUSED' AND NOT :'k_other_lot'::jsonb ? 'idempotent'
+  AND pg_temp.lc_lot(:'lot_k2'::uuid)->>'rack' = 'R2', 'B10: the same key with another lot is refused REQUEST_KEY_REUSED, not replayed, and writes nothing: ' || :'k_other_lot');
 -- The saved answer is found by get_submission_result (own keys only).
 SELECT pg_temp.lc_as(:'admin_claims'::jsonb, $q$SELECT public.get_submission_result('lc-b10-key')$q$) AS k_found \gset
 SELECT pg_temp.lc_as(:'staff_claims'::jsonb, $q$SELECT public.get_submission_result('lc-b10-key')$q$) AS k_not_mine \gset
@@ -500,6 +518,46 @@ SELECT pg_temp.lc_call(:'admin_claims'::jsonb, :'lot_k2'::uuid, '{}', 'lc-b10-re
 SELECT pg_temp.lc_call(:'admin_claims'::jsonb, :'lot_k2'::uuid, '{"rack":{"to":"KEY-4","from":"KEY-3"}}', 'lc-b10-refused-key') AS k_after_refusal \gset
 SELECT pg_temp.lc_assert(:'k_refused'::jsonb->>'reason' = 'LOT_CHANGE_INVALID' AND :'k_after_refusal'::jsonb->>'success' = 'true' AND NOT :'k_after_refusal'::jsonb ? 'idempotent'
   AND pg_temp.lc_lot(:'lot_k2'::uuid)->>'rack' = 'KEY-4', 'B10: a refused call does not use up its request key: ' || :'k_after_refusal');
+
+-- ===== B15. The phone time of a change sent over another person's value =====
+SELECT pg_temp.lc_save(:'admin_claims'::jsonb, 'LC15', :'cust'::uuid, :'item_id'::uuid, ARRAY['F1']) AS grn_f \gset
+SELECT id AS lot_f FROM public.goodsreceived_trl WHERE gr_id = :'grn_f' \gset
+SELECT to_char((now() - interval '2 hours') AT TIME ZONE 'UTC', 'YYYY-MM-DD"T"HH24:MI:SS.US"Z"') AS b15_two_hours_ago,
+       to_char((now() + interval '1 day') AT TIME ZONE 'UTC', 'YYYY-MM-DD"T"HH24:MI:SS.US"Z"') AS b15_tomorrow \gset
+-- Two hours before the server time, over the supervisor's value: the entry keeps the phone time; sent_at is the server time.
+SELECT pg_temp.lc_call(:'supervisor_claims'::jsonb, :'lot_f'::uuid, '{"rack":{"to":"F-SUP","from":"R1"}}', 'lc-b15-sup') AS b15_sup \gset
+SELECT jsonb_build_object('rack', jsonb_build_object('to', 'F-ADM', 'from', 'R1'), 'recorded_at', :'b15_two_hours_ago')::text AS b15_body \gset
+SELECT pg_temp.lc_call(:'admin_claims'::jsonb, :'lot_f'::uuid, :'b15_body'::jsonb, 'lc-b15-late') AS b15_late \gset
+SELECT pg_temp.lc_assert(:'b15_late'::jsonb->>'success' = 'true' AND jsonb_array_length(:'b15_late'::jsonb->'replaced') = 1
+  AND :'b15_late'::jsonb#>>'{replaced,0,newer}' = 'F-SUP' AND :'b15_late'::jsonb#>>'{replaced,0,sent}' = 'F-ADM'
+  AND (:'b15_late'::jsonb#>>'{replaced,0,recorded_at}')::timestamptz = now() - interval '2 hours'
+  AND (:'b15_late'::jsonb#>>'{replaced,0,sent_at}')::timestamptz = now(),
+  'B15: the answer''s entry carries the phone time (two hours ago) and the server time as sent_at: ' || :'b15_late');
+SELECT pg_temp.lc_assert((SELECT count(*) = 1 AND bool_and(r.recorded_at = now() - interval '2 hours' AND r.sent_at = now())
+    FROM warehouse_security.grn_replacements r WHERE r.lot_id = :'lot_f'::uuid AND r.sent_value = '"F-ADM"'::jsonb),
+  'B15: the stored entry has the phone time as recorded_at and the server time as sent_at');
+-- No recorded_at: the entry's recorded_at is NULL.
+SELECT pg_temp.lc_call(:'supervisor_claims'::jsonb, :'lot_f'::uuid, '{"package_mark":{"to":"F-MSUP","from":"F1"}}', 'lc-b15-sup-mark') AS b15_sup_mark \gset
+SELECT pg_temp.lc_call(:'admin_claims'::jsonb, :'lot_f'::uuid, '{"package_mark":{"to":"F-MADM","from":"F1"}}', 'lc-b15-none') AS b15_none \gset
+SELECT pg_temp.lc_assert(jsonb_array_length(:'b15_none'::jsonb->'replaced') = 1 AND :'b15_none'::jsonb#>'{replaced,0,recorded_at}' = 'null'::jsonb
+  AND (SELECT r.recorded_at IS NULL FROM warehouse_security.grn_replacements r WHERE r.lot_id = :'lot_f'::uuid AND r.sent_value = '"F-MADM"'::jsonb),
+  'B15: a call with no recorded_at makes an entry with recorded_at NULL: ' || :'b15_none');
+-- A phone clock ahead of the server: not refused, stored as sent_at.
+SELECT pg_temp.lc_call(:'supervisor_claims'::jsonb, :'lot_f'::uuid, '{"rack":{"to":"F-SUP2","from":"F-ADM"}}', 'lc-b15-sup-2') AS b15_sup_2 \gset
+SELECT jsonb_build_object('rack', jsonb_build_object('to', 'F-ADM2', 'from', 'F-ADM'), 'recorded_at', :'b15_tomorrow')::text AS b15_future_body \gset
+SELECT pg_temp.lc_call(:'admin_claims'::jsonb, :'lot_f'::uuid, :'b15_future_body'::jsonb, 'lc-b15-future') AS b15_future \gset
+SELECT pg_temp.lc_assert(:'b15_future'::jsonb->>'success' = 'true' AND jsonb_array_length(:'b15_future'::jsonb->'replaced') = 1
+  AND (:'b15_future'::jsonb#>>'{replaced,0,recorded_at}')::timestamptz = now()
+  AND (SELECT r.recorded_at = r.sent_at AND r.sent_at = now() FROM warehouse_security.grn_replacements r WHERE r.lot_id = :'lot_f'::uuid AND r.sent_value = '"F-ADM2"'::jsonb),
+  'B15: a recorded_at later than the server time is not refused and is stored as sent_at: ' || :'b15_future');
+-- A replay of the first key answers the first entry with its time and records none.
+SELECT count(*) AS b15_entries_before FROM warehouse_security.grn_replacements WHERE lot_id = :'lot_f'::uuid \gset
+SELECT jsonb_build_object('rack', jsonb_build_object('to', 'F-ADM', 'from', 'R1'), 'recorded_at', :'b15_tomorrow')::text AS b15_replay_body \gset
+SELECT pg_temp.lc_call(:'admin_claims'::jsonb, :'lot_f'::uuid, :'b15_replay_body'::jsonb, 'lc-b15-late') AS b15_replay \gset
+SELECT pg_temp.lc_assert(:'b15_replay'::jsonb->>'idempotent' = 'true' AND (:'b15_replay'::jsonb - 'idempotent') = :'b15_late'::jsonb
+  AND (:'b15_replay'::jsonb#>>'{replaced,0,recorded_at}')::timestamptz = now() - interval '2 hours'
+  AND (SELECT count(*) = :'b15_entries_before'::int FROM warehouse_security.grn_replacements WHERE lot_id = :'lot_f'::uuid),
+  'B15: a replay answers the first entry with its own phone time and records no second entry: ' || :'b15_replay');
 
 -- ===== B13. Two lots of one GRN, or two fields of one lot, changed from two phones: both kept =====
 SELECT pg_temp.lc_save(:'admin_claims'::jsonb, 'LC12', :'cust'::uuid, :'item_id'::uuid, ARRAY['P1', 'P2']) AS grn_p \gset
@@ -516,4 +574,4 @@ SELECT pg_temp.lc_assert(:'b13_c'::jsonb->'replaced' = '[]'::jsonb AND :'b13_d':
   AND pg_temp.lc_lot(:'lot_p1'::uuid) = '{"rack":"SAME-R","package_mark":"SAME-M"}',
   'B13: two fields of one lot changed from two phones are both kept and replace nothing');
 ROLLBACK;
-\echo 'WH-302 lot rack and mark change (B1-B10, B13, B14) checks passed.'
+\echo 'WH-302 lot rack and mark change (B1-B10, B13-B15) checks passed.'

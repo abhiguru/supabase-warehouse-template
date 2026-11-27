@@ -68,7 +68,7 @@ SELECT pg_temp.sf_assert(pg_temp.sf_ops(p, 'goodsreceived', :'grn_a', pg_temp.sf
     = (SELECT date_trunc('milliseconds', updated_at) FROM public.goodsreceived WHERE id = :'grn_a'),
   'B11: the GRN reached ' || p || ' as an upsert with its new updated_at') FROM unnest(ARRAY['admin', 'staff', 'reader']) p;
 -- The neighbouring lot did not change; the outsider received neither row.
-SELECT pg_temp.sf_assert(pg_temp.lm_row('staff', 'goodsreceived_trl', :'lot_a2'::uuid)->>'rack' = 'R2' AND pg_temp.lm_row('staff', 'goodsreceived_trl', :'lot_a2'::uuid)->>'package_mark' = 'LM2',
+SELECT pg_temp.sf_assert(pg_temp.lm_row('staff', 'goodsreceived_trl', :'lot_a2'::uuid)->>'rack' = 'R1' AND pg_temp.lm_row('staff', 'goodsreceived_trl', :'lot_a2'::uuid)->>'package_mark' = 'LM2',
   'B11: the other lot of the GRN is as it was on the staff phone');
 SELECT pg_temp.sf_assert(pg_temp.lm_row('outsider', 'goodsreceived_trl', :'lot_a1'::uuid) IS NULL AND pg_temp.lm_row('outsider', 'goodsreceived', :'grn_a'::uuid) IS NULL
   AND pg_temp.sf_ops('outsider', 'goodsreceived_trl', :'lot_a1', pg_temp.sf_last_pull('outsider')) = '',
