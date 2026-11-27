@@ -12,8 +12,8 @@
 --    whose active role is customer; warehouse_security.customer_answer does it. get_invoice_data and get_invoice_detail call it in their
 --    definitions files; get_customer_dispatch_list, get_grn_details, get_orders_list and get_order_with_items here (the other customer reads
 --    answer none of these keys).
--- 3. Feed format 7 (CUSTOMER_COPY_FORMAT): the entity list is unchanged on this base; held_items and grn_replacements are added to the
---    customer branch of warehouse_sync.entities() when WH-304 / WH-303 are stacked (assembly).
+-- 3. Feed format 7 (CUSTOMER_COPY_FORMAT): the entity list is unchanged here; held_items and grn_replacements are already kept out of the
+--    customer branch of warehouse_sync.entities() (NOT IN list) by 233 and 237.
 -- Patched by text with a marker count. No role, table, column, grant, owner, search_path or volatility changes (two new helper functions
 -- in warehouse_security have no grant).
 

@@ -146,6 +146,9 @@ BEGIN
     END IF;
   END IF;
 
+  -- The refresh lock before any row lock (migration 46), as update_grn and apply_grn_changes take it.
+  PERFORM pg_advisory_xact_lock(71040);
+
   -- The GRN first, then its lot.
   SELECT t.gr_id INTO v_gr_id FROM public.goodsreceived_trl t WHERE t.id = p_lot_id;
   IF v_gr_id IS NOT NULL THEN
