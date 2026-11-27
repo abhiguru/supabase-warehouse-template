@@ -583,6 +583,8 @@ test_files=(
   "$ROOT/tests/dispatch_range_print_189.sql" "$ROOT/tests/invoice_number_taken_190.sql"
   "$ROOT/tests/grn_items_invoice_filter_202.sql" "$ROOT/tests/grn_invoice_state_once_198.sql" "$ROOT/tests/bills_need_gst_details.sql"
   "$ROOT/tests/accountant_pack.sql"
+  "$ROOT/tests/offline_number_issued_161.sql" "$ROOT/tests/offline_recorded_time_161.sql"
+  "$ROOT/tests/offline_request_id_161.sql" "$ROOT/tests/offline_refusal_codes_161.sql"
 )
 for test_sql in "${test_files[@]}"; do
   # WH-205: bills need saved GST details with a GSTIN; every suite starts from a registered store (the suites that test the state set their own).
