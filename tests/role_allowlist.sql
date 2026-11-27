@@ -100,7 +100,7 @@ INSERT INTO ra_rpc(name,staff,customer) VALUES
  -- customer-scoped, used by no staff screen
  ('get_customer_stock_analysis_v2',false,'own'),
  -- warehouse-wide: staff documents (migrations 18 to 28)
- ('save_grn',true,'no'),('update_grn',true,'no'),('check_grn_exists',true,'no'),('get_next_grn_number',true,'no'),
+ ('save_grn',true,'no'),('update_grn',true,'no'),('set_lot_rack_and_mark',true,'no'),('check_grn_exists',true,'no'),('get_next_grn_number',true,'no'),
  -- the numbering rules (migration 127): staff are suggested the next number; supervisors read the rules, administrators change them
  ('suggest_document_number',true,'no'),('get_document_numbering',false,'no'),('set_document_numbering',false,'no'),
  -- the rack presets of the GRN item form (migration 131): staff read the buttons, administrators and supervisors change them

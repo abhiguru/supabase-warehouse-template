@@ -566,6 +566,7 @@ test_files=(
   "$ROOT/tests/packaging_rule_142.sql"
   "$ROOT/tests/invoice_kept_lines_143.sql"
   "$ROOT/tests/invoice_keeps_issued_marking.sql"
+  "$ROOT/tests/lot_rack_mark_change.sql"
   "$ROOT/tests/invoice_kept_long_numbers_149.sql"
   "$ROOT/tests/print_range_request_id_151.sql"
   "$ROOT/tests/signin_access_154.sql" "$ROOT/tests/audit_log_insert_only_155.sql" "$ROOT/tests/dispatch_delete_other_lines_156.sql"
@@ -1015,6 +1016,8 @@ bash "$ROOT/tests/numbering_lock.sh" "$container"
 # Migration 172 (WH-99): a payment written while an invoice is cancelled waits for the cancel and is refused, and a cancel started
 # while a payment is in flight waits and answers INVOICE_HAS_PAYMENTS.
 bash "$ROOT/tests/payment_cancel_race_99.sh" "$container"
+# WH-302 B12: two calls of set_lot_rack_and_mark on one lot at the same moment (uses the numbering lock fixture).
+bash "$ROOT/tests/lot_rack_mark_race.sh" "$container"
 
 # scripts/retention.sh: every statement it sends is one this database accepts.
 bash "$ROOT/tests/retention_queries.sh" "$container"
@@ -1030,7 +1033,7 @@ mig_psql -d "$sync_db" -c 'DROP SCHEMA storage CASCADE' >/dev/null
 docker exec -e PGPASSWORD=disposable-test-database-only "$container" pg_dump -U supabase_admin -d postgres --schema-only --no-owner -n storage | mig_psql -d "$sync_db" >/dev/null
 # WH-299, feed format 2: the invoice state of a GRN and the time a lot was emptied.
 for sync_sql in "$ROOT/tests/sync_feed_changes.sql" "$ROOT/tests/sync_feed_deletes_scope.sql" \
-  "$ROOT/tests/sync_feed_invoice_state.sql" "$ROOT/tests/sync_feed_emptied_time.sql" \
+  "$ROOT/tests/sync_feed_invoice_state.sql" "$ROOT/tests/sync_feed_emptied_time.sql" "$ROOT/tests/sync_feed_lot_rack_mark.sql" \
   "$ROOT/tests/sync_feed_orders_payments.sql"; do
   cat "$ROOT/tests/fixtures/gst_details.sql" "$ROOT/tests/sync_feed_contract.sql" "$sync_sql" | mig_psql -d "$sync_db"
 done
