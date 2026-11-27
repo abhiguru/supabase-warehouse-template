@@ -73,7 +73,7 @@ BEGIN
     -- refused to staff and customer accounts by the final ELSE.
     'hold_items','mark_held_item_seen',
     -- The photos of a held item (topic "held item photos", WH-304): the body lets only the item's recorder, or the administrator who moved it.
-    'register_held_photo_upload','confirm_held_photo_upload',
+    'register_held_photo_upload','confirm_held_photo_upload','mark_held_photo_missing',
     'get_all_grn_items','get_grn_list','get_grn_details',
     -- The next GRN, dispatch or invoice number under the facility's rule (migration 127); the rules are read by supervisors and above.
     'suggest_document_number',
