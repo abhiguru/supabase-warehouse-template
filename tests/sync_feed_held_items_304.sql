@@ -129,9 +129,10 @@ SELECT pg_temp.hf_hold(:'staff_claims'::jsonb, jsonb_build_array(
     jsonb_build_object('args', jsonb_build_object('p_dispatch_data', jsonb_build_object('customer_id', :'north'))))))) AS hand_c \gset
 SELECT pg_temp.hf_id('hf-c1') AS c1row \gset
 SELECT pg_temp.hf_step('customer from the body');
-SELECT pg_temp.sf_assert((SELECT c.row->>'customer_name' = 'Held Feed North' FROM pg_temp.sf_copy c WHERE c.slot = 'staff' AND c.e = 'held_items' AND c.id = :'c1row')
-  AND (SELECT customer_id = :'north'::uuid FROM public.held_items WHERE request_key = 'hf-c1'),
-  'B-F6: the recorder''s feed row names the body''s customer (Held Feed North), not the phone''s (Held Feed South)');
+SELECT COALESCE((SELECT c.row->>'customer_name' FROM pg_temp.sf_copy c WHERE c.slot = 'staff' AND c.e = 'held_items' AND c.id = :'c1row'), 'NO ROW') AS f6_feed_name,
+  COALESCE((SELECT name FROM public.customers WHERE id = (SELECT customer_id FROM public.held_items WHERE request_key = 'hf-c1')), 'NO CUSTOMER') AS f6_row_name \gset
+SELECT pg_temp.sf_assert(:'f6_feed_name' = 'Held Feed North' AND :'f6_row_name' = 'Held Feed North',
+  'B-F6: the recorder''s feed row names the body''s customer, not the phone''s (feed row: ' || :'f6_feed_name' || ', held row: ' || :'f6_row_name' || ', want Held Feed North)');
 
 -- ===== B-F5. 5,000 held rows: every answer stays inside 2,000 rows and 8 seconds =====
 SELECT pg_temp.sf_phone('admin_old', :'sf_admin_claims'::jsonb);

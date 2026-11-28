@@ -537,10 +537,14 @@ SELECT pg_temp.hp_assert(pg_temp.hp_put(:'staff2_claims'::jsonb, 'grn-images', :
   AND pg_temp.hp_access(:'staff_claims'::jsonb, 'grn-images', :'a1_new'::jsonb->>'storage_path', true) = 'true'
   AND pg_temp.hp_put(:'staff_claims'::jsonb, 'grn-images', :'a1_new'::jsonb->>'storage_path') = 'rows:1',
   'G9: storage: the recorder may write the pending file of an accepted item, another staff person may not');
-SELECT pg_temp.hp_assert(pg_temp.hp_ok(pg_temp.hp_confirm(:'staff_claims'::jsonb, :'a1'::uuid, 'pa-new'))
-  AND (SELECT count(*) = 4 AND count(*) FILTER (WHERE storage_path = :'a1_new'::jsonb->>'storage_path' AND uploaded_by = :'staff_profile'::uuid) = 1 FROM public.grn_images WHERE grn_id = :'a1_grn'::uuid)
-  AND pg_temp.hp_access(:'staff_claims'::jsonb, 'grn-images', :'a1_new'::jsonb->>'storage_path', true) = 'false',
-  'G9: the new photo is confirmed and attached (four images), and its file is no longer writable once confirmed');
+SELECT pg_temp.hp_confirm(:'staff_claims'::jsonb, :'a1'::uuid, 'pa-new') AS a1_cnew \gset
+SELECT count(*) AS a1_n_images FROM public.grn_images WHERE grn_id = :'a1_grn'::uuid \gset
+SELECT count(*) AS a1_n_new FROM public.grn_images WHERE grn_id = :'a1_grn'::uuid AND storage_path = :'a1_new'::jsonb->>'storage_path' AND uploaded_by = :'staff_profile'::uuid \gset
+SELECT pg_temp.hp_access(:'staff_claims'::jsonb, 'grn-images', :'a1_new'::jsonb->>'storage_path', true) AS a1_new_write \gset
+SELECT pg_temp.hp_assert(pg_temp.hp_ok(:'a1_cnew'::jsonb) AND :'a1_cnew'::jsonb->>'status' = 'confirmed', 'G9: confirm of the new photo of the accepted item answers confirmed: ' || :'a1_cnew');
+SELECT pg_temp.hp_assert(:'a1_n_images'::int = 4 AND :'a1_n_new'::int = 1,
+  'G9: the new photo is attached to the GRN once, uploaded by the recorder (images ' || :'a1_n_images' || ', of the new one ' || :'a1_n_new' || ', want 4 and 1)');
+SELECT pg_temp.hp_assert(:'a1_new_write'::text = 'false', 'G9: the confirmed file of an accepted item is no longer writable (write access ' || :'a1_new_write' || ')');
 
 -- The dispatch kind: a held new dispatch of one bag of the GRN above; its confirmed photo goes with the accept, the others follow.
 SELECT pg_temp.hp_hold(:'staff_claims'::jsonb, jsonb_build_array(
@@ -552,27 +556,37 @@ SELECT pg_temp.hp_assert(:'g9d_hold'::jsonb->>'success' = 'true', 'fixture: hp-a
 SELECT pg_temp.hp_hid('hp-a2') AS a2 \gset
 SELECT pg_temp.hp_reg(:'staff_claims'::jsonb, :'a2'::uuid, 'pd-conf', 'dispatch', 'dconf.jpg', 100, 'image/jpeg') AS a2_conf \gset
 SELECT pg_temp.hp_reg(:'staff_claims'::jsonb, :'a2'::uuid, 'pd-pend', 'dispatch', 'dpend.jpg', 100, 'image/jpeg') AS a2_pend \gset
-SELECT pg_temp.hp_assert(pg_temp.hp_ok(:'a2_conf'::jsonb) AND pg_temp.hp_ok(:'a2_pend'::jsonb)
-  AND pg_temp.hp_put(:'staff_claims'::jsonb, 'dispatch-images', :'a2_conf'::jsonb->>'storage_path') = 'rows:1'
-  AND pg_temp.hp_ok(pg_temp.hp_confirm(:'staff_claims'::jsonb, :'a2'::uuid, 'pd-conf')), 'fixture: dispatch photos registered, pd-conf confirmed');
+SELECT pg_temp.hp_assert(pg_temp.hp_ok(:'a2_conf'::jsonb) AND pg_temp.hp_ok(:'a2_pend'::jsonb), 'fixture: dispatch photos registered: ' || :'a2_conf' || ' / ' || :'a2_pend');
+SELECT pg_temp.hp_put(:'staff_claims'::jsonb, 'dispatch-images', :'a2_conf'::jsonb->>'storage_path') AS a2_put \gset
+SELECT pg_temp.hp_confirm(:'staff_claims'::jsonb, :'a2'::uuid, 'pd-conf') AS a2_cconf \gset
+SELECT pg_temp.hp_assert(:'a2_put' = 'rows:1' AND pg_temp.hp_ok(:'a2_cconf'::jsonb), 'fixture: pd-conf file uploaded and confirmed: ' || :'a2_put' || ' / ' || :'a2_cconf');
 SELECT pg_temp.hp_decide(:'admin_claims'::jsonb, :'a2'::uuid, 'accept', 'hp-dk-a2') AS g9d_accept \gset
 SELECT id AS a2_disp FROM public.dispatch WHERE request_key = 'hp-a2' \gset
-SELECT pg_temp.hp_assert(pg_temp.hp_ok(:'g9d_accept'::jsonb) AND pg_temp.hp_state('hp-a2') = 'accepted'
-  AND (SELECT count(*) = 1 AND bool_and(storage_path = :'a2_conf'::jsonb->>'storage_path' AND uploaded_by = :'staff_profile'::uuid) FROM public.dispatch_images WHERE dispatch_id = :'a2_disp'::uuid),
-  'G9: the dispatch is accepted with only its confirmed photo attached: ' || :'g9d_accept');
+SELECT pg_temp.hp_assert(pg_temp.hp_ok(:'g9d_accept'::jsonb) AND pg_temp.hp_state('hp-a2') = 'accepted', 'G9: the dispatch is accepted: ' || :'g9d_accept');
+SELECT count(*) AS a2_n1, count(*) FILTER (WHERE storage_path = :'a2_conf'::jsonb->>'storage_path' AND uploaded_by = :'staff_profile'::uuid) AS a2_n1_conf
+  FROM public.dispatch_images WHERE dispatch_id = :'a2_disp'::uuid \gset
+SELECT pg_temp.hp_assert(:'a2_n1'::int = 1 AND :'a2_n1_conf'::int = 1,
+  'G9: only the confirmed dispatch photo is attached by the accept, uploaded by the recorder (images ' || :'a2_n1' || ', its own ' || :'a2_n1_conf' || ', want 1 and 1)');
 -- The phone uploads the pending dispatch file after the accept (the storage rule), then confirms.
-SELECT pg_temp.hp_assert(pg_temp.hp_put(:'staff2_claims'::jsonb, 'dispatch-images', :'a2_pend'::jsonb->>'storage_path') = 'raised:42501'
-  AND pg_temp.hp_put(:'staff_claims'::jsonb, 'dispatch-images', :'a2_pend'::jsonb->>'storage_path') = 'rows:1', 'G9: the recorder alone uploads a pending dispatch file after the accept');
+SELECT pg_temp.hp_put(:'staff2_claims'::jsonb, 'dispatch-images', :'a2_pend'::jsonb->>'storage_path') AS a2_put_other \gset
+SELECT pg_temp.hp_put(:'staff_claims'::jsonb, 'dispatch-images', :'a2_pend'::jsonb->>'storage_path') AS a2_put_rec \gset
+SELECT pg_temp.hp_assert(:'a2_put_other' = 'raised:42501' AND :'a2_put_rec' = 'rows:1',
+  'G9: the recorder alone uploads a pending dispatch file after the accept (other staff ' || :'a2_put_other' || ', recorder ' || :'a2_put_rec' || ')');
 SELECT pg_temp.hp_confirm(:'staff_claims'::jsonb, :'a2'::uuid, 'pd-pend') AS a2_c1 \gset
 SELECT pg_temp.hp_confirm(:'staff_claims'::jsonb, :'a2'::uuid, 'pd-pend') AS a2_c2 \gset
-SELECT pg_temp.hp_assert(pg_temp.hp_ok(:'a2_c1'::jsonb) AND pg_temp.hp_ok(:'a2_c2'::jsonb)
-  AND (SELECT count(*) = 2 AND count(DISTINCT storage_path) = 2 AND bool_and(uploaded_by = :'staff_profile'::uuid AND status = 'confirmed') FROM public.dispatch_images WHERE dispatch_id = :'a2_disp'::uuid)
-  AND NOT EXISTS (SELECT 1 FROM public.grn_images WHERE storage_path IN (:'a2_conf'::jsonb->>'storage_path', :'a2_pend'::jsonb->>'storage_path'))
-  AND (SELECT count(*) = 2 AND bool_and(document_id = :'a2_disp'::uuid) FROM public.held_item_photos WHERE held_id = :'a2'::uuid),
-  'G9: a late dispatch photo is attached to the dispatch once (not to a GRN), uploaded by the recorder, and the rows link to the dispatch: ' || :'a2_c1' || ' / ' || :'a2_c2');
+SELECT pg_temp.hp_assert(pg_temp.hp_ok(:'a2_c1'::jsonb) AND pg_temp.hp_ok(:'a2_c2'::jsonb), 'G9: confirm and its repeat answer success for a dispatch photo: ' || :'a2_c1' || ' / ' || :'a2_c2');
+SELECT count(*) AS a2_n2, count(DISTINCT storage_path) AS a2_n2_paths, count(*) FILTER (WHERE uploaded_by = :'staff_profile'::uuid AND status = 'confirmed') AS a2_n2_ok
+  FROM public.dispatch_images WHERE dispatch_id = :'a2_disp'::uuid \gset
+SELECT count(*) AS a2_grn_leak FROM public.grn_images WHERE storage_path IN (:'a2_conf'::jsonb->>'storage_path', :'a2_pend'::jsonb->>'storage_path') \gset
+SELECT count(*) AS a2_linked FROM public.held_item_photos WHERE held_id = :'a2'::uuid AND document_id = :'a2_disp'::uuid \gset
+SELECT pg_temp.hp_assert(:'a2_n2'::int = 2 AND :'a2_n2_paths'::int = 2 AND :'a2_n2_ok'::int = 2,
+  'G9: a late dispatch photo is attached once, by the recorder, confirmed (images ' || :'a2_n2' || ', paths ' || :'a2_n2_paths' || ', recorder+confirmed ' || :'a2_n2_ok' || ', want 2/2/2)');
+SELECT pg_temp.hp_assert(:'a2_grn_leak'::int = 0 AND :'a2_linked'::int = 2,
+  'G9: dispatch photos are on no GRN and their rows link to the dispatch (on a GRN ' || :'a2_grn_leak' || ', linked rows ' || :'a2_linked' || ', want 0 and 2)');
 SELECT pg_temp.hp_mark(:'staff_claims'::jsonb, :'a2'::uuid, 'pd-gone', 'dispatch', NULL, 'Gave up') AS a2_mark \gset
-SELECT pg_temp.hp_assert(pg_temp.hp_ok(:'a2_mark'::jsonb) AND (SELECT state = 'missing' AND document_id = :'a2_disp'::uuid FROM public.held_item_photos WHERE held_id = :'a2'::uuid AND client_photo_id = 'pd-gone'),
-  'G9: a dispatch photo marked missing after the accept is linked to the dispatch: ' || :'a2_mark');
+SELECT state AS a2_gone_state, COALESCE(document_id::text, 'NULL') AS a2_gone_doc FROM public.held_item_photos WHERE held_id = :'a2'::uuid AND client_photo_id = 'pd-gone' \gset
+SELECT pg_temp.hp_assert(pg_temp.hp_ok(:'a2_mark'::jsonb) AND :'a2_gone_state' = 'missing' AND :'a2_gone_doc' = :'a2_disp',
+  'G9: a dispatch photo marked missing after the accept is linked to the dispatch (answer ' || :'a2_mark' || ', state ' || :'a2_gone_state' || ', document ' || :'a2_gone_doc' || ', dispatch ' || :'a2_disp' || ')');
 
 -- ===== G10. WH-382: the photos of an item that names another person's key never reach that person's GRN =====
 SELECT pg_temp.hp_hold(:'staff_claims'::jsonb, jsonb_build_array(
@@ -586,26 +600,33 @@ SELECT pg_temp.hp_hold(:'staff2_claims'::jsonb, jsonb_build_array(
   pg_temp.hp_item('hp-x-ph', 'photos', 2, :'ca'::uuid, '{"doc":"grn"}', jsonb_build_object('follows_key', 'hp-s1', 'refusal', NULL)))) AS g10_other \gset
 SELECT pg_temp.hp_assert(:'g10_other'::jsonb->>'success' = 'true' AND :'g10_other'::text LIKE '%REQUEST_KEY_REUSED%', 'fixture: the second person''s call: ' || :'g10_other');
 SELECT pg_temp.hp_hid('hp-s1') AS s1, pg_temp.hp_hid('hp-s2') AS s2, pg_temp.hp_hid('hp-s2-ph') AS s2ph, pg_temp.hp_hid('hp-x-ph') AS xph \gset
-SELECT pg_temp.hp_assert((SELECT follows IS NULL AND recorded_by = (SELECT id FROM public.user_profiles WHERE mobile = '919888885305') AND needs_decision FROM public.held_items WHERE id = :'xph'::uuid)
-  AND (SELECT follows = :'s2'::uuid AND NOT needs_decision FROM public.held_items WHERE id = :'s2ph'::uuid),
-  'G10: the foreign follower is not linked under hp-s1, the same recorder''s follower is linked under hp-s2');
+SELECT COALESCE(follows::text, 'NULL') AS x_follows, needs_decision AS x_needs FROM public.held_items WHERE id = :'xph'::uuid \gset
+SELECT COALESCE(follows::text, 'NULL') AS s_follows, needs_decision AS s_needs FROM public.held_items WHERE id = :'s2ph'::uuid \gset
+SELECT pg_temp.hp_assert(:'x_follows' = 'NULL' AND :'x_needs' = 't', 'G10: the foreign follower is not linked and keeps a decision of its own (follows ' || :'x_follows' || ', needs_decision ' || :'x_needs' || ')');
+SELECT pg_temp.hp_assert(:'s_follows' = :'s2' AND :'s_needs' = 'f', 'G10: the same recorder''s follower is linked under hp-s2 (follows ' || :'s_follows' || ', want ' || :'s2' || ', needs_decision ' || :'s_needs' || ')');
 SELECT pg_temp.hp_reg(:'staff2_claims'::jsonb, :'xph'::uuid, 'px-1', 'header', 'x.jpg', 100, 'image/jpeg') AS g10_xreg \gset
 SELECT pg_temp.hp_reg(:'staff_claims'::jsonb, :'s2ph'::uuid, 'ps-1', 'header', 's.jpg', 100, 'image/jpeg') AS g10_sreg \gset
-SELECT pg_temp.hp_assert(pg_temp.hp_ok(:'g10_xreg'::jsonb) AND pg_temp.hp_ok(:'g10_sreg'::jsonb)
-  AND pg_temp.hp_put(:'staff2_claims'::jsonb, 'grn-images', :'g10_xreg'::jsonb->>'storage_path') = 'rows:1'
-  AND pg_temp.hp_put(:'staff_claims'::jsonb, 'grn-images', :'g10_sreg'::jsonb->>'storage_path') = 'rows:1'
-  AND pg_temp.hp_ok(pg_temp.hp_confirm(:'staff2_claims'::jsonb, :'xph'::uuid, 'px-1')) AND pg_temp.hp_ok(pg_temp.hp_confirm(:'staff_claims'::jsonb, :'s2ph'::uuid, 'ps-1')),
-  'fixture: one confirmed photo on the foreign follower and one on the same recorder''s follower');
+SELECT pg_temp.hp_put(:'staff2_claims'::jsonb, 'grn-images', :'g10_xreg'::jsonb->>'storage_path') AS g10_xput \gset
+SELECT pg_temp.hp_put(:'staff_claims'::jsonb, 'grn-images', :'g10_sreg'::jsonb->>'storage_path') AS g10_sput \gset
+SELECT pg_temp.hp_confirm(:'staff2_claims'::jsonb, :'xph'::uuid, 'px-1') AS g10_xconf \gset
+SELECT pg_temp.hp_confirm(:'staff_claims'::jsonb, :'s2ph'::uuid, 'ps-1') AS g10_sconf \gset
+SELECT pg_temp.hp_assert(pg_temp.hp_ok(:'g10_xreg'::jsonb) AND pg_temp.hp_ok(:'g10_sreg'::jsonb) AND :'g10_xput' = 'rows:1' AND :'g10_sput' = 'rows:1'
+  AND pg_temp.hp_ok(:'g10_xconf'::jsonb) AND pg_temp.hp_ok(:'g10_sconf'::jsonb),
+  'fixture: one confirmed photo on each follower: ' || :'g10_xreg' || ' / ' || :'g10_sreg' || ' / ' || :'g10_xput' || ' / ' || :'g10_sput' || ' / ' || :'g10_xconf' || ' / ' || :'g10_sconf');
 SELECT pg_temp.hp_decide(:'admin_claims'::jsonb, :'s1'::uuid, 'accept', 'hp-dk-s1') AS g10_acc1 \gset
 SELECT pg_temp.hp_decide(:'admin_claims'::jsonb, :'s2'::uuid, 'accept', 'hp-dk-s2') AS g10_acc2 \gset
 SELECT id AS s1_grn FROM public.goodsreceived WHERE request_key = 'hp-s1' \gset
 SELECT id AS s2_grn FROM public.goodsreceived WHERE request_key = 'hp-s2' \gset
-SELECT pg_temp.hp_assert(pg_temp.hp_ok(:'g10_acc1'::jsonb) AND pg_temp.hp_ok(:'g10_acc2'::jsonb)
-  AND NOT EXISTS (SELECT 1 FROM public.grn_images WHERE grn_id = :'s1_grn'::uuid) AND NOT EXISTS (SELECT 1 FROM public.grn_images WHERE storage_path = :'g10_xreg'::jsonb->>'storage_path')
-  AND pg_temp.hp_state('hp-x-ph') = 'held',
-  'G10: accepting the staff person''s GRN attaches nothing of the other person''s photos item, which stays held: ' || :'g10_acc1');
-SELECT pg_temp.hp_assert((SELECT count(*) = 1 AND bool_and(storage_path = :'g10_sreg'::jsonb->>'storage_path' AND uploaded_by = :'staff_profile'::uuid) FROM public.grn_images WHERE grn_id = :'s2_grn'::uuid),
-  'G10: control: the same recorder''s follower photo is attached to its GRN on accept');
+SELECT pg_temp.hp_assert(pg_temp.hp_ok(:'g10_acc1'::jsonb) AND pg_temp.hp_ok(:'g10_acc2'::jsonb), 'G10: both GRNs are accepted: ' || :'g10_acc1' || ' / ' || :'g10_acc2');
+SELECT count(*) AS s1_images FROM public.grn_images WHERE grn_id = :'s1_grn'::uuid \gset
+SELECT count(*) AS x_anywhere FROM public.grn_images WHERE storage_path = :'g10_xreg'::jsonb->>'storage_path' \gset
+SELECT pg_temp.hp_state('hp-x-ph') AS x_state \gset
+SELECT pg_temp.hp_assert(:'s1_images'::int = 0 AND :'x_anywhere'::int = 0 AND :'x_state' = 'held',
+  'G10: accepting the staff person''s GRN attaches nothing of the other person''s photos item, which stays held (images on hp-s1 ' || :'s1_images'
+  || ', the foreign photo on any GRN ' || :'x_anywhere' || ', its state ' || :'x_state' || ')');
+SELECT count(*) AS s2_images, count(*) FILTER (WHERE storage_path = :'g10_sreg'::jsonb->>'storage_path' AND uploaded_by = :'staff_profile'::uuid) AS s2_own FROM public.grn_images WHERE grn_id = :'s2_grn'::uuid \gset
+SELECT pg_temp.hp_assert(:'s2_images'::int = 1 AND :'s2_own'::int = 1,
+  'G10: control: the same recorder''s follower photo is attached to its GRN on accept (images ' || :'s2_images' || ', its own ' || :'s2_own' || ')');
 -- The two new helpers are for the database owner's functions only: no app role runs them (no new public function, so no allowlist row).
 SELECT pg_temp.hp_assert(NOT has_function_privilege('authenticated', 'warehouse_security.held_document(uuid,text)', 'EXECUTE')
   AND NOT has_function_privilege('service_role', 'warehouse_security.held_document(uuid,text)', 'EXECUTE')
