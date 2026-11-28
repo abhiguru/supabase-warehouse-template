@@ -1,7 +1,7 @@
 -- public.save_grn: the definition setup applies after the numbered migrations whenever this file's checksum changes
 -- (scripts/migration-plan.mjs, table warehouse_migrations.definitions). Edit the function here, never in a new migration.
 -- Starts as the function migrations 000 to 126 leave (the numbered files that patched it stay as they are, never edited).
-CREATE OR REPLACE FUNCTION public.save_grn(p_gr_no character varying, p_date timestamp with time zone, p_customer_id uuid, p_customer_name character varying, p_sender_id uuid DEFAULT NULL::uuid, p_sender_name character varying DEFAULT NULL::character varying, p_supervisor_id uuid DEFAULT NULL::uuid, p_supervisor_name character varying DEFAULT NULL::character varying, p_registration character varying DEFAULT NULL::character varying, p_note character varying DEFAULT NULL::character varying, p_leon boolean DEFAULT false, p_pricing_mode character varying DEFAULT NULL::character varying, p_items jsonb DEFAULT '[]'::jsonb, p_images jsonb DEFAULT '[]'::jsonb, p_idempotency_key text DEFAULT NULL::text, p_duration_mode character varying DEFAULT 'legacy'::character varying, p_rates jsonb DEFAULT NULL::jsonb, p_warn_duplicate boolean DEFAULT false)
+CREATE OR REPLACE FUNCTION public.save_grn(p_gr_no character varying, p_date timestamp with time zone, p_customer_id uuid, p_customer_name character varying, p_sender_id uuid DEFAULT NULL::uuid, p_sender_name character varying DEFAULT NULL::character varying, p_supervisor_id uuid DEFAULT NULL::uuid, p_supervisor_name character varying DEFAULT NULL::character varying, p_registration character varying DEFAULT NULL::character varying, p_note character varying DEFAULT NULL::character varying, p_leon boolean DEFAULT false, p_pricing_mode character varying DEFAULT NULL::character varying, p_items jsonb DEFAULT '[]'::jsonb, p_images jsonb DEFAULT '[]'::jsonb, p_idempotency_key text DEFAULT NULL::text, p_duration_mode character varying DEFAULT 'legacy'::character varying, p_rates jsonb DEFAULT NULL::jsonb, p_warn_duplicate boolean DEFAULT false, p_issue_number boolean DEFAULT false, p_recorded_at timestamp with time zone DEFAULT NULL::timestamp with time zone)
  RETURNS jsonb
  LANGUAGE plpgsql
  SECURITY DEFINER
@@ -29,6 +29,13 @@ AS $function$
       v_detail text;
       v_duplicate jsonb;
       v_number_failure jsonb;
+      v_offline boolean;
+      v_digest text;
+      v_repeat jsonb;
+      v_numbered jsonb;
+      v_pre_ids uuid[];
+      v_pre_mapping jsonb;
+      v_accepter uuid;
 BEGIN
   PERFORM warehouse_security.authorize_rpc('save_grn',jsonb_build_object('p_customer_id',p_customer_id));
   -- Migration 90: rates typed on the GRN sheet are an administrator's or a supervisor's.
@@ -65,8 +72,32 @@ BEGIN
   p_supervisor_name := warehouse_security.trimmed_reason(p_supervisor_name);
     -- The list-refresh lock comes before any row lock (migration 46).
     PERFORM pg_advisory_xact_lock(71040);
+      -- WH-161 (offline sends): a save that carries the recorded time or asks the server for its number is an offline send. It must
+      -- carry a request key, which is kept on the GRN itself (request_key, request_digest), so a repeat is answered with the first
+      -- answer however late it comes, and the key of another request or person is refused (warehouse_security.offline_repeat).
+      -- The saved answers below (7 days) are used by saves that are not offline sends, exactly as before.
+      v_offline := COALESCE(p_issue_number, false) OR p_recorded_at IS NOT NULL;
+      IF v_offline THEN
+          IF warehouse_security.is_blank_text(p_idempotency_key) THEN
+              RETURN warehouse_security.refuse('REQUEST_KEY_REQUIRED', 'A save made offline needs a request key.', '{}'::jsonb);
+          END IF;
+          -- WH-304: an item accepted from the holding list is saved for the person who recorded it (the request key's owner is theirs).
+          v_user_profile_id := COALESCE(warehouse_security.acting_profile(), (SELECT id FROM user_profiles WHERE auth_user_id = auth.uid()));
+          IF v_user_profile_id IS NOT NULL THEN
+              v_digest := warehouse_security.request_digest(jsonb_build_object(
+                  'gr_no', p_gr_no, 'date', extract(epoch FROM p_date), 'customer_id', p_customer_id, 'customer_name', p_customer_name,
+                  'sender_id', p_sender_id, 'sender_name', p_sender_name, 'supervisor_id', p_supervisor_id, 'supervisor_name', p_supervisor_name,
+                  'registration', p_registration, 'note', p_note, 'leon', p_leon, 'pricing_mode', p_pricing_mode, 'items', p_items,
+                  'images', p_images, 'duration_mode', p_duration_mode, 'rates', p_rates, 'issue_number', COALESCE(p_issue_number, false)));
+              v_repeat := warehouse_security.offline_repeat('save_grn', p_idempotency_key, v_user_profile_id, v_digest);
+              IF v_repeat IS NOT NULL THEN
+                  RETURN v_repeat;
+              END IF;
+          END IF;
+      END IF;
+
       -- IDEMPOTENCY CHECK: Return cached response if key exists
-      IF p_idempotency_key IS NOT NULL THEN
+      IF p_idempotency_key IS NOT NULL AND NOT v_offline THEN
           SELECT response INTO v_cached_response
           FROM idempotency_keys
           WHERE idempotency_key = p_idempotency_key
@@ -115,14 +146,52 @@ BEGIN
           );
       END IF;
 
+      -- WH-304 (topic "save on behalf of the recorder"): when a supervisor or administrator accepts a held item, the role checks above
+      -- are the accepting person's; the GRN is the recorder's (creator, request key owner, photos) and notes who accepted it.
+      v_accepter := NULL;
+      IF warehouse_security.acting_profile() IS NOT NULL THEN
+          v_accepter := v_user_profile_id;
+          v_user_profile_id := warehouse_security.acting_profile();
+      END IF;
+
       PERFORM warehouse_security.require_person_supervisor(p_supervisor_id::text);
 
+      -- WH-161: a deleted or deactivated customer is answered with a code, as every other refusal an offline send can meet, instead of
+      -- raising; the words are today's. The check is before any write, so nothing is written either way.
       IF EXISTS (SELECT 1 FROM customers WHERE id = p_customer_id AND deleted_at IS NOT NULL) THEN
-          RAISE EXCEPTION 'Business is not active' USING ERRCODE = 'P0001';
+          RETURN warehouse_security.refuse('CUSTOMER_INACTIVE', 'Business is not active', jsonb_build_object('customer_id', p_customer_id));
       END IF;
 
       IF EXISTS (SELECT 1 FROM customers WHERE id = p_customer_id AND active = false) THEN
-          RAISE EXCEPTION 'This business is deactivated. Activate it in Customers to receive new goods.' USING ERRCODE = 'P0001';
+          RETURN warehouse_security.refuse('CUSTOMER_INACTIVE',
+              'This business is deactivated. Activate it in Customers to receive new goods.', jsonb_build_object('customer_id', p_customer_id));
+      END IF;
+
+      -- WH-161: the recorded time is the phone's clock; one more than 5 minutes ahead of the server is refused (clock drift is allowed).
+      IF p_recorded_at IS NOT NULL AND p_recorded_at > now() + interval '5 minutes' THEN
+          RETURN warehouse_security.refuse('RECORDED_TIME_FUTURE', 'The time this was recorded is ahead of the server''s clock.',
+              jsonb_build_object('recorded_at', p_recorded_at, 'server_time', now()));
+      END IF;
+
+      -- WH-161: the number is given at save (p_issue_number): the one the owner's numbering suggests for the day of the GRN, worked out
+      -- here inside the lock (71040), so a burst of sends gets consecutive numbers in the order it arrives. Nothing is reserved: a save
+      -- that is refused or rolled back uses none. A number sent beside the flag is refused; a store that types its numbers cannot be
+      -- given one; a series with no number left is refused.
+      IF COALESCE(p_issue_number, false) AND p_date IS NOT NULL AND p_customer_id IS NOT NULL THEN
+          IF NOT warehouse_security.is_blank_text(p_gr_no) THEN
+              RETURN warehouse_security.refuse('NUMBER_NOT_EXPECTED', 'This GRN already has a number, so the server does not give one.',
+                  jsonb_build_object('number', p_gr_no));
+          END IF;
+          v_numbered := warehouse_security.document_number_suggestion('grn', warehouse_security.business_date(p_date));
+          IF v_numbered->>'number' IS NULL THEN
+              IF v_numbered->>'reason' = 'SERIES_FULL' THEN
+                  RETURN warehouse_security.refuse('SERIES_FULL', COALESCE(v_numbered->>'message', 'No GRN number is left.'),
+                      jsonb_build_object('scheme', v_numbered->>'scheme'));
+              END IF;
+              RETURN warehouse_security.refuse('NUMBER_REQUIRED', 'This store types its GRN numbers, so the server cannot give one.',
+                  jsonb_build_object('scheme', v_numbered->>'scheme'));
+          END IF;
+          p_gr_no := v_numbered->>'number';
       END IF;
 
       IF warehouse_security.is_blank_text(p_gr_no) OR p_date IS NULL OR p_customer_id IS NULL THEN
@@ -154,10 +223,9 @@ BEGIN
       END IF;
 
       IF EXISTS (SELECT 1 FROM goodsreceived WHERE gr_no = p_gr_no) THEN
-          RETURN jsonb_build_object(
-              'success', false,
-              'message', 'GRN number already exists: ' || p_gr_no
-          );
+          -- WH-161: the code and the number beside today's message.
+          RETURN warehouse_security.refuse('NUMBER_TAKEN', 'GRN number already exists: ' || p_gr_no,
+              jsonb_build_object('number', p_gr_no));
       END IF;
 
       -- WH-231: a new GRN has a sender name and a supervisor, as the app's form requires. Empty is NULL, or blank after trimming
@@ -193,6 +261,16 @@ BEGIN
           );
       END IF;
 
+      -- WH-161: an offline send fixes the ids of its lines before the GRN is written, so the answer to a repeat can name them in the same
+      -- order (request_item_mapping): the id of line n is v_pre_ids[n + 1].
+      IF v_offline THEN
+          v_pre_ids := ARRAY(SELECT uuid_generate_v1() FROM generate_series(1, jsonb_array_length(p_items)));
+          SELECT COALESCE(jsonb_agg(jsonb_build_object('index', t.ord - 1, 'item_id', v_pre_ids[t.ord::integer], 'item_name', t.e->>'item_name')
+                                    ORDER BY t.ord), '[]'::jsonb)
+            INTO v_pre_mapping
+            FROM jsonb_array_elements(p_items) WITH ORDINALITY AS t(e, ord);
+      END IF;
+
       BEGIN
           INSERT INTO goodsreceived (
               gr_no,
@@ -211,7 +289,12 @@ BEGIN
               out_of_stock,
               invoiced,
               created_by,
-              updated_by
+              updated_by,
+              recorded_at,
+              request_key,
+              request_digest,
+              request_item_mapping,
+              accepted_by
           ) VALUES (
               p_gr_no,
               p_date,
@@ -229,7 +312,12 @@ BEGIN
               false,
               false,
               v_user_profile_id,
-              v_user_profile_id
+              v_user_profile_id,
+              p_recorded_at,
+              CASE WHEN v_offline THEN p_idempotency_key END,
+              CASE WHEN v_offline THEN v_digest END,
+              CASE WHEN v_offline THEN v_pre_mapping END,
+              v_accepter
           ) RETURNING id INTO v_grn_id;
 
           v_item_index := 0;
@@ -250,6 +338,7 @@ BEGIN
               END IF;
 
               INSERT INTO goodsreceived_trl (
+                  id,
                   gr_id,
                   item_id,
                   item_name,
@@ -260,6 +349,7 @@ BEGIN
                   rack,
                   package_mark
               ) VALUES (
+                  COALESCE(v_pre_ids[v_item_index + 1], uuid_generate_v1()),
                   v_grn_id,
                   (v_item->>'item_id')::uuid,
                   v_item->>'item_name',
@@ -368,7 +458,7 @@ BEGIN
           -- of the block, after every write and every refusal above: the answer is raised as 'dup_warn' (the handler returns the
           -- DETAIL), the block is rolled back, and the answer is never stored under the key.
           IF COALESCE(p_warn_duplicate, false) AND p_idempotency_key IS NOT NULL THEN
-              v_duplicate := warehouse_security.possible_duplicate_grn(p_customer_id, p_date, p_items, v_grn_id);
+              v_duplicate := warehouse_security.possible_duplicate_grn(p_customer_id, p_date, p_items, v_grn_id, p_recorded_at);
               IF v_duplicate IS NOT NULL THEN
                   RAISE EXCEPTION 'dup_warn' USING ERRCODE = 'P0001', DETAIL = v_duplicate::text;
               END IF;
@@ -432,5 +522,5 @@ BEGIN
   END;
   $function$;
 
-REVOKE ALL ON FUNCTION public.save_grn(character varying,timestamp with time zone,uuid,character varying,uuid,character varying,uuid,character varying,character varying,character varying,boolean,character varying,jsonb,jsonb,text,character varying,jsonb,boolean) FROM PUBLIC, anon, authenticated, service_role;
-GRANT EXECUTE ON FUNCTION public.save_grn(character varying,timestamp with time zone,uuid,character varying,uuid,character varying,uuid,character varying,character varying,character varying,boolean,character varying,jsonb,jsonb,text,character varying,jsonb,boolean) TO service_role, authenticated;
+REVOKE ALL ON FUNCTION public.save_grn(character varying,timestamp with time zone,uuid,character varying,uuid,character varying,uuid,character varying,character varying,character varying,boolean,character varying,jsonb,jsonb,text,character varying,jsonb,boolean,boolean,timestamp with time zone) FROM PUBLIC, anon, authenticated, service_role;
+GRANT EXECUTE ON FUNCTION public.save_grn(character varying,timestamp with time zone,uuid,character varying,uuid,character varying,uuid,character varying,character varying,character varying,boolean,character varying,jsonb,jsonb,text,character varying,jsonb,boolean,boolean,timestamp with time zone) TO service_role, authenticated;

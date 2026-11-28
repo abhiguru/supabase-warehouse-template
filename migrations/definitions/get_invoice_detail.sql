@@ -129,10 +129,11 @@ BEGIN
                it.kept_pricing_mode, -- WH-98 (migration 178): the GRN's mode when the invoice was cancelled
                CASE WHEN it.details_kept_at IS NOT NULL THEN it.kept_weight ELSE gt.weight END AS weight,
                gt.qty AS grn_original_qty,
-               CASE WHEN it.details_kept_at IS NOT NULL THEN it.kept_package_mark ELSE gt.package_mark END AS package_mark,
+               -- WH-308: an issued line keeps the marking and rack it was issued with (marking_kept_at), the cancel copy first.
+               CASE WHEN it.details_kept_at IS NOT NULL THEN it.kept_package_mark WHEN it.marking_kept_at IS NOT NULL THEN it.issued_package_mark ELSE gt.package_mark END AS package_mark,
                gt.item_id,
                d.id AS dispatch_id,
-               CASE WHEN it.details_kept_at IS NOT NULL THEN it.kept_rack ELSE gt.rack END AS rack,
+               CASE WHEN it.details_kept_at IS NOT NULL THEN it.kept_rack WHEN it.marking_kept_at IS NOT NULL THEN it.issued_rack ELSE gt.rack END AS rack,
                (it.details_kept_at IS NOT NULL OR dt.id IS NOT NULL) AS details_available
         FROM invoice_trl it
         LEFT JOIN dispatch_trl dt ON it.disp_trl_id = dt.id
@@ -144,7 +145,9 @@ BEGIN
           AND (v_cancelled OR it.details_kept_at IS NOT NULL OR (dt.id IS NOT NULL AND d.id IS NOT NULL AND gt.id IS NOT NULL AND gr.id IS NOT NULL))
     ) x;
 
-    RETURN jsonb_build_object('success', true, 'invoice', v_invoice_header, 'items', COALESCE(v_invoice_items, '[]'::jsonb));
+    -- WH-306: a customer account is never answered a staff-only key (warehouse_security.customer_answer).
+    RETURN warehouse_security.customer_answer(
+      jsonb_build_object('success', true, 'invoice', v_invoice_header, 'items', COALESCE(v_invoice_items, '[]'::jsonb)));
 EXCEPTION WHEN OTHERS THEN
     RETURN jsonb_build_object('success', false, 'error', SQLERRM);
 END;

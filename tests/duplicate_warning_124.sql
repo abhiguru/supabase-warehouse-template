@@ -244,7 +244,7 @@ SELECT pg_temp.dw_save_warn(:'staff_claims'::jsonb,'DUPA7',:'ca'::uuid,'Dup Cust
 SELECT pg_temp.dw_save_warn(:'staff_claims'::jsonb,'DUPA8',:'ca'::uuid,'Dup Customer A','2026-04-01T12:00:00Z',
   jsonb_build_array(pg_temp.dw_line(:'potatoes','Dup Potatoes','Bag',1,1),pg_temp.dw_line(:'onions','Dup Onions','Bag',1,1)),false) AS g5c \gset
 SELECT pg_temp.dw_assert(:'g5a'::jsonb->>'success'='true' AND :'g5b'::jsonb->>'success'='true' AND :'g5c'::jsonb->>'success'='true'
-  AND NOT :'g5a'::jsonb ? 'reason' AND NOT :'g5b'::jsonb ? 'reason' AND NOT :'g5c'::jsonb ? 'reason'
+  AND COALESCE(:'g5a'::jsonb->>'reason','') <> 'POSSIBLE_DUPLICATE' AND COALESCE(:'g5b'::jsonb->>'reason','') <> 'POSSIBLE_DUPLICATE' AND COALESCE(:'g5c'::jsonb->>'reason','') <> 'POSSIBLE_DUPLICATE'
   AND (SELECT count(*)=3 FROM public.goodsreceived WHERE gr_no IN ('DUPA6','DUPA7','DUPA8') AND deleted_at IS NULL),
   'G5 without the flag, with NULL and with false the same set saves (no warning is asked for): '||:'g5a'||:'g5b'||:'g5c');
 SELECT pg_temp.dw_save_warn(:'staff_claims'::jsonb,'DUPA9',:'ca'::uuid,'Dup Customer A','2026-04-01T12:00:00Z',
@@ -255,10 +255,10 @@ SELECT pg_temp.dw_assert((SELECT count(*)=4 FROM public.goodsreceived g WHERE g.
   'G5 fixture: A holds four GRNs of the set');
 -- One save_grn (PostgREST must not see two), with the new trailing parameter, owned and granted as before.
 SELECT pg_temp.dw_assert((SELECT count(*)=1 FROM pg_proc WHERE pronamespace='public'::regnamespace AND proname='save_grn'),'G5 exactly one public.save_grn');
-SELECT pg_temp.dw_assert((SELECT pg_get_function_arguments(oid) LIKE '%p_rates jsonb DEFAULT NULL::jsonb, p_warn_duplicate boolean DEFAULT false'
+SELECT pg_temp.dw_assert((SELECT pg_get_function_arguments(oid) LIKE '%p_rates jsonb DEFAULT NULL::jsonb, p_warn_duplicate boolean DEFAULT false, p_issue_number boolean DEFAULT false, p_recorded_at timestamp with time zone DEFAULT NULL::timestamp with time zone'
   AND pg_get_function_arguments(oid) NOT LIKE '%p_warn_duplicate%p_warn_duplicate%' FROM pg_proc WHERE pronamespace='public'::regnamespace AND proname='save_grn'),
-  'G5 p_warn_duplicate boolean DEFAULT false is the last parameter, after p_rates');
-SELECT pg_temp.dw_assert((SELECT pg_get_function_identity_arguments(oid) LIKE 'p_gr_no character varying, p_date timestamp with time zone, p_customer_id uuid, p_customer_name character varying, p_sender_id uuid, p_sender_name character varying, p_supervisor_id uuid, p_supervisor_name character varying, p_registration character varying, p_note character varying, p_leon boolean, p_pricing_mode character varying, p_items jsonb, p_images jsonb, p_idempotency_key text, p_duration_mode character varying, p_rates jsonb, p_warn_duplicate boolean'
+  'G5 p_warn_duplicate boolean DEFAULT false follows p_rates, then WH-161 p_issue_number and p_recorded_at close the list (20 arguments)');
+SELECT pg_temp.dw_assert((SELECT pg_get_function_identity_arguments(oid) LIKE 'p_gr_no character varying, p_date timestamp with time zone, p_customer_id uuid, p_customer_name character varying, p_sender_id uuid, p_sender_name character varying, p_supervisor_id uuid, p_supervisor_name character varying, p_registration character varying, p_note character varying, p_leon boolean, p_pricing_mode character varying, p_items jsonb, p_images jsonb, p_idempotency_key text, p_duration_mode character varying, p_rates jsonb, p_warn_duplicate boolean, p_issue_number boolean, p_recorded_at timestamp with time zone'
     FROM pg_proc WHERE pronamespace='public'::regnamespace AND proname='save_grn'),'G5 every argument of save_grn keeps its name and position (fas-sync calls them by name)');
 SELECT pg_temp.dw_assert((SELECT prosecdef AND pg_get_userbyid(proowner)='supabase_admin'
     AND proconfig @> ARRAY['search_path=pg_catalog, public, extensions, utils, pg_temp','jit=off'] FROM pg_proc WHERE pronamespace='public'::regnamespace AND proname='save_grn'),
@@ -281,7 +281,7 @@ SELECT pg_temp.dw_counts() AS counts9 \gset
 SELECT pg_temp.dw_save(:'admin_claims'::jsonb,'DUPA10',:'ca'::uuid,'Dup Customer A','2026-04-01T12:00:00Z',
   jsonb_build_array(pg_temp.dw_line(:'potatoes','Dup Potatoes','Bag',0,50),pg_temp.dw_line(:'onions','Dup Onions','Bag',5,30))) AS g9a \gset
 SELECT pg_temp.dw_assert(:'g9a'::jsonb->>'success'='false' AND :'g9a'::jsonb->>'message' LIKE 'Error creating GRN: Quantity must be greater than 0 for item at index 0%'
-  AND NOT :'g9a'::jsonb ? 'reason' AND pg_temp.dw_counts()=:'counts9','G9 a flagged duplicate with a quantity of 0 is refused for the quantity, not warned about: '||:'g9a');
+  AND COALESCE(:'g9a'::jsonb->>'reason','') <> 'POSSIBLE_DUPLICATE' AND pg_temp.dw_counts()=:'counts9','G9 a flagged duplicate with a quantity of 0 is refused for the quantity, not warned about: '||:'g9a');
 SELECT pg_temp.dw_save_rates(:'admin_claims'::jsonb,'DUPA10',:'ca'::uuid,'Dup Customer A','2026-04-01T12:00:00Z',
   jsonb_build_array(pg_temp.dw_line(:'potatoes','Dup Potatoes','Bag',10,50),pg_temp.dw_line(:'onions','Dup Onions','Bag',5,30)),'[]'::jsonb,true) AS g9b \gset
 SELECT pg_temp.dw_assert(:'g9b'::jsonb->>'success'='false' AND :'g9b'::jsonb->>'error_code'='RATE_MISSING' AND :'g9b'::jsonb->>'reason' IS DISTINCT FROM 'POSSIBLE_DUPLICATE'
@@ -326,14 +326,15 @@ SELECT pg_temp.dw_assert(:'g13b'::jsonb->>'success'='true' AND :'g13c'::jsonb->>
 -- G6. The number refusal and the saved answer come before the warning.
 SELECT pg_temp.dw_save(:'staff_claims'::jsonb,'DUPA1',:'ca'::uuid,'Dup Customer A','2026-04-01T12:00:00Z',
   jsonb_build_array(pg_temp.dw_line(:'potatoes','Dup Potatoes','Bag',1,1),pg_temp.dw_line(:'onions','Dup Onions','Bag',1,1))) AS g6a \gset
-SELECT pg_temp.dw_assert(:'g6a'::jsonb->>'success'='false' AND :'g6a'::jsonb->>'message'='GRN number already exists: DUPA1' AND NOT :'g6a'::jsonb ? 'reason',
+-- WH-161 (2026-11-27): refusals carry a code; a taken number is NUMBER_TAKEN, never the POSSIBLE_DUPLICATE warning.
+SELECT pg_temp.dw_assert(:'g6a'::jsonb->>'success'='false' AND :'g6a'::jsonb->>'message'='GRN number already exists: DUPA1' AND :'g6a'::jsonb->>'reason'='NUMBER_TAKEN',
   'G6 a taken number is refused as before, not warned about: '||:'g6a');
 -- Customer C: potatoes only. The first save is stored under the key; the identical resend returns the stored answer although the GRN it made is
 -- itself a match; another key with the same body warns, and the warning is not stored; the override with that key saves.
 SELECT pg_temp.dw_save(:'admin_claims'::jsonb,'DUPC1',:'cc'::uuid,'Dup Customer C','2026-04-01T12:00:00Z',jsonb_build_array(pg_temp.dw_line(:'potatoes','Dup Potatoes','Bag',10,50)),'dw-c1') AS c1 \gset
 SELECT pg_temp.dw_save(:'admin_claims'::jsonb,'DUPC1',:'cc'::uuid,'Dup Customer C','2026-04-01T12:00:00Z',jsonb_build_array(pg_temp.dw_line(:'potatoes','Dup Potatoes','Bag',10,50)),'dw-c1') AS c1_again \gset
 SELECT pg_temp.dw_assert(:'c1'::jsonb->>'success'='true' AND :'c1_again'::jsonb->>'success'='true' AND (:'c1_again'::jsonb->>'idempotent')::boolean
-  AND :'c1_again'::jsonb#>>'{data,grn_id}'=:'c1'::jsonb#>>'{data,grn_id}' AND NOT :'c1_again'::jsonb ? 'reason',
+  AND :'c1_again'::jsonb#>>'{data,grn_id}'=:'c1'::jsonb#>>'{data,grn_id}' AND COALESCE(:'c1_again'::jsonb->>'reason','') <> 'POSSIBLE_DUPLICATE',
   'G6 a resend of a saved request returns the stored answer, not the warning: '||:'c1_again');
 SELECT pg_temp.dw_save(:'admin_claims'::jsonb,'DUPC2',:'cc'::uuid,'Dup Customer C','2026-04-01T12:00:00Z',jsonb_build_array(pg_temp.dw_line(:'potatoes','Dup Potatoes','Bag',10,50)),'dw-c2') AS c2 \gset
 SELECT pg_temp.dw_assert(:'c2'::jsonb->>'reason'='POSSIBLE_DUPLICATE' AND :'c2'::jsonb->>'existing_number'='DUPC1'
@@ -389,7 +390,7 @@ UPDATE public.user_profiles SET name='Dup Staff' WHERE id=:'staff_profile'::uuid
 -- A malformed line (an item id that is no uuid) is no warning and no raw error: the save answers as it did before this migration.
 SELECT pg_temp.dw_save(:'admin_claims'::jsonb,'DUPF1',:'cf'::uuid,'Dup Customer F','2026-04-01T12:00:00Z',
   jsonb_build_array(jsonb_build_object('item_id','not-a-uuid','item_name','Dup Potatoes','packaging','Bag','qty',1,'weight',1))) AS f_bad \gset
-SELECT pg_temp.dw_assert(:'f_bad'::jsonb->>'success'='false' AND :'f_bad'::jsonb->>'message' LIKE 'Error creating GRN:%' AND NOT :'f_bad'::jsonb ? 'reason',
+SELECT pg_temp.dw_assert(:'f_bad'::jsonb->>'success'='false' AND :'f_bad'::jsonb->>'message' LIKE 'Error creating GRN:%' AND COALESCE(:'f_bad'::jsonb->>'reason','') <> 'POSSIBLE_DUPLICATE',
   'G8 a malformed line is answered by the save as before, not as a warning: '||:'f_bad');
 SELECT pg_temp.dw_assert(NOT EXISTS (SELECT 1 FROM public.goodsreceived WHERE gr_no='DUPF1'),'G8 and writes no GRN');
 
@@ -463,7 +464,7 @@ SELECT pg_temp.dw_disp(:'staff_claims'::jsonb,pg_temp.dw_ddata(:'cp'::uuid,'Dup 
 SELECT pg_temp.dw_assert(:'d_taken'::jsonb->>'reason'='NUMBER_TAKEN' AND :'d_taken'::jsonb->>'number'='DD1','D3 a taken number is refused as NUMBER_TAKEN, not warned about: '||:'d_taken');
 SELECT pg_temp.dw_disp(:'staff_claims'::jsonb,pg_temp.dw_ddata(:'cp'::uuid,'Dup Customer P','DD7','GJ 01 AB 1234'),
   ARRAY[pg_temp.dw_dline(:'lot_p'::uuid,9999),pg_temp.dw_dline(:'lot_o'::uuid,1)]) AS d_stock \gset
-SELECT pg_temp.dw_assert(:'d_stock'::jsonb->>'success'='false' AND :'d_stock'::jsonb->>'error' LIKE 'Insufficient stock:%' AND NOT :'d_stock'::jsonb ? 'reason',
+SELECT pg_temp.dw_assert(:'d_stock'::jsonb->>'success'='false' AND :'d_stock'::jsonb->>'error' LIKE 'Insufficient stock:%' AND COALESCE(:'d_stock'::jsonb->>'reason','') <> 'POSSIBLE_DUPLICATE',
   'D3 not enough stock is refused as before, not warned about: '||:'d_stock');
 -- Customer Q: a first direct dispatch under a key; the identical resend returns the saved answer (it is itself a match); a new key warns.
 SELECT pg_temp.dw_save(:'admin_claims'::jsonb,'DUPQ1',:'cq'::uuid,'Dup Customer Q','2026-04-01T12:00:00Z',jsonb_build_array(pg_temp.dw_line(:'potatoes','Dup Potatoes','Bag',100,50))) AS q1 \gset

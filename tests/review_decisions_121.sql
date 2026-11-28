@@ -913,15 +913,19 @@ SELECT public.get_or_create_cart(:'cd'::uuid) AS cart_d \gset
 SELECT public.add_item_to_order(:'cart_d'::uuid,:'lot_13o'::uuid,3) AS d_add \gset
 SELECT public.update_order_item_quantity((:'d_add'::jsonb#>>'{data,order_item_id}')::uuid,4) AS d_change \gset
 SELECT public.delete_dispatch_with_order_cleanup((:'d13'::jsonb->>'dispatch_id')::uuid,:'admin_profile'::uuid) AS d13_delete \gset
-SELECT pg_temp.rd_raises(format($q$SELECT public.save_grn(p_sender_name=>'Fixture Sender',p_supervisor_id=>(SELECT id FROM public.user_profiles WHERE NOT is_service_account ORDER BY created_at LIMIT 1),p_supervisor_name=>'Fixture Supervisor',p_gr_no=>'DG13B',p_date=>'2026-04-01T12:00:00Z',p_customer_id=>%L::uuid,p_customer_name=>'Decision Customer D',p_pricing_mode=>'MONTHLY',
- p_items=>%L::jsonb)$q$,:'cd',jsonb_build_array(pg_temp.rd_new_line(:'potatoes','Decision Potatoes',1,'DG13-N'))::text),'%deactivated%') AS d_new_grn_refused \gset
+-- WH-161 (2026-11-27): save_grn answers a refusal for an inactive business (success false, reason CUSTOMER_INACTIVE, today's text)
+-- instead of raising, so an offline send can be told apart from a lost answer.
+SELECT public.save_grn(p_sender_name=>'Fixture Sender',p_supervisor_id=>(SELECT id FROM public.user_profiles WHERE NOT is_service_account ORDER BY created_at LIMIT 1),p_supervisor_name=>'Fixture Supervisor',p_gr_no=>'DG13B',p_date=>'2026-04-01T12:00:00Z',p_customer_id=>:'cd'::uuid,p_customer_name=>'Decision Customer D',p_pricing_mode=>'MONTHLY',
+ p_items=>jsonb_build_array(pg_temp.rd_new_line(:'potatoes','Decision Potatoes',1,'DG13-N'))) AS d_new_grn_answer \gset
 RESET ROLE;
 SELECT pg_temp.rd_assert(:'d13'::jsonb->>'success'='true' AND :'d13_edit'::jsonb->>'success'='true' AND :'d13_delete'::jsonb->>'success'='true',
  'D16: a dispatch of a deactivated business is created, edited and deleted: '||:'d13'||:'d13_edit'||:'d13_delete');
 SELECT pg_temp.rd_assert(:'d_add'::jsonb->>'success'='true' AND :'d_change'::jsonb->>'success'='true' AND (SELECT requested_quantity=4 FROM public.order_items WHERE order_id=:'cart_d'::uuid AND grn_items_id=:'lot_13o'::uuid),
  'D16: a deactivated business may still add to its order and change a line: '||:'d_add'||:'d_change');
-SELECT pg_temp.rd_assert(:'d_new_grn_refused'::boolean AND NOT EXISTS (SELECT 1 FROM public.goodsreceived WHERE gr_no='DG13B'),
- 'D16 twin: a new GRN for the deactivated business is refused with the deactivated text and saves nothing');
+SELECT pg_temp.rd_assert(:'d_new_grn_answer'::jsonb->>'success'='false' AND :'d_new_grn_answer'::jsonb->>'reason'='CUSTOMER_INACTIVE'
+ AND concat_ws(' ',:'d_new_grn_answer'::jsonb->>'error',:'d_new_grn_answer'::jsonb->>'message') ILIKE '%deactivated%'
+ AND NOT EXISTS (SELECT 1 FROM public.goodsreceived WHERE gr_no='DG13B'),
+ 'D16 twin: a new GRN for the deactivated business is refused with the deactivated text and saves nothing: '||:'d_new_grn_answer');
 
 -- ===========================================================================
 -- D18: the confirmed total is checked by the server; a refusal rolls the save back

@@ -99,8 +99,12 @@ INSERT INTO ra_rpc(name,staff,customer) VALUES
  ('get_stock_aging_report',true,'own'),('get_item_wise_stock_list',true,'own'),
  -- customer-scoped, used by no staff screen
  ('get_customer_stock_analysis_v2',false,'own'),
+ -- WH-304 holding list: staff hand over their own refused items and see the outcome; reads and decisions are for administrators and supervisors
+ ('hold_items',true,'no'),('mark_held_item_seen',true,'no'),('get_held_items',false,'no'),('get_held_item',false,'no'),('decide_held_item',false,'no'),
+ -- WH-304 held photos: the recorder (or the administrator who moved the item) registers and confirms a photo; the body refuses everyone else
+ ('register_held_photo_upload',true,'no'),('confirm_held_photo_upload',true,'no'),('mark_held_photo_missing',true,'no'),
  -- warehouse-wide: staff documents (migrations 18 to 28)
- ('save_grn',true,'no'),('update_grn',true,'no'),('check_grn_exists',true,'no'),('get_next_grn_number',true,'no'),
+ ('save_grn',true,'no'),('update_grn',true,'no'),('set_lot_rack_and_mark',true,'no'),('check_grn_exists',true,'no'),('get_next_grn_number',true,'no'),
  -- the numbering rules (migration 127): staff are suggested the next number; supervisors read the rules, administrators change them
  ('suggest_document_number',true,'no'),('get_document_numbering',false,'no'),('set_document_numbering',false,'no'),
  -- the rack presets of the GRN item form (migration 131): staff read the buttons, administrators and supervisors change them
@@ -114,7 +118,7 @@ INSERT INTO ra_rpc(name,staff,customer) VALUES
  ('record_payment',false,'no'),('update_payment',false,'no'),('delete_payment',false,'no'),('delete_invoice_pair',false,'no'),
  ('get_gst_details',false,'no'),('set_gst_details',false,'no'),('set_facility_legal',false,'no'),('set_item_gst_treatment',false,'no'),
  ('preview_invoice_documents',true,'no'),('make_pairing_code',false,'no'),('get_server_alerts',false,'no'),
- ('get_customer_dues',false,'no'),('get_customer_statement',false,'own'),
+ ('get_customer_dues',false,'no'),('get_customer_dues_for',false,'no'),('get_customer_statement',false,'own'),
  ('get_accountant_ledgers',false,'no'),('set_accountant_ledgers',false,'no'),('get_accountant_pack',false,'no'),
  ('get_grn_prefixes_with_stock',true,'no'),('get_all_grn_activity',true,'no'),
  ('search_customers',true,'no'),('get_supervisors',true,'no'),('get_vehicle_suggestions',true,'no'),
@@ -135,6 +139,10 @@ INSERT INTO ra_rpc(name,staff,customer) VALUES
  ('get_submission_result',true,'no'),
  -- migration 121: the edit state of a GRN (version token, locks) for the staff roles; customers are refused
  ('get_grn_edit_state',true,'no'),
+ -- WH-297: the change feed for the phones' copy; any active role, each caller sees only its own rows
+ ('get_sync_start',true,'any'),('get_sync_page',true,'any'),('get_sync_changes',true,'any'),('get_sync_checksums',true,'any'),
+ -- WH-303: edit a GRN by field changes (staff roles, as update_grn); the replaced-entries list and "mark checked" are for administrators (the bodies refuse a supervisor)
+ ('apply_grn_changes',true,'no'),('get_grn_replacements',false,'no'),('mark_grn_replacements_checked',false,'no'),
  -- warehouse-wide: admitted for staff by migration 45
  ('get_all_stock_summary',true,'no'),('get_all_customer_activity_summary',true,'no'),
  -- migration 90: item pricing is for administrators and supervisors only

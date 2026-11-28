@@ -24,8 +24,10 @@ BEGIN
             IF NOT EXISTS (
                 SELECT 1 FROM invoice i
                 JOIN users_customers_new ucn ON ucn.customer_id = i.customer_id
+                JOIN customers live_c ON live_c.id = i.customer_id AND live_c.deleted_at IS NULL
                 WHERE i.id = p_invoice_id
                 AND ucn.user_profile_id = v_user_id
+                AND ucn.active
             ) THEN
                 RETURN jsonb_build_object(
                     'success', false,
@@ -162,8 +164,8 @@ BEGIN
                 grt.qty as grn_original_quantity,
                 grt.stock as grn_current_stock,
                 CASE WHEN it.details_kept_at IS NOT NULL THEN it.kept_weight ELSE grt.weight END as grn_weight,
-                CASE WHEN it.details_kept_at IS NOT NULL THEN it.kept_rack ELSE grt.rack END as grn_rack,
-                CASE WHEN it.details_kept_at IS NOT NULL THEN it.kept_package_mark ELSE grt.package_mark END as grn_package_mark,
+                CASE WHEN it.details_kept_at IS NOT NULL THEN it.kept_rack WHEN it.marking_kept_at IS NOT NULL THEN it.issued_rack ELSE grt.rack END as grn_rack,
+                CASE WHEN it.details_kept_at IS NOT NULL THEN it.kept_package_mark WHEN it.marking_kept_at IS NOT NULL THEN it.issued_package_mark ELSE grt.package_mark END as grn_package_mark,
                 CASE WHEN it.details_kept_at IS NOT NULL THEN it.kept_grn_no ELSE gr.gr_no END as grn_item_gr_no,
                 CASE WHEN it.details_kept_at IS NOT NULL THEN it.kept_grn_date ELSE gr.date END as grn_item_gr_date,
                 grt.trl_img_url as grn_item_image_url,
@@ -341,7 +343,8 @@ BEGIN
             )
         );
 
-        RETURN v_result;
+        -- WH-306: a customer account is never answered a staff-only key (warehouse_security.customer_answer).
+        RETURN warehouse_security.customer_answer(v_result);
 
     EXCEPTION
         WHEN OTHERS THEN

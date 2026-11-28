@@ -1757,3 +1757,29 @@ test('the handler echoes invoicing and bucket in the answer\'s document when the
   const parser = readFileSync(new URL('../functions/_shared/report-request.ts', import.meta.url), 'utf8');
   for (const source of [handler, parser]) assert.doesNotMatch(source, /console\./);
 });
+
+// WH-125: two items may share a name and differ in packaging (migration 144), so the customer stock aging PDF prints the word beside the name.
+const agingLine = (grNo, itemName, extra = {}) => ({ item_name: itemName, gr_no: grNo, grn_date: '2026-01-05', rack: 'R1', current_stock: 10,
+  aging_days: 5, dispatch_info: { last_dispatch_date: null }, ...extra });
+const agingItemCells = items => {
+  const built = buildReport(parseReportRequest({ report: 'stock-aging', customer_id: customer }),
+    unwrapReportBody({ success: true, data: { summary: { total_quantity: 1 }, items } }));
+  assert.equal(built.columns[0].label, 'Item');
+  return Object.fromEntries(built.rows.map(row => [row[1], row[0]]));
+};
+
+test('the stock aging PDF prints an item with its packaging word beside the name', () => {
+  assert.deepEqual(agingItemCells([agingLine('Z1', 'Egg', { packaging: 'Box' })]), { Z1: 'Egg · Box' });
+});
+
+test('the stock aging PDF keeps two items with one name apart by their packaging word', () => {
+  const cells = agingItemCells([agingLine('Z1', 'Egg', { packaging: 'Box' }), agingLine('Z2', 'Egg', { packaging: 'Trey' })]);
+  assert.deepEqual(cells, { Z1: 'Egg · Box', Z2: 'Egg · Trey' });
+  assert.notEqual(cells.Z1, cells.Z2);
+});
+
+test('the stock aging PDF prints the name alone for an empty, blank or missing packaging word', () => {
+  const cells = agingItemCells([agingLine('Z1', 'Egg', { packaging: '' }), agingLine('Z2', 'Egg', { packaging: '   ' }),
+    agingLine('Z3', 'Egg'), agingLine('Z4', 'Egg', { packaging: null })]);
+  assert.deepEqual(cells, { Z1: 'Egg', Z2: 'Egg', Z3: 'Egg', Z4: 'Egg' });
+});

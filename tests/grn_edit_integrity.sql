@@ -73,7 +73,7 @@ SELECT pg_temp.gei_assert((SELECT count(*)=1 AND bool_and(id=:'line_b'::uuid AND
  FROM public.goodsreceived_trl WHERE gr_id=:'grn_b'::uuid),'the edited receipt keeps its own line');
 SELECT pg_temp.gei_assert((SELECT note IS DISTINCT FROM 'Must roll back' FROM public.goodsreceived WHERE id=:'grn_b'::uuid),
  'the refused edit leaves the header as it was');
-SELECT pg_temp.gei_assert(NOT EXISTS (SELECT 1 FROM pg_trigger WHERE tgrelid IN ('public.goodsreceived_trl'::regclass,'public.goodsreceived'::regclass,'public.items'::regclass) AND NOT tgisinternal AND tgenabled<>'O'),
+SELECT pg_temp.gei_assert(NOT EXISTS (SELECT 1 FROM pg_trigger WHERE tgrelid IN ('public.goodsreceived_trl'::regclass,'public.goodsreceived'::regclass,'public.items'::regclass) AND NOT tgisinternal AND tgname NOT LIKE 'zz_change_feed%' AND tgenabled<>'O'),
  'the refused edit leaves no trigger of the receipt, its lines or the items disabled');
 
 -- The receipt's own line sent twice: before migration 65 both copies were

@@ -69,8 +69,10 @@ SELECT pg_temp.g83_call(format($q$SELECT public.save_grn(p_sender_name=>'Fixture
   p_idempotency_key=>'g83-x2')$q$,:'cust_b')) AS refuse_staff \gset
 RESET ROLE;
 SELECT pg_temp.g83_assert(
- :'refuse_admin'::jsonb->>'raised'='This business is deactivated. Activate it in Customers to receive new goods.' AND :'refuse_admin'::jsonb->>'state'='P0001'
- AND :'refuse_staff'::jsonb->>'raised'='This business is deactivated. Activate it in Customers to receive new goods.' AND :'refuse_staff'::jsonb->>'state'='P0001'
+ :'refuse_admin'::jsonb->>'raised' IS NULL AND :'refuse_admin'::jsonb->>'success'='false' AND :'refuse_admin'::jsonb->>'reason'='CUSTOMER_INACTIVE'
+ AND :'refuse_admin'::jsonb->>'message'='This business is deactivated. Activate it in Customers to receive new goods.' AND :'refuse_admin'::jsonb->>'customer_id'=:'cust_b'
+ AND :'refuse_staff'::jsonb->>'raised' IS NULL AND :'refuse_staff'::jsonb->>'success'='false' AND :'refuse_staff'::jsonb->>'reason'='CUSTOMER_INACTIVE'
+ AND :'refuse_staff'::jsonb->>'message'='This business is deactivated. Activate it in Customers to receive new goods.' AND :'refuse_staff'::jsonb->>'customer_id'=:'cust_b'
  AND NOT EXISTS (SELECT 1 FROM public.goodsreceived WHERE gr_no IN ('G83X1','G83X2'))
  AND (SELECT count(*)=1 FROM public.goodsreceived WHERE customer_id=:'cust_b'::uuid),
  'a deactivated business gets no new GRN (admin, staff): '||:'refuse_admin'||:'refuse_staff');

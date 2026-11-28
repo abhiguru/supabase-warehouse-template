@@ -96,7 +96,7 @@ BEGIN
   SELECT array_agg(g.id) INTO v_ids FROM public.goodsreceived g JOIN public.customers c ON c.id = g.customer_id AND c.deleted_at IS NULL
    WHERE g.deleted_at IS NULL AND (EXISTS (SELECT 1 FROM public.goodsreceived_trl t WHERE t.gr_id = g.id AND t.stock > 0)
           OR warehouse_security.grn_has_free_dispatch_line(g.id));
-  FOR r IN SELECT x.* FROM warehouse_security.not_invoiced_grns(NULL, p_today) x LOOP
+  FOR r IN SELECT x.* FROM warehouse_security.not_invoiced_grns(NULL, p_today, true) x LOOP
     v_seen := v_seen + 1;
     IF NOT (r.gr_id = ANY (COALESCE(v_ids, ARRAY[]::uuid[]))) THEN out := out || format('[%s: a row for a GRN the form would not look at] ', r.gr_no); CONTINUE; END IF;
     f := pg_temp.wc_form(r.gr_id, p_today);
@@ -117,7 +117,7 @@ BEGIN
   END LOOP;
   -- A GRN the form has a figure for that dues has no row for.
   FOR r IN SELECT g.id, g.gr_no FROM public.goodsreceived g WHERE g.id = ANY (COALESCE(v_ids, ARRAY[]::uuid[]))
-              AND NOT EXISTS (SELECT 1 FROM warehouse_security.not_invoiced_grns(NULL, p_today) n WHERE n.gr_id = g.id) LOOP
+              AND NOT EXISTS (SELECT 1 FROM warehouse_security.not_invoiced_grns(NULL, p_today, false) n WHERE n.gr_id = g.id) LOOP
     f := pg_temp.wc_form(r.id, p_today);
     IF f->'left' IS NOT NULL AND jsonb_typeof(f->'left') = 'object' OR f->'in_store' IS NOT NULL AND jsonb_typeof(f->'in_store') = 'object' THEN
       out := out || format('[%s: the form has a figure, dues has no row] ', r.gr_no); END IF;
@@ -240,9 +240,10 @@ SELECT pg_temp.wc_assert((SELECT count(*) FROM public.imported_billed_dispatches
 
 -- ===== WH-187: the old per-GRN function is gone, the new one is the only caller path =====
 SELECT pg_temp.wc_assert(to_regprocedure('warehouse_security.grn_not_invoiced(uuid,date)') IS NULL, 'grn_not_invoiced is dropped');
-SELECT pg_temp.wc_assert(to_regprocedure('warehouse_security.not_invoiced_grns(uuid,date)') IS NOT NULL, 'not_invoiced_grns exists');
-SELECT pg_temp.wc_assert(NOT has_function_privilege('anon', 'warehouse_security.not_invoiced_grns(uuid,date)', 'EXECUTE')
-  AND NOT has_function_privilege('authenticated', 'warehouse_security.not_invoiced_grns(uuid,date)', 'EXECUTE'), 'not_invoiced_grns is not callable by the app roles');
+SELECT pg_temp.wc_assert(to_regprocedure('warehouse_security.not_invoiced_grns(uuid,date,boolean)') IS NOT NULL, 'not_invoiced_grns exists');
+SELECT pg_temp.wc_assert(to_regprocedure('warehouse_security.not_invoiced_grns(uuid,date)') IS NULL, 'the two-argument not_invoiced_grns is gone');
+SELECT pg_temp.wc_assert(NOT has_function_privilege('anon', 'warehouse_security.not_invoiced_grns(uuid,date,boolean)', 'EXECUTE')
+  AND NOT has_function_privilege('authenticated', 'warehouse_security.not_invoiced_grns(uuid,date,boolean)', 'EXECUTE'), 'not_invoiced_grns is not callable by the app roles');
 
 -- ===== WH-188: the figures agree, in every setting =====
 CREATE TEMP TABLE wc_log(variant text, diff text, total numeric) ON COMMIT DROP;
@@ -257,7 +258,7 @@ BEGIN
   END IF;
   UPDATE warehouse_security.charging_rule SET step_days = p_step, minimum_days = p_min, rounding = p_rounding WHERE id;
   INSERT INTO wc_log VALUES (format('gst=%s rounding=%s step=%s/%s', p_gst, p_rounding, p_step, p_min), pg_temp.wc_diff(p_today),
-    (SELECT COALESCE(sum(COALESCE(left_amount, 0) + COALESCE(store_amount, 0)), 0) FROM warehouse_security.not_invoiced_grns(NULL, p_today)));
+    (SELECT COALESCE(sum(COALESCE(left_amount, 0) + COALESCE(store_amount, 0)), 0) FROM warehouse_security.not_invoiced_grns(NULL, p_today, false)));
 END $$;
 DO $$
 DECLARE g text; r text; s integer[]; v_today date := warehouse_security.business_date(now());
@@ -286,7 +287,7 @@ SELECT pg_temp.wc_assert((SELECT count(DISTINCT total) FROM wc_log WHERE variant
 -- The set covers what it says (default rule, GST registered, so the exempt line, the GSTIN customer and the inter-state document all count).
 UPDATE warehouse_security.charging_rule SET step_days = 15, minimum_days = 30, rounding = 'up' WHERE id;
 SELECT pg_temp.wc_assert(pg_temp.wc_diff(:'today'::date) = '', 'the default rule agrees');
-SELECT n.* INTO TEMP wc_rows FROM warehouse_security.not_invoiced_grns(NULL, :'today'::date) n;
+SELECT n.* INTO TEMP wc_rows FROM warehouse_security.not_invoiced_grns(NULL, :'today'::date, false) n;
 SELECT pg_temp.wc_assert((SELECT left_amount > 0 AND store_amount > 0 AND left_bags = 15 + 10 AND store_bags = 25 + 20 FROM wc_rows WHERE gr_no = 'A0001'), 'A0001 (customer rate, two lines): left and in store');
 SELECT pg_temp.wc_assert((SELECT left_amount > 0 AND store_amount > 0 AND left_bags = 5 AND store_bags = 15 FROM wc_rows WHERE gr_no = 'A0002'), 'A0002 (own rate): left and in store');
 SELECT pg_temp.wc_assert((SELECT cardinality(no_rate_lot_ids) = 1 AND left_amount IS NOT NULL AND store_amount IS NOT NULL FROM wc_rows WHERE gr_no = 'A0003'), 'A0003 (no rate): one lot without a rate');
@@ -296,7 +297,7 @@ SELECT pg_temp.wc_assert(NOT EXISTS (SELECT 1 FROM wc_rows WHERE gr_no = 'A0006'
 SELECT pg_temp.wc_assert((SELECT left_bags = 5 AND left_amount > 0 AND store_bags = 10 FROM wc_rows WHERE gr_no = 'A0007'), 'A0007: I0010 only is to bill (5 bags), I0009 is taken as billed, 10 bags in store');
 -- The GRN's own rate is used by both: raising it moves A0002's figure, and the two still agree.
 UPDATE public.grn_rates SET unit_price = 19 WHERE gr_id = (SELECT id FROM public.goodsreceived WHERE gr_no = 'A0002');
-SELECT pg_temp.wc_assert((SELECT store_amount FROM warehouse_security.not_invoiced_grns(NULL, :'today'::date) WHERE gr_no = 'A0002') > (SELECT store_amount FROM wc_rows WHERE gr_no = 'A0002')
+SELECT pg_temp.wc_assert((SELECT store_amount FROM warehouse_security.not_invoiced_grns(NULL, :'today'::date, false) WHERE gr_no = 'A0002') > (SELECT store_amount FROM wc_rows WHERE gr_no = 'A0002')
   AND pg_temp.wc_diff(:'today'::date) = '', 'the own rate of A0002 is used by the form and by dues');
 UPDATE public.grn_rates SET unit_price = 9 WHERE gr_id = (SELECT id FROM public.goodsreceived WHERE gr_no = 'A0002');
 
@@ -326,7 +327,7 @@ SELECT pg_temp.wc_assert((SELECT sum((e->>'amount')::numeric) FROM jsonb_array_e
 -- it: the figure the form gives. A0004 (Gamma, one time, 12 bags in store) has its date taken away directly.
 UPDATE public.goodsreceived SET date = NULL WHERE gr_no = 'A0004';
 SELECT pg_temp.wc_assert((SELECT date IS NULL FROM public.goodsreceived WHERE gr_no = 'A0004'), 'the GRN has no date');
-SELECT n.store_bags AS nd_bags, n.store_amount AS nd_amount FROM warehouse_security.not_invoiced_grns(:'c3'::uuid, :'today'::date) n WHERE n.gr_no = 'A0004' \gset
+SELECT n.store_bags AS nd_bags, n.store_amount AS nd_amount FROM warehouse_security.not_invoiced_grns(:'c3'::uuid, :'today'::date, false) n WHERE n.gr_no = 'A0004' \gset
 SELECT pg_temp.wc_assert(:'nd_bags'::numeric = 12 AND :'nd_amount' IS NOT NULL, 'a GRN with no date is still counted in dues (its figure is the form''s, checked next): ' || :'nd_bags' || ' bags, ' || :'nd_amount');
 SELECT pg_temp.wc_assert(pg_temp.wc_diff(:'today'::date) = '', 'with a GRN without a date the form and dues still agree: ' || pg_temp.wc_diff(:'today'::date));
 SELECT pg_temp.wc_as(:'admin_claims'::jsonb, format($q$SELECT public.get_customer_statement(%L::uuid)$q$, :'c3')) AS nd_stmt \gset

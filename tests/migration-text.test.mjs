@@ -38,12 +38,29 @@ test('the ledger refuses a database that recorded a migration this release does 
   assert.ok(plan.includes('docs/OPERATOR_INSTALL.md, "Baseline reload"'), 'the message points at the section by its exact title');
 });
 
-test('every tests/*.sql is registered exactly once in the test_files list of tests/migrations.sh', () => {
-  // An unregistered file would silently never run. Every SQL suite rolls back, so the order does not matter.
-  const harness = readFileSync(new URL('./migrations.sh', import.meta.url), 'utf8');
+test('every tests/*.sql is registered exactly once in a list tests/migrations.sh runs', () => {
+  // An unregistered file would silently never run. migrations.sh runs two lists: test_files (suites that roll back, so the order does not
+  // matter) and the sync feed loop (suites that commit, in a database of their own), which pipes a shared file in front of each suite.
+  // Whole comment lines are dropped first: a commented-out entry does not run.
+  const harness = readFileSync(new URL('./migrations.sh', import.meta.url), 'utf8').replace(/^[ \t]*#.*\n/gm, '');
+  const names = text => [...text.matchAll(/"\$ROOT\/tests\/([a-z0-9_]+\.sql)"/g)].map(match => match[1]);
+
   const list = harness.match(/^test_files=\(\n([^)]*)\n\)/m);
   assert.ok(list, 'test_files=( ... ) was found');
-  const registered = [...list[1].matchAll(/"\$ROOT\/tests\/([a-z0-9_]+\.sql)"/g)].map(match => match[1]);
+  assert.match(harness, /^for test_sql in "\$\{test_files\[@\]\}"; do\n(?:(?!done$).*\n)*?.*< "\$test_sql"\n(?:(?!done$).*\n)*?done$/m, 'every entry of test_files is run');
+
+  const loops = [...harness.matchAll(/^for sync_sql in ((?:\\\n|[^;\n])+); do\n([^]*?)^done$/gm)];
+  assert.equal(loops.length, 1, 'one sync feed loop was found');
+  const run = loops[0][2].match(/^\s*cat ([^|\n]*"\$sync_sql") \| mig_psql -d "\$sync_db"$/m);
+  assert.ok(run, 'every suite of the sync feed loop is run');
+
+  // WH-303: the two replaced-entries suites count every entry of their database, so each runs alone in a copy of the clean sync database
+  // (sync_feed_replaced_list, sync_feed_replaced_feed), behind the same shared file. The suite is the last file of its line.
+  const alone = [...harness.matchAll(/^cat ([^|\n]*) \| mig_psql -d sync_feed_replaced_(?:list|feed)$/gm)].map(match => names(match[1]));
+  assert.equal(alone.length, 2, 'the two replaced-entries suites each run in a database of their own');
+  for (const line of alone) assert.deepEqual(line.slice(0, -1), ['sync_feed_contract.sql'], 'the shared file is in front of the suite');
+
+  const registered = [...names(list[1]), ...names(loops[0][1]), ...names(run[1]), ...alone.map(line => line.at(-1))];
   const files = readdirSync(new URL('./', import.meta.url)).filter(name => name.endsWith('.sql')).sort();
   assert.deepEqual([...registered].sort(), files);
 });

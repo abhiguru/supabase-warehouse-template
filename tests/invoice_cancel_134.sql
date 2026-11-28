@@ -414,7 +414,7 @@ RESET ROLE;
 SELECT pg_temp.ic_assert(:'id_staff'::jsonb->>'cancel_reason'='Entered twice' AND :'id_staff'::jsonb->>'cancelled_at' IS NOT NULL AND :'id_staff'::jsonb->>'cancelled_by_name'='Cancel Test Supervisor'
  AND :'id_staff'::jsonb->>'cancelled_by'=:'supervisor_profile','get_invoice_data for staff names the cancellation and who: '||:'id_staff');
 SELECT pg_temp.ic_assert(:'id_customer'::jsonb->>'cancel_reason'='Entered twice' AND :'id_customer'::jsonb->>'cancelled_at' IS NOT NULL
- AND :'id_customer'::jsonb->'cancelled_by'='null'::jsonb AND :'id_customer'::jsonb->'cancelled_by_name'='null'::jsonb,'get_invoice_data for a customer account: the cancellation, not who: '||:'id_customer');
+ AND NOT (:'id_customer'::jsonb ? 'cancelled_by') AND NOT (:'id_customer'::jsonb ? 'cancelled_by_name'),'get_invoice_data for a customer account: the cancellation, not who (the keys are left out since migration 242, WH-306): '||:'id_customer');
 SELECT pg_temp.ic_assert(:'id_live'::jsonb->'cancelled_at'='null'::jsonb AND :'id_live'::jsonb->'cancel_reason'='null'::jsonb,'get_invoice_data of a live invoice: null cancellation: '||:'id_live');
 
 -- Preprinted printing: the range holds the live invoice only, and names the cancelled ones as skipped.

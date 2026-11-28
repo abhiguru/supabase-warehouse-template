@@ -12,6 +12,8 @@ DECLARE role_name text := warehouse_security.active_role(); customer uuid; other
 BEGIN
   IF auth.jwt()->>'role' = 'service_role' THEN RETURN; END IF;
   IF role_name IS NULL THEN RAISE EXCEPTION 'Active account required' USING ERRCODE = '42501'; END IF;
+  -- The phone's copy (WH-297): every active role; the bodies decide the entities and rows by role and customer.
+  IF rpc IN ('get_sync_start','get_sync_page','get_sync_changes','get_sync_checksums') THEN RETURN; END IF;
   -- User management: administrators, and supervisors for other people who are
   -- not administrators. The four bodies refuse a supervisor who targets an
   -- administrator or the own profile, or who grants the administrator role.
@@ -42,7 +44,8 @@ BEGIN
   END IF;
   -- What every customer owes (migration 176): administrators and supervisors only. A customer's statement (migration 176):
   -- administrators, supervisors and a customer account for its own customers (the get_customer_% rule below); staff never.
-  IF rpc = 'get_customer_dues' AND role_name NOT IN ('admin','supervisor') THEN
+  -- One customer's dues (WH-311, get_customer_dues_for): the same audience as the list.
+  IF rpc IN ('get_customer_dues','get_customer_dues_for') AND role_name NOT IN ('admin','supervisor') THEN
     RAISE EXCEPTION 'Administrator or supervisor required' USING ERRCODE = '42501';
   END IF;
   -- The accountant pack (migration 204, WH-158): administrators and supervisors only.
@@ -60,6 +63,17 @@ BEGIN
   -- Approved document RPCs only; no shared ownership or table-policy change.
   IF role_name = 'staff' AND rpc IN (
     'save_grn','update_grn','check_grn_exists','get_next_grn_number',
+    -- A lot's rack and package mark from its row (topic "lot rack and mark change"); a customer account stays refused by the final ELSE.
+    'set_lot_rack_and_mark',
+    -- Edit GRN by field changes (topic "edit GRN by field changes", WH-303), as update_grn. The replaced-entries list and "mark checked"
+    -- are not here: administrators and supervisors pass the line above and their bodies refuse a supervisor.
+    'apply_grn_changes',
+    -- The holding list (topics "hand over held items" and "held outcome seen", WH-304): staff hand over their own refused items and
+    -- see their outcome. The list, the item and the decision are for administrators and supervisors (the line above them) and are
+    -- refused to staff and customer accounts by the final ELSE.
+    'hold_items','mark_held_item_seen',
+    -- The photos of a held item (topic "held item photos", WH-304): the body lets only the item's recorder, or the administrator who moved it.
+    'register_held_photo_upload','confirm_held_photo_upload','mark_held_photo_missing',
     'get_all_grn_items','get_grn_list','get_grn_details',
     -- The next GRN, dispatch or invoice number under the facility's rule (migration 127); the rules are read by supervisors and above.
     'suggest_document_number',

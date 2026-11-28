@@ -152,6 +152,12 @@ export const bucketLabels: Readonly<Record<AgingBucket, LabelKey>> = {
   '0-120': 'bucket0to120', '121-240': 'bucket121to240', '241-364': 'bucket241to364', 'over-364': 'bucketOver364',
 };
 
+/** An item's name with its packaging word beside it ("Egg · Box"), as the app's list shows it; the name alone when there is no word. */
+function itemWithWord(name: unknown, packaging: unknown): unknown {
+  const word = typeof packaging === 'string' ? packaging.trim() : '';
+  return word && typeof name === 'string' && name ? `${name} · ${word}` : name;
+}
+
 /** The mean of the readable values, rounded to a whole number as the RPC's ROUND(AVG(aging_days)) is; 0 for none. */
 const roundedMean = (rows: Row[], key: string) => {
   const values = rows.map(row => num(row[key])).filter((value): value is number => value !== null);
@@ -411,7 +417,7 @@ export const reportDefinitions: Record<ReportName, Definition> = {
       rpc: request => ({ name: 'get_stock_aging_report', args: { p_customer_uuid: request.customerId } }),
       // With a bucket choice only the stock lines of that bucket are listed (`stockLineBucket`), as on the app's screen.
       rows: (body, request) => list(body.items).map(item => ({
-        item: item.item_name,
+        item: itemWithWord(item.item_name, item.packaging),
         gr_no: item.gr_no,
         date: item.grn_date,
         rack: item.rack,

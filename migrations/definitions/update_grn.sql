@@ -2,6 +2,8 @@
 -- (scripts/migration-plan.mjs, table warehouse_migrations.definitions). Edit the function here, never in a new migration.
 -- Starts as the function migrations 000 to 126 leave (the numbered files that patched it stay as they are, never edited).
 -- Migration 128 adds the order effect of the save (order_effects in the answer) to this file; see the section 3 note of migration 128.
+-- WH-303 (topic "GRN save never skips a quantity"): a dispatched lot's changed quantity is written or refused (QTY_BELOW_DISPATCHED,
+-- LOT_INVOICED with qty), never skipped; stats.items_skipped_stock stays in the answer, always [] (an older app reads it).
 CREATE OR REPLACE FUNCTION public.update_grn(p_grn_id uuid, p_gr_no character varying DEFAULT NULL::character varying, p_date timestamp with time zone DEFAULT NULL::timestamp with time zone, p_customer_id uuid DEFAULT NULL::uuid, p_customer_name character varying DEFAULT NULL::character varying, p_sender_id uuid DEFAULT NULL::uuid, p_sender_name character varying DEFAULT NULL::character varying, p_supervisor_id uuid DEFAULT NULL::uuid, p_supervisor_name character varying DEFAULT NULL::character varying, p_registration character varying DEFAULT NULL::character varying, p_note character varying DEFAULT NULL::character varying, p_leon boolean DEFAULT NULL::boolean, p_pricing_mode character varying DEFAULT NULL::character varying, p_items jsonb DEFAULT '[]'::jsonb, p_images jsonb DEFAULT '[]'::jsonb, p_duration_mode character varying DEFAULT NULL::character varying, p_idempotency_key text DEFAULT NULL::text, p_rates jsonb DEFAULT NULL::jsonb, p_expected_updated_at timestamp with time zone DEFAULT NULL::timestamp with time zone)
  RETURNS jsonb
  LANGUAGE plpgsql
@@ -382,8 +384,10 @@ BEGIN
                                    'invoice_label', warehouse_security.invoice_label(v_inv_prefix, v_inv_no)));
         END IF;
 
-        -- D2: per listed line, only where a value really differs from the stored one. An invoiced lot keeps its item, packing
-        -- and weight; a dispatched lot keeps its item and packing (its weight and the GRN date stay editable). The first
+        -- D2: per listed line, only where a value really differs from the stored one. An invoiced lot keeps its item, packing,
+        -- quantity (WH-303, Product PQ3) and weight; a dispatched lot keeps its item and packing (its weight and the GRN date stay
+        -- editable). WH-303 (topic "GRN save never skips a quantity", Product PQ2): a dispatched lot's quantity may change only to
+        -- at least what has left it (QTY_BELOW_DISPATCHED otherwise); it is never skipped while the answer says success. The first
         -- offending line, in the order sent, is named.
         FOR v_chk IN
             SELECT x.n,
@@ -392,13 +396,16 @@ BEGIN
                    (t.item_id IS DISTINCT FROM NULLIF(x.e->>'item_id', '')::uuid) AS item_changed,
                    (COALESCE(t.packaging, '') IS DISTINCT FROM COALESCE(x.e->>'packaging', '')) AS packaging_changed,
                    (COALESCE(t.weight, 0) IS DISTINCT FROM COALESCE((x.e->>'weight')::int, 0)) AS weight_changed,
+                   (x.e->>'qty' IS NOT NULL AND t.qty IS DISTINCT FROM (x.e->>'qty')::int) AS qty_changed,
+                   (x.e->>'qty')::int AS requested_qty,
+                   (SELECT COALESCE(SUM(dt.disp_qty), 0)::int FROM dispatch_trl dt WHERE dt.gr_trl_id = t.id) AS dispatched_qty,
                    EXISTS (SELECT 1 FROM dispatch_trl dt WHERE dt.gr_trl_id = t.id) AS dispatched
             FROM jsonb_array_elements(p_items) WITH ORDINALITY AS x(e, n)
             JOIN goodsreceived_trl t ON t.id = (x.e->>'id')::uuid AND t.gr_id = p_grn_id
             WHERE x.e->>'id' IS NOT NULL
             ORDER BY x.n
         LOOP
-            IF v_chk.item_changed OR v_chk.packaging_changed OR v_chk.weight_changed THEN
+            IF v_chk.item_changed OR v_chk.packaging_changed OR v_chk.weight_changed OR v_chk.qty_changed THEN
                 SELECT i.inv_no, i.inv_fin_year, i.inv_prefix INTO v_inv_no2, v_inv_year2, v_inv_prefix2
                 FROM invoice_trl it
                 JOIN dispatch_trl dt ON dt.id = it.disp_trl_id
@@ -411,9 +418,10 @@ BEGIN
                     v_changed_fields := '[]'::jsonb;
                     IF v_chk.item_changed THEN v_changed_fields := v_changed_fields || to_jsonb('item'::text); END IF;
                     IF v_chk.packaging_changed THEN v_changed_fields := v_changed_fields || to_jsonb('packaging'::text); END IF;
+                    IF v_chk.qty_changed THEN v_changed_fields := v_changed_fields || to_jsonb('qty'::text); END IF;
                     IF v_chk.weight_changed THEN v_changed_fields := v_changed_fields || to_jsonb('weight'::text); END IF;
                     RETURN warehouse_security.refuse('LOT_INVOICED',
-                        format('%s is on invoice %s. Item, packing and weight can''t be changed. Delete or edit the invoice first.',
+                        format('%s is on invoice %s. Item, packing, quantity and weight can''t be changed. Delete or edit the invoice first.',
                                v_chk.stored_name, warehouse_security.invoice_label(v_inv_prefix2, v_inv_no2)),
                         jsonb_build_object('line_id', v_chk.line_id, 'item_name', v_chk.stored_name,
                                            'invoice_no', v_inv_no2, 'invoice_label', warehouse_security.invoice_label(v_inv_prefix2, v_inv_no2), 'inv_fin_year', v_inv_year2, 'fields', v_changed_fields));
@@ -426,6 +434,14 @@ BEGIN
                     RETURN warehouse_security.refuse('LOT_DISPATCHED',
                         format('%s has been dispatched. Its item and packing can''t be changed.', v_chk.stored_name),
                         jsonb_build_object('line_id', v_chk.line_id, 'item_name', v_chk.stored_name, 'fields', v_changed_fields));
+                END IF;
+
+                IF v_chk.qty_changed AND v_chk.requested_qty < v_chk.dispatched_qty THEN
+                    RETURN warehouse_security.refuse('QTY_BELOW_DISPATCHED',
+                        format('%s: %s is less than the %s already dispatched from this lot.',
+                               v_chk.stored_name, v_chk.requested_qty, v_chk.dispatched_qty),
+                        jsonb_build_object('lot_id', v_chk.line_id, 'item_name', v_chk.stored_name,
+                                           'dispatched_qty', v_chk.dispatched_qty, 'requested', v_chk.requested_qty));
                 END IF;
             END IF;
         END LOOP;
@@ -521,8 +537,6 @@ BEGIN
         FROM goodsreceived g
         WHERE g.id = p_grn_id;
 
-        PERFORM safe_disable_grn_trl_triggers();
-
         UPDATE goodsreceived SET
             gr_no = COALESCE(p_gr_no, gr_no),
             date = COALESCE(p_date, date),
@@ -611,9 +625,15 @@ BEGIN
 
                     v_items_updated := v_items_updated + 1;
                 ELSE
+                    -- WH-303: a changed quantity of a dispatched lot was checked above (at least what has left, not invoiced);
+                    -- it is written with stock = quantity less what has left. An unchanged one leaves quantity and stock as they are.
                     UPDATE goodsreceived_trl SET
                         item_id = v_item_master_id,
                         packaging = v_item->>'packaging',
+                        qty = CASE WHEN (v_item->>'qty')::int IS DISTINCT FROM v_current_qty AND v_item->>'qty' IS NOT NULL
+                                   THEN (v_item->>'qty')::int ELSE qty END,
+                        stock = CASE WHEN (v_item->>'qty')::int IS DISTINCT FROM v_current_qty AND v_item->>'qty' IS NOT NULL
+                                     THEN (v_item->>'qty')::int - v_dispatched_qty ELSE stock END,
                         weight = COALESCE((v_item->>'weight')::int, 0),
                         rack = warehouse_security.ascii_digits(v_item->>'rack'),
                         package_mark = warehouse_security.ascii_digits(v_item->>'package_mark')
@@ -625,15 +645,6 @@ BEGIN
                     END IF;
 
                     v_items_updated := v_items_updated + 1;
-
-                    v_items_skipped_stock := v_items_skipped_stock || jsonb_build_object(
-                        'grn_trl_item_id', v_item->>'id',
-                        'item_name', v_item_name_from_db,
-                        'reason', format('Cannot update qty/stock - item has %s units dispatched', v_dispatched_qty),
-                        'current_qty', v_current_qty,
-                        'current_stock', v_current_stock,
-                        'dispatched_qty', v_dispatched_qty
-                    );
                 END IF;
 
                 v_provided_grn_item_ids := array_append(v_provided_grn_item_ids, (v_item->>'id')::uuid);
@@ -872,8 +883,6 @@ BEGIN
             END IF;
         END IF;
 
-        PERFORM safe_enable_grn_trl_triggers();
-
         PERFORM pg_advisory_xact_lock(71040);
 
         SELECT jsonb_agg(
@@ -971,10 +980,8 @@ BEGIN
     EXCEPTION WHEN OTHERS THEN
         IF SQLERRM = 'rate_fail' THEN
             GET STACKED DIAGNOSTICS v_detail = PG_EXCEPTION_DETAIL;
-            PERFORM safe_enable_grn_trl_triggers();
             RETURN v_detail::jsonb;
         END IF;
-        PERFORM safe_enable_grn_trl_triggers();
         RAISE;
     END;
 END;

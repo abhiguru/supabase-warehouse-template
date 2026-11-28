@@ -513,7 +513,7 @@ test_files=(
   "$ROOT/tests/user_status_enrollment.sql" "$ROOT/tests/retention.sql" "$ROOT/tests/audit_log_retention.sql"
   "$ROOT/tests/order_screen.sql" "$ROOT/tests/document_number_sort.sql" "$ROOT/tests/list_search.sql"
   "$ROOT/tests/preferred_language.sql" "$ROOT/tests/dispatch_lot_ownership.sql"
-  "$ROOT/tests/grn_edit_lines.sql" "$ROOT/tests/invoice_line_rules.sql"
+  "$ROOT/tests/grn_edit_lines.sql" "$ROOT/tests/grn_qty_invoiced_lock.sql" "$ROOT/tests/invoice_line_rules.sql"
   "$ROOT/tests/direct_write_guard.sql" "$ROOT/tests/image_path_rules.sql"
   "$ROOT/tests/refresh_reuse.sql" "$ROOT/tests/otp_abuse_limits.sql"
   "$ROOT/tests/admin_guards.sql" "$ROOT/tests/auth_and_access.sql"
@@ -565,6 +565,8 @@ test_files=(
   "$ROOT/tests/packaging_lines_141.sql"
   "$ROOT/tests/packaging_rule_142.sql"
   "$ROOT/tests/invoice_kept_lines_143.sql"
+  "$ROOT/tests/invoice_keeps_issued_marking.sql"
+  "$ROOT/tests/lot_rack_mark_change.sql"
   "$ROOT/tests/invoice_kept_long_numbers_149.sql"
   "$ROOT/tests/print_range_request_id_151.sql"
   "$ROOT/tests/signin_access_154.sql" "$ROOT/tests/audit_log_insert_only_155.sql" "$ROOT/tests/dispatch_delete_other_lines_156.sql"
@@ -577,10 +579,13 @@ test_files=(
   "$ROOT/tests/sensor_record_keeping_185.sql" "$ROOT/tests/sensor_stretches_186.sql" "$ROOT/tests/temperature_report_187.sql"
   "$ROOT/tests/rls_wrapped_137.sql" "$ROOT/tests/customer_rpc_deleted_137.sql" "$ROOT/tests/list_clamps_138.sql"
   "$ROOT/tests/invoice_date_rules_182_184.sql"
-  "$ROOT/tests/import_past_years_180.sql" "$ROOT/tests/grn_range_print_186.sql" "$ROOT/tests/dues_and_form_agree_187_188.sql"
+  "$ROOT/tests/import_past_years_180.sql" "$ROOT/tests/grn_range_print_186.sql" "$ROOT/tests/dues_and_form_agree_187_188.sql" "$ROOT/tests/item_rate_pick_agreement.sql"
   "$ROOT/tests/dispatch_range_print_189.sql" "$ROOT/tests/invoice_number_taken_190.sql"
   "$ROOT/tests/grn_items_invoice_filter_202.sql" "$ROOT/tests/grn_invoice_state_once_198.sql" "$ROOT/tests/bills_need_gst_details.sql"
   "$ROOT/tests/accountant_pack.sql"
+  "$ROOT/tests/offline_number_issued_161.sql" "$ROOT/tests/offline_recorded_time_161.sql"
+  "$ROOT/tests/offline_request_id_161.sql" "$ROOT/tests/offline_refusal_codes_161.sql"
+  "$ROOT/tests/held_items_hand_over_304.sql" "$ROOT/tests/held_items_reads_decide_304.sql" "$ROOT/tests/held_items_photos_304.sql"
 )
 for test_sql in "${test_files[@]}"; do
   # WH-205: bills need saved GST details with a GSTIN; every suite starts from a registered store (the suites that test the state set their own).
@@ -1014,9 +1019,42 @@ bash "$ROOT/tests/numbering_lock.sh" "$container"
 # Migration 172 (WH-99): a payment written while an invoice is cancelled waits for the cancel and is refused, and a cancel started
 # while a payment is in flight waits and answers INVOICE_HAS_PAYMENTS.
 bash "$ROOT/tests/payment_cancel_race_99.sh" "$container"
+# WH-302 B12: two calls of set_lot_rack_and_mark on one lot at the same moment (uses the numbering lock fixture).
+bash "$ROOT/tests/lot_rack_mark_race.sh" "$container"
 
 # scripts/retention.sh: every statement it sends is one this database accepts.
 bash "$ROOT/tests/retention_queries.sh" "$container"
+
+# WH-297: the server change log and its feed. The feed delivers only committed transactions, so these suites commit; they run in a
+# database of their own (the bootstrap's schemas, the whole plan with the definitions, the Storage tables of the main database) that
+# is dropped afterwards. tests/sync_feed_contract.sql (the agreed feed names, the setup and the phone stand-in) goes in front of each.
+sync_db=sync_feed_probe
+mig_psql -c "CREATE DATABASE $sync_db TEMPLATE template0" >/dev/null
+sed -n '/^-- Schemas the migrations and Storage expect to exist\./,$p' "$ROOT/docker/volumes/db/00-bootstrap.sql" | mig_psql -d "$sync_db" >/dev/null
+sync_plan=$(plan_of "$ROOT" | mig_psql -d "$sync_db" 2>&1) || { echo "$sync_plan" | tail -20 >&2; echo 'The plan did not apply to the sync feed database.' >&2; exit 1; }
+mig_psql -d "$sync_db" -c 'DROP SCHEMA storage CASCADE' >/dev/null
+docker exec -e PGPASSWORD=disposable-test-database-only "$container" pg_dump -U supabase_admin -d postgres --schema-only --no-owner -n storage | mig_psql -d "$sync_db" >/dev/null
+# WH-299, feed format 2: the invoice state of a GRN and the time a lot was emptied.
+# WH-303: the replaced entries list and the feed entity count every entry of the database ("exactly two rows", "holds [e1]"), so each runs in a
+# copy of the database as it is now (bootstrap and plan only, nothing a suite wrote); the entries grn_edit_field_changes leaves would break them.
+sync_replaced_dbs=(sync_feed_replaced_list sync_feed_replaced_feed)
+for replaced_db in "${sync_replaced_dbs[@]}"; do
+  mig_psql -c "CREATE DATABASE $replaced_db TEMPLATE $sync_db" >/dev/null
+done
+# WH-303: edit GRN by field changes (it needs committed statements).
+for sync_sql in "$ROOT/tests/sync_feed_changes.sql" "$ROOT/tests/sync_feed_deletes_scope.sql" \
+  "$ROOT/tests/sync_feed_invoice_state.sql" "$ROOT/tests/sync_feed_emptied_time.sql" "$ROOT/tests/sync_feed_lot_rack_mark.sql" \
+  "$ROOT/tests/sync_feed_orders_payments.sql" "$ROOT/tests/sync_feed_money_marks.sql" "$ROOT/tests/sync_feed_customer_accounts.sql" \
+  "$ROOT/tests/grn_edit_field_changes.sql" "$ROOT/tests/sync_feed_held_items_304.sql" "$ROOT/tests/sync_feed_scope_cut_381.sql"; do
+  cat "$ROOT/tests/fixtures/gst_details.sql" "$ROOT/tests/sync_feed_contract.sql" "$sync_sql" | mig_psql -d "$sync_db"
+done
+cat "$ROOT/tests/fixtures/gst_details.sql" "$ROOT/tests/sync_feed_contract.sql" "$ROOT/tests/grn_replacements_admin.sql" | mig_psql -d sync_feed_replaced_list
+cat "$ROOT/tests/fixtures/gst_details.sql" "$ROOT/tests/sync_feed_contract.sql" "$ROOT/tests/sync_feed_grn_replacements.sql" | mig_psql -d sync_feed_replaced_feed
+for replaced_db in "${sync_replaced_dbs[@]}"; do
+  mig_psql -c "DROP DATABASE $replaced_db WITH (FORCE)" >/dev/null
+done
+bash "$ROOT/tests/sync_feed_concurrency.sh" "$container" "$sync_db" "$ROOT/tests/sync_feed_contract.sql"
+mig_psql -c "DROP DATABASE $sync_db WITH (FORCE)" >/dev/null
 
 # The ledger after a rejected, changed copy (above) still holds exactly the baseline.
 [[ "$(docker exec -e PGPASSWORD=disposable-test-database-only "$container" psql -X -qAt -U supabase_admin -d postgres -c 'SELECT count(*) FROM warehouse_migrations.applied')" = "$migration_count" ]] || {

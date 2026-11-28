@@ -106,7 +106,7 @@ test('get-public-config: capabilities.payments follows the database setting (mig
     // Absent or false in the database: false, whatever instance.json says.
     const old = await publicConfig({ INSTANCE_MANIFEST_JSON: JSON.stringify(MANIFEST) });
     assert.equal(old.status, 200);
-    assert.deepEqual(old.body.data.capabilities, { sensors: false, printing: false, payments: false });
+    assert.deepEqual(old.body.data.capabilities, { sensors: false, printing: false, payments: false, sync: false });
     const manifestOn = await publicConfig({ INSTANCE_MANIFEST_JSON: JSON.stringify({ ...MANIFEST, capabilities: { ...MANIFEST.capabilities, payments: true } }) });
     assert.equal(manifestOn.body.data.capabilities.payments, false);
     recordPayments = false;
@@ -114,7 +114,7 @@ test('get-public-config: capabilities.payments follows the database setting (mig
     // True in the database: true, also when the manifest predates the key or says false; the other capabilities stay the manifest's.
     recordPayments = true;
     const on = await publicConfig({ INSTANCE_MANIFEST_JSON: JSON.stringify({ ...MANIFEST, capabilities: { ...MANIFEST.capabilities, payments: false } }) });
-    assert.deepEqual(on.body.data.capabilities, { sensors: false, printing: false, payments: true });
+    assert.deepEqual(on.body.data.capabilities, { sensors: false, printing: false, payments: true, sync: false });
     assert.equal((await publicConfig({})).body.data.capabilities.payments, true);
     // Only the boolean true counts.
     recordPayments = 'true';

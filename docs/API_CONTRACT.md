@@ -303,6 +303,68 @@ Test: `tests/packaging_rule_142.sql`.
   `get_customer_dispatch_items` and `get_customer_stock_analysis_v2` (a deleted receipt or dispatch is "not found"; its lines are left out):
   see [STAFF_GRN_POLICY.md](STAFF_GRN_POLICY.md).
 
+### Sync: the phone's copy and what changed (migration "sync change log", WH-297)
+
+The server logs every change a phone's copy needs (`warehouse_sync.change_log`, written by the `zz_change_feed` triggers, which are
+ENABLE ALWAYS: they also fire under `session_replication_role = replica`). Nothing may switch the user triggers of those tables off or
+on wholesale. The app uses these RPCs only when `capabilities.sync` is true in `get-public-config` (off by default; `scripts/set-capability.mjs
+sync on`) and it knows the answer's `format`; otherwise, or against a server without them (PGRST202), it works as before. The format
+is 4 since migration "replaced entries list and feed" (WH-303); it was 3 from migrations "sync orders" to "sync GST details" (WH-328, WH-348; the last of them sets it); a copy of an earlier format answers `reload_all` `FORMAT_CHANGED`. Format 2 was set by "sync GRN invoice state and lot emptied time" (WH-299).
+
+- **Positions** are decimal strings of 64-bit transaction ids; the phone stores and returns them, never computes with them. The copy key
+  (`copy`) is opaque: `<format>.<log id>.<access>`.
+- **`get_sync_start()`** → `{success, format, copy, position, as_of, page_limit: 2000, entities[]}`. The position is fixed before page one.
+  Entities by role: administrators and supervisors `customers, items, settings, goodsreceived, goodsreceived_trl, grn_images, dispatch,
+  dispatch_trl, dispatch_images, invoice, invoice_trl, orders, order_items, payments, grn_rates, item_storage_prices, standard_rate_tiers,
+  item_price_history, grn_lock, user_profiles, users_customers_new`; supervisors the same; staff the same without `payments`, `item_storage_prices`,
+  `standard_rate_tiers`, `item_price_history`, `user_profiles` and `users_customers_new`, with `people` (what `get_supervisors('')` answers staff);
+  customer accounts `customers, items`, the document tables, `orders`, `order_items`, `payments` and `grn_rates` (of their own customers).
+- **`get_sync_page(p_entity, p_after DEFAULT NULL, p_limit DEFAULT 2000)`** → `{success, entity, copy, rows: [{id, v, row}], next_after}`,
+  keyset by id, `p_limit` clamped to 1..2000, `next_after` null on the last page. `v` = first 16 hex digits of `md5(row::text)`. Rows and
+  columns are what the caller reads directly today (migration 137's row rules, invoice's granted columns). Administrators, supervisors and
+  staff receive soft-deleted rows with `deleted_at` set; a customer account receives only live rows of its own customers and none of
+  `created_by, updated_by, deleted_by, supervisor_id, sender_id, import_batch_id, uploaded_by`. `grn_lock` (by GRN id) is
+  `get_grn_edit_state`'s data plus `imported`, `rated_item_ids` and, from format 2, `invoice_state` (`not_invoiced` | `invoiced` |
+  `partly_invoiced`, the GRN list's `invoice_state`; one function builds both). From format 2 a `goodsreceived_trl` row also carries
+  `emptied_at`: the latest stock movement that left the lot at zero (what `get_customer_stock_summary` dates an emptied lot by), null
+  when there is none, for every role that receives the lot; it stays after the lot is refilled. `settings`: `rack_presets`, `numbering`
+  (staff: per document type only `server_issues`), `charging_rule` (administrators only), `gst_details` (administrators only; `{data}` as `get_gst_details` answers) and `bills_allowed` (`{allowed}`; administrators, supervisors,
+  staff).
+  From format 3: `orders` (every column but `revisions`, plus `updated_by_name` and `updated_by_display_name`) and `order_items` (every column but
+  `revisions`) for every role, soft-deleted orders with `deleted_at` set for administrators, supervisors and staff; `payments` (`payment_json` plus
+  `payment_date` and the invoice's `customer_id`; only payments with an invoice; never staff); `grn_rates`, `item_storage_prices`,
+  `standard_rate_tiers` and `item_price_history` (every column, id as text; the last three administrators and supervisors only); a `dispatch` row
+  made from an order carries `created_by_name`; an `invoice_trl` row `storage_amount`; an `invoice` row `payment_state` (not for staff). A
+  customer account's rows of these lose the columns above, and `entered_by` and `updated_by` of a payment.
+  From format 4 (WH-303): `grn_replacements`, the unchecked replaced entries in `get_grn_replacements`' row shape, for administrators,
+  supervisors and staff only; an entry checked is a delete, and any change of an entry brings its GRN (`goodsreceived`) as an upsert.
+  From format 5 (WH-304): `held_items`, for administrators, supervisors and staff only (never a customer account). The recorder holds their
+  own rows that are held, or decided and not yet seen (`id, kind, what, customer_name, recorded_by_name, recorded_at, phone, reason,
+  reason_data, state, follows, needs_decision, decided_by_name, decided_at, reject_reason, result, body, accepted_body, lines, grn_id,
+  dispatch_id, seen_at`); administrators and supervisors also every other person's held row as exactly `id, kind, state, needs_decision,
+  lines`; staff also every other person's held `newDispatch` row as exactly `id, kind, state, lines`. A row that leaves a phone's set (decided,
+  or seen) arrives as a delete.
+- **`get_sync_changes(p_position, p_copy, p_limit DEFAULT 2000)`** → `{success, format, position, as_of, more, reload_all, reload[], changes[]}`.
+  Changes come from finished transactions only, whole transactions per page, at most `p_limit` entries, one per entity and id, each the
+  row as it is now: `{e, id, op: "upsert", v, row}`, `{e, id, op: "delete"}`, or `{e: "money", id: <customer>, op: "stale"}` (that
+  customer's dues and statement are out of date). A changed GRN brings all its lots, photos and `grn_lock`; a dispatch its lines and
+  photos; an invoice its lines. A row the caller may no longer read arrives as a delete (a GRN moved to another customer, a customer
+  account's soft-deleted document). The phone applies a `delete` of `goodsreceived` to its lots, photos and `grn_lock`, of `dispatch` to
+  its lines and photos, of `invoice` to its lines. A transaction larger than a page answers `reload: [entities]` (reload them with
+  `get_sync_page`, then carry on from `position`; a reload of `invoice` also means every money figure is out of date). A change of the
+  charging rule's `invoice_as_goods_leave` answers `reload: ["grn_lock"]` to administrators, supervisors and staff. `reload_all:
+  {reason}` means erase the copy and load again; `position` is then not stored. Reasons: `FORMAT_CHANGED`, `RESTORED`, `BULK_IMPORT`,
+  `TRUNCATED`, `RESET`, `LOG_PURGED` (the log is kept 120 days, retention key `sync_change_log`), `ACCESS_CHANGED` (role, profile or a
+  customer account's customers changed), `POSITION_AHEAD`. While a transaction stays open, later changes wait for it; `as_of` is then its
+  start time.
+- **`get_sync_checksums(p_position, p_copy, p_entities DEFAULT NULL)`** → `{success, position, entities: [{e, count, sum, settled}]}`:
+  `sum` is the sum over the caller's rows of the first 15 hex digits of `v` as an integer, modulo 2^60, as a decimal string; `settled` is
+  false when the entity changed at or after `p_position` (compare later).
+- **Refusals** (the one envelope): `SYNC_BAD_POSITION` (`position`), `SYNC_BAD_COPY`, `SYNC_UNKNOWN_ENTITY` (`entity`; also for an entity
+  the caller's role does not load). No active session: 42501 as everywhere.
+- **Operators:** `scripts/restore.sh` rotates the log (`RESTORED`); `SELECT warehouse_sync.rotate_log('RESET')` as `supabase_admin` makes
+  every phone reload.
+
 ### Sessions: the refresh lifetime and the break-glass code (migration 126, 2026-10-26)
 
 No function changes its arguments or the shape of an answer; the app needs no change. What changed is how long a refresh token's session lasts and one more code that `operator-otp/verify` accepts.
@@ -624,7 +686,10 @@ per listed line that has an `id`, before any write, and only where a value reall
 packaging compared as `COALESCE(x,'')`; weight as `COALESCE(x,0)`): an invoiced lot whose item, packaging or weight changes is
 `LOT_INVOICED` (the first offending line in the order sent, `fields` all its changed fields); else a dispatched lot whose item or
 packaging changes is `LOT_DISPATCHED`. A dispatched lot keeps its stored `item_name` (the edit does not overwrite it); its weight and
-the GRN date stay editable unless it is invoiced. D23: the GRN date of an invoiced GRN (a live invoice, or `invoiced` set) is locked:
+the GRN date stay editable unless it is invoiced. WH-303 (topic "GRN save never skips a quantity"): an invoiced lot's quantity is locked
+too (`LOT_INVOICED`, `qty` in `fields`, checked first); a dispatched lot's changed quantity below what has left it is
+`QTY_BELOW_DISPATCHED` (`lot_id`, `item_name`, `dispatched_qty`, `requested`), nothing written; at or above it, it is written with
+`stock = qty − dispatched`. A quantity is never skipped: `stats.items_skipped_stock` is always `[]` (kept for older apps). D23: the GRN date of an invoiced GRN (a live invoice, or `invoiced` set) is locked:
 a day (IST) that differs from the stored one is `GRN_DATE_LOCKED`; the same day sent back, at any time, is not a change.
 `update_dispatch_smart`: when a line of the dispatch is on a live invoice and the request changes the date or the number it answers
 `DISPATCH_INVOICED`. "Changed": `disp_no` differs from the stored text; the day sent (a date) differs from the IST day of the
@@ -1481,6 +1546,93 @@ History: migrations 87 (the outside review fixes of 2026-10-15), 120 and 121.
 - `get_grn_list` (`total_weight`) and `get_customer_dispatch_items` (`total_weight`) sum weight as numeric: a
   total above 2147483647 kg is a number, not an error.
 
+### `set_lot_rack_and_mark(p_lot_id uuid, p_changes jsonb, p_request_key text)` (topic "lot rack and mark change", WH-302)
+
+Changes one lot's rack and package mark, nothing else. Administrators, supervisors and staff; a customer account is refused by the gate (42501).
+`p_changes` = `{ rack?: {to, from}, package_mark?: {to, from}, recorded_at?: ISO time }`; `from` is the value the phone held when the person made the
+change. `recorded_at` is the phone time of the change (not a field: alone, with an unknown key or not a time it is `LOT_CHANGE_INVALID`); it goes to the
+replaced entry, and a time later than the server time is stored as the server time. A missing field, an unknown key or a blank `p_request_key` is `LOT_CHANGE_INVALID`.
+Values are trimmed, given the digits 0-9, blank is NULL; then rack is limited to 30 and mark to 60 characters (`RACK_TOO_LONG`, `MARK_TOO_LONG`, with `limit`).
+A lot or GRN that is gone is `LOT_NOT_FOUND`. Dispatched, billed and on-order lots, imported lots (the imported guard lets this function alone change rack and
+mark of an imported line), lots of a deactivated customer and GRNs with no sender or supervisor are accepted. Last sent wins per field: the stored value
+becomes `to`; when it differed from both `from` and `to`, a `grn_replacements` entry is recorded and listed in `replaced`
+(`{id, field, newer, sent, newer_by_name, newer_at, sent_by_name, sent_at, recorded_at}`), except when the caller set the stored value themselves. `to`
+equal to the stored value writes nothing. A call that writes moves the GRN's `updated_at`/`updated_by` (an Edit GRN opened before is refused `STALE_RECORD`).
+Answer: `{success, lot: {id, gr_id, rack, package_mark}, grn: {id, gr_no, updated_at}, changed: [field], replaced: [entry]}`. The first answer of a key is kept
+with no expiry: a repeat of the key (by the same person, for the same lot) gets it again plus `idempotent: true` and writes nothing, and `get_submission_result`
+finds it while the lot exists; the same key for another lot is `REQUEST_KEY_REUSED`. Field marks (`warehouse_security.grn_field_marks`: who last set a lot's
+rack and mark, and when) are kept by a trigger on `goodsreceived_trl`.
+
+### `apply_grn_changes(p_grn_id uuid, p_changes jsonb, p_request_key text)` (topic "edit GRN by field changes", WH-303)
+
+A GRN edit made with no connection, sent as field changes, never the whole GRN. Administrators, supervisors and staff; a customer account
+is refused by the gate (42501). `p_changes` = `{v: 1, grnId, loadedAt, recordedAt, header?: {field: {from, to}}, lots?: {lotId: {field:
+{from, to}}}, linesAdded?: [{clientLineId, item_id, item_name, packaging, qty, weight, rack, package_mark}], linesRemoved?: [{lotId,
+item_name, qty}]}`; header fields `date`, `customer_id` (`{id, name}`), `sender` and `supervisor` (`{id, name}`), `registration`, `note`,
+`leon`, `pricing_mode`; lot fields `item` (`{id, name}`), `packaging`, `qty`, `weight`, `rack`, `package_mark`. No rates, no GRN number,
+no photos. A body not understood, nothing to change or a blank key is `GRN_CHANGE_INVALID`. Last sent wins (no `STALE_RECORD`); a `to`
+equal to the stored value is applied and writes nothing. The checks and the write are `update_grn`'s (the stored GRN with the changes on
+top), plus `GRN_NOT_FOUND`, `IMPORTED_READ_ONLY`, `LOT_NOT_FOUND` (also a change to a line deleted meanwhile), `GRN_CUSTOMER_LOCKED` and
+`GRN_PRICING_MODE_LOCKED`. All or nothing: a refusal is the first refused change's (order header, lots, linesAdded, linesRemoved) with
+`refused: [{path, code}]` for every refused change (`path` `header.<field>`, `lots.<lotId>.<field>`, `linesAdded.<clientLineId>`,
+`linesRemoved.<lotId>`). Answer: `{success, grn_id, gr_no, updated_at, applied: {header: [field], lots: {id: [field]}}, lines_added:
+[{client_line_id, id}], lines_removed: [id], replaced: [entry], order_effects}`; a write moves the GRN's `updated_at`/`updated_by`. A
+stored value that differs from both `from` and `to` is recorded as a replaced entry (`kind` `field`; none when the caller set it
+themselves); when the send adds a line and someone else added one after `loadedAt`, one `line_added` entry per such line and per line of
+this send. The first answer of a key is kept with no expiry (replay as `set_lot_rack_and_mark`; `get_submission_result` finds it while
+the GRN exists). Field marks now cover every field above (triggers on `goodsreceived` and `goodsreceived_trl`).
+
+### Replaced entries (WH-303)
+
+`get_grn_replacements(p_from date, p_to date, p_state text, p_limit int DEFAULT 100, p_offset int DEFAULT 0)`, administrators only:
+`{success, rows, total}`, newest first by `sent_at`, India days of `sent_at` between `p_from` and `p_to` (NULL = open), `p_state`
+`unchecked`, `checked` or NULL (both), else `STATE_INVALID`; at most 2,000 rows. Row: `{id, grn_id, gr_no, customer_name, kind, field,
+lot_id, lot_item_name, lot_package_mark, lot_rack, newer_value, newer_by_name, newer_at, sent_value, sent_by_name, sent_at, recorded_at,
+checked_by_name, checked_at}` (the `lot_*` keys name the entry's lot by its present item, mark and rack, null for a GRN field or a lot
+since removed; `apply_grn_changes`' `replaced` entries carry them too; a name is null when the person is not known; a `field` entry's values are JSON strings, a `line_added` entry's `sent_value` is `{item_name, qty, packaging}`).
+`mark_grn_replacements_checked(p_grn_id uuid, p_ids uuid[])`, administrators only: `{success, checked: n}`, the named entries of that GRN
+not yet checked; others are skipped. The server never deletes an entry. `get_grn_details` answers `replacements` (the GRN's unchecked
+entries, same rows) to administrators, supervisors and staff only.
+
+### Holding list (WH-304)
+
+Items the server refused wait here for a supervisor or administrator; nothing in the list is deleted or dropped for age.
+
+- `hold_items(p_items jsonb, p_recorder uuid DEFAULT NULL)`: administrators, supervisors and staff (never a customer account). `p_items` is at
+  most 50 items in `seq` order, each `{request_key, kind, body, seq, recorded_at, follows_key?, what?, customer_id?, refusal?: {code?, reason?, data?}}`,
+  `kind` one of `newGrn`, `newDispatch`, `grnEdit`, `lotChange`, `photos`. `p_recorder` (an administrator only) is another person's auth id: their unsent
+  items are moved (`source` moved). Answer `{success, held: [{request_key, id, state} | {request_key, id, state, idempotent: true} |
+  {request_key, reason: "REQUEST_KEY_REUSED"}]}` in the order of `p_items`; a repeated key answers its first row. Whole-call refusals (nothing
+  written): `HELD_TOO_MANY_ITEMS`, `HELD_ITEM_INVALID`, `HELD_BODY_TOO_LARGE` (body and `what` over 65,536 bytes), `HELD_MOVE_ADMIN_ONLY`,
+  `HELD_RECORDER_UNKNOWN` (no such profile), `HELD_RECORDER_INVALID` (`p_recorder` is a profile without a warehouse role, such as a customer
+  account, or a deleted profile; a deactivated staff, supervisor or administrator profile is allowed). An item follows only an item of the same recorder, and the
+  row's customer is taken from the saved body (a GRN's `p_customer_id`, a dispatch's `customer_id`, else the customer of the record it
+  belongs to), never from the item's `customer_id` field.
+- Photos of a held item (`register_held_photo_upload`, `confirm_held_photo_upload`, `mark_held_photo_missing`; the recorder, or the
+  administrator who moved the item): allowed while the item is held or accepted, refused with `HELD_ALREADY_DECIDED` once it is rejected. A
+  photo confirmed after the accept is attached at once to the document the accept created; one marked missing after the accept keeps its
+  state, reason and `document_id` (the GRN or dispatch). Only that photo is attached (once; one a person removed from the document is not put
+  back), and only for items of kind `newGrn`, `newDispatch` and `photos`. `confirm_held_photo_upload` of an accepted item answers the refusal
+  `HELD_PHOTO_DOCUMENT_GONE` (the GRN or dispatch was deleted since the accept) or `HELD_PHOTO_LINE_GONE` (the GRN line of an item photo was
+  deleted by a later edit): nothing is written and the photo stays pending, so the phone marks it missing with `mark_held_photo_missing`.
+- `get_held_items(p_limit int DEFAULT 50, p_offset int DEFAULT 0)`, administrators and supervisors: `{success, rows, total}`, open items only,
+  oldest first, an item that follows another directly under it; a row `{id, kind, what, customer_name, recorded_by_name, recorded_at, phone,
+  reason, reason_data, state, follows, needs_decision, can_accept, decided_by_name, decided_at, reject_reason, result}` (`reason` is one of
+  `stockShort`, `noRate`, `numberUsed`, `numberFormat`, `dateRefused`, `duplicate`, `deleted`, `locked`, `belowDispatched`, `followsHeld`, `moved`,
+  `other`; a moved item's `reason_data` is `{admin_name, recorder_name, moved_at}`).
+- `get_held_item(p_id uuid)`, administrators and supervisors: `{success, <the list row>, reason_code, body, accepted_body, photos, followers,
+  accept_possible, current}`. `accept_possible` is the item's own save run inside a block that is always rolled back (false while an item it
+  follows is still held); the reason found is stored on the row. `current` lists, for a held `lotChange` or `grnEdit`, `[{field, line_ref?, current,
+  held}]`.
+- `decide_held_item(p_id uuid, p_action text, p_decision_key text, p_reason text DEFAULT NULL, p_body jsonb DEFAULT NULL)`, administrators and
+  supervisors: `accept` runs the kind's own save under the item's request key, as the recorder (creator, recorded time, request key owner),
+  checked as the caller; the document notes `accepted_by`. `p_body` is an accept with changes. The save's own refusal is answered unchanged and
+  the item stays held. `reject` needs `p_reason` (trimmed, at most 500 characters). Success `{success, id, state, result, decided_by_name,
+  decided_at, now_acceptable[]}` with `result` `{grn_id, gr_no}` or `{dispatch_id, disp_no}`; a repeated `p_decision_key` answers the first with
+  `idempotent: true`. Refusals: `HELD_NOT_FOUND`, `HELD_ALREADY_DECIDED` (+ `state`, `decided_by_name`, `decided_at`), `HELD_NO_DECISION`,
+  `HELD_FOLLOWS_UNDECIDED` (accept only), `HELD_REASON_REQUIRED` (reject only), `HELD_ACTION_INVALID`.
+- `mark_held_item_seen(p_id uuid)`: the recorder marks a decided item of their own as seen (`HELD_NOT_FOUND`, `HELD_NOT_DECIDED`); a repeat writes nothing.
+
 ### Dispatch lists: the GRN of each line (migration 131)
 
 - `get_dispatch_list_with_items(..., p_include_items => true)`: each `data.dispatches[].items[]` object gains `grn_id` (the id of the GRN the lot was
@@ -1940,3 +2092,15 @@ At most 200 items in one dimension, and no more weights than items (`{success:fa
 
 `get_dispatch_list_with_items` (with `p_include_items`) and `get_recent_dispatched_orders` add `packaging` to each item object: the GRN item's current packaging text (`Bag`, `Box`, `Crate`, ...; `''` when none).
 `order_effects[].packaging` is the value the order line captured when it was added, so the two differ after a GRN item's packaging is edited. Additive; nothing else changes.
+
+## New GRN and new dispatch sent from the phone after the fact (WH-161)
+
+An **offline send** is a `save_grn` or `create_dispatch_with_stock_check` that carries the recorded time or asks for its number. A save with neither behaves as before. The four topics below are assembled together.
+
+**Number issued at save.** `save_grn` gains the trailing `p_issue_number boolean DEFAULT false`; the dispatch reads `issue_number` in `p_dispatch_data`. With it true the number sent must be blank (`NUMBER_NOT_EXPECTED` otherwise); the server gives the number the owner's numbering suggests for the day of the document, inside the document lock, so a burst gets consecutive numbers in arrival order and a refused or rolled-back save uses none. A store that types its numbers: `NUMBER_REQUIRED`; no number left: `SERIES_FULL`. The dispatch answer gains `disp_no` (every dispatch save); `save_grn` already answers `data.gr_no`.
+
+**Recorded time.** `save_grn` gains the trailing `p_recorded_at timestamptz DEFAULT NULL` (after `p_issue_number`); the dispatch reads `recorded_at`. Stored beside `created_at` in the new column `recorded_at` of `goodsreceived` and `dispatch`. More than 5 minutes ahead of the server: `RECORDED_TIME_FUTURE`. The possible-duplicate window of an offline send runs between the recorded times (`COALESCE(recorded_at, created_at)` of the stored record within 30 minutes of this one's recorded time); a save without a recorded time is measured from its arrival as before.
+
+**Permanent request ID.** An offline send must carry a request key (`REQUEST_KEY_REQUIRED` otherwise). The key and a digest of the request are stored on the document (`request_key`, `request_digest`). A repeat returns the first answer however late, with `idempotent: true`, and writes nothing (the saved answer while it is kept, else one rebuilt from the document: GRN `data.{grn_id, gr_no, item_mapping}`, dispatch `dispatch_id` and `disp_no`; a rebuilt dispatch answer has no `order_effects`). The same key with other contents, or from another person: `REQUEST_KEY_REUSED`. The document deleted meanwhile: `RECORD_DELETED` (the key of every deleted offline document is kept in `warehouse_security.deleted_request_keys`, never purged). `get_submission_result` finds an offline document by its key without the 7 days; `found: false` once it is deleted.
+
+**Refusal codes.** `success: false` with a `reason`, today's text beside it, online and offline: GRN number taken `NUMBER_TAKEN` + `number`; stock short `STOCK_SHORT` + `lines: [{lot_id, item_name, available, requested}]` (only the short lots; `error` keeps "Insufficient stock: ..."); a deleted or deactivated customer on `save_grn` `CUSTOMER_INACTIVE` (it no longer raises); a lot removed meanwhile `LOT_NOT_FOUND` + `lot_ids`. The dispatch save keeps no customer check. The other codes are unchanged.
