@@ -1,7 +1,10 @@
 -- WH-304, topic "held photos after accept" (follows "held photo missing", migration 241 at assembly; from Test's release review of the batch).
 --  1. A photo that is still uploading when its item is accepted is not lost. A pending photo of an ACCEPTED item can still be registered,
 --     confirmed and marked missing by its recorder (the same caller rule as before); on confirm it is attached at once to the document the
---     accept created (the same attach code as accept: held_attach_photos, uploaded_by = the recorder; a repeat of confirm attaches once).
+--     accept created, that one photo only (held_attach_one; uploaded_by = the recorder; held_item_photos.attached_at records it, so a repeat of
+--     confirm attaches once and never puts back a photo a person removed). Only kinds newGrn, newDispatch and photos attach late. When the
+--     document or the photo's line was deleted since the accept, confirm answers HELD_PHOTO_DOCUMENT_GONE or HELD_PHOTO_LINE_GONE, writes
+--     nothing and leaves the photo pending, so the phone can mark it missing.
 --     A REJECTED item keeps the refusal HELD_ALREADY_DECIDED. Accept itself is unchanged (no refusal, no new message).
 --       - held_items.item_mapping keeps the save's item mapping of an accepted item, so a late line photo ("index:<n>") resolves its line
 --         as accept does (decide_held_item is patched to store it).
@@ -43,6 +46,8 @@ END $$;
 -- ===== 1a. columns =====
 ALTER TABLE public.held_items ADD COLUMN item_mapping jsonb;
 ALTER TABLE public.held_item_photos ADD COLUMN document_id uuid;
+-- Set when a late confirm attached this photo to the saved document: a photo someone removed from the document afterwards is never put back.
+ALTER TABLE public.held_item_photos ADD COLUMN attached_at timestamptz;
 
 -- ===== 1b. accept keeps the item mapping (of the item and of the photos that go with it) =====
 SELECT pg_temp.patch_function('public.decide_held_item(uuid, text, text, text, jsonb)'::regprocedure, ARRAY[
@@ -106,35 +111,83 @@ AS $$
   SELECT CASE WHEN (CASE WHEN p_role = 'dispatch' THEN h.result ->> 'dispatch_id' ELSE h.result ->> 'grn_id' END)
                    ~* '^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$'
               THEN (CASE WHEN p_role = 'dispatch' THEN h.result ->> 'dispatch_id' ELSE h.result ->> 'grn_id' END)::uuid END
-    FROM public.held_items h WHERE h.id = p_held AND h.state = 'accepted';
+    FROM public.held_items h WHERE h.id = p_held AND h.state = 'accepted' AND h.kind IN ('newGrn', 'newDispatch', 'photos');
 $$;
 ALTER FUNCTION warehouse_security.held_document(uuid, text) OWNER TO supabase_admin;
 REVOKE ALL ON FUNCTION warehouse_security.held_document(uuid, text) FROM PUBLIC, anon, authenticated, service_role;
 
--- Attaches the confirmed photos of an ACCEPTED held item to the document its accept created, as accept does (held_attach_photos: uploaded_by = the
--- recorder, the line resolved through the stored item mapping or a lot id, a photo already on the document by path is not attached twice), and
--- links every confirmed or missing photo of the item that has none yet to that document. A deleted document is not attached to.
+-- Links every confirmed or missing photo of an ACCEPTED held item that has none yet to the document its accept created (no attaching).
 CREATE FUNCTION warehouse_security.held_attach_late(p_held uuid) RETURNS void
+  LANGUAGE sql SECURITY DEFINER
+  SET search_path TO 'pg_catalog', 'public', 'pg_temp'
+AS $$
+  UPDATE public.held_item_photos x SET document_id = warehouse_security.held_document(x.held_id, x.role)
+   WHERE x.held_id = p_held AND x.document_id IS NULL AND x.state IN ('confirmed', 'missing');
+$$;
+ALTER FUNCTION warehouse_security.held_attach_late(uuid) OWNER TO supabase_admin;
+REVOKE ALL ON FUNCTION warehouse_security.held_attach_late(uuid) FROM PUBLIC, anon, authenticated, service_role;
+
+-- Attaches ONE late photo (the one being confirmed, by its client_photo_id) to the document the accept created, never the item's other photos.
+-- Only a photo that is not yet confirmed and not yet attached is attached (a photo confirmed before the accept was attached by the accept; one
+-- attached here has attached_at set), so a photo a person later removed from the document is not put back by a repeat confirm. Uploaded_by is the
+-- recorder, as accept does. Answers NULL when the photo was attached or there is nothing to attach (the item is not accepted, its kind attaches no
+-- photos, or a line photo's line cannot be told: it stays with the held item). Answers a refusal, writing nothing, when the document or the
+-- photo's line was deleted since the accept: HELD_PHOTO_DOCUMENT_GONE, HELD_PHOTO_LINE_GONE (the phone marks the photo missing).
+CREATE FUNCTION warehouse_security.held_attach_one(p_held uuid, p_client_photo_id text) RETURNS jsonb
   LANGUAGE plpgsql SECURITY DEFINER
   SET search_path TO 'pg_catalog', 'public', 'pg_temp'
 AS $$
 DECLARE
+  v_uuid constant text := '^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$';
   h public.held_items;
-  v_grn uuid := warehouse_security.held_document(p_held, 'header');
-  v_disp uuid := warehouse_security.held_document(p_held, 'dispatch');
+  p public.held_item_photos;
+  v_doc uuid;
+  v_line uuid;
+  v_mapped boolean := false;
 BEGIN
-  SELECT * INTO h FROM public.held_items x WHERE x.id = p_held AND x.state = 'accepted';
-  IF NOT FOUND THEN RETURN; END IF;
-  IF v_grn IS NOT NULL AND NOT EXISTS (SELECT 1 FROM public.goodsreceived g WHERE g.id = v_grn AND g.deleted_at IS NULL) THEN v_grn := NULL; END IF;
-  IF v_disp IS NOT NULL AND NOT EXISTS (SELECT 1 FROM public.dispatch d WHERE d.id = v_disp AND d.deleted_at IS NULL) THEN v_disp := NULL; END IF;
-  IF v_grn IS NOT NULL OR v_disp IS NOT NULL THEN
-    PERFORM warehouse_security.held_attach_photos(h.id, h.recorded_by, v_grn, v_disp, h.item_mapping);
+  SELECT x.* INTO h FROM public.held_items x WHERE x.id = p_held AND x.state = 'accepted';
+  IF NOT FOUND THEN RETURN NULL; END IF;
+  SELECT x.* INTO p FROM public.held_item_photos x WHERE x.held_id = p_held AND x.client_photo_id = p_client_photo_id;
+  IF NOT FOUND OR p.state = 'confirmed' OR p.attached_at IS NOT NULL THEN RETURN NULL; END IF;
+  v_doc := warehouse_security.held_document(p_held, p.role);
+  IF v_doc IS NULL THEN RETURN NULL; END IF;
+
+  IF p.role = 'dispatch' THEN
+    IF NOT EXISTS (SELECT 1 FROM public.dispatch d WHERE d.id = v_doc AND d.deleted_at IS NULL) THEN
+      RETURN warehouse_security.refuse('HELD_PHOTO_DOCUMENT_GONE', 'The dispatch this photo belongs to was deleted.');
+    END IF;
+    IF NOT EXISTS (SELECT 1 FROM public.dispatch_images i WHERE i.dispatch_id = v_doc AND i.storage_path = p.path) THEN
+      INSERT INTO public.dispatch_images (dispatch_id, storage_path, original_filename, file_size, mime_type, uploaded_by, status)
+      VALUES (v_doc, p.path, p.file_name, p.file_size, p.mime_type, h.recorded_by, 'confirmed');
+    END IF;
+  ELSE
+    IF NOT EXISTS (SELECT 1 FROM public.goodsreceived g WHERE g.id = v_doc AND g.deleted_at IS NULL) THEN
+      RETURN warehouse_security.refuse('HELD_PHOTO_DOCUMENT_GONE', 'The GRN this photo belongs to was deleted.');
+    END IF;
+    IF p.role = 'item' THEN
+      -- The line the photo names, checked against the lines this GRN has now (an edit may have deleted it).
+      IF p.line_ref ~ '^index:[0-9]{1,6}$' THEN
+        SELECT true, (e ->> 'item_id')::uuid INTO v_mapped, v_line FROM jsonb_array_elements(COALESCE(h.item_mapping, '[]'::jsonb)) e
+         WHERE e ->> 'index' = substr(p.line_ref, 7) LIMIT 1;
+      ELSIF p.line_ref ~* v_uuid THEN
+        v_mapped := true;
+        v_line := p.line_ref::uuid;
+      END IF;
+      IF NOT COALESCE(v_mapped, false) THEN RETURN NULL; END IF;
+      IF v_line IS NULL OR NOT EXISTS (SELECT 1 FROM public.goodsreceived_trl t WHERE t.id = v_line AND t.gr_id = v_doc) THEN
+        RETURN warehouse_security.refuse('HELD_PHOTO_LINE_GONE', 'The GRN line this photo belongs to was deleted.');
+      END IF;
+    END IF;
+    IF NOT EXISTS (SELECT 1 FROM public.grn_images i WHERE i.grn_id = v_doc AND i.storage_path = p.path) THEN
+      INSERT INTO public.grn_images (grn_id, grn_item_id, image_type, storage_path, original_filename, file_size, mime_type, uploaded_by, status)
+      VALUES (v_doc, v_line, p.role, p.path, p.file_name, p.file_size, p.mime_type, h.recorded_by, 'confirmed');
+    END IF;
   END IF;
-  UPDATE public.held_item_photos x SET document_id = warehouse_security.held_document(x.held_id, x.role)
-   WHERE x.held_id = p_held AND x.document_id IS NULL AND x.state IN ('confirmed', 'missing');
+  UPDATE public.held_item_photos x SET attached_at = now() WHERE x.held_id = p.held_id AND x.client_photo_id = p.client_photo_id;
+  RETURN NULL;
 END $$;
-ALTER FUNCTION warehouse_security.held_attach_late(uuid) OWNER TO supabase_admin;
-REVOKE ALL ON FUNCTION warehouse_security.held_attach_late(uuid) FROM PUBLIC, anon, authenticated, service_role;
+ALTER FUNCTION warehouse_security.held_attach_one(uuid, text) OWNER TO supabase_admin;
+REVOKE ALL ON FUNCTION warehouse_security.held_attach_one(uuid, text) FROM PUBLIC, anon, authenticated, service_role;
 
 -- ===== 1e. confirm: attaches at once when the item is already accepted =====
 SET LOCAL check_function_bodies = false;
@@ -170,9 +223,12 @@ BEGIN
     IF NOT EXISTS (SELECT 1 FROM storage.objects o WHERE o.bucket_id = v_bucket AND o.name = p.path) THEN
       RETURN warehouse_security.refuse('IMAGE_NOT_VERIFIED', 'Image file is not in storage.');
     END IF;
+    -- An accepted item's photo goes onto the saved document now, this photo only. A refusal (document or line deleted since the accept)
+    -- is answered before anything is written, so the photo stays pending and the phone can mark it missing.
+    v_refusal := warehouse_security.held_attach_one(p_held_id, p.client_photo_id);
+    IF v_refusal IS NOT NULL THEN RETURN v_refusal; END IF;
     UPDATE public.held_item_photos x SET state = 'confirmed' WHERE x.held_id = p.held_id AND x.client_photo_id = p.client_photo_id;
   END IF;
-  -- An accepted item's photo goes onto the saved document now (idempotent: a repeat attaches nothing twice).
   PERFORM warehouse_security.held_attach_late(p_held_id);
   RETURN jsonb_build_object('success', true, 'held_id', p.held_id, 'client_photo_id', p.client_photo_id, 'storage_path', p.path,
                             'status', 'confirmed');

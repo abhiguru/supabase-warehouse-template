@@ -1611,7 +1611,10 @@ Items the server refused wait here for a supervisor or administrator; nothing in
 - Photos of a held item (`register_held_photo_upload`, `confirm_held_photo_upload`, `mark_held_photo_missing`; the recorder, or the
   administrator who moved the item): allowed while the item is held or accepted, refused with `HELD_ALREADY_DECIDED` once it is rejected. A
   photo confirmed after the accept is attached at once to the document the accept created; one marked missing after the accept keeps its
-  state, reason and `document_id` (the GRN or dispatch).
+  state, reason and `document_id` (the GRN or dispatch). Only that photo is attached (once; one a person removed from the document is not put
+  back), and only for items of kind `newGrn`, `newDispatch` and `photos`. `confirm_held_photo_upload` of an accepted item answers the refusal
+  `HELD_PHOTO_DOCUMENT_GONE` (the GRN or dispatch was deleted since the accept) or `HELD_PHOTO_LINE_GONE` (the GRN line of an item photo was
+  deleted by a later edit): nothing is written and the photo stays pending, so the phone marks it missing with `mark_held_photo_missing`.
 - `get_held_items(p_limit int DEFAULT 50, p_offset int DEFAULT 0)`, administrators and supervisors: `{success, rows, total}`, open items only,
   oldest first, an item that follows another directly under it; a row `{id, kind, what, customer_name, recorded_by_name, recorded_at, phone,
   reason, reason_data, state, follows, needs_decision, can_accept, decided_by_name, decided_at, reject_reason, result}` (`reason` is one of
