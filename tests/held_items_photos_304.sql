@@ -627,6 +627,165 @@ SELECT pg_temp.hp_assert(:'s1_images'::int = 0 AND :'x_anywhere'::int = 0 AND :'
 SELECT count(*) AS s2_images, count(*) FILTER (WHERE storage_path = :'g10_sreg'::jsonb->>'storage_path' AND uploaded_by = :'staff_profile'::uuid) AS s2_own FROM public.grn_images WHERE grn_id = :'s2_grn'::uuid \gset
 SELECT pg_temp.hp_assert(:'s2_images'::int = 1 AND :'s2_own'::int = 1,
   'G10: control: the same recorder''s follower photo is attached to its GRN on accept (images ' || :'s2_images' || ', its own ' || :'s2_own' || ')');
+
+-- ===== G11. The late attach takes only the photo being confirmed (held_attach_one, attached_at) and answers when its line or document is gone =====
+-- A GRN with two lines, and a helper that registers a photo and uploads its file as its recorder.
+CREATE FUNCTION pg_temp.hp_grn_body2(cust uuid, item uuid, no text) RETURNS jsonb LANGUAGE sql AS $$
+  SELECT jsonb_set(pg_temp.hp_grn_body(cust, item, 2, no), '{args,p_items}', jsonb_build_array(
+    jsonb_build_object('item_id', item, 'item_name', 'Photo Cumin', 'packaging', 'Bag', 'qty', 2, 'weight', 10, 'rack', 'N1', 'package_mark', 'NM'),
+    jsonb_build_object('item_id', item, 'item_name', 'Photo Cumin', 'packaging', 'Bag', 'qty', 3, 'weight', 10, 'rack', 'N2', 'package_mark', 'N2'))) $$;
+CREATE FUNCTION pg_temp.hp_reg_put(claims jsonb, held uuid, cid text, role text, fname text, line text DEFAULT NULL) RETURNS jsonb LANGUAGE plpgsql AS $$
+DECLARE r jsonb; put text;
+BEGIN
+  r := pg_temp.hp_reg(claims, held, cid, role, fname, 100, 'image/jpeg', line);
+  IF NOT pg_temp.hp_ok(r) THEN RAISE EXCEPTION 'held items photos 304: fixture: register % failed: %', cid, r; END IF;
+  put := pg_temp.hp_put(claims, CASE role WHEN 'dispatch' THEN 'dispatch-images' ELSE 'grn-images' END, r->>'storage_path');
+  IF put <> 'rows:1' THEN RAISE EXCEPTION 'held items photos 304: fixture: upload of % answered %', cid, put; END IF;
+  RETURN r;
+END $$;
+
+-- (a) A photo removed from the saved GRN is never put back by a later confirm (header and line photo alike).
+SELECT pg_temp.hp_hold(:'staff_claims'::jsonb, jsonb_build_array(
+  pg_temp.hp_item('hp-d1', 'newGrn', 60, :'ca'::uuid, pg_temp.hp_grn_body(:'ca'::uuid, :'item_id'::uuid, 2, 'HPD1G')))) AS g11a_hold \gset
+SELECT pg_temp.hp_assert(:'g11a_hold'::jsonb->>'success' = 'true', 'fixture: hp-d1 handed over: ' || :'g11a_hold');
+SELECT pg_temp.hp_hid('hp-d1') AS d1 \gset
+SELECT pg_temp.hp_reg_put(:'staff_claims'::jsonb, :'d1'::uuid, 'pd1-h1', 'header', 'h1.jpg') AS d1_h1 \gset
+SELECT pg_temp.hp_reg_put(:'staff_claims'::jsonb, :'d1'::uuid, 'pd1-h2', 'header', 'h2.jpg') AS d1_h2 \gset
+SELECT pg_temp.hp_reg_put(:'staff_claims'::jsonb, :'d1'::uuid, 'pd1-l1', 'item', 'l1.jpg', 'index:0') AS d1_l1 \gset
+SELECT pg_temp.hp_reg_put(:'staff_claims'::jsonb, :'d1'::uuid, 'pd1-b', 'header', 'b.jpg') AS d1_b \gset
+SELECT pg_temp.hp_reg_put(:'staff_claims'::jsonb, :'d1'::uuid, 'pd1-c', 'item', 'c.jpg', 'index:0') AS d1_c \gset
+SELECT pg_temp.hp_confirm(:'staff_claims'::jsonb, :'d1'::uuid, 'pd1-h1') AS d1_ch1 \gset
+SELECT pg_temp.hp_confirm(:'staff_claims'::jsonb, :'d1'::uuid, 'pd1-h2') AS d1_ch2 \gset
+SELECT pg_temp.hp_confirm(:'staff_claims'::jsonb, :'d1'::uuid, 'pd1-l1') AS d1_cl1 \gset
+SELECT pg_temp.hp_assert(pg_temp.hp_ok(:'d1_ch1'::jsonb) AND pg_temp.hp_ok(:'d1_ch2'::jsonb) AND pg_temp.hp_ok(:'d1_cl1'::jsonb),
+  'fixture: h1, h2 and l1 confirmed before the accept: ' || :'d1_ch1' || ' / ' || :'d1_ch2' || ' / ' || :'d1_cl1');
+SELECT pg_temp.hp_decide(:'admin_claims'::jsonb, :'d1'::uuid, 'accept', 'hp-dk-d1') AS d1_accept \gset
+SELECT id AS d1_grn FROM public.goodsreceived WHERE request_key = 'hp-d1' \gset
+SELECT count(*) AS d1_n0 FROM public.grn_images WHERE grn_id = :'d1_grn'::uuid \gset
+SELECT pg_temp.hp_assert(pg_temp.hp_ok(:'d1_accept'::jsonb) AND :'d1_n0'::int = 3, 'G11a: the accept attached the three confirmed photos (images ' || :'d1_n0' || ', want 3): ' || :'d1_accept');
+-- A manager removes h1 (header) and l1 (line photo) from the saved GRN with the product call.
+SELECT id AS d1_h1_img FROM public.grn_images WHERE grn_id = :'d1_grn'::uuid AND storage_path = :'d1_h1'::jsonb->>'storage_path' \gset
+SELECT id AS d1_l1_img FROM public.grn_images WHERE grn_id = :'d1_grn'::uuid AND storage_path = :'d1_l1'::jsonb->>'storage_path' \gset
+SELECT pg_temp.hp_as(:'admin_claims'::jsonb, format('SELECT public.delete_grn_image(%L::uuid)', :'d1_h1_img')) AS d1_del1 \gset
+SELECT pg_temp.hp_as(:'admin_claims'::jsonb, format('SELECT public.delete_grn_image(%L::uuid)', :'d1_l1_img')) AS d1_del2 \gset
+SELECT count(*) AS d1_n1 FROM public.grn_images WHERE grn_id = :'d1_grn'::uuid \gset
+SELECT pg_temp.hp_assert(:'d1_del1'::jsonb->>'success' = 'true' AND :'d1_del2'::jsonb->>'success' = 'true' AND :'d1_n1'::int = 1,
+  'fixture: the manager removed h1 and l1 (images left ' || :'d1_n1' || ', want 1): ' || :'d1_del1' || ' / ' || :'d1_del2');
+-- The still-uploading photos b (header) and c (line) are confirmed afterwards, and the removed ones are confirmed again.
+SELECT pg_temp.hp_confirm(:'staff_claims'::jsonb, :'d1'::uuid, 'pd1-b') AS d1_cb \gset
+SELECT pg_temp.hp_confirm(:'staff_claims'::jsonb, :'d1'::uuid, 'pd1-c') AS d1_cc \gset
+SELECT pg_temp.hp_confirm(:'staff_claims'::jsonb, :'d1'::uuid, 'pd1-h1') AS d1_rh1 \gset
+SELECT pg_temp.hp_confirm(:'staff_claims'::jsonb, :'d1'::uuid, 'pd1-l1') AS d1_rl1 \gset
+SELECT pg_temp.hp_confirm(:'staff_claims'::jsonb, :'d1'::uuid, 'pd1-b') AS d1_rb \gset
+SELECT pg_temp.hp_confirm(:'staff_claims'::jsonb, :'d1'::uuid, 'pd1-c') AS d1_rc \gset
+SELECT pg_temp.hp_assert(pg_temp.hp_ok(:'d1_cb'::jsonb) AND pg_temp.hp_ok(:'d1_cc'::jsonb) AND pg_temp.hp_ok(:'d1_rh1'::jsonb) AND pg_temp.hp_ok(:'d1_rl1'::jsonb)
+  AND pg_temp.hp_ok(:'d1_rb'::jsonb) AND pg_temp.hp_ok(:'d1_rc'::jsonb), 'G11a: every confirm answers success: ' || :'d1_cb' || ' / ' || :'d1_cc' || ' / ' || :'d1_rh1' || ' / ' || :'d1_rl1');
+SELECT count(*) AS d1_n2 FROM public.grn_images WHERE grn_id = :'d1_grn'::uuid \gset
+SELECT count(*) AS d1_back FROM public.grn_images WHERE grn_id = :'d1_grn'::uuid AND storage_path IN (:'d1_h1'::jsonb->>'storage_path', :'d1_l1'::jsonb->>'storage_path') \gset
+SELECT count(*) AS d1_b_n FROM public.grn_images WHERE grn_id = :'d1_grn'::uuid AND storage_path = :'d1_b'::jsonb->>'storage_path' AND image_type = 'header' AND uploaded_by = :'staff_profile'::uuid \gset
+SELECT count(*) AS d1_c_n FROM public.grn_images WHERE grn_id = :'d1_grn'::uuid AND storage_path = :'d1_c'::jsonb->>'storage_path' AND image_type = 'item' AND grn_item_id IS NOT NULL AND uploaded_by = :'staff_profile'::uuid \gset
+SELECT count(*) AS d1_h2_n FROM public.grn_images WHERE grn_id = :'d1_grn'::uuid AND storage_path = :'d1_h2'::jsonb->>'storage_path' \gset
+SELECT pg_temp.hp_assert(:'d1_back'::int = 0, 'G11a: the header photo and the line photo the manager removed are not put back (back on the GRN: ' || :'d1_back' || ', want 0)');
+SELECT pg_temp.hp_assert(:'d1_b_n'::int = 1 AND :'d1_c_n'::int = 1, 'G11a: the late header and line photos are attached once, by the recorder (b ' || :'d1_b_n' || ', c ' || :'d1_c_n' || ', want 1 and 1)');
+SELECT pg_temp.hp_assert(:'d1_n2'::int = 3 AND :'d1_h2_n'::int = 1, 'G11a: the GRN has h2, b and c only, after repeats (images ' || :'d1_n2' || ', h2 ' || :'d1_h2_n' || ', want 3 and 1)');
+
+-- (b) The line a photo is mapped to was deleted by a GRN edit, or the GRN was deleted: a refusal, nothing written, the photo stays pending.
+SELECT pg_temp.hp_hold(:'staff_claims'::jsonb, jsonb_build_array(
+  pg_temp.hp_item('hp-d2', 'newGrn', 61, :'ca'::uuid, pg_temp.hp_grn_body2(:'ca'::uuid, :'item_id'::uuid, 'HPD2G')),
+  pg_temp.hp_item('hp-d3', 'newGrn', 62, :'ca'::uuid, pg_temp.hp_grn_body(:'ca'::uuid, :'item_id'::uuid, 2, 'HPD3G')))) AS g11b_hold \gset
+SELECT pg_temp.hp_assert(:'g11b_hold'::jsonb->>'success' = 'true', 'fixture: hp-d2 and hp-d3 handed over: ' || :'g11b_hold');
+SELECT pg_temp.hp_hid('hp-d2') AS d2, pg_temp.hp_hid('hp-d3') AS d3 \gset
+SELECT pg_temp.hp_reg_put(:'staff_claims'::jsonb, :'d2'::uuid, 'pd2-l0', 'item', 'l0.jpg', 'index:0') AS d2_l0 \gset
+SELECT pg_temp.hp_reg_put(:'staff_claims'::jsonb, :'d2'::uuid, 'pd2-l1', 'item', 'l1.jpg', 'index:1') AS d2_l1 \gset
+SELECT pg_temp.hp_reg_put(:'staff_claims'::jsonb, :'d2'::uuid, 'pd2-h', 'header', 'h.jpg') AS d2_h \gset
+SELECT pg_temp.hp_reg_put(:'staff_claims'::jsonb, :'d3'::uuid, 'pd3-h', 'header', 'h.jpg') AS d3_h \gset
+SELECT pg_temp.hp_reg_put(:'staff_claims'::jsonb, :'d3'::uuid, 'pd3-l', 'item', 'l.jpg', 'index:0') AS d3_l \gset
+SELECT pg_temp.hp_decide(:'admin_claims'::jsonb, :'d2'::uuid, 'accept', 'hp-dk-d2') AS d2_accept \gset
+SELECT pg_temp.hp_decide(:'admin_claims'::jsonb, :'d3'::uuid, 'accept', 'hp-dk-d3') AS d3_accept \gset
+SELECT id AS d2_grn FROM public.goodsreceived WHERE request_key = 'hp-d2' \gset
+SELECT id AS d3_grn FROM public.goodsreceived WHERE request_key = 'hp-d3' \gset
+SELECT pg_temp.hp_assert(pg_temp.hp_ok(:'d2_accept'::jsonb) AND pg_temp.hp_ok(:'d3_accept'::jsonb), 'fixture: both GRNs accepted with every photo still pending: ' || :'d2_accept' || ' / ' || :'d3_accept');
+SELECT e ->> 'item_id' AS d2_line0 FROM public.held_items, jsonb_array_elements(item_mapping) e WHERE id = :'d2'::uuid AND e ->> 'index' = '0' \gset
+SELECT e ->> 'item_id' AS d2_line1 FROM public.held_items, jsonb_array_elements(item_mapping) e WHERE id = :'d2'::uuid AND e ->> 'index' = '1' \gset
+-- The administrator edits the GRN and leaves line 0 out: the product's edit deletes it.
+SELECT pg_temp.hp_as(:'admin_claims'::jsonb, format('SELECT public.update_grn(p_grn_id => %L::uuid, p_items => %L::jsonb)', :'d2_grn',
+  jsonb_build_array(jsonb_build_object('id', :'d2_line1', 'item_id', :'item_id', 'item_name', 'Photo Cumin', 'packaging', 'Bag', 'qty', 3, 'weight', 10, 'rack', 'N2', 'package_mark', 'N2')))) AS d2_edit \gset
+SELECT count(*) AS d2_lines FROM public.goodsreceived_trl WHERE gr_id = :'d2_grn'::uuid \gset
+SELECT count(*) AS d2_line0_left FROM public.goodsreceived_trl WHERE id = :'d2_line0'::uuid \gset
+SELECT pg_temp.hp_assert(:'d2_edit'::jsonb->>'success' = 'true' AND :'d2_lines'::int = 1 AND :'d2_line0_left'::int = 0,
+  'fixture: the edit deleted line 0 (lines ' || :'d2_lines' || ', line 0 left ' || :'d2_line0_left' || '): ' || :'d2_edit');
+SELECT count(*) AS d2_n0 FROM public.grn_images WHERE grn_id = :'d2_grn'::uuid \gset
+SELECT pg_temp.hp_confirm(:'staff_claims'::jsonb, :'d2'::uuid, 'pd2-l0') AS d2_c0 \gset
+SELECT pg_temp.hp_photo_state(:'d2'::uuid, 'pd2-l0') AS d2_s0 \gset
+SELECT count(*) AS d2_n1 FROM public.grn_images WHERE grn_id = :'d2_grn'::uuid \gset
+SELECT pg_temp.hp_assert(:'d2_c0'::jsonb->>'success' = 'false' AND NOT (:'d2_c0'::jsonb ? 'raised') AND :'d2_c0'::text LIKE '%HELD_PHOTO_LINE_GONE%',
+  'G11b: confirming a photo whose line was deleted answers HELD_PHOTO_LINE_GONE as a refusal, not an exception: ' || :'d2_c0');
+SELECT pg_temp.hp_assert(:'d2_s0' = 'pending' AND :'d2_n1'::int = :'d2_n0'::int, 'G11b: nothing was written for it: the photo is ' || :'d2_s0' || ' (want pending), images ' || :'d2_n0' || ' before and ' || :'d2_n1' || ' after');
+SELECT pg_temp.hp_mark(:'staff_claims'::jsonb, :'d2'::uuid, 'pd2-l0', 'item', 'index:0', 'The line was deleted') AS d2_m0 \gset
+SELECT state AS d2_ms, COALESCE(document_id::text, 'NULL') AS d2_md FROM public.held_item_photos WHERE held_id = :'d2'::uuid AND client_photo_id = 'pd2-l0' \gset
+SELECT pg_temp.hp_assert(pg_temp.hp_ok(:'d2_m0'::jsonb) AND :'d2_ms' = 'missing' AND :'d2_md' = :'d2_grn',
+  'G11b: the phone can then mark it missing, linked to the GRN (answer ' || :'d2_m0' || ', state ' || :'d2_ms' || ', document ' || :'d2_md' || ')');
+-- Another photo of the same item still attaches: a line that survives, and the header.
+SELECT pg_temp.hp_confirm(:'staff_claims'::jsonb, :'d2'::uuid, 'pd2-l1') AS d2_c1 \gset
+SELECT pg_temp.hp_confirm(:'staff_claims'::jsonb, :'d2'::uuid, 'pd2-h') AS d2_ch \gset
+SELECT pg_temp.hp_confirm(:'staff_claims'::jsonb, :'d2'::uuid, 'pd2-l1') AS d2_c1b \gset
+SELECT count(*) AS d2_l1_n FROM public.grn_images WHERE grn_id = :'d2_grn'::uuid AND storage_path = :'d2_l1'::jsonb->>'storage_path' AND grn_item_id = :'d2_line1'::uuid AND uploaded_by = :'staff_profile'::uuid \gset
+SELECT count(*) AS d2_h_n FROM public.grn_images WHERE grn_id = :'d2_grn'::uuid AND storage_path = :'d2_h'::jsonb->>'storage_path' AND image_type = 'header' \gset
+SELECT count(*) AS d2_n2 FROM public.grn_images WHERE grn_id = :'d2_grn'::uuid \gset
+SELECT pg_temp.hp_assert(pg_temp.hp_ok(:'d2_c1'::jsonb) AND pg_temp.hp_ok(:'d2_ch'::jsonb) AND pg_temp.hp_ok(:'d2_c1b'::jsonb),
+  'G11b: the surviving line photo and the header photo confirm: ' || :'d2_c1' || ' / ' || :'d2_ch' || ' / ' || :'d2_c1b');
+SELECT pg_temp.hp_assert(:'d2_l1_n'::int = 1 AND :'d2_h_n'::int = 1 AND :'d2_n2'::int = 2,
+  'G11b: the photo of the surviving line is on that line once, the header photo is attached, and the GRN has those two only (line photo ' || :'d2_l1_n' || ', header ' || :'d2_h_n' || ', images ' || :'d2_n2' || ', want 1, 1, 2)');
+-- A deleted GRN.
+SELECT pg_temp.hp_as(:'admin_claims'::jsonb, format('SELECT public.delete_grn_safe(%L::uuid)', :'d3_grn')) AS d3_del \gset
+SELECT count(*) AS d3_n0 FROM public.grn_images WHERE grn_id = :'d3_grn'::uuid \gset
+SELECT pg_temp.hp_assert(:'d3_del'::jsonb->>'success' = 'true', 'fixture: the GRN of hp-d3 is deleted: ' || :'d3_del');
+SELECT pg_temp.hp_confirm(:'staff_claims'::jsonb, :'d3'::uuid, 'pd3-h') AS d3_ch \gset
+SELECT pg_temp.hp_confirm(:'staff_claims'::jsonb, :'d3'::uuid, 'pd3-l') AS d3_cl \gset
+SELECT pg_temp.hp_photo_state(:'d3'::uuid, 'pd3-h') AS d3_sh \gset
+SELECT pg_temp.hp_photo_state(:'d3'::uuid, 'pd3-l') AS d3_sl \gset
+SELECT count(*) AS d3_n1 FROM public.grn_images WHERE grn_id = :'d3_grn'::uuid \gset
+SELECT pg_temp.hp_assert(:'d3_ch'::jsonb->>'success' = 'false' AND NOT (:'d3_ch'::jsonb ? 'raised') AND :'d3_ch'::text LIKE '%HELD_PHOTO_DOCUMENT_GONE%'
+  AND :'d3_cl'::jsonb->>'success' = 'false' AND NOT (:'d3_cl'::jsonb ? 'raised') AND :'d3_cl'::text LIKE '%HELD_PHOTO_DOCUMENT_GONE%',
+  'G11b: confirming a header and a line photo of a deleted GRN answers HELD_PHOTO_DOCUMENT_GONE as a refusal: ' || :'d3_ch' || ' / ' || :'d3_cl');
+SELECT pg_temp.hp_assert(:'d3_sh' = 'pending' AND :'d3_sl' = 'pending' AND :'d3_n1'::int = :'d3_n0'::int,
+  'G11b: nothing was written (states ' || :'d3_sh' || ' / ' || :'d3_sl' || ', want pending; images ' || :'d3_n0' || ' before and ' || :'d3_n1' || ' after)');
+SELECT pg_temp.hp_mark(:'staff_claims'::jsonb, :'d3'::uuid, 'pd3-h', 'header', NULL, 'The GRN was deleted') AS d3_m \gset
+SELECT state AS d3_ms FROM public.held_item_photos WHERE held_id = :'d3'::uuid AND client_photo_id = 'pd3-h' \gset
+SELECT pg_temp.hp_assert(pg_temp.hp_ok(:'d3_m'::jsonb) AND :'d3_ms' = 'missing', 'G11b: the phone can mark it missing after the GRN is gone (answer ' || :'d3_m' || ', state ' || :'d3_ms' || ')');
+
+-- (c) Kinds that attach nothing late: an accepted lotChange and an accepted grnEdit keep their photos with the held item.
+-- The migration answers success (the photo is confirmed) and attaches nothing; the photo is not linked to a document (held_document answers only for
+-- newGrn, newDispatch and photos).
+SELECT id AS e_line FROM public.goodsreceived_trl WHERE gr_id = :'s1_grn'::uuid \gset
+SELECT pg_temp.hp_hold(:'staff_claims'::jsonb, jsonb_build_array(
+  pg_temp.hp_item('hp-lc', 'lotChange', 70, :'ca'::uuid, jsonb_build_object('lotId', :'a1_line_id', 'grnId', :'a1_grn', 'recordedAt', now() - interval '2 hours',
+    'changes', jsonb_build_object('rack', jsonb_build_object('from', 'N1', 'to', 'N3')))),
+  pg_temp.hp_item('hp-ge', 'grnEdit', 71, :'ca'::uuid, jsonb_build_object('v', 1, 'grnId', :'s1_grn', 'loadedAt', NULL, 'recordedAt', now() - interval '2 hours',
+    'lots', jsonb_build_object(:'e_line', jsonb_build_object('rack', jsonb_build_object('from', 'N1', 'to', 'N4'))))))) AS g11c_hold \gset
+SELECT pg_temp.hp_assert(:'g11c_hold'::jsonb->>'success' = 'true', 'fixture: hp-lc and hp-ge handed over: ' || :'g11c_hold');
+SELECT pg_temp.hp_hid('hp-lc') AS lc, pg_temp.hp_hid('hp-ge') AS ge \gset
+SELECT pg_temp.hp_reg_put(:'staff_claims'::jsonb, :'lc'::uuid, 'pl-h', 'header', 'lc.jpg') AS lc_h \gset
+SELECT pg_temp.hp_reg_put(:'staff_claims'::jsonb, :'ge'::uuid, 'pg-h', 'header', 'ge.jpg') AS ge_h \gset
+SELECT pg_temp.hp_decide(:'admin_claims'::jsonb, :'lc'::uuid, 'accept', 'hp-dk-lc') AS lc_accept \gset
+SELECT pg_temp.hp_decide(:'admin_claims'::jsonb, :'ge'::uuid, 'accept', 'hp-dk-ge') AS ge_accept \gset
+SELECT pg_temp.hp_assert(pg_temp.hp_ok(:'lc_accept'::jsonb) AND pg_temp.hp_ok(:'ge_accept'::jsonb), 'fixture: lotChange and grnEdit accepted: ' || :'lc_accept' || ' / ' || :'ge_accept');
+SELECT count(*) AS lc_n0 FROM public.grn_images WHERE grn_id = :'a1_grn'::uuid \gset
+SELECT count(*) AS ge_n0 FROM public.grn_images WHERE grn_id = :'s1_grn'::uuid \gset
+SELECT pg_temp.hp_confirm(:'staff_claims'::jsonb, :'lc'::uuid, 'pl-h') AS lc_c \gset
+SELECT pg_temp.hp_confirm(:'staff_claims'::jsonb, :'ge'::uuid, 'pg-h') AS ge_c \gset
+SELECT count(*) AS lc_n1 FROM public.grn_images WHERE grn_id = :'a1_grn'::uuid \gset
+SELECT count(*) AS ge_n1 FROM public.grn_images WHERE grn_id = :'s1_grn'::uuid \gset
+SELECT count(*) AS cx_any FROM public.grn_images WHERE storage_path IN (:'lc_h'::jsonb->>'storage_path', :'ge_h'::jsonb->>'storage_path') \gset
+SELECT count(*) AS cx_doc FROM public.held_item_photos WHERE held_id IN (:'lc'::uuid, :'ge'::uuid) AND (document_id IS NOT NULL OR attached_at IS NOT NULL) \gset
+SELECT pg_temp.hp_assert(pg_temp.hp_ok(:'lc_c'::jsonb) AND :'lc_c'::jsonb->>'status' = 'confirmed' AND pg_temp.hp_ok(:'ge_c'::jsonb) AND :'ge_c'::jsonb->>'status' = 'confirmed',
+  'G11c: a late confirm of a lotChange or grnEdit photo answers success, confirmed: ' || :'lc_c' || ' / ' || :'ge_c');
+SELECT pg_temp.hp_assert(:'lc_n1'::int = :'lc_n0'::int AND :'ge_n1'::int = :'ge_n0'::int AND :'cx_any'::int = 0,
+  'G11c: nothing is attached to the GRN (images before/after: lotChange GRN ' || :'lc_n0' || '/' || :'lc_n1' || ', grnEdit GRN ' || :'ge_n0' || '/' || :'ge_n1' || ', on any GRN ' || :'cx_any' || ')');
+SELECT pg_temp.hp_assert(:'cx_doc'::int = 0, 'G11c: the photos are linked to no document and not stamped attached (rows with a document or attached_at ' || :'cx_doc' || ', want 0)');
+SELECT pg_temp.hp_assert(NOT has_function_privilege('authenticated', 'warehouse_security.held_attach_one(uuid,text)', 'EXECUTE')
+  AND NOT has_function_privilege('service_role', 'warehouse_security.held_attach_one(uuid,text)', 'EXECUTE')
+  AND NOT has_function_privilege('anon', 'warehouse_security.held_attach_one(uuid,text)', 'EXECUTE'), 'G7: held_attach_one is executable by no app role');
 -- The two new helpers are for the database owner's functions only: no app role runs them (no new public function, so no allowlist row).
 SELECT pg_temp.hp_assert(NOT has_function_privilege('authenticated', 'warehouse_security.held_document(uuid,text)', 'EXECUTE')
   AND NOT has_function_privilege('service_role', 'warehouse_security.held_document(uuid,text)', 'EXECUTE')
