@@ -528,5 +528,24 @@ SELECT pg_temp.hd_assert(:'o1_first'::jsonb->>'success' = 'true' AND :'o1_again'
   AND (:'o1_again'::jsonb#>>'{data,gr_no}') = 'HD19' AND (SELECT count(*) FROM public.goodsreceived WHERE gr_no = 'HD19') = 1
   AND (SELECT created_by = :'staff_profile'::uuid AND accepted_by IS NULL FROM public.goodsreceived WHERE gr_no = 'HD19'),
   'O1: an ordinary save is the caller''s own, has no accepter, and its repeated key answers the first save once: ' || :'o1_again');
+-- ===== B-R6. WH-383: the customer of a held row is the customer of the saved record, never the phone's customer_id field =====
+-- Every item below says Held Customer B in the phone's field; the body or the record it belongs to is Held Customer A's.
+INSERT INTO public.customers(name, mobile) VALUES ('Held Customer B', '9888885112');
+SELECT id AS cb FROM public.customers WHERE name = 'Held Customer B' \gset
+SELECT pg_temp.hd_hold(:'staff_claims'::jsonb, jsonb_build_array(
+  pg_temp.hd_item('hd-v-grn', 'newGrn', 90, :'cb'::uuid, pg_temp.hd_grn_body(:'ca'::uuid, :'item_id'::uuid, 1, 'HDV1')),
+  pg_temp.hd_item('hd-v-disp', 'newDispatch', 91, :'cb'::uuid, pg_temp.hd_disp_body(:'ca'::uuid, 'HDV2', :'lot_stock'::uuid, 1)),
+  pg_temp.hd_item('hd-v-lc', 'lotChange', 92, :'cb'::uuid, pg_temp.hd_lc_body(:'lot_stock'::uuid, :'grn_stock'::uuid, 'A-1', 'A-2')),
+  pg_temp.hd_item('hd-v-ge', 'grnEdit', 93, :'cb'::uuid, jsonb_build_object('v', 1, 'grnId', :'grn_stock', 'recordedAt', now() - interval '2 hours', 'lots', '[]'::jsonb)),
+  pg_temp.hd_item('hd-v-ph', 'photos', 94, :'cb'::uuid, jsonb_build_object('doc', 'grn', 'recordId', :'grn_stock', 'grnId', :'grn_stock')))) AS r6_hold \gset
+SELECT pg_temp.hd_assert(:'r6_hold'::jsonb->>'success' = 'true', 'fixture: R6 hand-over: ' || :'r6_hold');
+SELECT pg_temp.hd_as(:'admin_claims'::jsonb, 'SELECT public.get_held_items(500, 0)') AS r6_list \gset
+SELECT pg_temp.hd_assert((SELECT count(*) = 5 AND bool_and(r->>'customer_name' = 'Held Customer A')
+    FROM jsonb_array_elements(:'r6_list'::jsonb->'rows') r WHERE (r->>'id')::uuid IN (pg_temp.hd_hid('hd-v-grn'), pg_temp.hd_hid('hd-v-disp'), pg_temp.hd_hid('hd-v-lc'),
+      pg_temp.hd_hid('hd-v-ge'), pg_temp.hd_hid('hd-v-ph')))
+  AND (SELECT count(*) = 5 AND bool_and(customer_id = :'ca'::uuid) FROM public.held_items WHERE request_key LIKE 'hd-v-%'),
+  'R6: the list shows the body''s or the record''s customer (Held Customer A) for a new GRN, a new dispatch, a lot change, a GRN edit and photos, never the phone''s B');
+SELECT pg_temp.hd_one(:'admin_claims'::jsonb, pg_temp.hd_hid('hd-v-grn')) AS r6_one \gset
+SELECT pg_temp.hd_assert(:'r6_one'::jsonb->>'customer_name' = 'Held Customer A', 'R6: get_held_item names the body''s customer: ' || left(:'r6_one', 300));
 ROLLBACK;
 \echo 'WH-304 held items reads and decide (B-R, B-D, B-P1, B-S1, B-O1) checks passed.'

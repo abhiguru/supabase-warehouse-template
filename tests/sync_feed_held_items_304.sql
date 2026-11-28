@@ -121,6 +121,18 @@ SELECT pg_temp.sf_assert(pg_temp.sf_ops('staff', 'held_items', :'d2', pg_temp.sf
   AND (SELECT c.row->>'state' = 'rejected' FROM pg_temp.sf_copy c WHERE c.slot = 'staff2' AND c.e = 'held_items' AND c.id = :'d2'),
   'B-F2: the decision of another person''s dispatch is a delete for the other staff phone and an upsert (rejected) for its recorder');
 
+-- ===== B-F6. WH-383: the customer in the recorder's feed row is the saved body's, not the phone's customer_id field =====
+SELECT pg_temp.sf_assert(pg_temp.sf_as(:'sf_admin_claims'::jsonb, 'SELECT public.create_customer(''Held Feed South'', ''9888897672'')')->>'success' = 'true', 'customer south');
+SELECT id AS south FROM public.customers WHERE name = 'Held Feed South' \gset
+SELECT pg_temp.hf_hold(:'staff_claims'::jsonb, jsonb_build_array(
+  pg_temp.hf_item('hf-c1', 'newDispatch', 60, :'south'::uuid, jsonb_build_object('body',
+    jsonb_build_object('args', jsonb_build_object('p_dispatch_data', jsonb_build_object('customer_id', :'north'))))))) AS hand_c \gset
+SELECT pg_temp.hf_id('hf-c1') AS c1row \gset
+SELECT pg_temp.hf_step('customer from the body');
+SELECT pg_temp.sf_assert((SELECT c.row->>'customer_name' = 'Held Feed North' FROM pg_temp.sf_copy c WHERE c.slot = 'staff' AND c.e = 'held_items' AND c.id = :'c1row')
+  AND (SELECT customer_id = :'north'::uuid FROM public.held_items WHERE request_key = 'hf-c1'),
+  'B-F6: the recorder''s feed row names the body''s customer (Held Feed North), not the phone''s (Held Feed South)');
+
 -- ===== B-F5. 5,000 held rows: every answer stays inside 2,000 rows and 8 seconds =====
 SELECT pg_temp.sf_phone('admin_old', :'sf_admin_claims'::jsonb);
 SELECT pg_temp.sf_first_load('admin_old');
