@@ -1605,7 +1605,7 @@ Items the server refused wait here for a supervisor or administrator; nothing in
   {request_key, reason: "REQUEST_KEY_REUSED"}]}` in the order of `p_items`; a repeated key answers its first row. Whole-call refusals (nothing
   written): `HELD_TOO_MANY_ITEMS`, `HELD_ITEM_INVALID`, `HELD_BODY_TOO_LARGE` (body and `what` over 65,536 bytes), `HELD_MOVE_ADMIN_ONLY`,
   `HELD_RECORDER_UNKNOWN` (no such profile), `HELD_RECORDER_INVALID` (`p_recorder` is a profile without a warehouse role, such as a customer
-  account; a deactivated staff, supervisor or administrator profile is allowed). An item follows only an item of the same recorder, and the
+  account, or a deleted profile; a deactivated staff, supervisor or administrator profile is allowed). An item follows only an item of the same recorder, and the
   row's customer is taken from the saved body (a GRN's `p_customer_id`, a dispatch's `customer_id`, else the customer of the record it
   belongs to), never from the item's `customer_id` field.
 - Photos of a held item (`register_held_photo_upload`, `confirm_held_photo_upload`, `mark_held_photo_missing`; the recorder, or the

@@ -15,7 +15,7 @@
 --  3. WH-383: hold_items derives the held row's customer from the saved body (newGrn: args.p_customer_id; newDispatch:
 --     args.p_dispatch_data.customer_id; any other kind: the customer of the GRN or dispatch it belongs to), never from the phone's item field.
 --  4. WH-384: in an administrator's move (p_recorder) the recorder must have a warehouse role (admin, supervisor, staff); a deactivated
---     profile is allowed. Another role: HELD_RECORDER_INVALID. An unknown profile keeps HELD_RECORDER_UNKNOWN.
+--     profile is allowed. Another role, or a deleted profile (deleted_at set): HELD_RECORDER_INVALID. An unknown profile keeps HELD_RECORDER_UNKNOWN.
 -- confirm_held_photo_upload reads storage.objects (migration 130's pattern: its body is not checked at creation). The pg_temp helper is
 -- dropped at the end. No role is created, altered or dropped. No new public function (so no authorize_rpc line).
 
@@ -237,7 +237,7 @@ $m$IF jsonb_typeof(v_e -> 'customer_id') = 'string' AND (v_e ->> 'customer_id') 
 $m$SELECT c.id INTO v_customer FROM public.customers c WHERE c.id = (v_e ->> 'customer_id')::uuid;$m$,
 $m$INSERT INTO public.held_items (request_key, kind, body,$m$
 ], ARRAY[
-$m$IF NOT EXISTS (SELECT 1 FROM public.user_profiles p WHERE p.id = v_recorder AND p.role IN ('admin', 'supervisor', 'staff')) THEN
+$m$IF NOT EXISTS (SELECT 1 FROM public.user_profiles p WHERE p.id = v_recorder AND p.role IN ('admin', 'supervisor', 'staff') AND p.deleted_at IS NULL) THEN
       RETURN warehouse_security.refuse('HELD_RECORDER_INVALID', 'That person cannot have items moved from their phone.');
     END IF;
     v_moved := true;$m$,
