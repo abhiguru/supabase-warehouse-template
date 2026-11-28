@@ -51,6 +51,7 @@ CREATE FUNCTION pg_temp.hh_hold(claims jsonb, items jsonb, recorder uuid DEFAULT
 CREATE FUNCTION pg_temp.hh_refused(a jsonb) RETURNS boolean LANGUAGE sql IMMUTABLE AS $$
   SELECT a ? 'raised' OR a->>'success' IS DISTINCT FROM 'true' $$;
 CREATE FUNCTION pg_temp.hh_n() RETURNS bigint LANGUAGE sql AS $$ SELECT count(*) FROM public.held_items $$;
+CREATE FUNCTION pg_temp.hh_hid(key text) RETURNS uuid LANGUAGE sql AS $$ SELECT id FROM public.held_items WHERE request_key = key $$;
 -- One item of a hand-over (a refused dispatch of customer cust unless extra changes it).
 CREATE FUNCTION pg_temp.hh_item(key text, kind text, seq int, cust uuid, extra jsonb DEFAULT '{}'::jsonb) RETURNS jsonb LANGUAGE sql AS $$
   SELECT jsonb_build_object('request_key', key, 'kind', kind, 'body', jsonb_build_object('note', 'frozen ' || key) ||
@@ -332,5 +333,11 @@ SELECT pg_temp.hh_hold(:'admin_claims'::jsonb, jsonb_build_array(pg_temp.hh_item
 SELECT pg_temp.hh_assert(pg_temp.hh_refused(:'h9_deleted'::jsonb) AND :'h9_deleted'::text LIKE '%HELD_RECORDER_INVALID%'
   AND NOT EXISTS (SELECT 1 FROM public.held_items WHERE request_key = 'hh-r-deleted'),
   'H9: a recorder whose account is deleted is HELD_RECORDER_INVALID and nothing is written: ' || :'h9_deleted');
+-- A deleted profile whose auth link is gone is found by no auth id: HELD_RECORDER_UNKNOWN, nothing written.
+UPDATE public.user_profiles SET auth_user_id = gen_random_uuid() WHERE id = :'deleted_profile'::uuid;
+SELECT pg_temp.hh_n() AS n_h9b \gset
+SELECT pg_temp.hh_hold(:'admin_claims'::jsonb, jsonb_build_array(pg_temp.hh_item('hh-r-deleted2', 'newDispatch', 37, :'ca'::uuid)), :'deleted_auth'::uuid) AS h9_unlinked \gset
+SELECT pg_temp.hh_assert(pg_temp.hh_refused(:'h9_unlinked'::jsonb) AND :'h9_unlinked'::text LIKE '%HELD_RECORDER_UNKNOWN%' AND :'h9_unlinked'::text NOT LIKE '%HELD_RECORDER_INVALID%'
+  AND pg_temp.hh_n() = :'n_h9b'::bigint, 'H9: a deleted profile whose auth link was cleared is HELD_RECORDER_UNKNOWN and nothing is written: ' || :'h9_unlinked');
 ROLLBACK;
 \echo 'WH-304 held items hand over (B-H1 to B-H6) checks passed.'
